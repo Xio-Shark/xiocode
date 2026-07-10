@@ -1,5 +1,6 @@
 import type { ExtensionHost } from "./extension-host.ts";
 import type {
+  ChatCompletionResponse,
   ChatMessage,
   ChatToolCall,
   LlmClient,
@@ -7,14 +8,17 @@ import type {
   ToolDefinition,
   ToolExecuteResult,
 } from "./types.ts";
+import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
 
+import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
 
 export type AgentLoopOptions = Readonly<{
   host: ExtensionHost;
   client: LlmClient;
   model: string;
+  providerApi?: string;
   systemPrompt?: string;
   maxTurns?: number;
   doneContract?: DoneContract;
@@ -30,6 +34,22 @@ export type AgentLoopResult = Readonly<{
   finalText: string;
   doneContract?: DoneContractResult;
   success: boolean;
+  turns: number;
+  toolCalls: number;
+  toolErrors: number;
+  usage: TokenUsage;
+}>;
+
+type SegmentResult = Readonly<{
+  turns: number;
+  finalText: string;
+  toolCalls: number;
+  toolErrors: number;
+  usages: readonly TokenUsage[];
+}>;
+
+type LoopProgress = SegmentResult & Readonly<{
+  doneContract?: DoneContractResult;
 }>;
 
 export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -57,57 +77,49 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
-
-  let finalText = "";
-  let turnsUsed = 0;
-  let doneContractResult: DoneContractResult | undefined;
-
-  while (turnsUsed < maxTurns) {
-    const turnBudget = maxTurns - turnsUsed;
-    const segment = await runUntilIdle(messages, options, turnBudget);
-    turnsUsed += segment.turns;
-    finalText = segment.finalText || finalText;
-
-    if (!options.doneContract) {
-      break;
-    }
-
-    doneContractResult = await runDoneContract(options.doneContract);
-    if (doneContractResult.passed) {
-      break;
-    }
-
-    if (turnsUsed >= maxTurns || verifyRepairTurns <= 0) {
-      break;
-    }
-
-    const repairBudget = Math.min(verifyRepairTurns, maxTurns - turnsUsed);
-    if (repairBudget <= 0) {
-      break;
-    }
-
-    messages.push({
-      role: "user",
-      content: formatDoneContractFeedback(doneContractResult),
-    });
-    const repair = await runUntilIdle(messages, options, repairBudget);
-    turnsUsed += repair.turns;
-    finalText = repair.finalText || finalText;
-    doneContractResult = await runDoneContract(options.doneContract);
-    break;
-  }
+  const progress = await runSegments(messages, options, { maxTurns, repairTurns: verifyRepairTurns });
 
   await options.host.emit("turn_end", { prompt: userPrompt });
   await options.host.emit("agent_end", {
-    doneContract: doneContractResult,
-    success: doneContractResult ? doneContractResult.passed : true,
+    doneContract: progress.doneContract,
+    success: progress.doneContract ? progress.doneContract.passed : true,
   });
 
   return {
     messages,
-    finalText,
-    doneContract: doneContractResult,
-    success: doneContractResult ? doneContractResult.passed : true,
+    finalText: progress.finalText,
+    doneContract: progress.doneContract,
+    success: progress.doneContract ? progress.doneContract.passed : true,
+    turns: progress.turns,
+    toolCalls: progress.toolCalls,
+    toolErrors: progress.toolErrors,
+    usage: sumTokenUsage(progress.usages),
+  };
+}
+
+async function runSegments(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+  budget: Readonly<{ maxTurns: number; repairTurns: number }>,
+): Promise<LoopProgress> {
+  const primary = await runUntilIdle(messages, options, budget.maxTurns);
+  if (!options.doneContract) {
+    return primary;
+  }
+  const firstCheck = await runDoneContract(options.doneContract);
+  const repairBudget = Math.min(budget.repairTurns, budget.maxTurns - primary.turns);
+  if (firstCheck.passed || repairBudget <= 0) {
+    return { ...primary, doneContract: firstCheck };
+  }
+  messages.push({ role: "user", content: formatDoneContractFeedback(firstCheck) });
+  const repair = await runUntilIdle(messages, options, repairBudget);
+  return {
+    turns: primary.turns + repair.turns,
+    finalText: repair.finalText || primary.finalText,
+    toolCalls: primary.toolCalls + repair.toolCalls,
+    toolErrors: primary.toolErrors + repair.toolErrors,
+    usages: [...primary.usages, ...repair.usages],
+    doneContract: await runDoneContract(options.doneContract),
   };
 }
 
@@ -115,23 +127,17 @@ async function runUntilIdle(
   messages: ChatMessage[],
   options: AgentLoopOptions,
   maxTurns: number,
-): Promise<{ turns: number; finalText: string }> {
+): Promise<SegmentResult> {
   let finalText = "";
   let turns = 0;
+  let toolCalls = 0;
+  let toolErrors = 0;
+  const usages: TokenUsage[] = [];
   for (; turns < maxTurns; turns += 1) {
     const tools = options.host.listTools();
-    const providerPayload = {
-      model: options.model,
-      messages,
-      tools: toProviderTools(tools),
-    };
-    const enhanced = await options.host.emit("before_provider_request", { payload: providerPayload });
-    const request = asRecord(enhanced.at(-1)) ?? providerPayload;
-    const completion = await options.client.complete({
-      model: typeof request.model === "string" ? request.model : options.model,
-      messages: (Array.isArray(request.messages) ? request.messages : messages) as ChatMessage[],
-      tools: Array.isArray(request.tools) ? request.tools as ReturnType<typeof toProviderTools> : toProviderTools(tools),
-    });
+    const completion = await requestCompletion(messages, options, tools);
+    const usage = completion.usage ?? emptyTokenUsage();
+    usages.push(usage);
 
     if (completion.content) {
       options.onAssistantText?.(completion.content);
@@ -150,20 +156,57 @@ async function runUntilIdle(
       toolCalls: completion.toolCalls,
     });
 
-    for (const call of completion.toolCalls) {
-      options.onToolStart?.(call);
-      const result = await executeToolCall(options.host, call);
-      options.onToolEnd?.(call, result);
-      const text = result.content.map((part) => part.text).join("\n");
-      messages.push({
-        role: "tool",
-        toolCallId: call.id,
-        name: call.name,
-        content: text,
-      });
-    }
+    const metrics = await appendToolResults(messages, options, completion.toolCalls);
+    toolCalls += metrics.calls;
+    toolErrors += metrics.errors;
   }
-  return { turns, finalText };
+  return { turns, finalText, toolCalls, toolErrors, usages };
+}
+
+async function requestCompletion(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+  tools: readonly ToolDefinition[],
+): Promise<ChatCompletionResponse> {
+  const providerTools = toProviderTools(tools);
+  const providerPayload = { model: options.model, messages, tools: providerTools };
+  const enhanced = await options.host.emit("before_provider_request", { payload: providerPayload });
+  const request = asRecord(enhanced.at(-1)) ?? providerPayload;
+  const requestedModel = typeof request.model === "string" ? request.model : options.model;
+  const completion = await options.client.complete({
+    model: requestedModel,
+    messages: (Array.isArray(request.messages) ? request.messages : messages) as ChatMessage[],
+    tools: Array.isArray(request.tools) ? request.tools as typeof providerTools : providerTools,
+  });
+  await options.host.emit("provider_response", {
+    providerApi: options.providerApi ?? "unknown",
+    model: requestedModel,
+    usage: completion.usage ?? emptyTokenUsage(),
+  });
+  return completion;
+}
+
+async function appendToolResults(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+  calls: readonly ChatToolCall[],
+): Promise<{ calls: number; errors: number }> {
+  let errors = 0;
+  for (const call of calls) {
+    options.onToolStart?.(call);
+    const result = await executeToolCall(options.host, call);
+    if (result.isError === true) {
+      errors += 1;
+    }
+    options.onToolEnd?.(call, result);
+    messages.push({
+      role: "tool",
+      toolCallId: call.id,
+      name: call.name,
+      content: result.content.map((part) => part.text).join("\n"),
+    });
+  }
+  return { calls: calls.length, errors };
 }
 
 async function executeToolCall(host: ExtensionHost, call: ChatToolCall): Promise<ToolExecuteResult> {
@@ -172,44 +215,46 @@ async function executeToolCall(host: ExtensionHost, call: ChatToolCall): Promise
     ...toolCallEvent,
     call: { id: call.id, name: call.name, args: call.arguments },
   });
+  const blocked = blockedToolResult(call, hookResults);
+  if (blocked) {
+    return emitToolResult(host, call, blocked);
+  }
+  const tool = host.getTool(call.name);
+  const result = tool
+    ? await runTool(tool, call)
+    : { content: [{ type: "text", text: `tool not found: ${call.name}` }], isError: true } as ToolExecuteResult;
+  return emitToolResult(host, call, result);
+}
+
+function blockedToolResult(call: ChatToolCall, hookResults: readonly unknown[]): ToolExecuteResult | undefined {
   for (const hook of hookResults) {
     const record = asRecord(hook);
     if (record?.block === true) {
-      const blocked: ToolExecuteResult = {
+      return {
         content: [{ type: "text", text: String(record.reason ?? `blocked ${call.name}`) }],
         isError: true,
       };
-      await host.emit("tool_result", {
-        call: { id: call.id, name: call.name, args: call.arguments },
-        result: { content: blocked.content, isError: true },
-      });
-      return blocked;
     }
   }
+  return undefined;
+}
 
-  const tool = host.getTool(call.name);
-  if (!tool) {
-    const missing: ToolExecuteResult = {
-      content: [{ type: "text", text: `tool not found: ${call.name}` }],
-      isError: true,
-    };
-    await host.emit("tool_result", {
-      call: { id: call.id, name: call.name, args: call.arguments },
-      result: { content: missing.content, isError: true },
-    });
-    return missing;
-  }
-
-  let result: ToolExecuteResult;
+async function runTool(tool: ToolDefinition, call: ChatToolCall): Promise<ToolExecuteResult> {
   try {
-    result = await tool.execute(call.id, call.arguments);
+    return await tool.execute(call.id, call.arguments);
   } catch (error) {
-    result = {
+    return {
       content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
       isError: true,
     };
   }
+}
 
+async function emitToolResult(
+  host: ExtensionHost,
+  call: ChatToolCall,
+  result: ToolExecuteResult,
+): Promise<ToolExecuteResult> {
   const processed = await host.emit("tool_result", {
     call: { id: call.id, name: call.name, args: call.arguments },
     result: {

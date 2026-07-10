@@ -22,3 +22,4 @@ XioCode originally extended pi-agent in-process. That made the product a thin wr
 - Temporary feature gap: no semantic search until a Xio-native tool is added later.
 - REPL is intentionally minimal versus pi-tui; polish is a follow-up.
 - Docs and AGENTS identity must describe Xio as self-hosted, not “built on pi-agent”.
+- Product north star (self-owned loop under merge-ask): [docs/GOAL.md](../GOAL.md).

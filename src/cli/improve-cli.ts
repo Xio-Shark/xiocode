@@ -2,6 +2,7 @@ import { writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { createTrustedCapabilityGate } from "../../extensions/xio-eval/src/index.ts";
 import { GoalStore, SelfImproveRunner } from "../../extensions/xio-improve/src/index.ts";
 import { defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 
@@ -10,6 +11,7 @@ export type ImproveCliArgs = Readonly<{
   help: boolean;
   verifierCommands: readonly string[];
   noBuiltinSeeds: boolean;
+  capabilityGate: boolean;
 }>;
 
 /**
@@ -34,17 +36,7 @@ export async function runImproveCli(
 
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const worktreeBaseDir = path.join(env.XIO_HOME ? expandHome(env.XIO_HOME) : path.join(os.homedir(), ".xiocode"), "worktrees");
-
-  const goalStore = new GoalStore({ loadBuiltinSeeds: !parsed.noBuiltinSeeds });
-  const runner = new SelfImproveRunner({
-    mainRoot: cwd,
-    goalStore,
-    worktreeBaseDir,
-    verifierCommands: parsed.verifierCommands.length > 0 ? parsed.verifierCommands : undefined,
-    ask: options.ask ?? defaultAsk,
-    notify: (message) => write(`${message}\n`),
-  });
+  const runner = createRunner({ parsed, cwd, env, ask: options.ask ?? defaultAsk, write });
 
   write(
     `Self-improve: T4 schedule, verifier default npm run check, merge via MergeGate ask only (never auto-merge on green).\n`,
@@ -57,7 +49,7 @@ export async function runImproveCli(
       return 1;
     }
     write(formatResult(result));
-    return result.verifier.ok ? 0 : 2;
+    return result.verifier.ok && gatePassed(result.capabilityGate) ? 0 : 2;
   }
 
   const results = await runner.runLoop({ max: parsed.max });
@@ -68,13 +60,41 @@ export async function runImproveCli(
   for (const result of results) {
     write(formatResult(result));
   }
-  return results.every((r) => r.verifier.ok) ? 0 : 2;
+  return results.every((result) => result.verifier.ok && gatePassed(result.capabilityGate)) ? 0 : 2;
+}
+
+function createRunner(options: Readonly<{
+  parsed: ImproveCliArgs;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  ask: (question: string) => Promise<boolean>;
+  write: (chunk: string) => void;
+}>): SelfImproveRunner {
+  const { parsed, cwd, env } = options;
+  const xioHome = env.XIO_HOME ? expandHome(env.XIO_HOME) : path.join(os.homedir(), ".xiocode");
+  return new SelfImproveRunner({
+    mainRoot: cwd,
+    goalStore: new GoalStore({ loadBuiltinSeeds: !parsed.noBuiltinSeeds }),
+    worktreeBaseDir: path.join(xioHome, "worktrees"),
+    verifierCommands: parsed.verifierCommands.length > 0 ? parsed.verifierCommands : undefined,
+    ask: options.ask,
+    notify: (message) => options.write(`${message}\n`),
+    capabilityGate: parsed.capabilityGate
+      ? createTrustedCapabilityGate({
+        trustedRoot: cwd,
+        evalRoot: env.XIO_EVAL_ROOT,
+        priceTablePath: env.XIO_EVAL_PRICE_TABLE,
+        env,
+      })
+      : undefined,
+  });
 }
 
 export function parseImproveArgs(argv: readonly string[]): ImproveCliArgs {
   let max = 1;
   let help = false;
   let noBuiltinSeeds = false;
+  let capabilityGate = false;
   const verifierCommands: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -108,14 +128,19 @@ export function parseImproveArgs(argv: readonly string[]): ImproveCliArgs {
       noBuiltinSeeds = true;
       continue;
     }
+    if (arg === "--capability-gate") {
+      capabilityGate = true;
+      continue;
+    }
   }
 
-  return { max, help, verifierCommands, noBuiltinSeeds };
+  return { max, help, verifierCommands, noBuiltinSeeds, capabilityGate };
 }
 
 function formatResult(result: {
   goal: { id: string; source: string; title: string };
   verifier: { ok: boolean; exitCode: number };
+  capabilityGate?: { status: string; evalId?: string };
   merge: { asked: boolean; approved?: boolean; merged?: boolean; reason?: string };
 }): string {
   const merge = result.merge;
@@ -132,6 +157,9 @@ function formatResult(result: {
   return [
     `goal=${result.goal.id} source=${result.goal.source} title=${JSON.stringify(result.goal.title)}`,
     `verifier=${result.verifier.ok ? "green" : "red"} exit=${result.verifier.exitCode}`,
+    result.capabilityGate
+      ? `capability_gate=${result.capabilityGate.status} eval=${result.capabilityGate.evalId ?? "n/a"}`
+      : "capability_gate=disabled",
     mergeLine,
     "",
   ].join("\n");
@@ -145,15 +173,21 @@ function improveHelp(): string {
     "  xio improve                 Run one goal (T4: queue → red_test → seed)",
     "  xio improve --max N         Run up to N goals",
     "  xio improve --check CMD     Append verifier command (default: npm run check)",
+    "  xio improve --capability-gate  Require trusted before/after PASS before merge ask",
     "  xio improve --no-builtin-seeds",
     "  xio improve --help",
     "",
     "Policy:",
     "  Edits run inside WorktreeSandbox.",
     "  Green verifier triggers MergeGate ask only — never auto-merge.",
+    "  With --capability-gate, FAIL/INFRA/CONCERNS do not ask to merge.",
     "  Red verifier does not ask to merge.",
     "",
   ].join("\n");
+}
+
+function gatePassed(gate: { status: string } | undefined): boolean {
+  return gate === undefined || gate.status === "PASS";
 }
 
 function expandHome(value: string): string {

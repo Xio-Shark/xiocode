@@ -11,7 +11,14 @@ import {
 import { GoalStore } from "./goal-store.ts";
 import { Verifier } from "./verifier.ts";
 
-import type { ImproveGoal, ImproveRunResult, MergeOutcome, VerifierResult } from "./types.ts";
+import type {
+  CapabilityGate,
+  CapabilityGateResult,
+  ImproveGoal,
+  ImproveRunResult,
+  MergeOutcome,
+  VerifierResult,
+} from "./types.ts";
 
 export type ApplyGoalFn = (goal: ImproveGoal, worktreePath: string) => Promise<void>;
 
@@ -31,6 +38,8 @@ export type SelfImproveRunnerOptions = Readonly<{
   /** When true, always remove the worktree in finally (tests). Default false. */
   forceCleanup?: boolean;
   spawnXio?: (prompt: string, worktreePath: string) => Promise<void>;
+  /** Optional trusted before/after gate loaded outside the candidate worktree. */
+  capabilityGate?: CapabilityGate;
 }>;
 
 /**
@@ -47,6 +56,7 @@ export class SelfImproveRunner {
   readonly #notify?: (message: string) => void;
   readonly #skipMergeAsk: boolean;
   readonly #forceCleanup: boolean;
+  readonly #capabilityGate?: CapabilityGate;
 
   constructor(options: SelfImproveRunnerOptions) {
     this.#mainRoot = path.resolve(options.mainRoot);
@@ -57,6 +67,7 @@ export class SelfImproveRunner {
     this.#notify = options.notify;
     this.#skipMergeAsk = options.skipMergeAsk === true;
     this.#forceCleanup = options.forceCleanup === true;
+    this.#capabilityGate = options.capabilityGate;
     this.#applyGoal = options.applyGoal
       ?? createDefaultApplyGoal(options.spawnXio);
   }
@@ -82,26 +93,12 @@ export class SelfImproveRunner {
 
     let merge: MergeOutcome | undefined;
     try {
-      this.#notify?.(`Goal ${goal.id} (${goal.source}) in worktree ${session.worktreePath}`);
-      await this.#applyGoal(goal, session.worktreePath);
-
-      const verifier = new Verifier({
-        cwd: session.worktreePath,
-        commands: this.#verifierCommands,
-      });
-      const verifierResult = await verifier.run();
-      this.#notify?.(
-        verifierResult.ok
-          ? `Verifier green for ${goal.id}`
-          : `Verifier red for ${goal.id} (exit ${verifierResult.exitCode})`,
-      );
-
-      merge = await this.#maybeAskMerge(session, verifierResult);
+      const outcome = await this.#executeGoal(goal, session);
+      merge = outcome.merge;
       return {
         goal,
         worktreePath: session.worktreePath,
-        verifier: verifierResult,
-        merge,
+        ...outcome,
       };
     } finally {
       // Remove worktree after successful merge or when there is nothing left to keep.
@@ -122,6 +119,28 @@ export class SelfImproveRunner {
     }
   }
 
+  async #executeGoal(
+    goal: ImproveGoal,
+    session: WorktreeSession,
+  ): Promise<Pick<ImproveRunResult, "verifier" | "capabilityGate" | "merge">> {
+    this.#notify?.(`Goal ${goal.id} (${goal.source}) in worktree ${session.worktreePath}`);
+    await this.#applyGoal(goal, session.worktreePath);
+    const verifier = await new Verifier({
+      cwd: session.worktreePath,
+      commands: this.#verifierCommands,
+    }).run();
+    this.#notify?.(
+      verifier.ok
+        ? `Verifier green for ${goal.id}`
+        : `Verifier red for ${goal.id} (exit ${verifier.exitCode})`,
+    );
+    const capabilityGate = verifier.ok
+      ? await this.#runCapabilityGate(goal, session.worktreePath)
+      : undefined;
+    const merge = await this.#maybeAskMerge(session, verifier, capabilityGate);
+    return { verifier, capabilityGate, merge };
+  }
+
   async runLoop(options: { max: number }): Promise<ImproveRunResult[]> {
     const max = Math.max(0, options.max);
     const results: ImproveRunResult[] = [];
@@ -138,9 +157,16 @@ export class SelfImproveRunner {
     return results;
   }
 
-  async #maybeAskMerge(session: WorktreeSession, verifier: VerifierResult): Promise<MergeOutcome> {
+  async #maybeAskMerge(
+    session: WorktreeSession,
+    verifier: VerifierResult,
+    capabilityGate?: CapabilityGateResult,
+  ): Promise<MergeOutcome> {
     if (!verifier.ok) {
       return { asked: false, reason: "verifier_red" };
+    }
+    if (capabilityGate && capabilityGate.status !== "PASS") {
+      return { asked: false, reason: gateReason(capabilityGate.status) };
     }
     if (this.#skipMergeAsk) {
       return { asked: false, reason: "skipped_by_policy" };
@@ -153,9 +179,8 @@ export class SelfImproveRunner {
     }
 
     this.#notify?.(summary.text);
-    const approved = await this.#ask(
-      `Verifier green. Merge ${summary.filesChanged} change(s) from improve worktree into main tree? [y/N] `,
-    );
+    const gateLabel = capabilityGate ? "Verifier and trusted capability gate green." : "Verifier green.";
+    const approved = await this.#ask(`${gateLabel} Merge ${summary.filesChanged} change(s) from improve worktree into main tree? [y/N] `);
     if (!approved) {
       return { asked: true, approved: false };
     }
@@ -173,6 +198,28 @@ export class SelfImproveRunner {
       error: result.error,
       conflict: result.conflict,
     };
+  }
+
+  async #runCapabilityGate(goal: ImproveGoal, candidateRoot: string): Promise<CapabilityGateResult | undefined> {
+    if (!this.#capabilityGate) {
+      return undefined;
+    }
+    try {
+      const result = await this.#capabilityGate.evaluate({
+        mainRoot: this.#mainRoot,
+        candidateRoot,
+        goal,
+      });
+      this.#notify?.(`Trusted capability gate: ${result.status}${result.evalId ? ` (${result.evalId})` : ""}`);
+      for (const concern of result.concerns) {
+        this.#notify?.(`Capability concern: ${concern}`);
+      }
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#notify?.(`Trusted capability gate: INFRA_ERROR (${message})`);
+      return { status: "INFRA_ERROR", concerns: [], errors: [message] };
+    }
   }
 }
 
@@ -192,4 +239,14 @@ function createDefaultApplyGoal(spawnXio?: (prompt: string, worktreePath: string
       `Goal ${goal.id} has no scriptedChange; provide applyGoal or spawnXio to run the agent in the worktree.`,
     );
   };
+}
+
+function gateReason(status: CapabilityGateResult["status"]): Extract<MergeOutcome, { asked: false }>["reason"] {
+  if (status === "FAIL") {
+    return "capability_gate_fail";
+  }
+  if (status === "INFRA_ERROR") {
+    return "capability_gate_infra";
+  }
+  return "capability_gate_concerns";
 }

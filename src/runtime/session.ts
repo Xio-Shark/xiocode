@@ -1,13 +1,18 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
-import { runAgentLoop } from "./agent-loop.ts";
 import { ExtensionHost } from "./extension-host.ts";
 import { createLlmClient, resolveApiKey } from "./providers/client.ts";
+import {
+  createPromptRunner,
+  createSessionCloser,
+  createSessionHost,
+  registerMergeCommand,
+} from "./session-lifecycle.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { MergeGate, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 
-import type { ModelInfo, ProviderRegistration, XioExtensionAPI } from "./types.ts";
+import type { ModelInfo, ProviderRegistration, SessionStartPayload, TokenUsage, XioExtensionAPI } from "./types.ts";
 import type { DoneContract } from "./verify/done-contract.ts";
 import type { XioRuntimeConfig, XioVerifyConfig } from "../cli/config-parser.ts";
 
@@ -19,12 +24,21 @@ export type SessionOptions = Readonly<{
   promptOnce?: string;
   env?: NodeJS.ProcessEnv;
   ask?: (question: string) => Promise<boolean>;
+  maxTurns?: number;
+  sessionStart?: SessionStartPayload;
 }>;
 
 export type PreparedSession = Readonly<{
   host: ExtensionHost;
   model: ModelInfo;
-  runPrompt: (prompt: string) => Promise<{ text: string; success: boolean }>;
+  runPrompt: (prompt: string) => Promise<{
+    text: string;
+    success: boolean;
+    turns: number;
+    toolCalls: number;
+    toolErrors: number;
+    usage: TokenUsage;
+  }>;
   close: () => Promise<void>;
 }>;
 
@@ -36,25 +50,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const verify = options.runtimeConfig.verify ?? { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] };
   const doneContract = toDoneContract(verify);
   const ask = options.ask ?? defaultAsk;
-  const host = new ExtensionHost({
-    initialModel: model,
-    ui: {
-      notify(message, level) {
-        const prefix = level ? `[${level}] ` : "";
-        output.write(`${prefix}${message}\n`);
-      },
-      setStatus(key, text) {
-        if (text) {
-          output.write(`[status:${key}] ${text}\n`);
-        }
-      },
-      setWidget(_key, content) {
-        if (content && content.length > 0) {
-          output.write(`${content.join("\n")}\n`);
-        }
-      },
-    },
-  });
+  const host = createSessionHost(model);
 
   for (const tool of createBuiltinTools({ cwd, workspaceRoot })) {
     host.registerTool(tool);
@@ -71,24 +67,10 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
   // Core owns finalize; extension may also register /merge — prefer core gate via re-register.
   if (mergeGate) {
-    host.registerCommand("merge", {
-      description: "Show worktree diff and merge into the main tree after confirmation.",
-      handler: async () => {
-        const result = await mergeGate.promptMerge(ask, (message) => {
-          output.write(`${message}\n`);
-        });
-        if ("skipped" in result) {
-          return "merge skipped";
-        }
-        if (result.ok) {
-          return result.summary;
-        }
-        return result.error;
-      },
-    });
+    registerMergeCommand(host, mergeGate, ask);
   }
 
-  await host.emit("session_start", {});
+  await host.emit("session_start", options.sessionStart ?? {});
 
   const registration = host.getProvider(model.provider);
   if (!registration) {
@@ -102,37 +84,12 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   return {
     host,
     model,
-    async runPrompt(prompt: string) {
-      const result = await runAgentLoop(prompt, {
-        host,
-        client,
-        model: model.id,
-        doneContract,
-        verifyRepairTurns: verify.repairTurns,
-        onAssistantText(text) {
-          output.write(`\n${text}\n`);
-        },
-        onToolStart(call) {
-          output.write(`\n→ ${call.name}(${JSON.stringify(call.arguments)})\n`);
-        },
-      });
-      if (result.doneContract && !result.doneContract.passed) {
-        output.write(`\n${result.doneContract.summary}\n`);
-      }
-      return { text: result.finalText, success: result.success };
-    },
-    async close() {
-      await host.emit("session_end", {});
-      if (mergeGate) {
-        await mergeGate.finalizeSession(
-          ask,
-          { retainOnReject: options.runtimeConfig.worktree.retainOnReject },
-          (message) => {
-            output.write(`${message}\n`);
-          },
-        );
-      }
-    },
+    runPrompt: createPromptRunner({
+      host, client, model, providerApi: registration.api, maxTurns: options.maxTurns, doneContract, verify,
+    }),
+    close: createSessionCloser({
+      host, mergeGate, ask, retainOnReject: options.runtimeConfig.worktree.retainOnReject,
+    }),
   };
 }
 

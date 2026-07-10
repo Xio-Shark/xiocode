@@ -19,11 +19,11 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run extensions/xio-evolve/test extensions/xio-improve/test extensions/xio-sandbox/test"
+    "test:unit": "vitest run extensions/xio-eval/test extensions/xio-evolve/test extensions/xio-improve/test extensions/xio-regress/test extensions/xio-sandbox/test src/cli/regress-cli.test.ts"
   },
   "keywords": [],
   "author": "",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
     "diff": "9.0.0",
     "smol-toml": "1.6.1"

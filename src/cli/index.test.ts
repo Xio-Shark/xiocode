@@ -69,6 +69,14 @@ api_key_env = "XIO_DEEPSEEK_KEY"
     expect(launch.cwd).toBe(launch.worktree!.worktreePath);
     expect(launch.cwd).not.toBe(root);
     expect(launch.mainRoot).toBe(await WorktreeSandbox.resolveMainRoot(root));
+    expect(launch.sessionStart.provenance).toMatchObject({
+      schema_version: "xio-run-provenance.v1",
+      workspace_root: launch.cwd,
+      main_root: launch.mainRoot,
+      dirty: true,
+    });
+    expect(launch.sessionStart.provenance?.base_commit).toMatch(/^[a-f0-9]{40}$/);
+    expect(launch.sessionStart.provenance?.dirty_summary_sha).toMatch(/^[a-f0-9]{64}$/);
 
     const runtime = JSON.parse(await readFile(launch.runtimeConfigPath, "utf8")) as {
       general?: { defaultProvider?: string };
@@ -149,6 +157,7 @@ describe("handleXioFlag", () => {
     expect(handleXioFlag(["--help"], (chunk) => chunks.push(chunk))).toBe(true);
     expect(chunks.join("")).toContain("local-first coding agent");
     expect(chunks.join("")).toContain("worktree");
+    expect(chunks.join("")).toContain("xio regress");
     expect(chunks.join("")).not.toContain("pi-agent");
   });
 });

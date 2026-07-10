@@ -5,9 +5,11 @@ import { createTwoFilesPatch } from "diff";
 import { RunStore } from "./run-store.ts";
 import { parseTodos } from "./todo-enforcer.ts";
 import { SecretRedactor } from "./secret-redactor.ts";
+import { decodeProviderUsageEvent, sumTokenUsage } from "../../../src/runtime/usage.ts";
 
 import type { ErrorTracker } from "./error-tracker.ts";
 import type { RunMetadata, RunSummary, TodoItem, ToolCall, TrajectoryTurn } from "./types.ts";
+import type { TokenUsage } from "../../../src/runtime/types.ts";
 
 export type TrajectoryRecorderOptions = Readonly<{
   store?: RunStore;
@@ -54,6 +56,7 @@ export class TrajectoryRecorder {
   private readonly turns: TrajectoryTurn[] = [];
   private readonly failureReasons: string[] = [];
   private readonly pendingEvents: PendingEvent[] = [];
+  private readonly providerUsages: TokenUsage[] = [];
   private todoItems: readonly TodoItem[] = [];
   private pendingFlush: Promise<void> | undefined;
   private flushAgain = false;
@@ -147,6 +150,12 @@ export class TrajectoryRecorder {
     this.pendingToolCallsInTurn = Math.max(0, this.pendingToolCallsInTurn - 1);
   }
 
+  recordProviderUsage(event: unknown): void {
+    const usage = decodeProviderUsageEvent(event);
+    this.providerUsages.push(usage);
+    this.queueEvent("provider.usage", "provider usage", { usage });
+  }
+
   recordTurnEnd(event: unknown): void {
     const turn = toTurn(event);
     const assistantError = assistantErrorMessage(turn.message);
@@ -193,6 +202,7 @@ export class TrajectoryRecorder {
       success: resolvedStatus === "success",
       failure_reasons: failureReasons,
       finished_at: this.now().toISOString(),
+      usage: sumTokenUsage(this.providerUsages),
     };
     await this.store.writeJson(metadata.run_id, "summary.json", summary);
     await this.writeEvent(resolvedStatus === "success" ? "run.finished" : "run.error", `run ${resolvedStatus}`, { summary });
