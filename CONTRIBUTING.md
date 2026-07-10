@@ -103,7 +103,7 @@ npx xio --help
 
 Expected output:
 ```
-XioCode - A self-iterating AI coding agent
+XioCode - A local-first AI coding agent
 
 Usage:
   xio [options]
@@ -120,10 +120,13 @@ xiocode/
 ├── src/cli/                # xio CLI, config parser, extension wiring
 ├── src/runtime/            # self-owned agent loop, tools, providers, REPL
 ├── extensions/
+│   ├── xio-sandbox/        # WorktreeSandbox + MergeGate
 │   ├── xio-evolve/         # TrajectoryRecorder + RunStore + Denoiser + ContextInjector
-│   └── xio-sandbox/        # WorktreeSandbox + MergeGate
+│   └── xio-improve/        # Self-improve outer loop (T4 + verifier + merge-ask)
 ├── docs/
+│   ├── GOAL.md             # Final product goal (north star)
 │   ├── STATUS.md           # Delivery snapshot
+│   ├── self-improve.md     # Self-modify + merge-ask
 │   ├── adr/                # Architecture decisions
 │   └── archive/            # Historical plans / contracts
 ├── package.json
@@ -132,7 +135,7 @@ xiocode/
 └── README.md
 ```
 
-本仓库不依赖 `@earendil-works/pi-*`。扩展通过 `XioExtensionAPI` 注册。
+本仓库不依赖 `@earendil-works/pi-*`。扩展通过 `XioExtensionAPI` 注册。产品终点见 [docs/GOAL.md](./docs/GOAL.md)；近期待办见 [ROADMAP.md](./ROADMAP.md)。
 
 ---
 
@@ -155,7 +158,7 @@ xiocode/
 ### Naming Conventions
 
 - **Files**: kebab-case (`strategy-learner.ts`)
-- **Classes**: PascalCase (`StrategyLearner`)
+- **Classes**: PascalCase (`GoalStore`, `WorktreeSandbox`)
 - **Functions**: camelCase (`extractToolSequence()`)
 - **Constants**: UPPER_SNAKE_CASE (`MAX_RETRIES`)
 - **Interfaces**: PascalCase, no `I` prefix (`ToolCall`, not `IToolCall`)
@@ -176,17 +179,14 @@ Group and order:
 import { readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
 
-// 2. Pi-agent packages
-import { type AgentContext } from '@earendil-works/pi-agent-core';
-
-// 3. Internal dependencies (same package)
+// 2. Internal dependencies (same package)
 import { type ToolCall, type ToolResult } from './types.js';
 
-// 4. Relative imports
+// 3. Relative imports
 import { RunStore } from './run-store.js';
 ```
 
-Always use `.js` extension in imports (TypeScript with `--module nodenext`).
+Always use `.js` extension in imports (TypeScript with `--module nodenext`). Do **not** import `@earendil-works/pi-*` (removed; see ADR 0002).
 
 ---
 
@@ -210,31 +210,32 @@ npx vitest watch extensions/xio-evolve/test
 Place tests in `test/` subdirectory, mirroring `src/` structure:
 
 ```
-extensions/xio-evolve/
+extensions/xio-improve/
 ├── src/
-│   ├── strategy-learner.ts
-│   └── prompt-evolver.ts
+│   ├── goal-store.ts
+│   └── verifier.ts
 └── test/
-    ├── strategy-learner.test.ts
-    └── prompt-evolver.test.ts
+    └── self-improve.test.ts
 ```
+
+Default evolve path tests cover recorder / denoiser / injector — not StrategyLearner / PromptEvolver (off default path; see [docs/GOAL.md](./docs/GOAL.md) §5).
 
 ### Test Naming
 
 ```typescript
 import { describe, it, expect } from 'vitest';
 
-describe('StrategyLearner', () => {
-  describe('extractToolSequence()', () => {
-    it('should extract tool names in order', () => {
+describe('GoalStore', () => {
+  describe('next()', () => {
+    it('should drain queue before seeds', () => {
       // ...
     });
 
-    it('should handle empty trajectory', () => {
+    it('should handle empty store', () => {
       // ...
     });
 
-    it('should deduplicate consecutive identical tool calls', () => {
+    it('should prefer red_test over seed', () => {
       // ...
     });
   });
@@ -301,39 +302,35 @@ const mockResponse = JSON.parse(
 
 ### Scope
 
-- `core` — xio wrapper CLI
+- `runtime` — `src/runtime`
+- `cli` — `src/cli`
 - `evolve` — xio-evolve extension
+- `improve` — xio-improve extension
 - `sandbox` — xio-sandbox extension
-- `contracts` — Interop protocols
 - `docs` — Documentation
 
 ### Examples
 
 ```
-feat(evolve): implement SpeculativeExecutor for tool prefetching
+feat(improve): add ExternalEvalAdapter stub for SWE-bench failures
 
-Adds pattern-based tool call prediction and prefetch caching.
-Based on PASTE paper (arxiv.org/html/2603.18897v1).
-
-Reduces task completion time by ~48% on grep→read→edit chains.
+Maps eval failure signals to ImproveGoal entries. External patches
+are never merged into xiocode (S4 contract).
 
 Closes #42
 ```
 
 ```
-fix(sandbox): PathGuard incorrectly rejects valid symlinks
+fix(sandbox): MergeGate aborts cleanly on conflict
 
-realpath() was called before path.resolve(), causing false positives
-when workspace root itself is a symlink.
+Conflict leaves the worktree in place and reports the conflicting paths
+instead of partially applying the merge.
 
 Fixes #67
 ```
 
 ```
-docs(quickstart): add Docker sandbox setup instructions
-
-Previously only mentioned "optional Docker", now includes full config
-example and troubleshooting steps.
+docs(goal): add docs/GOAL.md north star and sync active docs
 ```
 
 ---
@@ -349,9 +346,9 @@ example and troubleshooting steps.
 ### 2. Create a Branch
 
 ```bash
-git checkout -b feat/speculative-executor
+git checkout -b feat/external-eval-adapter
 # or
-git checkout -b fix/pathguard-symlink-bug
+git checkout -b fix/merge-gate-conflict-report
 ```
 
 Branch naming: `<type>/<short-description>`
@@ -381,8 +378,8 @@ All must pass before pushing.
 
 ```bash
 git add .
-git commit -m "feat(evolve): implement SpeculativeExecutor"
-git push origin feat/speculative-executor
+git commit -m "feat(improve): add ExternalEvalAdapter stub"
+git push origin feat/external-eval-adapter
 ```
 
 ### 6. Open Pull Request
@@ -434,76 +431,50 @@ cd extensions/xio-my-extension
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.4.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^2.0.0"
-  }
+  "private": true
 }
 ```
 
-3. **Write extension entry point**:
+3. **Write extension entry point** (register via `XioExtensionAPI` from `src/runtime` — not pi-agent):
 
 ```typescript
 // extensions/xio-my-extension/src/index.ts
-import type { AgentContext } from '@earendil-works/pi-agent-core';
+import type { XioExtensionAPI } from "../../../src/runtime/index.ts";
 
-export function register(ctx: AgentContext): void {
-  // Register tools
-  ctx.registerTool({
-    name: 'my_tool',
-    description: 'Does something useful',
+export function register(api: XioExtensionAPI): void {
+  api.registerTool({
+    name: "my_tool",
+    description: "Does something useful",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        input: { type: 'string' },
+        input: { type: "string" },
       },
-      required: ['input'],
+      required: ["input"],
     },
-    execute: async (args) => {
-      return { result: `Processed: ${args.input}` };
-    },
-  });
-
-  // Register commands
-  ctx.registerCommand('/my-command', {
-    description: 'Runs my custom command',
-    execute: async () => {
-      console.log('Command executed!');
+    execute: async (_toolCallId, params) => {
+      const input = String(params.input ?? "");
+      return { content: [{ type: "text", text: `Processed: ${input}` }] };
     },
   });
 
-  // Hook into lifecycle events
-  ctx.on('turn.start', async () => {
-    console.log('Turn starting...');
-  });
-
-  ctx.on('tool_call', async (event) => {
-    console.log(`Tool called: ${event.tool_name}`);
+  api.registerCommand("my-command", {
+    description: "Runs my custom command",
+    handler: async () => {
+      // ...
+    },
   });
 }
 ```
 
-4. **Register in xio config**:
-
-```toml
-[extensions.my-extension]
-enabled = true
-path = "./extensions/xio-my-extension"
-```
+4. **Wire the extension** in CLI extension loading (see `src/cli/xio-extension.ts` and existing `extensions/*` for the current pattern). Prefer config toggles under `~/.xiocode/config.toml` when adding on/off switches.
 
 5. **Build and test**:
 
 ```bash
-npm run build
-npx xio  # Your extension should load automatically
+npm run check
+npm run test:unit
+./bin/xio
 ```
 
 ### Extension Best Practices
@@ -511,7 +482,7 @@ npx xio  # Your extension should load automatically
 - **Don't modify runtime core lightly** — Prefer extension hooks and registration APIs
 - **Fail gracefully** — If extension init fails, log error but don't crash agent
 - **Document config options** — Add README.md to your extension directory
-- **Version carefully** — Breaking changes should bump major version
+- **Align with [docs/GOAL.md](./docs/GOAL.md)** — especially merge-ask and honest delivery
 - **Test in isolation** — Unit tests shouldn't require full agent runtime
 
 ---
@@ -524,4 +495,4 @@ npx xio  # Your extension should load automatically
 
 ---
 
-**Thank you for contributing to XioCode!** 🎉
+**Thank you for contributing to XioCode!**

@@ -93,15 +93,43 @@ export type ToolCallEvent = Readonly<{
   input: unknown;
 }>;
 
+export type TokenUsage = Readonly<{
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheTokens: number | null;
+  reasoningTokens: number | null;
+}>;
+
+export type ProviderResponseEvent = Readonly<{
+  providerApi: string;
+  model: string;
+  usage: TokenUsage;
+}>;
+
 export type UserBashEvent = Readonly<{
   command: string;
 }>;
 
+export type SessionStartPayload = Readonly<{
+  provenance?: Readonly<{
+    schema_version: "xio-run-provenance.v1";
+    workspace_root: string;
+    main_root: string;
+    base_commit: string;
+    branch: string | null;
+    dirty: boolean;
+    dirty_summary_sha: string;
+    xiocode_revision: string | null;
+    created_at: string;
+  }>;
+}>;
+
 export type ExtensionEventMap = {
-  session_start: unknown;
+  session_start: SessionStartPayload;
   session_end: unknown;
   before_agent_start: unknown;
   before_provider_request: unknown;
+  provider_response: ProviderResponseEvent;
   turn_start: unknown;
   turn_end: unknown;
   tool_call: ToolCallEvent | Record<string, unknown>;
@@ -166,6 +194,7 @@ export type ChatCompletionRequest = Readonly<{
 export type ChatCompletionResponse = Readonly<{
   content: string;
   toolCalls: readonly ChatToolCall[];
+  usage?: TokenUsage;
   raw?: unknown;
 }>;
 

@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Nothing yet
+- `docs/GOAL.md` — product north star (final goal, non-goals, status mapping)
+- Trusted `xio eval` preflight/smoke/compare pipeline with 5-family dev/holdout fixtures, out-of-workspace hidden graders, versioned evidence reports, nullable provider usage, and opt-in self-improve capability gating
 
 ### Changed
-- Nothing yet
+- Active docs (README, CONTEXT, ROADMAP, STATUS, AGENTS, self-improve, CONTRIBUTING, archive INDEX) link to `docs/GOAL.md` and drop stale pi / default-path evolve framing where touched
 
 ### Fixed
 - Nothing yet

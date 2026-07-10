@@ -7,6 +7,7 @@
 ## Product
 
 - **XioCode**: local-first AI coding agent with a self-owned TypeScript runtime (`src/runtime`), outer worktree isolation, and run evidence under `~/.xiocode/runs/`.
+- **Goal / north star**: observable, rollback-safe, self-improvable local coding-agent loop under user MergeGate consent — see [docs/GOAL.md](./docs/GOAL.md).
 - **`xio`**: CLI binary. Reads `~/.xiocode/config.toml`, starts the session/REPL, loads extensions in-process.
 - **Harness**: layer between the LLM and the execution environment (tool calls ↔ file/shell actions).
 
@@ -21,11 +22,13 @@
 - **xio-sandbox**: outer git worktree sandbox. `prepareLaunch` creates `~/.xiocode/worktrees/<repo_id>/<session_id>`; agent cwd points there. `/merge` and session-end use MergeGate.
 - **xio-evolve** (default path): TodoEnforcer addendum, TrajectoryRecorder, RunStore, ResultDenoiser, ContextInjector. StrategyLearner / PromptEvolver / EvalComparator are **not** on the default path.
 - **xio-improve**: self-modification outer loop (`xio improve` / `bin/xio-improve`). T4 GoalStore → worktree edits → verifier → **MergeGate ask**. Green verifier never auto-merges.
+- **xio-eval**: trusted local evaluator. Materializes tiny public fixtures, starts the candidate in its normal worktree path, then runs hidden graders from outside the candidate workspace and writes a versioned report.
 
 ## Run evidence
 
 - **Run**: one session, id `run_YYYYMMDD_HHMMSS`, stored at `~/.xiocode/runs/<run_id>/`.
 - **Trajectory**: prompts, tool calls/results, todos, timing — `events.jsonl` + `trajectory.json`.
+- **Eval report**: before/after quality, safety, latency, efficiency, nullable usage, hashes, and run references under `~/.xiocode/evals/<eval_id>/`; not a second trajectory store.
 
 ## Active infra (default path)
 
@@ -45,6 +48,7 @@
 - **T4**: GoalStore drains queue → red_test → seed.
 - **S4 seed**: in-repo adaptation from external-eval-style signals; only xiocode changes.
 - **Verifier**: default `npm run check`; red → no merge ask.
+- **CapabilityGate**: optional trusted `xio eval compare` boundary. Only `PASS` may proceed to MergeGate ask; concerns/fail/infra stop before the ask.
 - Details: [docs/self-improve.md](./docs/self-improve.md).
 
 ## Tools

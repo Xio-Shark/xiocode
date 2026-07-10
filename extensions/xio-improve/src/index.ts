@@ -6,6 +6,9 @@ export { SelfImproveRunner } from "./self-improve-runner.ts";
 export type { ApplyGoalFn, SelfImproveRunnerOptions } from "./self-improve-runner.ts";
 export { BUILTIN_SEEDS } from "./seeds.ts";
 export type {
+  CapabilityGate,
+  CapabilityGateResult,
+  CapabilityGateStatus,
   GoalSource,
   ImproveGoal,
   ImproveRunResult,
