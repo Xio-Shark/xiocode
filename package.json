@@ -1,0 +1,34 @@
+{
+  "name": "xiocode",
+  "version": "1.1.0",
+  "description": "A local-first AI coding agent for your terminal with self-owned runtime.",
+  "type": "module",
+  "bin": {
+    "xio": "bin/xio",
+    "xio-improve": "bin/xio-improve"
+  },
+  "files": [
+    "dist",
+    "extensions",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "dependencies": {
+    "diff": "9.0.0",
+    "smol-toml": "1.6.1"
+  },
+  "devDependencies": {
+    "@types/diff": "8.0.0",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}
