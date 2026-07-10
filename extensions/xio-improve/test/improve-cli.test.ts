@@ -9,6 +9,7 @@ describe("parseImproveArgs", () => {
       help: false,
       verifierCommands: ["npm test"],
       noBuiltinSeeds: false,
+      capabilityGate: false,
     });
   });
 
@@ -18,6 +19,11 @@ describe("parseImproveArgs", () => {
       help: true,
       verifierCommands: [],
       noBuiltinSeeds: true,
+      capabilityGate: false,
     });
+  });
+
+  it("parses trusted capability gate opt-in", () => {
+    expect(parseImproveArgs(["--capability-gate"]).capabilityGate).toBe(true);
   });
 });

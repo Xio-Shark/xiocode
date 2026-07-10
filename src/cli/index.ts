@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { realpathSync, writeSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -10,11 +11,13 @@ import { fileURLToPath } from "node:url";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { setupProviderEnv } from "./env-setup.ts";
 import registerXioRuntime from "./xio-extension.ts";
+import { git, gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { runSession } from "../runtime/session.ts";
 
 import type { XioRuntimeConfig } from "./config-parser.ts";
 import type { WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
+import type { SessionStartPayload } from "../runtime/types.ts";
 
 const XIO_VERSION = readPackageVersion();
 
@@ -40,6 +43,7 @@ export type LaunchPlan = Readonly<{
   mainRoot: string;
   worktree?: WorktreeSession;
   runtimeExtensionEnabled: boolean;
+  sessionStart: SessionStartPayload;
 }>;
 
 export type XioArgs = Readonly<{
@@ -56,6 +60,7 @@ export async function prepareLaunch(cwd: string, env: NodeJS.ProcessEnv = proces
   const runtimeConfigPath = path.join(configRoot, "runtime-config.json");
 
   const mainRoot = await WorktreeSandbox.resolveMainRoot(cwd);
+  const sourceProvenance = await collectSourceProvenance(mainRoot);
   let worktree: WorktreeSession | undefined;
   let agentCwd = mainRoot;
   let runtimeConfig: XioRuntimeConfig = {
@@ -82,6 +87,9 @@ export async function prepareLaunch(cwd: string, env: NodeJS.ProcessEnv = proces
   await mkdir(expandHome(parsed.xio.general.runRoot), { recursive: true });
   await writeJson(runtimeConfigPath, runtimeConfig);
   setupProviderEnv(parsed.xio.providers, env);
+  const sessionStart: SessionStartPayload = {
+    provenance: { ...sourceProvenance, workspace_root: agentCwd },
+  };
 
   return {
     runtimeConfig,
@@ -90,6 +98,7 @@ export async function prepareLaunch(cwd: string, env: NodeJS.ProcessEnv = proces
     mainRoot,
     worktree,
     runtimeExtensionEnabled: options.runtimeExtensionEnabled !== false,
+    sessionStart,
     env: {
       ...env,
       XIO_RUNTIME_CONFIG: runtimeConfigPath,
@@ -106,6 +115,16 @@ async function main(): Promise<void> {
     process.exitCode = await runImproveCli(rawArgs.slice(1));
     return;
   }
+  if (rawArgs[0] === "eval") {
+    const { runEvalCli } = await import("./eval-cli.ts");
+    process.exitCode = await runEvalCli(rawArgs.slice(1));
+    return;
+  }
+  if (rawArgs[0] === "regress") {
+    const { runRegressCli } = await import("./regress-cli.ts");
+    process.exitCode = await runRegressCli(rawArgs.slice(1));
+    return;
+  }
 
   const xioArgs = parseXioArgs(rawArgs);
   try {
@@ -119,6 +138,7 @@ async function main(): Promise<void> {
       runtimeConfig: launch.runtimeConfig,
       env: launch.env,
       promptOnce: xioArgs.promptOnce,
+      sessionStart: launch.sessionStart,
       registerExtensions: launch.runtimeExtensionEnabled
         ? async (api) => {
           process.env.XIO_RUNTIME_CONFIG = launch.runtimeConfigPath;
@@ -131,6 +151,27 @@ async function main(): Promise<void> {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
+}
+
+async function collectSourceProvenance(
+  mainRoot: string,
+): Promise<NonNullable<SessionStartPayload["provenance"]>> {
+  const [baseCommit, status, branch] = await Promise.all([
+    gitOk(mainRoot, ["rev-parse", "HEAD"]),
+    gitOk(mainRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
+    git(mainRoot, ["symbolic-ref", "--short", "HEAD"]),
+  ]);
+  return {
+    schema_version: "xio-run-provenance.v1",
+    workspace_root: mainRoot,
+    main_root: mainRoot,
+    base_commit: baseCommit,
+    branch: branch.code === 0 && branch.stdout.length > 0 ? branch.stdout : null,
+    dirty: status.length > 0,
+    dirty_summary_sha: createHash("sha256").update(status).digest("hex"),
+    xiocode_revision: XIO_VERSION,
+    created_at: new Date().toISOString(),
+  };
 }
 
 export function parseXioArgs(args: readonly string[]): XioArgs {
@@ -210,6 +251,8 @@ function xioHelp(): string {
     "  xio                 Start interactive REPL",
     "  xio -p \"prompt\"     Run a single prompt",
     "  xio improve         Self-improve loop (worktree + verifier + merge ask)",
+    "  xio eval            Trusted capability preflight/smoke/compare",
+    "  xio regress         Capture and preflight a private local regression",
     "  xio --xio-fast      Skip evolve/sandbox extensions",
     "  xio --version",
     "  xio --help",

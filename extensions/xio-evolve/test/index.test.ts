@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -54,9 +55,80 @@ describe("registerXioEvolve", () => {
     expect(registration.handlers.has("session_start")).toBe(true);
     expect(registration.handlers.has("tool_call")).toBe(true);
     expect(registration.handlers.has("tool_result")).toBe(true);
+    expect(registration.handlers.has("provider_response")).toBe(true);
 
     await registration.handlers.get("session_start")?.[0]?.({});
     expect(registration.setActiveToolsCalls).toEqual([]);
+  });
+
+  it("persists normalized provider usage in the existing run summary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-usage-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+    await registration.handlers.get("session_start")?.[0]?.({});
+    registration.handlers.get("provider_response")?.[0]?.({
+      providerApi: "openai-completions",
+      model: "test",
+      usage: { inputTokens: 15, outputTokens: 4, cacheTokens: 3, reasoningTokens: 2 },
+    });
+    await registration.handlers.get("agent_end")?.[0]?.({});
+    const record = (await store.listRecent(1))[0]!;
+    const summary = JSON.parse(await readFile(path.join(record.path, "summary.json"), "utf8")) as {
+      usage: unknown;
+    };
+    expect(summary.usage).toEqual({
+      inputTokens: 15,
+      outputTokens: 4,
+      cacheTokens: 3,
+      reasoningTokens: 2,
+    });
+  });
+
+  it("writes versioned provenance and prompt hashes for new runs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-provenance-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+    await registration.handlers.get("session_start")?.[0]?.({
+      provenance: {
+        schema_version: "xio-run-provenance.v1",
+        workspace_root: "/tmp/worktree",
+        main_root: "/tmp/repo",
+        base_commit: "abc123",
+        branch: "main",
+        dirty: false,
+        dirty_summary_sha: "a".repeat(64),
+        xiocode_revision: "1.1.0",
+        created_at: "2026-07-11T00:00:00.000Z",
+      },
+    });
+    const secret = `sk-${"a".repeat(48)}`;
+    await registration.handlers.get("turn_start")?.[0]?.({ prompt: `private task ${secret}` });
+    const record = (await store.listRecent(1))[0]!;
+    const provenance = JSON.parse(await readFile(path.join(record.path, "provenance.json"), "utf8"));
+    const prompt = JSON.parse(await readFile(path.join(record.path, "prompt.json"), "utf8"));
+    expect(provenance.schema_version).toBe("xio-run-provenance.v1");
+    expect(prompt).toMatchObject({ schema_version: "xio-run-prompt.v2" });
+    expect(prompt.content).toContain("REDACTED");
+    expect(prompt.content).not.toContain(secret);
+    expect(prompt.prompt_sha).toBe(createHash("sha256").update(prompt.content).digest("hex"));
+  });
+
+  it("rejects malformed provenance but accepts legacy empty session payloads", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-provenance-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    registerXioEvolve(registration.api, { runStore: new RunStore({ root }) });
+    await expect(registration.handlers.get("session_start")?.[0]?.({
+      provenance: { schema_version: "xio-run-provenance.v2" },
+    })).rejects.toThrow("unsupported schema");
+
+    const legacy = createRegistration();
+    registerXioEvolve(legacy.api, { runStore: new RunStore({ root: path.join(root, "legacy") }) });
+    await expect(legacy.handlers.get("session_start")?.[0]?.({})).resolves.toBeDefined();
   });
 
   it("appends todo addendum on before_agent_start", async () => {

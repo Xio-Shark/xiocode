@@ -1,3 +1,5 @@
+import type { TokenUsage } from "../../../src/runtime/types.ts";
+
 export type ToolCall = Readonly<{
   id?: string;
   name: string;
@@ -99,6 +101,7 @@ export type RunSummary = Readonly<{
   success: boolean;
   failure_reasons: readonly string[];
   finished_at: string;
+  usage: TokenUsage;
 }>;
 
 export type TrajectoryTurn = Readonly<{

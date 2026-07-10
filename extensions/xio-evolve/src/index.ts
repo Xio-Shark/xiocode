@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
+
+import { decodeRunProvenance } from "../../xio-regress/src/decoder.ts";
 import { ContextInjector } from "./context-injector.ts";
 import { ResultDenoiser } from "./result-denoiser.ts";
 import { collectRuntimeStatus, formatStatusWidget } from "./runtime-status.ts";
 import { RunStore } from "./run-store.ts";
+import { SecretRedactor } from "./secret-redactor.ts";
 import { TodoEnforcer } from "./todo-enforcer.ts";
 import { TrajectoryRecorder } from "./trajectory-recorder.ts";
 import { classifyPrompt, type ModelRouteDecision } from "./model-router.ts";
@@ -18,6 +22,7 @@ export type XioEvolveOptions = Readonly<{
 }>;
 
 const CONTEXT_INVALIDATING_TOOLS = new Set(["bash", "edit", "write"]);
+const PROMPT_REDACTOR = new SecretRedactor();
 
 /**
  * Default evolve path: TrajectoryRecorder + RunStore + Denoiser + ContextInjector + TodoEnforcer.
@@ -39,13 +44,18 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   let lastContextInjectionError: string | undefined;
   let lastBaseSystemPrompt = "";
   let currentSystemPrompt = "";
+  let promptArtifactWritten = false;
 
-  ctx.on?.("session_start", () => {
-    return recorder.start().then((metadata) => {
-      currentRun = metadata;
-      options.onRunStart?.(metadata);
-      return metadata;
-    });
+  ctx.on?.("session_start", async (payload) => {
+    const provenance = sessionProvenance(payload);
+    const metadata = await recorder.start();
+    currentRun = metadata;
+    promptArtifactWritten = false;
+    if (provenance) {
+      await runStore.writeJson(metadata.run_id, "provenance.json", provenance);
+    }
+    options.onRunStart?.(metadata);
+    return metadata;
   });
 
   ctx.on?.("before_agent_start", async (payload, eventCtx) => {
@@ -69,6 +79,15 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
 
   ctx.on?.("turn_start", async (payload) => {
     const prompt = userPromptFromPayload(payload);
+    if (prompt.length > 0 && currentRun && !promptArtifactWritten) {
+      const replayPrompt = redactPrompt(prompt);
+      await runStore.writeJson(currentRun.run_id, "prompt.json", {
+        schema_version: "xio-run-prompt.v2",
+        content: replayPrompt,
+        prompt_sha: createHash("sha256").update(replayPrompt).digest("hex"),
+      });
+      promptArtifactWritten = true;
+    }
     lastRoute = classifyPrompt(prompt);
     if (lastRoute.taskClass === "simple") {
       return "";
@@ -100,6 +119,7 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     return result;
   });
 
+  ctx.on?.("provider_response", (payload) => recorder.recordProviderUsage(payload));
   ctx.on?.("turn_end", (payload) => recorder.recordTurnEnd(payload));
   ctx.on?.("agent_end", () => recorder.finish());
 
@@ -201,12 +221,28 @@ function userPromptFromPayload(payload: unknown): string {
   return typeof text === "string" ? text : "";
 }
 
+function redactPrompt(prompt: string): string {
+  const redacted = PROMPT_REDACTOR.redact(prompt);
+  if (typeof redacted !== "string") {
+    throw new Error("redacted prompt must remain a string");
+  }
+  return redacted;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function sessionProvenance(payload: unknown) {
+  const event = asRecord(payload);
+  if (!("provenance" in event)) {
+    return null;
+  }
+  return decodeRunProvenance(event.provenance);
 }
 
 export { ContextInjector, ResultDenoiser, RunStore, TodoEnforcer, TrajectoryRecorder };
