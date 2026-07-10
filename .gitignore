@@ -1,0 +1,44 @@
+# Build artifacts
+/dist/
+/build/
+*.js.map
+
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Runtime
+.xiocode/
+.pi/
+*.sock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archive (v1 source, not tracked)
+archive/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage/
+
+# Test backups
+*.test.ts.bak
+
+# TypeScript build output
+*.tsbuildinfo
+
+# scrape/search cache
+.firecrawl/
