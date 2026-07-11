@@ -183,17 +183,29 @@ describe("registerXioRuntime", () => {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },
         },
+        // Isolate TodoEnforcer prompt merge from hygiene addenda.
+        agentsMd: { enabled: false },
+        skills: { enabled: false },
+        hooks: { enabled: false },
       }),
       "utf8",
     );
     const registration = createRegistration();
 
     await registerXioRuntime(registration.api);
-    const result = await registration.handlers.get("before_agent_start")?.[0]?.(
-      { systemPrompt: "old base" },
-      createEventContext({ systemPrompt: "fresh base" }),
-    );
-    const systemPrompt = (result as { systemPrompt?: string })?.systemPrompt ?? "";
+    // Progressive emit across all before_agent_start handlers (ExtensionHost order).
+    let systemPrompt = "";
+    const eventCtx = createEventContext({ systemPrompt: "fresh base" });
+    for (const handler of registration.handlers.get("before_agent_start") ?? []) {
+      const result = await handler({ systemPrompt: "old base" }, {
+        ...(eventCtx as object),
+        getSystemPrompt: () => systemPrompt || "fresh base",
+      });
+      const next = (result as { systemPrompt?: string } | undefined)?.systemPrompt;
+      if (typeof next === "string" && next.length > 0) {
+        systemPrompt = next;
+      }
+    }
 
     expect(systemPrompt).toContain("fresh base");
     expect(systemPrompt).not.toContain("old base");
@@ -223,6 +235,14 @@ describe("registerXioRuntime", () => {
         extensions: {
           evolve: { enabled: false, options: {} },
           sandbox: { enabled: true, options: {} },
+        },
+        mcp: {
+          enabled: false,
+          readClaude: false,
+          readCursor: false,
+          failClosed: false,
+          timeoutMs: 30_000,
+          servers: {},
         },
       }),
       "utf8",

@@ -51,6 +51,79 @@ describe("WorktreeSandbox", () => {
     tempDirs.push(root);
     await expect(WorktreeSandbox.resolveMainRoot(root)).rejects.toThrow(/requires a git repository/i);
   });
+
+  it("restores committed, tracked, untracked, and ignored files to the immutable session baseline", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, ".gitignore"), "*.ignored\n", "utf8");
+    await gitOk(mainRoot, ["add", ".gitignore"]);
+    await gitOk(mainRoot, ["commit", "-m", "ignore fixture"]);
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "rollback1" });
+    const baseline = await gitOk(mainRoot, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(session.worktreePath, "README.md"), "committed session edit\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "committed.txt"), "committed\n", "utf8");
+    await gitOk(session.worktreePath, ["add", "-A"]);
+    await gitOk(session.worktreePath, ["commit", "-m", "session commit"]);
+    await writeFile(path.join(session.worktreePath, "README.md"), "uncommitted session edit\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "untracked.txt"), "untracked\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "cache.ignored"), "ignored\n", "utf8");
+
+    await writeFile(path.join(mainRoot, "main-only.txt"), "main\n", "utf8");
+    await gitOk(mainRoot, ["add", "main-only.txt"]);
+    await gitOk(mainRoot, ["commit", "-m", "advance main"]);
+    const mainHead = await gitOk(mainRoot, ["rev-parse", "HEAD"]);
+
+    expect(session.baseRef).toBe(baseline);
+    await WorktreeSandbox.rollbackToSessionBaseline(session);
+
+    expect(await gitOk(session.worktreePath, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(await gitOk(session.worktreePath, ["status", "--short", "--ignored=matching"])).toBe("");
+    expect(await readFile(path.join(session.worktreePath, "README.md"), "utf8")).toBe("base\n");
+    await expect(readFile(path.join(session.worktreePath, "committed.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(session.worktreePath, "untracked.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(session.worktreePath, "cache.ignored"), "utf8")).rejects.toThrow();
+    expect(await gitOk(mainRoot, ["rev-parse", "HEAD"])).toBe(mainHead);
+    expect(await readFile(path.join(mainRoot, "main-only.txt"), "utf8")).toBe("main\n");
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("restores the exact turn-start tree without changing the main tree", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, ".gitignore"), "*.ignored\n", "utf8");
+    await gitOk(mainRoot, ["add", ".gitignore"]);
+    await gitOk(mainRoot, ["commit", "-m", "ignore fixture"]);
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "turn1" });
+
+    await writeFile(path.join(session.worktreePath, "README.md"), "before turn\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "existing.txt"), "keep me\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "cache.ignored"), "cached\n", "utf8");
+    const checkpoint = await WorktreeSandbox.captureTurnCheckpoint(session);
+
+    await writeFile(path.join(session.worktreePath, "README.md"), "during turn\n", "utf8");
+    await rm(path.join(session.worktreePath, "existing.txt"));
+    await writeFile(path.join(session.worktreePath, "created.txt"), "remove me\n", "utf8");
+    await gitOk(session.worktreePath, ["add", "-A"]);
+    await gitOk(session.worktreePath, ["commit", "-m", "turn commit"]);
+    const summary = await WorktreeSandbox.summarizeSinceCheckpoint(session, checkpoint);
+    expect(summary.hasChanges).toBe(true);
+    expect(summary.filesChanged).toBe(3);
+
+    const mainHead = await gitOk(mainRoot, ["rev-parse", "HEAD"]);
+    await WorktreeSandbox.rollbackToTurnCheckpoint(session, checkpoint);
+
+    expect(await readFile(path.join(session.worktreePath, "README.md"), "utf8")).toBe("before turn\n");
+    expect(await readFile(path.join(session.worktreePath, "existing.txt"), "utf8")).toBe("keep me\n");
+    expect(await readFile(path.join(session.worktreePath, "cache.ignored"), "utf8")).toBe("cached\n");
+    await expect(readFile(path.join(session.worktreePath, "created.txt"), "utf8")).rejects.toThrow();
+    expect(await gitOk(mainRoot, ["rev-parse", "HEAD"])).toBe(mainHead);
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
 });
 
 describe("MergeGate", () => {
@@ -88,6 +161,53 @@ describe("MergeGate", () => {
     await expect(readFile(path.join(mainRoot, "temp.txt"), "utf8")).rejects.toThrow();
     const worktrees = await gitOk(mainRoot, ["worktree", "list", "--porcelain"]);
     expect(worktrees).not.toContain(session.worktreePath);
+  });
+
+  it("previews and confirms rollback without mutating files when rejected", async () => {
+    const mainRoot = await initGitRepo();
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "rollback2" });
+    await writeFile(path.join(session.worktreePath, "README.md"), "changed\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "feature.txt"), "hello\n", "utf8");
+    const gate = new MergeGate(session);
+    const notices: string[] = [];
+
+    const rejected = await gate.promptRollback(async () => false, (message) => notices.push(message));
+    expect(rejected.skipped).toBe(true);
+    expect(notices.join("\n")).toContain("diff --git");
+    expect(notices.join("\n")).toContain("feature.txt");
+    expect(await readFile(path.join(session.worktreePath, "feature.txt"), "utf8")).toBe("hello\n");
+
+    const approved = await gate.promptRollback(async () => true);
+    expect(approved.skipped).toBe(false);
+    await expect(readFile(path.join(session.worktreePath, "feature.txt"), "utf8")).rejects.toThrow();
+    expect((await gate.promptRollback(async () => {
+      throw new Error("confirmation must not run for a clean worktree");
+    })).skipped).toBe(true);
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("previews and restores only changes made after the turn checkpoint", async () => {
+    const mainRoot = await initGitRepo();
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "rollbackturn" });
+    await writeFile(path.join(session.worktreePath, "prior.txt"), "prior turn\n", "utf8");
+    const gate = new MergeGate(session);
+    await gate.captureTurnCheckpoint();
+    await writeFile(path.join(session.worktreePath, "prior.txt"), "current turn\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "new.txt"), "new\n", "utf8");
+    const notices: string[] = [];
+
+    const result = await gate.promptRollbackTurn(async () => true, (message) => notices.push(message));
+
+    expect(result.skipped).toBe(false);
+    expect(notices.join("\n")).toContain("2 files changed");
+    expect(await readFile(path.join(session.worktreePath, "prior.txt"), "utf8")).toBe("prior turn\n");
+    await expect(readFile(path.join(session.worktreePath, "new.txt"), "utf8")).rejects.toThrow();
+    await WorktreeSandbox.remove(session, { force: true });
   });
 });
 

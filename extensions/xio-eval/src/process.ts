@@ -19,11 +19,10 @@ export async function spawnCommand(options: Readonly<{
   cwd: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
-  detached?: boolean;
   maxOutputBytes?: number;
 }>): Promise<SpawnResult> {
   const started = Date.now();
-  const detached = options.detached !== false && process.platform !== "win32";
+  const detached = process.platform !== "win32";
   const maxOutputBytes = options.maxOutputBytes ?? Number.POSITIVE_INFINITY;
   if (maxOutputBytes < 0 || Number.isNaN(maxOutputBytes)) {
     throw new Error("maxOutputBytes must be non-negative");

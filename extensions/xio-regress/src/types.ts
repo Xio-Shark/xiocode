@@ -75,6 +75,35 @@ export type PrivateRegressionPreflight = Readonly<{
   errors: readonly string[];
 }>;
 
+export type CompareStatus = "FIXED" | "STILL_RED" | "INVALID_CASE" | "INFRA_ERROR";
+
+export type CompareSideResult = Readonly<{
+  root: string;
+  kind?: "pinned_base" | "explicit";
+  actual_exit: number | null;
+  duration_ms: number;
+}>;
+
+export type PrivateRegressionCompare = Readonly<{
+  schema_version: "private-regression-compare.v1";
+  case_id: string;
+  status: CompareStatus;
+  before: CompareSideResult & Readonly<{ kind: "pinned_base" | "explicit" }>;
+  candidate: CompareSideResult;
+  source_main_unchanged: boolean;
+  artifact_hashes_match: boolean;
+  temporary_worktree: string | null;
+  host_isolation: "unsupported";
+  concerns: readonly string[];
+  errors: readonly string[];
+}>;
+
+export type CompareInput = Readonly<{
+  caseId: string;
+  candidateRoot: string;
+  beforeRoot?: string;
+}>;
+
 export type RunEvidence = Readonly<{
   metadata: Readonly<{ run_id: string; provider: string | null; model: string | null }>;
   summary: Readonly<{ run_id: string; status: "success" | "failed" }>;

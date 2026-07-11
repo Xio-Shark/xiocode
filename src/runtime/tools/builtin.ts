@@ -120,9 +120,9 @@ function createBashTool(cwd: string): ToolDefinition {
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute." }),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, ctx) {
       const command = String(params.command ?? "");
-      const result = await runCommand(command, cwd);
+      const result = await runCommand(command, cwd, ctx?.signal);
       return textResult(`exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`, result.exitCode !== 0);
     },
   });
@@ -211,11 +211,35 @@ function assertInsideWorkspace(filePath: string, workspaceRoot: string): string 
   return undefined;
 }
 
-async function runCommand(command: string, cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCommand(
+  command: string,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (signal?.aborted) {
+    return { exitCode: 1, stdout: "", stderr: "bash cancelled: AbortSignal aborted before start" };
+  }
   return new Promise((resolve) => {
     const child = spawn("/bin/sh", ["-c", command], { cwd });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      child.kill("SIGTERM");
+      // Escalate if the child ignores SIGTERM.
+      const escalate = setTimeout(() => {
+        if (!settled) {
+          child.kill("SIGKILL");
+        }
+      }, 1_000);
+      escalate.unref?.();
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
@@ -223,11 +247,26 @@ async function runCommand(command: string, cwd: string): Promise<{ exitCode: num
       stderr += chunk.toString("utf8");
     });
     child.on("close", (code) => {
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) {
+        resolve({
+          exitCode: code ?? 1,
+          stdout,
+          stderr: stderr.length > 0 ? stderr : "bash cancelled: AbortSignal aborted",
+        });
+        return;
+      }
       resolve({ exitCode: code ?? 1, stdout, stderr });
     });
     child.on("error", (error) => {
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
       resolve({ exitCode: 1, stdout, stderr: error.message });
     });
+    if (signal?.aborted) {
+      onAbort();
+    }
   });
 }
 
