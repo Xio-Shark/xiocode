@@ -105,7 +105,7 @@ function xioHelp(): string {
     "  xio --version",
     "  xio --help",
     "",
-    "Install once: npm install -g github:Xio-Shark/xiocode",
+    "Install once: curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash",
     "Then run xio / xiocode from any git repository.",
     "Sandbox: starts in a git worktree under ~/.xiocode/worktrees.",
     "Merge with /merge, or answer the prompt when the session ends.",
