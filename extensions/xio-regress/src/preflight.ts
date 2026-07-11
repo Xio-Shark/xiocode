@@ -1,17 +1,22 @@
-import { createHash, randomUUID } from "node:crypto";
-import path from "node:path";
-
-import { spawnCommand } from "../../xio-eval/src/process.ts";
-import { git, gitOk } from "../../xio-sandbox/src/git.ts";
-import { WorktreeSandbox } from "../../xio-sandbox/src/worktree-sandbox.ts";
 import { RegressionCaseStore } from "./case-store.ts";
 import { evidenceHashesMatch } from "./run-evidence-reader.ts";
+import {
+  assertBaseCommit,
+  cleanupWorktree,
+  createPinnedBaseWorktree,
+  errorMessage,
+  runVerifier,
+  sourceSnapshot,
+  sourceUnchanged,
+  statusHash,
+  verifierInfraErrors,
+} from "./verifier-exec.ts";
 
 import type { PrivateRegressionCase, PrivateRegressionPreflight, PreflightStatus } from "./types.ts";
 import type { SpawnResult } from "../../xio-eval/src/process.ts";
+import type { SourceSnapshot } from "./verifier-exec.ts";
 import type { WorktreeSession } from "../../xio-sandbox/src/worktree-sandbox.ts";
 
-type SourceSnapshot = Readonly<{ head: string; status: string }>;
 type ExecuteOptions = Readonly<{
   regression: PrivateRegressionCase;
   before: SourceSnapshot;
@@ -75,12 +80,7 @@ export class RegressionPreflight {
     const { regression, before, concerns, started } = options;
     let session: WorktreeSession | undefined;
     try {
-      session = await WorktreeSandbox.create({
-        mainRoot: regression.source.repo_root,
-        baseDir: path.join(this.store.root, ".worktrees"),
-        baseRef: regression.source.base_commit,
-        sessionId: `regress-${randomUUID().slice(0, 12)}`,
-      });
+      session = await createPinnedBaseWorktree(regression, this.store.root);
       const outcome = await runVerifier(regression, session.worktreePath, this.env);
       return await this.finish({ regression, session, before, concerns, outcome, started });
     } catch (error) {
@@ -128,44 +128,6 @@ export class RegressionPreflight {
   }
 }
 
-async function runVerifier(
-  regression: PrivateRegressionCase,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<SpawnResult> {
-  const shell = process.platform === "win32" ? "cmd.exe" : (env.SHELL ?? "/bin/sh");
-  const args = process.platform === "win32"
-    ? ["/d", "/s", "/c", regression.verifier.command]
-    : ["-lc", regression.verifier.command];
-  return spawnCommand({
-    command: shell,
-    args,
-    cwd,
-    env,
-    timeoutMs: regression.verifier.timeout_ms,
-    maxOutputBytes: 64 * 1024,
-  });
-}
-
-async function sourceSnapshot(repoRoot: string): Promise<SourceSnapshot> {
-  const [head, status] = await Promise.all([
-    gitOk(repoRoot, ["rev-parse", "HEAD"]),
-    gitOk(repoRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
-  ]);
-  return { head, status };
-}
-
-async function assertBaseCommit(regression: PrivateRegressionCase): Promise<void> {
-  const result = await git(regression.source.repo_root, [
-    "cat-file",
-    "-e",
-    `${regression.source.base_commit}^{commit}`,
-  ]);
-  if (result.code !== 0) {
-    throw new Error(`base commit is unavailable: ${regression.source.base_commit}`);
-  }
-}
-
 function preflightConcerns(regression: PrivateRegressionCase, snapshot: SourceSnapshot): readonly string[] {
   const concerns = new Set(regression.concerns);
   concerns.add("host_isolation_unsupported");
@@ -174,17 +136,6 @@ function preflightConcerns(regression: PrivateRegressionCase, snapshot: SourceSn
     concerns.add("source_dirty_state_changed_since_run");
   }
   return [...concerns].sort();
-}
-
-function verifierInfraErrors(outcome: SpawnResult): string[] {
-  const errors: string[] = [];
-  if (outcome.timedOut) errors.push("verifier timed out");
-  if (outcome.cleanupError) errors.push(outcome.cleanupError);
-  if (outcome.signal) errors.push(`verifier exited by signal ${outcome.signal}`);
-  if (outcome.code === null) errors.push("verifier did not return an exit code");
-  if (outcome.code === 126 || outcome.code === 127) errors.push("verifier command could not be executed");
-  if (outcome.code !== null && outcome.code >= 128) errors.push("verifier process crashed");
-  return errors;
 }
 
 function classifyStatus(
@@ -245,36 +196,4 @@ function infraResult(options: Readonly<{
     concerns: options.concerns ?? [...regression.concerns, "host_isolation_unsupported"],
     errors,
   };
-}
-
-async function cleanupWorktree(session: WorktreeSession): Promise<Readonly<{
-  temporaryWorktree: string | null;
-  errors: readonly string[];
-}>> {
-  try {
-    await WorktreeSandbox.remove(session, { force: true });
-    return { temporaryWorktree: null, errors: [] };
-  } catch (error) {
-    return {
-      temporaryWorktree: session.worktreePath,
-      errors: [`worktree cleanup failed: ${errorMessage(error)}`],
-    };
-  }
-}
-
-async function sourceUnchanged(repoRoot: string, before: SourceSnapshot): Promise<boolean> {
-  const after = await sourceSnapshot(repoRoot).catch(() => null);
-  return after !== null && snapshotsEqual(before, after);
-}
-
-function snapshotsEqual(left: SourceSnapshot, right: SourceSnapshot): boolean {
-  return left.head === right.head && left.status === right.status;
-}
-
-function statusHash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import {
   RegressionCapture,
   RegressionCaseStore,
+  RegressionCompare,
   RegressionPreflight,
 } from "../src/index.ts";
 
@@ -22,6 +23,7 @@ export type RegressionFixture = Readonly<{
   store: RegressionCaseStore;
   capture: RegressionCapture;
   preflight: RegressionPreflight;
+  compare: RegressionCompare;
 }>;
 
 export async function createFixture(
@@ -54,6 +56,7 @@ export async function createFixture(
       now: () => new Date("2026-07-11T00:00:00.000Z"),
     }),
     preflight: new RegressionPreflight({ store, env }),
+    compare: new RegressionCompare({ store, env }),
   };
 }
 
