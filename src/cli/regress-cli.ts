@@ -3,25 +3,33 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { SecretRedactor } from "../../extensions/xio-evolve/src/secret-redactor.ts";
 import {
   InvalidRegressionCaseError,
   RegressionCapture,
   RegressionCaseStore,
+  RegressionCompare,
   RegressionPreflight,
 } from "../../extensions/xio-regress/src/index.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
+import {
+  writeCapture,
+  writeCompare,
+  writeFailure,
+  writePreflight,
+} from "./regress-cli-output.ts";
 
-import type { CaptureInput, CaptureResult, PrivateRegressionPreflight } from "../../extensions/xio-regress/src/types.ts";
+import type { CaptureInput } from "../../extensions/xio-regress/src/types.ts";
+import type { PrivateRegressionCompare, PrivateRegressionPreflight } from "../../extensions/xio-regress/src/types.ts";
 
-type RegressCommand = "create" | "preflight" | "help";
-const OUTPUT_REDACTOR = new SecretRedactor();
+type RegressCommand = "create" | "preflight" | "compare" | "help";
 
 export type RegressCliArgs = Readonly<{
   command: RegressCommand;
   json: boolean;
   noPreflight: boolean;
   caseId?: string;
+  candidate?: string;
+  before?: string;
   capture?: CaptureInput;
 }>;
 
@@ -58,9 +66,20 @@ export async function runRegressCli(
       writePreflight({ write, json: args.json, result });
       return preflightExit(result.status);
     }
+    if (args.command === "compare") {
+      const result = await new RegressionCompare({ store, env }).evaluate({
+        caseId: args.caseId!,
+        candidateRoot: args.candidate!,
+        beforeRoot: args.before,
+      });
+      writeCompare({ write, json: args.json, result });
+      return compareExit(result.status);
+    }
     const runRoot = options.runRoot ?? await resolveRunRoot(options.cwd ?? process.cwd(), env);
     const capture = await new RegressionCapture({ run_root: runRoot, store, now: options.now }).capture(args.capture!);
-    const preflight = args.noPreflight ? undefined : await new RegressionPreflight({ store, env }).run(capture.case.case_id);
+    const preflight = args.noPreflight
+      ? undefined
+      : await new RegressionPreflight({ store, env }).run(capture.case.case_id);
     writeCapture({ write, json: args.json, capture, preflight });
     return preflight ? preflightExit(preflight.status) : 0;
   } catch (error) {
@@ -77,10 +96,24 @@ export function parseRegressArgs(argv: readonly string[]): RegressCliArgs {
   const json = values.has("--json");
   const noPreflight = values.has("--no-preflight");
   if (command === "preflight") {
-    assertOnly(values, new Set(["--case", "--json"]));
+    assertOnly(values, new Set(["--case", "--json"]), "preflight");
     return { command, json, noPreflight: false, caseId: required(values, "--case") };
   }
-  if (values.has("--case")) throw new Error("--case is only valid for preflight");
+  if (command === "compare") {
+    assertOnly(values, new Set(["--case", "--candidate", "--before", "--json"]), "compare");
+    return {
+      command,
+      json,
+      noPreflight: false,
+      caseId: required(values, "--case"),
+      candidate: required(values, "--candidate"),
+      before: optional(values, "--before"),
+    };
+  }
+  if (values.has("--case")) throw new Error("--case is only valid for preflight or compare");
+  if (values.has("--candidate") || values.has("--before")) {
+    throw new Error("--candidate/--before are only valid for compare");
+  }
   return {
     command,
     json,
@@ -105,6 +138,7 @@ function parseFlags(argv: readonly string[]): Map<string, string | true> {
     ...booleans,
     "--run", "--repo", "--base", "--failure-type", "--failure",
     "--verify", "--expect-exit", "--timeout-ms", "--case",
+    "--candidate", "--before",
   ]);
   for (let index = 0; index < argv.length; index += 1) {
     const raw = argv[index]!;
@@ -136,97 +170,8 @@ async function resolveRunRoot(cwd: string, env: NodeJS.ProcessEnv): Promise<stri
   return expandHome(parseXioConfig(content, { cwd }).xio.general.runRoot);
 }
 
-function writeCapture(options: Readonly<{
-  write: (chunk: string) => void;
-  json: boolean;
-  capture: CaptureResult;
-  preflight?: PrivateRegressionPreflight;
-}>): void {
-  const { write, json, capture, preflight } = options;
-  const output = {
-    status: preflight?.status ?? capture.status,
-    capture_status: capture.status,
-    case_id: capture.case.case_id,
-    case_path: capture.case_path,
-    identity_hashes: {
-      prompt: capture.case.task.prompt_sha,
-      prompt_artifact: capture.case.evidence.prompt.sha256,
-      metadata: capture.case.evidence.metadata.sha256,
-      summary: capture.case.evidence.summary.sha256,
-      trajectory: capture.case.evidence.trajectory.sha256,
-    },
-    concerns: preflight?.concerns ?? capture.case.concerns,
-    existing: capture.existing,
-    preflight_status: preflight?.status ?? null,
-  };
-  if (json) {
-    writeJson(write, output);
-    return;
-  }
-  write(redactText(`CAPTURED case=${capture.case.case_id} path=${capture.case_path}\n`));
-  if (preflight) write(formatPreflight(preflight));
-}
-
-function writePreflight(options: Readonly<{
-  write: (chunk: string) => void;
-  json: boolean;
-  result: PrivateRegressionPreflight;
-}>): void {
-  const { write, json, result } = options;
-  const output = {
-    status: result.status,
-    case_id: result.case_id,
-    concerns: result.concerns,
-    actual_exit: result.actual_exit,
-    source_main_unchanged: result.source_main_unchanged,
-    artifact_hashes_match: result.artifact_hashes_match,
-    temporary_worktree: result.temporary_worktree,
-    errors: result.errors,
-  };
-  if (json) {
-    writeJson(write, output);
-  } else {
-    write(formatPreflight(result));
-  }
-}
-
-function formatPreflight(result: PrivateRegressionPreflight): string {
-  const lines = [
-    `${result.status} case=${result.case_id} exit=${String(result.actual_exit)}`,
-    `source_main_unchanged=${result.source_main_unchanged} artifact_hashes_match=${result.artifact_hashes_match}`,
-    "warning: verifier runs in a git worktree, not an OS sandbox",
-    ...result.concerns.map((concern) => `concern: ${concern}`),
-    ...result.errors.map((error) => `error: ${error}`),
-  ];
-  return redactText(`${lines.join("\n")}\n`);
-}
-
-function writeFailure(options: Readonly<{
-  write: (chunk: string) => void;
-  json: boolean;
-  status: "INVALID_CASE" | "INFRA_ERROR";
-  error: unknown;
-}>): void {
-  const { write, json, status, error } = options;
-  const message = redactText(error instanceof Error ? error.message : String(error));
-  if (json) {
-    writeJson(write, { status, error: message });
-  } else {
-    write(`${status}: ${message}\n`);
-  }
-}
-
-function writeJson(write: (chunk: string) => void, value: unknown): void {
-  write(`${JSON.stringify(OUTPUT_REDACTOR.redact(value))}\n`);
-}
-
-function redactText(value: string): string {
-  const redacted = OUTPUT_REDACTOR.redact(value);
-  return typeof redacted === "string" ? redacted : "redacted output";
-}
-
 function parseCommand(value: string | undefined): RegressCommand {
-  if (value === "create" || value === "preflight") return value;
+  if (value === "create" || value === "preflight" || value === "compare") return value;
   if (value === undefined || value === "help" || value === "--help" || value === "-h") return "help";
   throw new Error(`unknown command: ${value}`);
 }
@@ -254,9 +199,13 @@ function optionalInteger(values: Map<string, string | true>, flag: string): numb
   return Number.parseInt(value, 10);
 }
 
-function assertOnly(values: Map<string, string | true>, allowed: ReadonlySet<string>): void {
+function assertOnly(
+  values: Map<string, string | true>,
+  allowed: ReadonlySet<string>,
+  command: string,
+): void {
   const invalid = [...values.keys()].find((flag) => !allowed.has(flag));
-  if (invalid) throw new Error(`unknown argument for preflight: ${invalid}`);
+  if (invalid) throw new Error(`unknown argument for ${command}: ${invalid}`);
 }
 
 function preflightExit(status: PrivateRegressionPreflight["status"]): number {
@@ -265,16 +214,25 @@ function preflightExit(status: PrivateRegressionPreflight["status"]): number {
   return 0;
 }
 
+function compareExit(status: PrivateRegressionCompare["status"]): number {
+  if (status === "FIXED") return 0;
+  if (status === "STILL_RED") return 1;
+  if (status === "INVALID_CASE") return 2;
+  return 3;
+}
+
 function regressHelp(): string {
   return [
-    "xio regress — capture a user-confirmed private regression",
+    "xio regress — capture and compare private regressions",
     "",
     "Usage:",
     "  xio regress create --run ID --failure-type TYPE --failure TEXT --verify CMD [--repo PATH --base SHA] [--json]",
     "  xio regress preflight --case ID [--json]",
+    "  xio regress compare --case ID --candidate PATH [--before PATH] [--json]",
     "",
-    "Capture is local-only. Preflight proves base-red; it does not prove a fix or authorize merge.",
-    "Verifier commands run in temporary git worktrees without OS-level isolation.",
+    "Capture is local-only. Preflight proves base-red.",
+    "Compare proves whether a candidate fixes the frozen verifier; FIXED does not authorize merge.",
+    "Verifier commands run without OS-level isolation.",
     "",
   ].join("\n");
 }

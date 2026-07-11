@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -122,5 +123,33 @@ describe("xio regress CLI", () => {
     });
     expect(() => parseRegressArgs(["preflight", "--case", "id", "--verify", "true"]))
       .toThrow("unknown argument");
+  });
+
+  it("compares a candidate through the CLI and returns FIXED", async () => {
+    const fixture = await createFixture(temporaryRoots, "failed");
+    const captured = await fixture.capture.capture({
+      run_id: "run-1",
+      repo_root: fixture.repo,
+      base_commit: fixture.base,
+      failure_type: "user_task_failure",
+      failure_statement: "the requested behavior is missing",
+      verifier_command: "test -f fixed.txt",
+    });
+    const candidate = path.join(fixture.root, "candidate");
+    await mkdir(candidate, { recursive: true });
+    await writeFile(path.join(candidate, "fixed.txt"), "ok\n", "utf8");
+    const chunks: string[] = [];
+    const code = await runRegressCli([
+      "compare",
+      "--case", captured.case.case_id,
+      "--candidate", candidate,
+      "--json",
+    ], {
+      env: { SHELL: "/bin/sh" },
+      store: fixture.store,
+      write: (chunk) => chunks.push(chunk),
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(chunks.join(""))).toMatchObject({ status: "FIXED" });
   });
 });

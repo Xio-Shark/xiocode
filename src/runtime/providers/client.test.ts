@@ -78,6 +78,74 @@ describe("provider usage normalization", () => {
       reasoningTokens: null,
     });
   });
+
+  it("parses OpenAI SSE deltas through completeStream", async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => streamResponse(sse),
+    });
+    expect(client.completeStream).toBeTypeOf("function");
+    const events = [];
+    for await (const event of client.completeStream!({ model: "test", messages: [] })) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === "text_delta").map((event) =>
+      event.type === "text_delta" ? event.text : ""
+    )).toEqual(["Hel", "lo"]);
+    const done = events.find((event) => event.type === "done");
+    expect(done).toMatchObject({ type: "done", content: "Hello" });
+  });
+
+  it("aborts an in-flight OpenAI complete when the signal fires", async () => {
+    const controller = new AbortController();
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 500);
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          }, { once: true });
+        });
+        return jsonResponse({ choices: [{ message: { content: "late", tool_calls: [] } }] });
+      },
+    });
+    const pending = client.complete({ model: "test", messages: [] }, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("parses Anthropic SSE text deltas through completeStream", async () => {
+    const sse = [
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","usage":{"input_tokens":4,"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("");
+    const client = createLlmClient({
+      registration: registration("anthropic-messages"),
+      apiKey: "test",
+      fetchImpl: async () => streamResponse(sse),
+    });
+    const events = [];
+    for await (const event of client.completeStream!({ model: "test", messages: [] })) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === "text_delta").map((event) =>
+      event.type === "text_delta" ? event.text : ""
+    )).toEqual(["Hi", "!"]);
+    const done = events.find((event) => event.type === "done");
+    expect(done).toMatchObject({ type: "done", content: "Hi!" });
+  });
 });
 
 function registration(api: string): ProviderRegistration {
@@ -93,5 +161,12 @@ function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
     status: 200,
     headers: { "content-type": "application/json" },
+  });
+}
+
+function streamResponse(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
   });
 }

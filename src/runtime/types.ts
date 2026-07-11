@@ -22,13 +22,21 @@ export type ToolExecuteResult = Readonly<{
   isError?: boolean;
 }>;
 
+export type ToolExecuteContext = Readonly<{
+  signal?: AbortSignal;
+}>;
+
 export type ToolDefinition = Readonly<{
   name: string;
   label?: string;
   description: string;
   promptSnippet?: string;
   parameters: JsonSchema;
-  execute: (toolCallId: string, params: Record<string, unknown>) => Promise<ToolExecuteResult> | ToolExecuteResult;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    ctx?: ToolExecuteContext,
+  ) => Promise<ToolExecuteResult> | ToolExecuteResult;
 }>;
 
 export type ToolInfo = Readonly<{
@@ -189,6 +197,7 @@ export type ChatCompletionRequest = Readonly<{
   }>[];
   maxTokens?: number;
   temperature?: number;
+  parallelToolCalls?: boolean;
 }>;
 
 export type ChatCompletionResponse = Readonly<{
@@ -198,6 +207,27 @@ export type ChatCompletionResponse = Readonly<{
   raw?: unknown;
 }>;
 
+export type StreamEvent =
+  | Readonly<{ type: "text_delta"; text: string }>
+  | Readonly<{ type: "tool_call_delta"; index: number; id?: string; name?: string; argumentsDelta?: string }>
+  | Readonly<{ type: "tool_calls_done"; toolCalls: readonly ChatToolCall[] }>
+  | Readonly<{ type: "usage"; usage: TokenUsage }>
+  | Readonly<{
+    type: "done";
+    content: string;
+    toolCalls: readonly ChatToolCall[];
+    usage: TokenUsage;
+    raw?: unknown;
+  }>;
+
+export type LlmCompleteOptions = Readonly<{
+  signal?: AbortSignal;
+}>;
+
 export type LlmClient = Readonly<{
-  complete: (request: ChatCompletionRequest) => Promise<ChatCompletionResponse>;
+  complete: (request: ChatCompletionRequest, options?: LlmCompleteOptions) => Promise<ChatCompletionResponse>;
+  completeStream?: (
+    request: ChatCompletionRequest,
+    options?: LlmCompleteOptions,
+  ) => AsyncIterable<StreamEvent>;
 }>;

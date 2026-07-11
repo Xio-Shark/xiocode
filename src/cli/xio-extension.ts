@@ -1,14 +1,27 @@
 import { readFile } from "node:fs/promises";
+import os from "node:os";
 
-import type { XioRuntimeConfig } from "./config-parser.ts";
+import type { XioMcpConfig, XioRuntimeConfig } from "./config-parser.ts";
 import type { XioExtensionAPI } from "../runtime/index.ts";
 import type { CommandHandlerContext, ExtensionContext } from "../../extensions/xio-evolve/src/types.ts";
+import { parseServerSpec, type McpConfig, type McpServerSpec } from "../../extensions/xio-hygiene/src/mcp.ts";
 
 export default async function registerXioRuntime(api: XioExtensionAPI): Promise<void> {
   const configPath = process.env.XIO_RUNTIME_CONFIG;
   const evolveApi = adaptEvolveApi(api);
   if (!configPath) {
-    const [{ registerXioEvolve }, { registerXioSandbox }] = await Promise.all([loadEvolve(), loadSandbox()]);
+    const [{ registerXioHygiene }, { registerXioEvolve }, { registerXioSandbox }] = await Promise.all([
+      loadHygiene(),
+      loadEvolve(),
+      loadSandbox(),
+    ]);
+    // Hygiene before evolve so TodoEnforcer appends after agents_md / skills catalog.
+    registerXioHygiene(evolveApi, {
+      cwd: process.env.XIO_MAIN_ROOT ?? process.cwd(),
+      home: os.homedir(),
+      registerTool: (tool) => api.registerTool(tool),
+      warn: (message) => console.warn(message),
+    });
     registerXioEvolve(evolveApi);
     registerXioSandbox(api);
     return;
@@ -17,8 +30,38 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
   const config = JSON.parse(await readFile(configPath, "utf8")) as XioRuntimeConfig;
   registerProviders(api, config);
   let currentRunId: string | undefined;
-  const { registerXioEvolve, RunStore } = await loadEvolve();
+  const [{ registerXioHygiene }, { registerXioEvolve, RunStore }] = await Promise.all([loadHygiene(), loadEvolve()]);
   const runStore = new RunStore({ root: config.general.runRoot });
+  const workspaceCwd = config.worktree.session?.worktreePath
+    ?? process.env.XIO_WORKTREE
+    ?? process.env.XIO_MAIN_ROOT
+    ?? process.cwd();
+
+  // Hygiene before evolve: agents_md + skills catalog → TodoEnforcer (progressive emit).
+  registerXioHygiene(evolveApi, {
+    cwd: workspaceCwd,
+    home: os.homedir(),
+    agentsMd: config.agentsMd ?? {
+      enabled: true,
+      readClaudeDirs: true,
+      maxBytes: 65_536,
+      maxImportDepth: 3,
+    },
+    skills: config.skills ?? {
+      enabled: true,
+      readClaude: true,
+      readCursor: true,
+      maxBodyBytes: 32_768,
+    },
+    hooks: config.hooks ?? {
+      enabled: true,
+      readClaude: true,
+      timeoutMs: 5_000,
+    },
+    mcp: toHygieneMcp(config.mcp),
+    registerTool: (tool) => api.registerTool(tool),
+    warn: (message) => console.warn(message),
+  });
 
   if (config.extensions.evolve?.enabled !== false) {
     registerXioEvolve(evolveApi, {
@@ -174,10 +217,45 @@ function providerApi(kind: string): string {
   return "openai-completions";
 }
 
+async function loadHygiene(): Promise<typeof import("../../extensions/xio-hygiene/src/index.ts")> {
+  return import("../../extensions/xio-hygiene/src/index.ts");
+}
+
 async function loadEvolve(): Promise<typeof import("../../extensions/xio-evolve/src/index.ts")> {
   return import("../../extensions/xio-evolve/src/index.ts");
 }
 
 async function loadSandbox(): Promise<typeof import("../../extensions/xio-sandbox/src/index.ts")> {
   return import("../../extensions/xio-sandbox/src/index.ts");
+}
+
+function toHygieneMcp(mcp: XioMcpConfig | undefined): Partial<McpConfig> {
+  if (!mcp) {
+    return {
+      enabled: true,
+      readClaude: true,
+      readCursor: true,
+      failClosed: false,
+      timeoutMs: 30_000,
+    };
+  }
+  const servers: Record<string, McpServerSpec> = {};
+  const warnings: string[] = [];
+  for (const [name, entry] of Object.entries(mcp.servers)) {
+    const spec = parseServerSpec(name, entry, warnings);
+    if (spec) {
+      servers[name] = spec;
+    }
+  }
+  for (const warning of warnings) {
+    console.warn(warning);
+  }
+  return {
+    enabled: mcp.enabled,
+    readClaude: mcp.readClaude,
+    readCursor: mcp.readCursor,
+    failClosed: mcp.failClosed,
+    timeoutMs: mcp.timeoutMs,
+    servers: Object.keys(servers).length > 0 ? servers : undefined,
+  };
 }
