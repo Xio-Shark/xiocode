@@ -12,6 +12,7 @@
     "bin",
     "src",
     "extensions",
+    "install.sh",
     "LICENSE",
     "README.md",
     "!**/*.test.ts",

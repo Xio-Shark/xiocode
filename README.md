@@ -46,6 +46,12 @@ XioCode is a terminal coding agent. The agent loop, builtin tools, and LLM clien
 Requires **Node.js ≥ 22.6** (uses `--experimental-strip-types`).
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
+```
+
+Or with npm directly:
+
+```bash
 npm install -g github:Xio-Shark/xiocode
 ```
 
