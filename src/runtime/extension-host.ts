@@ -150,7 +150,15 @@ export class ExtensionHost implements XioExtensionAPI {
       if (entry.event !== event) {
         continue;
       }
-      results.push(await entry.handler(payload, context));
+      const result = await entry.handler(payload, context);
+      results.push(result);
+      // Progressive systemPrompt so later handlers (e.g. TodoEnforcer) see prior addenda.
+      const record = result && typeof result === "object" && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : undefined;
+      if (typeof record?.systemPrompt === "string" && record.systemPrompt.length > 0) {
+        this.#systemPrompt = record.systemPrompt;
+      }
     }
     return results;
   }

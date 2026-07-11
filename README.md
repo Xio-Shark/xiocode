@@ -20,48 +20,56 @@ XioCode is a terminal coding agent. The agent loop, builtin tools, and LLM clien
 | Outer worktree sandbox + MergeGate | ✅ |
 | Trajectory recording (`~/.xiocode/runs/`) | ✅ |
 | Result denoising + context injection | ✅ |
+| Provider streaming + parallel tools + multi-turn session | ✅ H1–H5 |
 | Secret redaction in trajectories | ✅ |
+| AGENTS.md / CLAUDE.md system-prompt injection | ✅ in-place + bounded `@` imports; not full Claude memory |
+| Skills discovery (`skill` tool) | ✅ short catalog in prompt; load body on demand; `[skills]` config |
+| User hooks (Claude settings subset) | ✅ SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]` config |
+| MCP client (tools-first) | ✅ `.mcp.json` + Claude/Cursor user configs; stdio / SSE / HTTP; `mcp__*` tools; `[mcp]` config |
 | Self-improve outer loop (`xio improve`) | ✅ MVP — merge-ask only |
 | Trusted local capability baseline (`xio eval`) | ✅ preflight / smoke / compare |
-| Private regression capture (`xio regress`) | ✅ user verdict + base-red preflight |
+| Private regression capture (`xio regress`) | ✅ user verdict + base-red preflight + before/candidate compare |
+| Session and turn rollback (`/rollback`, `/rollback turn`) | ✅ diff preview + confirmation; files reset, chat retained |
+| Persistent chat session resume (`~/.xiocode/sessions/`) | ✅ latest/id/picker restore; new worktree per launch |
+| Context compaction / execution checkpoint-resume | ❌ not shipped (see ROADMAP) |
+| Ink / React interactive TUI core | ✅ TTY transcript, stream/tool rows, slash commands, status bar, Ctrl+C cancel |
+| TUI diff confirmation + session bypass | ✅ unified diff modal for merge/rollback/finalize; `/bypass` is session-only |
+| TUI session picker / resume | ✅ `xio resume`, `xio resume <id>`, `xio resume --list`, `--continue` |
 | Strategy self-iteration loop | ❌ not on default path |
 | Semantic search (`search_context` / ace) | ❌ not shipped |
 | Speculative prefetch / replay UI | ❌ removed from delivery |
 
 ---
 
-## Quick Start
+## Install (once, like Claude Code)
+
+Requires **Node.js ≥ 22.6** (uses `--experimental-strip-types`).
 
 ```bash
-git clone https://github.com/xioshark/xiocode.git
+npm install -g github:Xio-Shark/xiocode
+```
+
+Then from **any git repository**:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...   # or edit ~/.xiocode/config.toml
+xio          # Ink TUI
+# or
+xiocode      # same binary
+```
+
+First run creates `~/.xiocode/config.toml` if missing (`xio init` does the same). Sessions always start in a worktree under `~/.xiocode/worktrees/`; merge into the main tree only after `/merge` (or session-end) confirmation.
+
+### Develop from a local checkout
+
+```bash
+git clone https://github.com/Xio-Shark/xiocode.git
 cd xiocode
 npm install --ignore-scripts
-npm run build
+npm link    # registers xio / xiocode / xio-improve on PATH
 ```
 
-```bash
-mkdir -p ~/.xiocode
-cat > ~/.xiocode/config.toml << 'EOF'
-[general]
-default_provider = "deepseek"
-default_model = "deepseek-chat"
-
-[providers.deepseek]
-kind = "openai"
-base_url = "https://api.deepseek.com"
-model = "deepseek-chat"
-api_key_env = "DEEPSEEK_API_KEY"
-
-[worktree]
-enabled = true
-retain_on_reject = false
-EOF
-
-export DEEPSEEK_API_KEY=sk-...
-./bin/xio
-```
-
-Sessions require a git repo. The agent works in `~/.xiocode/worktrees/<repo_id>/<session_id>`; merge into the main tree only after `/merge` (or session-end) confirmation.
+Without linking: `./bin/xio` from the checkout.
 
 ---
 
@@ -69,10 +77,12 @@ Sessions require a git repo. The agent works in `~/.xiocode/worktrees/<repo_id>/
 
 ```
 src/cli            # xio CLI, config parser, extension wiring
-src/runtime        # extension host, tools, providers, agent loop, REPL
+src/runtime        # extension host, tools, providers, agent loop, session UI sink
+src/tui            # Ink interactive shell (runtime remains React-free)
 extensions/
   xio-sandbox      # WorktreeSandbox + MergeGate
   xio-evolve       # TrajectoryRecorder + RunStore + Denoiser + ContextInjector
+  xio-hygiene      # AGENTS.md / CLAUDE.md + skills + user hooks + MCP client
   xio-improve      # Self-improve runner (T4 + verifier + merge-ask)
   xio-eval         # Trusted fixtures, hidden graders, before/after gate
   xio-regress      # Private run capture + zero-model base-red preflight
@@ -85,13 +95,96 @@ docs/archive/      # Historical plans / contracts
 
 Default `xio-evolve` path records runs and denoise/injects context. It does **not** register StrategyLearner, PromptEvolver, the old strategy-layer EvalComparator, SpeculativeExecutor, or ActiveTools.
 
+Harness throughput on the default path: provider streaming (`completeStream`), parallel tool scheduling (read/bash parallel; write/edit serial), TUI multi-turn history with an explicit trim notice, ContextInjector output merged into provider messages, and AbortSignal / Ctrl+C cancel for the current turn.
+
 `xio improve` runs the code self-modification outer loop inside a worktree. A green verifier only triggers a **MergeGate ask** — it never auto-merges into the main tree. See [docs/self-improve.md](./docs/self-improve.md).
 
 `xio eval` runs its controller and hidden graders outside the candidate fixture worktree. `preflight` is zero-model; `smoke` runs five held-out TypeScript families; `compare` uses one frozen suite for before/candidate and repeats differing cases. Stub mode validates wiring only and returns `PASS_WITH_CONCERNS`, never a capability claim.
 
-`xio regress` turns a run into a local case only after the user supplies a failure statement and executable verifier. New runs keep a `SecretRedactor`-sanitized replay prompt in `prompt.json`; cases freeze its reference and hashes without copying the text. Its preflight checks the pinned base is red in a temporary worktree; this does not prove the failure is fixed and does not authorize merge.
+`xio regress` turns a run into a local case only after the user supplies a failure statement and executable verifier. New runs keep a `SecretRedactor`-sanitized replay prompt in `prompt.json`; cases freeze its reference and hashes without copying the text. Its preflight checks the pinned base is red in a temporary worktree. `xio regress compare` runs the same frozen verifier on a before root and a candidate checkout (`FIXED` / `STILL_RED`); neither proves trusted capability nor authorizes merge.
 
 Workspace writes stay inside the worktree via `assertInsideWorkspace` (no separate PathGuard / PermissionEngine / Docker layer).
+
+### Skills discovery
+
+`xio-hygiene` scans local `SKILL.md` files in place (no plugin market):
+
+| Root | Flag |
+|------|------|
+| `.claude/skills/**/SKILL.md` | `[skills].read_claude` |
+| `~/.claude/skills/**/SKILL.md` | `[skills].read_claude` |
+| `.cursor/skills/**/SKILL.md` | `[skills].read_cursor` |
+| `~/.xiocode/skills/**/SKILL.md` | always on when skills enabled |
+
+Same-name priority: project `.claude` > project `.cursor` > `~/.xiocode/skills` > `~/.claude/skills`. System prompt gets a short catalog (name + description only). Full body is loaded via the `skill` tool:
+
+| Param | Values |
+|-------|--------|
+| `action` | `list` (JSON catalog) or `load` (body + hash; truncated by `max_body_bytes`) |
+| `name` | required for `load` |
+
+Disable with `[skills] enabled = false` in `~/.xiocode/config.toml`.
+
+### User hooks
+
+`xio-hygiene` reads Claude-compatible hooks from settings files (project overrides user per event):
+
+| Path | Notes |
+|------|-------|
+| `~/.claude/settings.json` | user |
+| `~/.claude/settings.local.json` | user local |
+| `.claude/settings.json` | project |
+| `.claude/settings.local.json` | project local |
+
+MVP events mapped to ExtensionHost:
+
+| Claude | Xio event | Behavior |
+|--------|-----------|----------|
+| `SessionStart` | `session_start` (+ prompt via `before_agent_start`) | stdout / `additionalContext` → system prompt |
+| `PreToolUse` | `tool_call` | exit `2` (or JSON deny) blocks the tool |
+| `PostToolUse` | `tool_result` | side effects; non-blocking errors continue |
+| `Stop` | `agent_end` / `session_end` | side effects |
+
+Only `type: "command"` handlers run (stdin JSON → stdout/stderr). Unsupported events and handler types warn and are skipped. Default timeout is 5s via `[hooks].timeout_ms`; Claude settings `timeout` is seconds (converted to ms). Failures continue except PreToolUse block.
+
+```toml
+[hooks]
+enabled = true
+read_claude = true
+timeout_ms = 5000
+```
+
+### MCP client
+
+`xio-hygiene` connects configured MCP servers on `session_start` and registers their tools on the normal tool surface (so PreToolUse hooks can block `mcp__*`). Connections close on `session_end`.
+
+| Source | Flag |
+|--------|------|
+| `~/.claude.json` → `mcpServers` | `[mcp].read_claude` |
+| `~/.cursor/mcp.json` → `mcpServers` | `[mcp].read_cursor` |
+| Project `.mcp.json` | always on when MCP enabled |
+| `config.toml` `[mcp.servers.*]` | always on when MCP enabled (overrides same name) |
+
+Merge order (later wins): Claude user → Cursor user → project `.mcp.json` → config.toml.
+
+Transports:
+
+| Kind | Config shape |
+|------|----------------|
+| stdio | `command` / `args` / `env` / `cwd` |
+| SSE | `url` + `type`/`transport` = `sse` (+ optional `headers`) |
+| HTTP (Streamable) | `url` + `type`/`transport` = `http` / `streamable-http` (+ optional `headers`) |
+
+Tool names: `mcp__<server>__<tool>`. MVP is **tools-first** — resources/prompts are not a full workflow. Connection failures default to skip + warn (`fail_closed = true` to hard-fail).
+
+```toml
+[mcp]
+enabled = true
+read_claude = true
+read_cursor = true
+fail_closed = false
+timeout_ms = 30000
+```
 
 ---
 
@@ -101,6 +194,8 @@ Workspace writes stay inside the worktree via `assertInsideWorkspace` (no separa
 |---------|--------|-------|
 | `/status` | xio-evolve | Runtime + current run |
 | `/merge` | xio-sandbox | Diff summary + merge ask |
+| `/rollback` | runtime + xio-sandbox | Preview and discard all session worktree changes; main tree and chat history stay untouched |
+| `/rollback turn` | runtime + xio-sandbox | Restore the file tree captured at the start of the latest prompt; earlier-turn files and chat stay intact |
 | `xio improve` | xio-improve | Self-improve loop; merge-ask only |
 | `xio improve --capability-gate` | xio-improve + xio-eval | Trusted compare must PASS before merge ask |
 | `xio eval preflight` | xio-eval | Zero-model fixture/oracle/tamper validation |
@@ -108,12 +203,15 @@ Workspace writes stay inside the worktree via `assertInsideWorkspace` (no separa
 | `xio eval compare` | xio-eval | Paired before/candidate evidence |
 | `xio regress create` | xio-regress | Capture explicit user verdict + frozen verifier |
 | `xio regress preflight` | xio-regress | Zero-model pinned-base red check |
+| `xio regress compare` | xio-regress | Private before/candidate verifier compare |
 
 ---
 
 ## Evidence
 
 Runs land under `~/.xiocode/runs/<run_id>/` (`metadata.json`, `events.jsonl`, `trajectory.json`, `provenance.json`, `prompt.json`, …). `prompt.json` contains the redacted replayable prompt and a hash of that exact content. Private cases reference these artifacts from `~/.xiocode/regressions/<case_id>/case.json`; they copy neither prompt text nor trajectories. Legacy runs are replayable only when one user prompt can be recovered unambiguously from the trajectory. Historical interop notes live in `docs/archive/contracts/` (archived; no runtime consumers).
+
+Interactive chat sessions are separate: `~/.xiocode/sessions/<session_id>/metadata.json` stores model/repository/worktree timestamps and `messages.json` stores resumable chat context. `xio resume` restores the latest session for the current repository, `xio resume <id>` restores an exact record, `xio resume --list` opens the history picker, and `xio resume --delete <id>` removes a bad or unwanted record. Resume starts a new isolated worktree; it does not reuse `runs/` evidence or silently reopen an old sandbox.
 
 Eval reports land under `~/.xiocode/evals/<eval_id>/` and reference the existing run id/trajectory instead of copying a second trajectory store. Provider token usage is normalized at the runtime client boundary; unavailable fields remain `null`. Cost is calculated only when `--price-table PATH` or `XIO_EVAL_PRICE_TABLE` supplies a versioned trusted price table.
 

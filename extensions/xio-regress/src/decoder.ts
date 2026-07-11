@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type {
   EvidenceReference,
   PrivateRegressionCase,
+  PrivateRegressionCompare,
   PrivateRegressionPreflight,
   PromptEvidenceReference,
   RunProvenance,
@@ -66,6 +67,51 @@ export function decodePrivateRegressionPreflight(value: unknown): PrivateRegress
     status,
     actual_exit: nullableInteger(root, "actual_exit"),
     duration_ms: nonNegativeInteger(root, "duration_ms"),
+    source_main_unchanged: requiredBoolean(root, "source_main_unchanged"),
+    artifact_hashes_match: requiredBoolean(root, "artifact_hashes_match"),
+    temporary_worktree: nullableString(root, "temporary_worktree"),
+    host_isolation: "unsupported",
+    concerns: stringArray(root.concerns, "concerns"),
+    errors: stringArray(root.errors, "errors"),
+  };
+}
+
+export function decodePrivateRegressionCompare(value: unknown): PrivateRegressionCompare {
+  const root = objectValue(value, "private regression compare");
+  schema(root, "private-regression-compare.v1");
+  const status = root.status;
+  if (
+    status !== "FIXED"
+    && status !== "STILL_RED"
+    && status !== "INVALID_CASE"
+    && status !== "INFRA_ERROR"
+  ) {
+    throw new Error("invalid compare status");
+  }
+  if (root.host_isolation !== "unsupported") {
+    throw new Error("invalid host_isolation");
+  }
+  const before = objectField(root, "before");
+  const candidate = objectField(root, "candidate");
+  const beforeKind = before.kind;
+  if (beforeKind !== "pinned_base" && beforeKind !== "explicit") {
+    throw new Error("invalid before kind");
+  }
+  return {
+    schema_version: "private-regression-compare.v1",
+    case_id: requiredHash(root, "case_id"),
+    status,
+    before: {
+      root: requiredString(before, "root"),
+      kind: beforeKind,
+      actual_exit: nullableInteger(before, "actual_exit"),
+      duration_ms: nonNegativeInteger(before, "duration_ms"),
+    },
+    candidate: {
+      root: requiredString(candidate, "root"),
+      actual_exit: nullableInteger(candidate, "actual_exit"),
+      duration_ms: nonNegativeInteger(candidate, "duration_ms"),
+    },
     source_main_unchanged: requiredBoolean(root, "source_main_unchanged"),
     artifact_hashes_match: requiredBoolean(root, "artifact_hashes_match"),
     temporary_worktree: nullableString(root, "temporary_worktree"),

@@ -1,0 +1,17 @@
+# Keep the published / git-install package lean; runtime uses TS + Node strip-types.
+**/*.test.ts
+**/test/**
+.trellis/
+.cursor/
+.claude/
+.gitnexus/
+docs/
+*.md
+!README.md
+coverage/
+dist/
+node_modules/
+.vscode/
+.idea/
+*.tgz
+scripts/

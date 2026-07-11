@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -282,5 +282,98 @@ describe("private regression preflight", () => {
       source: { ...source, base_commit: "f".repeat(40) },
     })}\n`);
     await expect(fixture.preflight.run(captured.case.case_id)).rejects.toThrow("case identity mismatch");
+  });
+});
+
+describe("private regression compare", () => {
+  it("reports FIXED when the candidate satisfies the frozen verifier", async () => {
+    const fixture = await createFixture("failed");
+    const captured = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "test -f fixed.txt"));
+    const candidate = path.join(fixture.root, "candidate");
+    await mkdir(candidate, { recursive: true });
+    await writeFile(path.join(candidate, "fixed.txt"), "ok\n", "utf8");
+    const before = await gitState(fixture.repo);
+
+    const result = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: candidate,
+    });
+
+    expect(result.status).toBe("FIXED");
+    expect(result.before.kind).toBe("pinned_base");
+    expect(result.before.actual_exit).not.toBe(0);
+    expect(result.candidate.actual_exit).toBe(0);
+    expect(result.temporary_worktree).toBeNull();
+    expect(result.source_main_unchanged).toBe(true);
+    expect(await gitState(fixture.repo)).toEqual(before);
+    expect(await readFile(path.join(candidate, "fixed.txt"), "utf8")).toBe("ok\n");
+    expect(JSON.parse(await readFile(path.join(path.dirname(captured.case_path), "compare.json"), "utf8")))
+      .toMatchObject({ schema_version: "private-regression-compare.v1", status: "FIXED" });
+  });
+
+  it("reports STILL_RED when the candidate remains red", async () => {
+    const fixture = await createFixture("failed");
+    const captured = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "test -f fixed.txt"));
+    const candidate = path.join(fixture.root, "candidate");
+    await mkdir(candidate, { recursive: true });
+
+    const result = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: candidate,
+    });
+
+    expect(result.status).toBe("STILL_RED");
+    expect(result.candidate.actual_exit).not.toBe(0);
+  });
+
+  it("reports INVALID_CASE when before is already green", async () => {
+    const fixture = await createFixture("failed");
+    const captured = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "test -f README.md"));
+    const result = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: fixture.repo,
+    });
+    expect(result.status).toBe("INVALID_CASE");
+    expect(result.before.actual_exit).toBe(0);
+  });
+
+  it("accepts an explicit before root and never removes the candidate", async () => {
+    const fixture = await createFixture("failed");
+    const captured = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "test -f fixed.txt"));
+    const beforeRoot = path.join(fixture.root, "before");
+    const candidate = path.join(fixture.root, "candidate");
+    await mkdir(beforeRoot, { recursive: true });
+    await mkdir(candidate, { recursive: true });
+    await writeFile(path.join(candidate, "fixed.txt"), "ok\n", "utf8");
+
+    const result = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: candidate,
+      beforeRoot,
+    });
+
+    expect(result.status).toBe("FIXED");
+    expect(result.before.kind).toBe("explicit");
+    expect(result.before.root).toBe(await realpath(beforeRoot));
+    expect(await readFile(path.join(candidate, "fixed.txt"), "utf8")).toBe("ok\n");
+  });
+
+  it("reports INFRA_ERROR for unavailable candidate paths and hash mismatches", async () => {
+    const fixture = await createFixture("failed");
+    const captured = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "false"));
+    const missing = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: path.join(fixture.root, "missing-candidate"),
+    });
+    expect(missing.status).toBe("INFRA_ERROR");
+    expect(missing.errors.join("\n")).toContain("path is unavailable");
+
+    await writeFile(path.join(fixture.runRoot, "run-1", "summary.json"), "{}\n", "utf8");
+    const tampered = await fixture.compare.evaluate({
+      caseId: captured.case.case_id,
+      candidateRoot: fixture.repo,
+    });
+    expect(tampered.status).toBe("INFRA_ERROR");
+    expect(tampered.artifact_hashes_match).toBe(false);
   });
 });

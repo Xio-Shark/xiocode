@@ -43,8 +43,9 @@ xio improve --capability-gate  # require trusted before/after PASS
 The trusted gate is opt-in until credentialed real-model series are established. Stub evaluation exercises controller → child → worktree → hidden grader → report, but is always reported with concerns and cannot authorize merge. Candidate package scripts and tests are advisory; they do not define the trusted outcome.
 
 `xio regress` cases are not `ImproveGoal` inputs in this delivery. A private
-case can prove that its pinned base is red under a user-frozen verifier, but it
-does not prove a candidate fixed the failure and cannot enable MergeGate.
+case can prove that its pinned base is red (`preflight`) and whether a
+candidate checkout fixes the frozen verifier (`compare` → `FIXED` /
+`STILL_RED`). Neither result enables MergeGate by itself.
 Future integration must require both private before/candidate improvement and
 no stable regression in the trusted synthetic/holdout suite.
 
@@ -55,3 +56,4 @@ no stable regression in the trusted synthetic/holdout suite.
 - Merging external repository patches into xiocode
 - Claiming host-level isolation: worktrees protect the main tree, but `bash` is not an OS sandbox
 - Treating private base-red evidence as a capability PASS or automatic improve trigger
+- Session code rollback / Ink TUI (product UX; tracked under GOAL G5b / G11 and ROADMAP — not part of `xio improve`)

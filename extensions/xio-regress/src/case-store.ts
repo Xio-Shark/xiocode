@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { computeCaseId } from "./case-identity.ts";
-import { decodePrivateRegressionCase, decodePrivateRegressionPreflight } from "./decoder.ts";
+import { decodePrivateRegressionCase, decodePrivateRegressionCompare, decodePrivateRegressionPreflight } from "./decoder.ts";
 import { InvalidRegressionCaseError, invalidRegressionCase } from "./errors.ts";
 
-import type { PrivateRegressionCase, PrivateRegressionPreflight } from "./types.ts";
+import type { PrivateRegressionCase, PrivateRegressionCompare, PrivateRegressionPreflight } from "./types.ts";
 
 export type CaseWriteResult = Readonly<{
   case_path: string;
@@ -56,6 +56,13 @@ export class RegressionCaseStore {
   async writePreflight(value: PrivateRegressionPreflight): Promise<string> {
     decodePrivateRegressionPreflight(value);
     const output = path.join(this.caseDirectory(value.case_id), "preflight.json");
+    await atomicWrite(output, value);
+    return output;
+  }
+
+  async writeCompare(value: PrivateRegressionCompare): Promise<string> {
+    decodePrivateRegressionCompare(value);
+    const output = path.join(this.caseDirectory(value.case_id), "compare.json");
     await atomicWrite(output, value);
     return output;
   }

@@ -4,9 +4,12 @@ import type {
   ChatMessage,
   ChatToolCall,
   LlmClient,
+  LlmCompleteOptions,
   ProviderRegistration,
+  StreamEvent,
+  TokenUsage,
 } from "../types.ts";
-import { normalizeProviderUsage } from "../usage.ts";
+import { emptyTokenUsage, normalizeProviderUsage } from "../usage.ts";
 
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
@@ -25,100 +28,294 @@ export function createLlmClient(options: ProviderClientOptions): LlmClient {
 function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = (options.registration.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
-  return {
-    async complete(request) {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${options.apiKey}`,
-          ...options.registration.models[0]?.headers,
-        },
-        body: JSON.stringify({
-          model: request.model,
-          messages: request.messages.map(toOpenAiMessage),
-          tools: request.tools,
-          max_tokens: request.maxTokens,
-          temperature: request.temperature,
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`LLM request failed (${response.status}): ${body}`);
-      }
-      const json = await response.json() as {
-        choices?: Array<{
-          message?: {
-            content?: string | null;
-            tool_calls?: Array<{
-              id: string;
-              function?: { name?: string; arguments?: string };
-            }>;
-          };
-        }>;
-      };
-      const message = json.choices?.[0]?.message;
-      const toolCalls: ChatToolCall[] = (message?.tool_calls ?? []).map((call) => ({
-        id: call.id,
-        name: call.function?.name ?? "",
-        arguments: parseArguments(call.function?.arguments),
-      }));
-      return {
-        content: message?.content ?? "",
-        toolCalls,
-        usage: normalizeProviderUsage("openai-completions", json),
-        raw: json,
-      };
-    },
+  const headers = {
+    "content-type": "application/json",
+    authorization: `Bearer ${options.apiKey}`,
+    ...options.registration.models[0]?.headers,
   };
+
+  async function complete(
+    request: ChatCompletionRequest,
+    completeOptions?: LlmCompleteOptions,
+  ): Promise<ChatCompletionResponse> {
+    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(openAiBody(request, false)),
+      signal: completeOptions?.signal,
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`LLM request failed (${response.status}): ${body}`);
+    }
+    const json = await response.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          tool_calls?: Array<{
+            id: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
+    };
+    const message = json.choices?.[0]?.message;
+    const toolCalls: ChatToolCall[] = (message?.tool_calls ?? []).map((call) => ({
+      id: call.id,
+      name: call.function?.name ?? "",
+      arguments: parseArguments(call.function?.arguments),
+    }));
+    return {
+      content: message?.content ?? "",
+      toolCalls,
+      usage: normalizeProviderUsage("openai-completions", json),
+      raw: json,
+    };
+  }
+
+  async function* completeStream(
+    request: ChatCompletionRequest,
+    completeOptions?: LlmCompleteOptions,
+  ): AsyncIterable<StreamEvent> {
+    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(openAiBody(request, true)),
+      signal: completeOptions?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
+    }
+    if (!response.body) {
+      throw new Error("LLM stream failed: response body is empty");
+    }
+
+    const toolBuffers = new Map<number, { id: string; name: string; arguments: string }>();
+    let content = "";
+    let usage: TokenUsage = emptyTokenUsage();
+    let raw: unknown;
+
+    for await (const data of readSseDataLines(response.body, completeOptions?.signal)) {
+      if (data === "[DONE]") {
+        break;
+      }
+      let json: OpenAiStreamChunk;
+      try {
+        json = JSON.parse(data) as OpenAiStreamChunk;
+      } catch (error) {
+        throw new Error(`LLM stream parse failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      raw = json;
+      const choice = json.choices?.[0];
+      const delta = choice?.delta;
+      if (typeof delta?.content === "string" && delta.content.length > 0) {
+        content += delta.content;
+        yield { type: "text_delta", text: delta.content };
+      }
+      for (const toolDelta of delta?.tool_calls ?? []) {
+        const index = toolDelta.index ?? 0;
+        const current = toolBuffers.get(index) ?? { id: "", name: "", arguments: "" };
+        if (toolDelta.id) {
+          current.id = toolDelta.id;
+        }
+        if (toolDelta.function?.name) {
+          current.name = toolDelta.function.name;
+        }
+        if (toolDelta.function?.arguments) {
+          current.arguments += toolDelta.function.arguments;
+        }
+        toolBuffers.set(index, current);
+        yield {
+          type: "tool_call_delta",
+          index,
+          id: toolDelta.id,
+          name: toolDelta.function?.name,
+          argumentsDelta: toolDelta.function?.arguments,
+        };
+      }
+      if (json.usage) {
+        usage = normalizeProviderUsage("openai-completions", json) ?? emptyTokenUsage();
+        yield { type: "usage", usage };
+      }
+    }
+
+    const toolCalls = [...toolBuffers.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, value]) => ({
+        id: value.id,
+        name: value.name,
+        arguments: parseArguments(value.arguments),
+      }));
+    if (toolCalls.length > 0) {
+      yield { type: "tool_calls_done", toolCalls };
+    }
+    yield { type: "done", content, toolCalls, usage, raw };
+  }
+
+  return { complete, completeStream };
+}
+
+function openAiBody(request: ChatCompletionRequest, stream: boolean): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: request.messages.map(toOpenAiMessage),
+    tools: request.tools,
+    max_tokens: request.maxTokens,
+    temperature: request.temperature,
+    stream,
+  };
+  if (request.parallelToolCalls !== undefined) {
+    body.parallel_tool_calls = request.parallelToolCalls;
+  }
+  if (stream) {
+    body.stream_options = { include_usage: true };
+  }
+  return body;
 }
 
 function createAnthropicClient(options: ProviderClientOptions): LlmClient {
-  return {
-    complete: (request) => completeAnthropic(request, {
-      apiKey: options.apiKey,
-      baseUrl: (options.registration.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, ""),
-      fetchImpl: options.fetchImpl ?? fetch,
-      headers: options.registration.models[0]?.headers,
-    }),
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const baseUrl = (options.registration.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": options.apiKey,
+    "anthropic-version": "2023-06-01",
+    ...options.registration.models[0]?.headers,
   };
+
+  async function complete(
+    request: ChatCompletionRequest,
+    completeOptions?: LlmCompleteOptions,
+  ): Promise<ChatCompletionResponse> {
+    return completeAnthropic(request, {
+      baseUrl,
+      headers,
+      fetchImpl,
+      signal: completeOptions?.signal,
+      stream: false,
+    });
+  }
+
+  async function* completeStream(
+    request: ChatCompletionRequest,
+    completeOptions?: LlmCompleteOptions,
+  ): AsyncIterable<StreamEvent> {
+    const response = await fetchImpl(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(anthropicBody(request, true)),
+      signal: completeOptions?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
+    }
+    if (!response.body) {
+      throw new Error("LLM stream failed: response body is empty");
+    }
+
+    const toolBuffers = new Map<number, { id: string; name: string; inputJson: string }>();
+    let content = "";
+    let usage: TokenUsage = emptyTokenUsage();
+    let raw: unknown;
+
+    for await (const event of readSseEvents(response.body, completeOptions?.signal)) {
+      let json: AnthropicStreamEvent;
+      try {
+        json = JSON.parse(event.data) as AnthropicStreamEvent;
+      } catch (error) {
+        throw new Error(`LLM stream parse failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      raw = json;
+      if (json.type === "content_block_start" && json.content_block?.type === "tool_use") {
+        const index = json.index ?? 0;
+        toolBuffers.set(index, {
+          id: json.content_block.id ?? "",
+          name: json.content_block.name ?? "",
+          inputJson: "",
+        });
+        yield {
+          type: "tool_call_delta",
+          index,
+          id: json.content_block.id,
+          name: json.content_block.name,
+        };
+      } else if (json.type === "content_block_delta") {
+        const index = json.index ?? 0;
+        if (json.delta?.type === "text_delta" && typeof json.delta.text === "string") {
+          content += json.delta.text;
+          yield { type: "text_delta", text: json.delta.text };
+        } else if (json.delta?.type === "input_json_delta" && typeof json.delta.partial_json === "string") {
+          const current = toolBuffers.get(index) ?? { id: "", name: "", inputJson: "" };
+          current.inputJson += json.delta.partial_json;
+          toolBuffers.set(index, current);
+          yield {
+            type: "tool_call_delta",
+            index,
+            argumentsDelta: json.delta.partial_json,
+          };
+        }
+      } else if (json.type === "message_delta" && json.usage) {
+        usage = normalizeProviderUsage("anthropic-messages", { usage: json.usage }) ?? emptyTokenUsage();
+        yield { type: "usage", usage };
+      } else if (json.type === "message_start" && json.message?.usage) {
+        usage = normalizeProviderUsage("anthropic-messages", { usage: json.message.usage }) ?? emptyTokenUsage();
+        yield { type: "usage", usage };
+      }
+    }
+
+    const toolCalls = [...toolBuffers.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, value]) => ({
+        id: value.id,
+        name: value.name,
+        arguments: parseArguments(value.inputJson || "{}"),
+      }));
+    if (toolCalls.length > 0) {
+      yield { type: "tool_calls_done", toolCalls };
+    }
+    yield { type: "done", content, toolCalls, usage, raw };
+  }
+
+  return { complete, completeStream };
 }
 
 async function completeAnthropic(
   request: ChatCompletionRequest,
   options: Readonly<{
-    apiKey: string;
     baseUrl: string;
+    headers: Record<string, string>;
     fetchImpl: typeof fetch;
-    headers?: Readonly<Record<string, string>>;
+    signal?: AbortSignal;
+    stream: boolean;
   }>,
 ): Promise<ChatCompletionResponse> {
-  const system = request.messages.filter((message) => message.role === "system")
-    .map((message) => message.content).join("\n\n");
   const response = await options.fetchImpl(`${options.baseUrl}/v1/messages`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": options.apiKey,
-      "anthropic-version": "2023-06-01",
-      ...options.headers,
-    },
-    body: JSON.stringify({
-      model: request.model,
-      max_tokens: request.maxTokens ?? 8192,
-      system: system.length > 0 ? system : undefined,
-      messages: request.messages.filter((message) => message.role !== "system").map(toAnthropicMessage),
-      tools: request.tools?.map((tool) => ({
-        name: tool.function.name,
-        description: tool.function.description,
-        input_schema: tool.function.parameters,
-      })),
-    }),
+    headers: options.headers,
+    body: JSON.stringify(anthropicBody(request, false)),
+    signal: options.signal,
   });
   if (!response.ok) {
     throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
   }
   return fromAnthropicResponse(await response.json() as AnthropicResponse);
+}
+
+function anthropicBody(request: ChatCompletionRequest, stream: boolean): Record<string, unknown> {
+  const system = request.messages.filter((message) => message.role === "system")
+    .map((message) => message.content).join("\n\n");
+  return {
+    model: request.model,
+    max_tokens: request.maxTokens ?? 8192,
+    system: system.length > 0 ? system : undefined,
+    messages: request.messages.filter((message) => message.role !== "system").map(toAnthropicMessage),
+    tools: request.tools?.map((tool) => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      input_schema: tool.function.parameters,
+    })),
+    stream,
+  };
 }
 
 function toAnthropicMessage(message: ChatMessage): Record<string, unknown> {
@@ -168,6 +365,39 @@ type AnthropicResponse = {
   usage?: unknown;
 };
 
+type OpenAiStreamChunk = {
+  choices?: Array<{
+    delta?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+  usage?: unknown;
+};
+
+type AnthropicStreamEvent = {
+  type?: string;
+  index?: number;
+  delta?: {
+    type?: string;
+    text?: string;
+    partial_json?: string;
+  };
+  content_block?: {
+    type?: string;
+    id?: string;
+    name?: string;
+  };
+  usage?: unknown;
+  message?: {
+    usage?: unknown;
+  };
+};
+
 function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   if (message.role === "tool") {
     return {
@@ -209,6 +439,71 @@ function parseArguments(value: string | undefined): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+async function* readSseDataLines(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
+  for await (const event of readSseEvents(body, signal)) {
+    if (event.data.length > 0) {
+      yield event.data;
+    }
+  }
+}
+
+async function* readSseEvents(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<{ event?: string; data: string }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      if (signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split(/\r?\n\r?\n/);
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const parsed = parseSseBlock(part);
+        if (parsed) {
+          yield parsed;
+        }
+      }
+    }
+    if (buffer.trim().length > 0) {
+      const parsed = parseSseBlock(buffer);
+      if (parsed) {
+        yield parsed;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseSseBlock(block: string): { event?: string; data: string } | undefined {
+  const lines = block.split(/\r?\n/);
+  let event: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) {
+    return undefined;
+  }
+  return { event, data: dataLines.join("\n") };
 }
 
 export function resolveApiKey(registration: ProviderRegistration, env: NodeJS.ProcessEnv = process.env): string {

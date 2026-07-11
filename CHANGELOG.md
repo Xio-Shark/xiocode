@@ -10,11 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `docs/GOAL.md` — product north star (final goal, non-goals, status mapping)
+- `docs/GOAL.md` — product north star (final goal, non-goals, JD alignment G1–G11, status mapping)
 - Trusted `xio eval` preflight/smoke/compare pipeline with 5-family dev/holdout fixtures, out-of-workspace hidden graders, versioned evidence reports, nullable provider usage, and opt-in self-improve capability gating
+- `xio regress` — user-confirmed private regression capture with evidence hashes and pinned-base red preflight
+- `xio-hygiene` extension:
+  - AGENTS.md / CLAUDE.md system-prompt injection (bounded `@` imports; `[agents_md]`)
+  - Local skills discovery + `skill` tool (`list` / `load`; `[skills]`)
+  - User hooks MVP from Claude settings (SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]`)
+  - Tools-first MCP client (`.mcp.json` + Claude/Cursor configs; stdio / SSE / HTTP; `mcp__*`; `[mcp]`)
+- Harness throughput H1–H5: provider `completeStream`, parallel tool scheduling, REPL multi-turn history + trim notice, ContextInjector → messages, AbortSignal / Ctrl+C cancel turn
 
 ### Changed
-- Active docs (README, CONTEXT, ROADMAP, STATUS, AGENTS, self-improve, CONTRIBUTING, archive INDEX) link to `docs/GOAL.md` and drop stale pi / default-path evolve framing where touched
+- Active docs (README, CONTEXT, ROADMAP, STATUS, AGENTS, GOAL, CONTRIBUTING, archive INDEX) reflect hygiene MVP + throughput; G1–G3 marked delivered with honest MVP boundaries
+- Default evolve path framing: record / denoise / inject only — no StrategyLearner / PromptEvolver on default path
 
 ### Fixed
 - Nothing yet

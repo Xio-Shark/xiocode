@@ -122,7 +122,10 @@ xiocode/
 ├── extensions/
 │   ├── xio-sandbox/        # WorktreeSandbox + MergeGate
 │   ├── xio-evolve/         # TrajectoryRecorder + RunStore + Denoiser + ContextInjector
-│   └── xio-improve/        # Self-improve outer loop (T4 + verifier + merge-ask)
+│   ├── xio-hygiene/        # AGENTS.md/CLAUDE.md + skills + user hooks + MCP client
+│   ├── xio-improve/        # Self-improve outer loop (T4 + verifier + merge-ask)
+│   ├── xio-eval/           # Trusted fixtures, hidden graders, capability gate
+│   └── xio-regress/        # Private run → local regression case
 ├── docs/
 │   ├── GOAL.md             # Final product goal (north star)
 │   ├── STATUS.md           # Delivery snapshot

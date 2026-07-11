@@ -7,10 +7,25 @@
 node_modules/
 package-lock.json.bak
 
-# Runtime
+# Runtime (local user data — never commit)
 .xiocode/
 .pi/
 *.sock
+
+# Local IDE / agent adapter (not product)
+.cursor/
+.claude/
+
+# Trellis personal / session state (keep shared spec + scripts)
+.trellis/workspace/
+.trellis/tasks/
+.trellis/.developer
+.trellis/.current-task
+.trellis/.runtime/
+.trellis/.ralph-state.json
+.trellis/.agents/
+.trellis/.agent-log
+.trellis/.session-id
 
 # IDE
 .idea/
@@ -26,7 +41,7 @@ Thumbs.db
 # Archive (v1 source, not tracked)
 archive/
 
-# Environment
+# Environment / secrets
 .env
 .env.*
 !.env.example

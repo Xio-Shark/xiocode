@@ -95,7 +95,6 @@ async function runFixtureCli(workspace: string, entry: string, args: readonly st
     args: ["--experimental-strip-types", path.join(workspace, entry), ...args],
     cwd: workspace,
     timeoutMs: 2_000,
-    detached: false,
   });
   if (result.cleanupError) {
     throw new Error(result.cleanupError);

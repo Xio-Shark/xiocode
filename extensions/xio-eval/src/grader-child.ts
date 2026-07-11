@@ -69,7 +69,6 @@ async function runTypecheck(workspace: string, trustedRoot: string, timeoutMs: n
     ],
     cwd: workspace,
     timeoutMs,
-    detached: false,
   });
   if (result.cleanupError) {
     throw new Error(result.cleanupError);
@@ -89,7 +88,6 @@ async function runBehaviorGrade(
     args: ["--experimental-strip-types", entry, caseId, workspace],
     cwd: trustedRoot,
     timeoutMs,
-    detached: false,
   });
   if (result.cleanupError || result.timedOut || result.code !== 0) {
     throw new Error(result.cleanupError ?? `behavior probe failed with code ${String(result.code)}`);

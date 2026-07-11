@@ -8,7 +8,7 @@
 
 - **XioCode**: local-first AI coding agent with a self-owned TypeScript runtime (`src/runtime`), outer worktree isolation, and run evidence under `~/.xiocode/runs/`.
 - **Goal / north star**: observable, rollback-safe, self-improvable local coding-agent loop under user MergeGate consent — see [docs/GOAL.md](./docs/GOAL.md).
-- **`xio`**: CLI binary. Reads `~/.xiocode/config.toml`, starts the session/REPL, loads extensions in-process.
+- **`xio`**: CLI binary. Reads `~/.xiocode/config.toml`, starts the TTY Ink session (or non-TTY/one-shot path), loads extensions in-process.
 - **Harness**: layer between the LLM and the execution environment (tool calls ↔ file/shell actions).
 
 ## Architecture
@@ -21,25 +21,33 @@
 
 - **xio-sandbox**: outer git worktree sandbox. `prepareLaunch` creates `~/.xiocode/worktrees/<repo_id>/<session_id>`; agent cwd points there. `/merge` and session-end use MergeGate.
 - **xio-evolve** (default path): TodoEnforcer addendum, TrajectoryRecorder, RunStore, ResultDenoiser, ContextInjector. StrategyLearner / PromptEvolver / EvalComparator are **not** on the default path.
+- **xio-hygiene**: in-place agent hygiene — AGENTS.md / CLAUDE.md injection, local skills discovery (`skill` tool), Claude-settings user hooks (SessionStart / PreToolUse / PostToolUse / Stop), tools-first MCP client (`mcp__*`). Kill-switches under `config.toml` `[agents_md]` / `[skills]` / `[hooks]` / `[mcp]`.
 - **xio-improve**: self-modification outer loop (`xio improve` / `bin/xio-improve`). T4 GoalStore → worktree edits → verifier → **MergeGate ask**. Green verifier never auto-merges.
 - **xio-eval**: trusted local evaluator. Materializes tiny public fixtures, starts the candidate in its normal worktree path, then runs hidden graders from outside the candidate workspace and writes a versioned report.
+- **xio-regress**: private regression capture (`xio regress`). User verdict + frozen verifier + evidence hashes; pinned-base red preflight. Does not authorize merge.
 
 ## Run evidence
 
 - **Run**: one session, id `run_YYYYMMDD_HHMMSS`, stored at `~/.xiocode/runs/<run_id>/`.
+- **Chat session**: resumable model/message history stored at `~/.xiocode/sessions/<session_id>/`; separate from run/eval evidence and resumed into a new worktree.
 - **Trajectory**: prompts, tool calls/results, todos, timing — `events.jsonl` + `trajectory.json`.
 - **Eval report**: before/after quality, safety, latency, efficiency, nullable usage, hashes, and run references under `~/.xiocode/evals/<eval_id>/`; not a second trajectory store.
+- **Private case**: `~/.xiocode/regressions/<case_id>/case.json` — references run artifacts; does not copy prompt text or trajectories.
 
 ## Active infra (default path)
 
 - **ResultDenoising** (ResultDenoiser): truncate long tool outputs; light regex outline for large source files; stack-trace truncation.
-- **Dynamic Context Injection** (ContextInjector): inject git branch/status/recent commits for non-simple prompts.
+- **Dynamic Context Injection** (ContextInjector): inject git branch/status/recent commits for non-simple prompts; `turn_start` return value merged into provider messages.
+- **Provider streaming**: `completeStream` (OpenAI / Anthropic SSE); the Ink transcript renders deltas through `SessionUiSink`.
+- **Parallel tool scheduling**: read/bash may run in parallel; write/edit stay serial.
+- **Session multi-turn**: runtime retains messages; `general.max_session_messages` + explicit trim notice (not full compaction).
 - **Prompt classification**: tiny binary simple vs code classifier (optional model hint from config). Not a full multi-model router product.
 
 ## Safety & sandbox
 
 - **WorktreeSandbox**: session-outer isolation; non-git dirs fail at launch (G0).
 - **MergeGate**: diff summary + confirm before merging worktree branch into main tree; conflicts abort and keep worktree. Self-improve reuses the same gate — never “测绿即合”.
+- **User hooks**: PreToolUse can block tools (exit 2 / JSON deny); not a resurrected PathGuard / PermissionEngine.
 - **Workspace containment**: builtin `write`/`edit` use `assertInsideWorkspace` against worktree cwd. PathGuard / PermissionEngine / Docker were removed; do not reintroduce.
 - **Config**: `[worktree] enabled` (default true), `retain_on_reject`.
 
@@ -54,7 +62,8 @@
 ## Tools
 
 - Builtin: `read`, `write`, `edit`, `bash`, `grep`, `glob`.
-- **Not shipped**: `search_context`, pi-ace-tool, `/ace-*`.
+- Hygiene: `skill` (list/load local `SKILL.md`); MCP tools as `mcp__<server>__<tool>`.
+- **Not shipped**: `search_context`, pi-ace-tool, `/ace-*`, full context compaction, process-interruption execution/file checkpoint-resume. Ink core, TUI diff confirmation/session bypass, persistent chat resume/picker, session-baseline `/rollback`, and latest-turn `/rollback turn` are shipped.
 
 ## Decision history (short)
 

@@ -11,6 +11,7 @@ import {
   classifyOutcome,
   compactLogs,
   comparisonCompatibilityErrors,
+  finalSeriesId,
   selectedHoldouts,
 } from "../src/eval-support.ts";
 import { materializeFixture, validateCandidateWorktree } from "../src/fixture-materializer.ts";
@@ -89,13 +90,14 @@ describe("trusted capability evaluator", () => {
         estimated_cost_usd: null,
       });
     }
-    const repeated = await new EvalRunner({
-      trusted_root: trustedRoot,
-      candidate_root: trustedRoot,
-      candidate_mode: "stub",
-      eval_root: evalRoot,
-    }).smoke();
-    expect(repeated.series_id).toBe(report.series_id);
+    const suite = await loadTrustedSuite(trustedRoot);
+    expect(finalSeriesId({
+      suite,
+      createdAt: report.created_at,
+      evalId: report.eval_id,
+      reportRoot: evalRoot,
+      provisionalSeriesId: "unused",
+    }, report.candidates[0]!.trials)).toBe(report.series_id);
     const trial = report.candidates[0]!.trials[0]!;
     const incompatible = {
       ...trial,
@@ -206,7 +208,7 @@ describe("trusted capability evaluator", () => {
     const script = path.join(root, "spawn-descendant.mjs");
     await writeFile(script, [
       'import { spawn } from "node:child_process";',
-      "const child = spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "const child = spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", () => {}); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
       "console.log(child.pid);",
       "setTimeout(() => process.exit(0), 20);",
     ].join("\n"), "utf8");

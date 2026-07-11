@@ -2,7 +2,7 @@ import { WorktreeSandbox } from "./worktree-sandbox.ts";
 
 import { git, gitOk } from "./git.ts";
 
-import type { WorktreeSession } from "./worktree-sandbox.ts";
+import type { TurnCheckpoint, WorktreeSession } from "./worktree-sandbox.ts";
 
 export type DiffSummary = Readonly<{
   text: string;
@@ -15,11 +15,18 @@ export type MergeResult =
   | Readonly<{ ok: true; summary: string }>
   | Readonly<{ ok: false; error: string; conflict: boolean }>;
 
+export type RollbackResult = Readonly<{
+  ok: true;
+  skipped: boolean;
+  summary: string;
+}>;
+
 export type AskFn = (question: string) => Promise<boolean>;
 
 export class MergeGate {
   readonly #session: WorktreeSession;
   #merged = false;
+  #turnCheckpoint: TurnCheckpoint | undefined;
 
   constructor(session: WorktreeSession) {
     this.#session = session;
@@ -37,14 +44,20 @@ export class MergeGate {
     this.#merged = true;
   }
 
-  async summarize(): Promise<DiffSummary> {
-    const uncommitted = await WorktreeSandbox.hasUncommittedChanges(this.#session);
+  async captureTurnCheckpoint(): Promise<void> {
+    if (this.#merged) {
+      throw new Error("cannot checkpoint after this session has been merged into the main tree");
+    }
+    this.#turnCheckpoint = await WorktreeSandbox.captureTurnCheckpoint(this.#session);
+  }
+
+  async summarize(options: { includeIgnored?: boolean } = {}): Promise<DiffSummary> {
     const range = `${this.#session.baseRef}...${this.#session.branch}`;
     const nameStatus = await git(this.#session.mainRoot, ["diff", "--name-status", range]);
-    const stat = await git(this.#session.mainRoot, ["diff", "--stat", range]);
-    const worktreeStatus = uncommitted
-      ? await git(this.#session.worktreePath, ["status", "--short"])
-      : { stdout: "", stderr: "", code: 0 };
+    const unified = await git(this.#session.worktreePath, ["diff", "--no-ext-diff", this.#session.baseRef]);
+    const statusArgs = ["status", "--short", "--untracked-files=all"];
+    if (options.includeIgnored) statusArgs.push("--ignored=matching");
+    const worktreeStatus = await git(this.#session.worktreePath, statusArgs);
 
     const committedFiles = nameStatus.stdout
       .split("\n")
@@ -54,6 +67,7 @@ export class MergeGate {
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
+    const uncommitted = uncommittedFiles.some((line) => !line.startsWith("!!"));
 
     const filesChanged = new Set([
       ...committedFiles.map((line) => line.replace(/^[A-Z]+\s+/, "")),
@@ -61,11 +75,11 @@ export class MergeGate {
     ]).size;
 
     const parts: string[] = [];
-    if (stat.stdout.trim().length > 0) {
-      parts.push(stat.stdout.trim());
+    if (unified.stdout.trim().length > 0) {
+      parts.push(unified.stdout.trim());
     }
-    if (uncommitted && worktreeStatus.stdout.trim().length > 0) {
-      parts.push("Uncommitted in worktree:");
+    if (worktreeStatus.stdout.trim().length > 0) {
+      parts.push("Worktree status:");
       parts.push(worktreeStatus.stdout.trim());
     }
     if (parts.length === 0) {
@@ -130,6 +144,46 @@ export class MergeGate {
       return { ok: true, skipped: true };
     }
     return this.merge();
+  }
+
+  async promptRollback(ask: AskFn, notify?: (message: string) => void): Promise<RollbackResult> {
+    if (this.#merged) {
+      throw new Error("cannot rollback after this session has been merged into the main tree");
+    }
+    const summary = await this.summarize({ includeIgnored: true });
+    if (!summary.hasChanges) {
+      notify?.("No session worktree changes to rollback.");
+      return { ok: true, skipped: true, summary: "rollback skipped: no changes" };
+    }
+    notify?.(summary.text);
+    const approved = await ask(`Discard ${summary.filesChanged} session change(s) and restore the session baseline? [y/N] `);
+    if (!approved) {
+      return { ok: true, skipped: true, summary: "rollback skipped" };
+    }
+    await WorktreeSandbox.rollbackToSessionBaseline(this.#session);
+    return { ok: true, skipped: false, summary: `rolled back to session baseline ${this.#session.baseRef.slice(0, 12)}` };
+  }
+
+  async promptRollbackTurn(ask: AskFn, notify?: (message: string) => void): Promise<RollbackResult> {
+    if (this.#merged) {
+      throw new Error("cannot rollback after this session has been merged into the main tree");
+    }
+    const checkpoint = this.#turnCheckpoint;
+    if (!checkpoint) {
+      throw new Error("turn rollback is unavailable before the first prompt starts");
+    }
+    const summary = await WorktreeSandbox.summarizeSinceCheckpoint(this.#session, checkpoint);
+    if (!summary.hasChanges) {
+      notify?.("No file changes since the current turn started.");
+      return { ok: true, skipped: true, summary: "turn rollback skipped: no changes" };
+    }
+    notify?.(summary.text);
+    const approved = await ask(`Discard ${summary.filesChanged} change(s) made since this turn started? [y/N] `);
+    if (!approved) {
+      return { ok: true, skipped: true, summary: "turn rollback skipped" };
+    }
+    await WorktreeSandbox.rollbackToTurnCheckpoint(this.#session, checkpoint);
+    return { ok: true, skipped: false, summary: `rolled back to turn checkpoint ${checkpoint.tree.slice(0, 12)}` };
   }
 
   async finalizeSession(

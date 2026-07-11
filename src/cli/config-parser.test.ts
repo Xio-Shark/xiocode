@@ -8,6 +8,7 @@ const SAMPLE_CONFIG = `
 default_provider = "deepseek"
 default_model = "deepseek-chat"
 run_root = "~/.xiocode/runs"
+max_session_messages = 40
 
 [providers.deepseek]
 kind = "openai"
@@ -54,6 +55,7 @@ describe("parseXioConfig", () => {
 
     expect(parsed.runtimeConfig.general.defaultProvider).toBe("deepseek");
     expect(parsed.runtimeConfig.general.defaultModel).toBe("deepseek-chat");
+    expect(parsed.runtimeConfig.general.maxSessionMessages).toBe(40);
     expect(parsed.runtimeConfig.providers.deepseek).toMatchObject({
       name: "deepseek",
       kind: "openai",
@@ -175,6 +177,157 @@ thinking_display = "hidden"
       requireAllPass: true,
       repairTurns: 3,
       commands: [],
+    });
+    expect(parsed.runtimeConfig.agentsMd).toEqual({
+      enabled: true,
+      readClaudeDirs: true,
+      maxBytes: 65_536,
+      maxImportDepth: 3,
+    });
+    expect(parsed.runtimeConfig.skills).toEqual({
+      enabled: true,
+      readClaude: true,
+      readCursor: true,
+      maxBodyBytes: 32_768,
+    });
+    expect(parsed.runtimeConfig.hooks).toEqual({
+      enabled: true,
+      readClaude: true,
+      timeoutMs: 5_000,
+    });
+  });
+
+  it("parses agents_md kill-switch and limits", () => {
+    const parsed = parseXioConfig(
+      `
+[agents_md]
+enabled = false
+read_claude_dirs = false
+max_bytes = 1024
+max_import_depth = 1
+`,
+      { cwd: "/repo" },
+    );
+
+    expect(parsed.runtimeConfig.agentsMd).toEqual({
+      enabled: false,
+      readClaudeDirs: false,
+      maxBytes: 1024,
+      maxImportDepth: 1,
+    });
+  });
+
+  it("parses skills kill-switch and source flags", () => {
+    const parsed = parseXioConfig(
+      `
+[skills]
+enabled = false
+read_claude = false
+read_cursor = true
+max_body_bytes = 4096
+`,
+      { cwd: "/repo" },
+    );
+
+    expect(parsed.runtimeConfig.skills).toEqual({
+      enabled: false,
+      readClaude: false,
+      readCursor: true,
+      maxBodyBytes: 4096,
+    });
+  });
+
+  it("parses hooks kill-switch and timeout", () => {
+    const parsed = parseXioConfig(
+      `
+[hooks]
+enabled = false
+read_claude = false
+timeout_ms = 1500
+`,
+      { cwd: "/repo" },
+    );
+
+    expect(parsed.runtimeConfig.hooks).toEqual({
+      enabled: false,
+      readClaude: false,
+      timeoutMs: 1500,
+    });
+  });
+
+  it("defaults hooks to enabled with 5s timeout", () => {
+    const parsed = parseXioConfig(SAMPLE_CONFIG, { cwd: "/repo" });
+    expect(parsed.runtimeConfig.hooks).toEqual({
+      enabled: true,
+      readClaude: true,
+      timeoutMs: 5_000,
+    });
+  });
+
+  it("parses mcp kill-switch, sources, and servers", () => {
+    const parsed = parseXioConfig(
+      `
+[mcp]
+enabled = false
+read_claude = false
+read_cursor = true
+fail_closed = true
+timeout_ms = 12000
+
+[mcp.servers.echo]
+command = "node"
+args = ["./echo.mjs"]
+
+[mcp.servers.remote]
+url = "http://127.0.0.1:9/mcp"
+transport = "http"
+
+[mcp.servers.remote.headers]
+Authorization = "Bearer x"
+`,
+      { cwd: "/repo" },
+    );
+
+    expect(parsed.runtimeConfig.mcp).toEqual({
+      enabled: false,
+      readClaude: false,
+      readCursor: true,
+      failClosed: true,
+      timeoutMs: 12_000,
+      servers: {
+        echo: {
+          command: "node",
+          args: ["./echo.mjs"],
+          env: undefined,
+          cwd: undefined,
+          url: undefined,
+          transport: undefined,
+          type: undefined,
+          headers: undefined,
+        },
+        remote: {
+          command: undefined,
+          args: undefined,
+          env: undefined,
+          cwd: undefined,
+          url: "http://127.0.0.1:9/mcp",
+          transport: "http",
+          type: undefined,
+          headers: { Authorization: "Bearer x" },
+        },
+      },
+    });
+  });
+
+  it("defaults mcp to enabled fail-open", () => {
+    const parsed = parseXioConfig(SAMPLE_CONFIG, { cwd: "/repo" });
+    expect(parsed.runtimeConfig.mcp).toEqual({
+      enabled: true,
+      readClaude: true,
+      readCursor: true,
+      failClosed: false,
+      timeoutMs: 30_000,
+      servers: {},
     });
   });
 

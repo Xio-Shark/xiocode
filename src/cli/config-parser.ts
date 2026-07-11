@@ -17,6 +17,8 @@ export type XioGeneralConfig = Readonly<{
   defaultProvider?: string;
   defaultModel?: string;
   runRoot: string;
+  /** Hard cap on retained ChatMessage count across REPL prompts. Default 80. */
+  maxSessionMessages?: number;
 }>;
 
 export type XioProviderConfig = Readonly<{
@@ -60,12 +62,56 @@ export type XioWorktreeRuntime = WorktreeConfig & Readonly<{
   session?: WorktreeSession;
 }>;
 
+export type XioAgentsMdConfig = Readonly<{
+  enabled: boolean;
+  readClaudeDirs: boolean;
+  maxBytes: number;
+  maxImportDepth: number;
+}>;
+
+export type XioSkillsConfig = Readonly<{
+  enabled: boolean;
+  readClaude: boolean;
+  readCursor: boolean;
+  maxBodyBytes: number;
+}>;
+
+export type XioHooksConfig = Readonly<{
+  enabled: boolean;
+  readClaude: boolean;
+  timeoutMs: number;
+}>;
+
+export type XioMcpServerConfig = Readonly<{
+  command?: string;
+  args?: readonly string[];
+  env?: Readonly<Record<string, string>>;
+  cwd?: string;
+  url?: string;
+  transport?: string;
+  type?: string;
+  headers?: Readonly<Record<string, string>>;
+}>;
+
+export type XioMcpConfig = Readonly<{
+  enabled: boolean;
+  readClaude: boolean;
+  readCursor: boolean;
+  failClosed: boolean;
+  timeoutMs: number;
+  servers: Readonly<Record<string, XioMcpServerConfig>>;
+}>;
+
 export type XioConfig = Readonly<{
   general: XioGeneralConfig;
   providers: Readonly<Record<string, XioProviderConfig>>;
   worktree: WorktreeConfig;
   extensions: Readonly<Record<string, XioExtensionConfig>>;
   verify: XioVerifyConfig;
+  agentsMd: XioAgentsMdConfig;
+  skills: XioSkillsConfig;
+  hooks: XioHooksConfig;
+  mcp: XioMcpConfig;
 }>;
 
 export type XioRuntimeConfig = Readonly<{
@@ -74,6 +120,10 @@ export type XioRuntimeConfig = Readonly<{
   extensions: Readonly<Record<string, XioExtensionConfig>>;
   general: XioGeneralConfig;
   verify: XioVerifyConfig;
+  agentsMd: XioAgentsMdConfig;
+  skills: XioSkillsConfig;
+  hooks: XioHooksConfig;
+  mcp: XioMcpConfig;
 }>;
 
 export type ParsedXioConfig = Readonly<{
@@ -87,6 +137,34 @@ export type ParseConfigOptions = Readonly<{
 
 const DEFAULT_RUN_ROOT = "~/.xiocode/runs";
 const DEFAULT_WORKSPACE_ROOT = process.cwd();
+const DEFAULT_AGENTS_MD: XioAgentsMdConfig = {
+  enabled: true,
+  readClaudeDirs: true,
+  maxBytes: 65_536,
+  maxImportDepth: 3,
+};
+
+const DEFAULT_SKILLS: XioSkillsConfig = {
+  enabled: true,
+  readClaude: true,
+  readCursor: true,
+  maxBodyBytes: 32_768,
+};
+
+const DEFAULT_HOOKS: XioHooksConfig = {
+  enabled: true,
+  readClaude: true,
+  timeoutMs: 5_000,
+};
+
+const DEFAULT_MCP: XioMcpConfig = {
+  enabled: true,
+  readClaude: true,
+  readCursor: true,
+  failClosed: false,
+  timeoutMs: 30_000,
+  servers: {},
+};
 
 export function parseXioConfig(content: string, options: ParseConfigOptions = {}): ParsedXioConfig {
   const data = asTable(parse(content), "config");
@@ -97,7 +175,11 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const worktree = parseWorktree(getTable(data, "worktree"));
   const extensions = parseExtensions(getTable(data, "extensions"));
   const verify = parseVerify(getTable(data, "verify"));
-  const xio: XioConfig = { general, providers, worktree, extensions, verify };
+  const agentsMd = parseAgentsMd(getTable(data, "agents_md"));
+  const skills = parseSkills(getTable(data, "skills"));
+  const hooks = parseHooks(getTable(data, "hooks"));
+  const mcp = parseMcp(getTable(data, "mcp"));
+  const xio: XioConfig = { general, providers, worktree, extensions, verify, agentsMd, skills, hooks, mcp };
   return {
     xio,
     runtimeConfig: toRuntimeConfig(xio),
@@ -111,6 +193,10 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     worktree: { ...config.worktree },
     extensions: config.extensions,
     verify: config.verify,
+    agentsMd: config.agentsMd,
+    skills: config.skills,
+    hooks: config.hooks,
+    mcp: config.mcp,
   };
 }
 
@@ -129,6 +215,7 @@ function parseGeneral(table: Record<string, unknown> | undefined): XioGeneralCon
     defaultProvider: getOptionalString(table, "default_provider"),
     defaultModel: getOptionalString(table, "default_model"),
     runRoot: getOptionalString(table, "run_root") ?? DEFAULT_RUN_ROOT,
+    maxSessionMessages: getOptionalNumber(table, "max_session_messages"),
   };
 }
 
@@ -193,6 +280,78 @@ function parseVerify(table: Record<string, unknown> | undefined): XioVerifyConfi
   const repairTurns = getOptionalNumber(table, "repair_turns") ?? 3;
   const commands = parseVerifyCommands(table?.commands);
   return { enabled, requireAllPass, repairTurns, commands };
+}
+
+function parseAgentsMd(table: Record<string, unknown> | undefined): XioAgentsMdConfig {
+  return {
+    enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_AGENTS_MD.enabled,
+    readClaudeDirs: getOptionalBoolean(table, "read_claude_dirs") ?? DEFAULT_AGENTS_MD.readClaudeDirs,
+    maxBytes: getOptionalNumber(table, "max_bytes") ?? DEFAULT_AGENTS_MD.maxBytes,
+    maxImportDepth: getOptionalNumber(table, "max_import_depth") ?? DEFAULT_AGENTS_MD.maxImportDepth,
+  };
+}
+
+function parseSkills(table: Record<string, unknown> | undefined): XioSkillsConfig {
+  return {
+    enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_SKILLS.enabled,
+    readClaude: getOptionalBoolean(table, "read_claude") ?? DEFAULT_SKILLS.readClaude,
+    readCursor: getOptionalBoolean(table, "read_cursor") ?? DEFAULT_SKILLS.readCursor,
+    maxBodyBytes: getOptionalNumber(table, "max_body_bytes") ?? DEFAULT_SKILLS.maxBodyBytes,
+  };
+}
+
+function parseHooks(table: Record<string, unknown> | undefined): XioHooksConfig {
+  return {
+    enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_HOOKS.enabled,
+    readClaude: getOptionalBoolean(table, "read_claude") ?? DEFAULT_HOOKS.readClaude,
+    timeoutMs: getOptionalNumber(table, "timeout_ms") ?? DEFAULT_HOOKS.timeoutMs,
+  };
+}
+
+function parseMcp(table: Record<string, unknown> | undefined): XioMcpConfig {
+  return {
+    enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_MCP.enabled,
+    readClaude: getOptionalBoolean(table, "read_claude") ?? DEFAULT_MCP.readClaude,
+    readCursor: getOptionalBoolean(table, "read_cursor") ?? DEFAULT_MCP.readCursor,
+    failClosed: getOptionalBoolean(table, "fail_closed") ?? DEFAULT_MCP.failClosed,
+    timeoutMs: getOptionalNumber(table, "timeout_ms") ?? DEFAULT_MCP.timeoutMs,
+    servers: parseMcpServers(table ? getTable(table, "servers") : undefined),
+  };
+}
+
+function parseMcpServers(table: Record<string, unknown> | undefined): Readonly<Record<string, XioMcpServerConfig>> {
+  if (!table) {
+    return {};
+  }
+  const servers: Record<string, XioMcpServerConfig> = {};
+  for (const [name, value] of Object.entries(table)) {
+    const server = asTable(value, `mcp.servers.${name}`);
+    const args = getStringArray(server.args, `mcp.servers.${name}.args`);
+    const envTable = getTable(server, "env");
+    const headersTable = getTable(server, "headers");
+    servers[name] = {
+      command: getOptionalString(server, "command"),
+      args,
+      env: envTable ? stringRecord(envTable, `mcp.servers.${name}.env`) : undefined,
+      cwd: getOptionalString(server, "cwd"),
+      url: getOptionalString(server, "url"),
+      transport: getOptionalString(server, "transport"),
+      type: getOptionalString(server, "type"),
+      headers: headersTable ? stringRecord(headersTable, `mcp.servers.${name}.headers`) : undefined,
+    };
+  }
+  return servers;
+}
+
+function stringRecord(table: Record<string, unknown>, label: string): Readonly<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(table)) {
+    if (typeof value !== "string") {
+      throw new Error(`${label}.${key} must be a string`);
+    }
+    out[key] = value;
+  }
+  return out;
 }
 
 function parseVerifyCommands(value: unknown): readonly XioVerifyCommandConfig[] {

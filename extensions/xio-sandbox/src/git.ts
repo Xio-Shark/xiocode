@@ -10,11 +10,28 @@ export type GitResult = Readonly<{
 }>;
 
 export async function git(cwd: string, args: readonly string[]): Promise<GitResult> {
+  return runGit(cwd, args);
+}
+
+export async function gitWithEnv(
+  cwd: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+): Promise<GitResult> {
+  return runGit(cwd, args, env);
+}
+
+async function runGit(
+  cwd: string,
+  args: readonly string[],
+  env?: Readonly<Record<string, string>>,
+): Promise<GitResult> {
   try {
     const { stdout, stderr } = await execFileAsync("git", [...args], {
       cwd,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
+      env: env ? { ...process.env, ...env } : process.env,
     });
     return { stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code: 0 };
   } catch (error) {

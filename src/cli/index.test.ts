@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { handleXioFlag, isDirectRunEntry, parseXioArgs, prepareLaunch } from "./index.ts";
+import { handleXioFlag, isDirectRunEntry, parseXioArgs, prepareLaunch, shouldUseInk } from "./index.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 const execFileAsync = promisify(execFile);
@@ -129,6 +129,28 @@ describe("parseXioArgs", () => {
       runtimeExtensionEnabled: false,
       promptOnce: "hello",
     });
+  });
+
+  it("parses resume and continue entry points", () => {
+    expect(parseXioArgs(["resume", "session1"]).resume).toEqual({ action: "load", id: "session1" });
+    expect(parseXioArgs(["resume", "--list"]).resume).toEqual({ action: "list" });
+    expect(parseXioArgs(["resume", "--xio-fast"])).toMatchObject({
+      resume: { action: "latest" },
+      runtimeExtensionEnabled: false,
+    });
+    expect(parseXioArgs(["--continue", "--xio-fast"])).toMatchObject({
+      resume: { action: "latest" },
+      runtimeExtensionEnabled: false,
+    });
+  });
+});
+
+describe("shouldUseInk", () => {
+  it("requires an interactive TTY and no one-shot prompt", () => {
+    expect(shouldUseInk({}, { stdinIsTTY: true, stdoutIsTTY: true })).toBe(true);
+    expect(shouldUseInk({ promptOnce: "hello" }, { stdinIsTTY: true, stdoutIsTTY: true })).toBe(false);
+    expect(shouldUseInk({}, { stdinIsTTY: false, stdoutIsTTY: true })).toBe(false);
+    expect(shouldUseInk({}, { stdinIsTTY: true, stdoutIsTTY: false })).toBe(false);
   });
 });
 
