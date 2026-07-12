@@ -42,6 +42,13 @@ async function main(): Promise<void> {
     process.exitCode = await runRegressCli(rawArgs.slice(1));
     return;
   }
+  if (rawArgs[0] === "models") {
+    const { runModelsCli } = await import("./models-cli.ts");
+    process.exitCode = await runModelsCli({
+      catalogOnly: rawArgs.includes("--catalog-only"),
+    });
+    return;
+  }
 
   try {
     const xioArgs = parseXioArgs(rawArgs);
@@ -100,17 +107,22 @@ function xioHelp(): string {
     "  xio improve         Self-improve loop (worktree + verifier + merge ask)",
     "  xio eval            Trusted capability preflight/smoke/compare",
     "  xio regress         Capture / preflight / compare private regressions",
+    "  xio models          List known provider/model ids (no worktree session)",
     "  xiocode             Same as xio (alias)",
     "  xio --xio-fast      Skip evolve/sandbox extensions",
+    "  xio --allow-dirty   Allow worktree session when main tree is dirty",
     "  xio --version",
     "  xio --help",
     "",
     "Install once: curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash",
     "Then run xio / xiocode from any git repository.",
     "Sandbox: starts in a git worktree under ~/.xiocode/worktrees.",
+    "Dirty main trees are refused by default (worktree would hide uncommitted files); use --allow-dirty or [worktree] allow_dirty = true.",
     "Merge with /merge, or answer the prompt when the session ends.",
     "Self-improve never auto-merges on green verifier — MergeGate ask only.",
     "Non-git directories are rejected (initialize a repo first).",
+    "MCP servers connect in the background after the prompt is ready.",
+    "Session modes: /agent build (default) | /agent plan (read-oriented tools).",
     "",
   ].join("\n");
 }

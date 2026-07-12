@@ -17,6 +17,8 @@ import type {
   ImproveGoal,
   ImproveRunResult,
   MergeOutcome,
+  PrivateGate,
+  PrivateGateResult,
   VerifierResult,
 } from "./types.ts";
 
@@ -40,11 +42,16 @@ export type SelfImproveRunnerOptions = Readonly<{
   spawnXio?: (prompt: string, worktreePath: string) => Promise<void>;
   /** Optional trusted before/after gate loaded outside the candidate worktree. */
   capabilityGate?: CapabilityGate;
+  /** Optional private regression compare gate (requires capabilityGate for ask). */
+  privateGate?: PrivateGate;
+  /** Private case id when privateGate is set. */
+  privateCaseId?: string;
 }>;
 
 /**
  * Self-improve outer loop.
  * Green verifier → MergeGate ask only. Never auto-merges (A1; G4 revoked).
+ * With privateCaseId: FIXED × trusted PASS required before ask.
  */
 export class SelfImproveRunner {
   readonly #mainRoot: string;
@@ -57,6 +64,8 @@ export class SelfImproveRunner {
   readonly #skipMergeAsk: boolean;
   readonly #forceCleanup: boolean;
   readonly #capabilityGate?: CapabilityGate;
+  readonly #privateGate?: PrivateGate;
+  readonly #privateCaseId?: string;
 
   constructor(options: SelfImproveRunnerOptions) {
     this.#mainRoot = path.resolve(options.mainRoot);
@@ -68,6 +77,8 @@ export class SelfImproveRunner {
     this.#skipMergeAsk = options.skipMergeAsk === true;
     this.#forceCleanup = options.forceCleanup === true;
     this.#capabilityGate = options.capabilityGate;
+    this.#privateGate = options.privateGate;
+    this.#privateCaseId = options.privateCaseId;
     this.#applyGoal = options.applyGoal
       ?? createDefaultApplyGoal(options.spawnXio);
   }
@@ -101,8 +112,6 @@ export class SelfImproveRunner {
         ...outcome,
       };
     } finally {
-      // Remove worktree after successful merge or when there is nothing left to keep.
-      // Rejected ask / red verifier with dirty tree: retain for inspection (unless forceCleanup).
       try {
         const mergedOk = merge?.asked === true && merge.approved === true && merge.merged === true;
         if (
@@ -122,7 +131,7 @@ export class SelfImproveRunner {
   async #executeGoal(
     goal: ImproveGoal,
     session: WorktreeSession,
-  ): Promise<Pick<ImproveRunResult, "verifier" | "capabilityGate" | "merge">> {
+  ): Promise<Pick<ImproveRunResult, "verifier" | "capabilityGate" | "privateGate" | "merge">> {
     this.#notify?.(`Goal ${goal.id} (${goal.source}) in worktree ${session.worktreePath}`);
     await this.#applyGoal(goal, session.worktreePath);
     const verifier = await new Verifier({
@@ -134,11 +143,14 @@ export class SelfImproveRunner {
         ? `Verifier green for ${goal.id}`
         : `Verifier red for ${goal.id} (exit ${verifier.exitCode})`,
     );
+    const privateGate = verifier.ok
+      ? await this.#runPrivateGate(session.worktreePath)
+      : undefined;
     const capabilityGate = verifier.ok
       ? await this.#runCapabilityGate(goal, session.worktreePath)
       : undefined;
-    const merge = await this.#maybeAskMerge(session, verifier, capabilityGate);
-    return { verifier, capabilityGate, merge };
+    const merge = await this.#maybeAskMerge(session, verifier, { capabilityGate, privateGate });
+    return { verifier, capabilityGate, privateGate, merge };
   }
 
   async runLoop(options: { max: number }): Promise<ImproveRunResult[]> {
@@ -160,13 +172,25 @@ export class SelfImproveRunner {
   async #maybeAskMerge(
     session: WorktreeSession,
     verifier: VerifierResult,
-    capabilityGate?: CapabilityGateResult,
+    gates: Readonly<{
+      capabilityGate?: CapabilityGateResult;
+      privateGate?: PrivateGateResult;
+    }>,
   ): Promise<MergeOutcome> {
     if (!verifier.ok) {
       return { asked: false, reason: "verifier_red" };
     }
-    if (capabilityGate && capabilityGate.status !== "PASS") {
-      return { asked: false, reason: gateReason(capabilityGate.status) };
+    if (this.#privateCaseId) {
+      if (!this.#capabilityGate) {
+        return { asked: false, reason: "private_gate_requires_capability" };
+      }
+      const privateGate = gates.privateGate;
+      if (!privateGate || privateGate.status !== "FIXED") {
+        return { asked: false, reason: privateGateReason(privateGate?.status) };
+      }
+    }
+    if (gates.capabilityGate && gates.capabilityGate.status !== "PASS") {
+      return { asked: false, reason: gateReason(gates.capabilityGate.status) };
     }
     if (this.#skipMergeAsk) {
       return { asked: false, reason: "skipped_by_policy" };
@@ -179,7 +203,11 @@ export class SelfImproveRunner {
     }
 
     this.#notify?.(summary.text);
-    const gateLabel = capabilityGate ? "Verifier and trusted capability gate green." : "Verifier green.";
+    const gateLabel = this.#privateCaseId
+      ? "Verifier, private FIXED, and trusted capability PASS."
+      : gates.capabilityGate
+        ? "Verifier and trusted capability gate green."
+        : "Verifier green.";
     const approved = await this.#ask(`${gateLabel} Merge ${summary.filesChanged} change(s) from improve worktree into main tree? [y/N] `);
     if (!approved) {
       return { asked: true, approved: false };
@@ -198,6 +226,32 @@ export class SelfImproveRunner {
       error: result.error,
       conflict: result.conflict,
     };
+  }
+
+  async #runPrivateGate(candidateRoot: string): Promise<PrivateGateResult | undefined> {
+    if (!this.#privateGate || !this.#privateCaseId) {
+      return undefined;
+    }
+    try {
+      const result = await this.#privateGate.evaluate({
+        caseId: this.#privateCaseId,
+        candidateRoot,
+      });
+      this.#notify?.(`Private regression gate: ${result.status} (case=${result.caseId})`);
+      for (const concern of result.concerns) {
+        this.#notify?.(`Private concern: ${concern}`);
+      }
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#notify?.(`Private regression gate: INFRA_ERROR (${message})`);
+      return {
+        status: "INFRA_ERROR",
+        caseId: this.#privateCaseId,
+        concerns: [],
+        errors: [message],
+      };
+    }
   }
 
   async #runCapabilityGate(goal: ImproveGoal, candidateRoot: string): Promise<CapabilityGateResult | undefined> {
@@ -249,4 +303,12 @@ function gateReason(status: CapabilityGateResult["status"]): Extract<MergeOutcom
     return "capability_gate_infra";
   }
   return "capability_gate_concerns";
+}
+
+function privateGateReason(
+  status: PrivateGateResult["status"] | undefined,
+): Extract<MergeOutcome, { asked: false }>["reason"] {
+  if (status === "STILL_RED") return "private_gate_still_red";
+  if (status === "INFRA_ERROR") return "private_gate_infra";
+  return "private_gate_invalid";
 }

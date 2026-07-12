@@ -24,15 +24,19 @@
 | Light file outline (regex) | ✅ | Replaces web-tree-sitter |
 | Provider streaming (`completeStream`) | ✅ | OpenAI + Anthropic SSE; TUI renders first delta |
 | Parallel tool execution | ✅ | `parallel_tool_calls`; read/bash parallel, write/edit serial |
-| Session multi-turn history | ✅ | Session retains messages; `general.max_session_messages` + explicit trim notice |
+| Session multi-turn history | ✅ | Single-owner history; `general.max_session_messages` triggers transactional compaction instead of slicing |
+| Context compaction (G4) | ✅ | `/compact [focus]` + automatic trigger; same-provider summary; persisted marker; TUI lifecycle |
 | Turn AbortSignal / TUI cancel | ✅ | Loop + fetch + bash; Ctrl+C cancels turn, idle Ctrl+C exits |
-| Ink TUI core | ✅ | Alternate screen, transcript, tool rows, slash commands, model/busy/cwd status |
+| Ink TUI core + polish | ✅ | Alternate screen, transcript, thinking stream/collapse, tool I/O preview, slash commands, model/busy/cwd status; select/resume accent selection; confirm scroll indicator; dynamic `/help`; busy `working…` |
 | Session baseline rollback (`/rollback`) | ✅ | Diff preview + confirmation; restores immutable session baseline; chat retained |
 | Turn rollback (`/rollback turn`) | ✅ | Git tree checkpoint at prompt start; restores files without trimming chat |
 | AGENTS.md / CLAUDE.md injection | ✅ | `xio-hygiene`; bounded `@` imports; `[agents_md]` kill-switch |
 | Skills discovery (`skill` tool) | ✅ | Local `SKILL.md` roots; catalog in prompt; load on demand; `[skills]` |
 | User hooks (Claude subset) | ✅ | SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]` |
-| MCP client (tools-first) | ✅ | `.mcp.json` + Claude/Cursor configs; stdio/SSE/HTTP; `mcp__*` |
+| MCP client (tools-first) | ✅ | `.mcp.json` + Claude/Cursor configs; stdio/SSE/HTTP; `mcp__*`; deferred parallel connect |
+| Agent modes (`/agent`) | ✅ | `build` / `plan`; plan denies write/exec/MCP |
+| Tool risk permissions (G7) | ✅ | Session ask / `-p` deny / `--allow-high-risk`; MCP unknown_source_fail_closed |
+| `xio models` | ✅ | Catalog (+ discovery) `provider/model` lines; no worktree |
 | StrategyLearner / PromptEvolver / old strategy EvalComparator | ❌ | Removed from default path |
 | SpeculativeExecutor / replay UI | ❌ | Deleted from delivery |
 | pi-ace / search_context | ❌ | Not shipped (ADR 0002) |
@@ -43,24 +47,25 @@
 ## Near term
 
 > JD / market-admission gaps (G1–G11) and target tiers A/B/C: [docs/GOAL.md](./docs/GOAL.md#agent-harness-市场准入与-jd-对齐).
-> G1–G3 are MVP-done; remaining A-tier pressure is G4–G5/G5b + G9–G10 (+ optional G11 TUI).
+> G1–G5, G5b, G9, G10, and G11 are shipped; remaining A-tier pressure is corpus quality + isolation ladder (G6/G8 polish).
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Real run corpus under `~/.xiocode/runs/` | P0 | Needed before stronger self-iteration claims (G10) |
-| Private case → improve joint gate | P1 | Wire `compare FIXED` + trusted capability PASS before MergeGate ask (G10 remaining) |
-| Credentialed capability series | P0 | Run repeated real-model smoke/compare with pinned provider/model/settings (G9) |
-| Context compaction | P1 | GOAL G4; history + trim notice shipped, full compaction next |
+| Real run corpus under `~/.xiocode/runs/` | P0 | Needed before stronger self-iteration claims |
+| Default private flywheel (G10) | ✅ | Failure nudge → last-case pointer → `[improve]` defaults; FIXED × PASS ask only; case ≠ goal |
+| Private case → improve joint gate | ✅ | `--private-case` + `--capability-gate` require FIXED × PASS |
+| Credentialed capability series | ✅ | `/connect` credentials → real smoke/compare; `--candidate-mode`/`--model`/`--repeat`; `credentialed-series.v1` (G9) |
+| Context compaction | ✅ | G4 shipped at message-budget level; token-source `/context` diagnostics remain separate follow-on work |
 | Persistent chat session resume | ✅ | `sessions/` store, latest/id/picker, model/messages restore, explicit delete |
-| Execution checkpoint-resume | P1 | GOAL G5 remaining: recover in-progress file/tool state after interruption |
+| Execution checkpoint-resume | ✅ | Atomic v2 state, original worktree attach, durable turn checkpoint, no uncertain tool replay |
 | Ink TUI diff/permission + bypass | ✅ | Merge/rollback/finalize modal, scrollable unified diff, session-only audited bypass |
 | Ink TUI session resume picker | ✅ | Repository-filtered history picker plus latest/id CLI entry points |
-| Tool-layer throughput (ripgrep grep/glob) | P1 | H6 follow-on after H1–H5 |
-| Edit robustness (patch / fuzzy) | P1 | H8 follow-on |
-| Isolation ladder docs (+ optional host path) | P1 | JD tier B; default sandbox stays worktree (G6–G7) |
+| Tool-layer throughput (ripgrep grep/glob) | ✅ | H6: prefer system `rg`; Node fallback with backend marker |
+| Edit robustness (patch / fuzzy) | ✅ | H8: exact unique default; `replace_all`; whitespace fuzzy retry; unified `patch` |
+| Isolation ladder docs (+ optional host path) | P1 | JD tier B; default sandbox stays worktree (G6); G7 risk gate shipped |
 | Price table + richer tracing | P1 | Cost/observability completeness (G8) |
 | External eval Docker / SWE-bench wiring | P1 | Adapter stub exists; full harness later |
-| TUI polish | P1 | Core, modal review, bypass, and resume shipped; remaining work is compaction/polish |
+| TUI polish | ✅ | Select/resume accent selection, confirm scroll indicator, busy `working…`, dynamic `/help` |
 | Optional Xio-native semantic search | P2 | Only if product need is real |
 | Re-enable strategy loop behind explicit flag | P2 | After corpus + eval design |
 

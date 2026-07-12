@@ -14,8 +14,10 @@ export type McpConfig = Readonly<{
   enabled: boolean;
   readClaude: boolean;
   readCursor: boolean;
-  /** When true, a failed server connection throws from session_start. Default false = skip + warn. */
+  /** When true, first connect failure aborts peers (notify + close). Default false = skip + warn. */
   failClosed: boolean;
+  /** When true, skip Claude/Cursor user auto-import (config + project only). */
+  unknownSourceFailClosed: boolean;
   timeoutMs: number;
   /** Xio-native servers from config.toml; override same-name entries from disk. */
   servers?: Readonly<Record<string, McpServerSpec>>;
@@ -26,6 +28,7 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
   readClaude: true,
   readCursor: true,
   failClosed: false,
+  unknownSourceFailClosed: false,
   timeoutMs: 30_000,
 };
 
@@ -78,6 +81,8 @@ export type McpBridgeRegistration = Readonly<{
   getLoaded: () => LoadedMcpConfigs | undefined;
   getStatuses: () => readonly McpConnectionStatus[];
   getToolNames: () => readonly string[];
+  /** Resolves when background connect+register finishes (or immediately if idle). */
+  waitUntilSettled: () => Promise<void>;
   close: () => Promise<void>;
 }>;
 
@@ -94,6 +99,8 @@ export type RegisterMcpBridgeOptions = Readonly<{
   config: McpConfig;
   registerTool: (tool: ToolDefinition) => void;
   warn?: (message: string) => void;
+  /** Called after each successful server registers its tools (hot-add). */
+  onToolsChanged?: () => void;
   /** Injectable connect for tests. */
   connectServer?: typeof connectMcpServer;
 }>;
@@ -181,14 +188,18 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
     }
   };
 
-  if (config.readClaude) {
+  if (config.readClaude && !config.unknownSourceFailClosed) {
     await applyFile(path.join(home, ".claude.json"), "claude-user", (data) => {
       const root = asRecord(data);
       return root ? asRecord(root.mcpServers) : undefined;
     });
+  } else if (config.readClaude && config.unknownSourceFailClosed) {
+    const message = "mcp: unknown_source_fail_closed skips Claude user MCP auto-import";
+    warnings.push(message);
+    options.warn?.(message);
   }
 
-  if (config.readCursor) {
+  if (config.readCursor && !config.unknownSourceFailClosed) {
     await applyFile(path.join(home, ".cursor", "mcp.json"), "cursor-user", (data) => {
       const root = asRecord(data);
       if (!root) {
@@ -196,6 +207,10 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
       }
       return asRecord(root.mcpServers) ?? asRecord(root.servers);
     });
+  } else if (config.readCursor && config.unknownSourceFailClosed) {
+    const message = "mcp: unknown_source_fail_closed skips Cursor user MCP auto-import";
+    warnings.push(message);
+    options.warn?.(message);
   }
 
   await applyFile(path.join(cwd, ".mcp.json"), "project", (data) => {
@@ -220,7 +235,8 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
 }
 
 /**
- * Register MCP bridge: connect on session_start, register `mcp__*` tools, close on session_end.
+ * Register MCP bridge: load configs on session_start, connect servers in the background
+ * (parallel, per-server timeout), hot-register `mcp__*` tools, close on session_end.
  */
 export function registerMcpBridge(
   ctx: ExtensionContext,
@@ -234,6 +250,7 @@ export function registerMcpBridge(
   let statuses: McpConnectionStatus[] = [];
   const live: LiveConnection[] = [];
   let closed = false;
+  let settlePromise: Promise<void> = Promise.resolve();
 
   const closeAll = async (): Promise<void> => {
     closed = true;
@@ -247,16 +264,19 @@ export function registerMcpBridge(
     }));
   };
 
+  const registration: McpBridgeRegistration = {
+    getLoaded: () => loaded,
+    getStatuses: () => statuses,
+    getToolNames: () => statuses.flatMap((status) => status.toolNames),
+    waitUntilSettled: () => settlePromise,
+    close: closeAll,
+  };
+
   if (!config.enabled) {
-    return {
-      getLoaded: () => loaded,
-      getStatuses: () => statuses,
-      getToolNames: () => [],
-      close: closeAll,
-    };
+    return registration;
   }
 
-  ctx.on?.("session_start", async () => {
+  ctx.on?.("session_start", async (_payload, eventCtx) => {
     closed = false;
     loaded = await loadMcpConfigs({
       cwd: options.cwd,
@@ -265,75 +285,38 @@ export function registerMcpBridge(
       warn,
     });
 
-    const nextStatuses: McpConnectionStatus[] = [];
-
-    for (const server of loaded.servers) {
-      try {
-        const connection = await connect(server, {
-          cwd: options.cwd,
-          timeoutMs: config.timeoutMs,
-        });
-        live.push(connection);
-
-        const listed = await withTimeout(
-          connection.client.listTools(),
-          config.timeoutMs,
-          `listTools(${server.name})`,
-        );
-        const toolNames: string[] = [];
-
-        for (const tool of listed.tools ?? []) {
-          const name = mcpToolName(server.name, tool.name);
-          toolNames.push(name);
-          options.registerTool(createMcpToolDefinition({
-            toolName: name,
-            serverName: server.name,
-            mcpToolName: tool.name,
-            description: tool.description ?? `MCP tool ${tool.name} from ${server.name}`,
-            parameters: toJsonSchema(tool.inputSchema),
-            client: connection.client,
-            timeoutMs: config.timeoutMs,
-            isClosed: () => closed,
-          }));
-        }
-
-        connection.toolNames = toolNames;
-        nextStatuses.push({
-          name: server.name,
-          ok: true,
-          toolNames,
-          source: server.source,
-        });
-      } catch (error) {
-        const message = `mcp: failed to connect server "${server.name}": ${errorMessage(error)}`;
-        warn(message);
-        nextStatuses.push({
-          name: server.name,
-          ok: false,
-          toolNames: [],
-          error: errorMessage(error),
-          source: server.source,
-        });
-        if (config.failClosed) {
-          statuses = nextStatuses;
-          // Close any servers already connected in this session_start before aborting.
-          await closeAll();
-          throw new Error(message);
-        }
-      }
+    const planned = loaded.servers.map((server) => server.name);
+    const ui = eventCtx?.ui;
+    if (planned.length > 0) {
+      ui?.setStatus?.("mcp", `mcp:connecting(${planned.length})`);
+      ui?.notify?.(`mcp: connecting ${planned.length} server(s) in background…`, "info");
+    } else {
+      ui?.setStatus?.("mcp", undefined);
     }
 
-    statuses = nextStatuses;
+    settlePromise = connectServersInBackground({
+      servers: loaded.servers,
+      config,
+      cwd: options.cwd,
+      connect,
+      warn,
+      registerTool: options.registerTool,
+      onToolsChanged: options.onToolsChanged,
+      isClosed: () => closed,
+      closeAll,
+      setStatuses: (next) => {
+        statuses = next;
+      },
+      getLive: () => live,
+      ui,
+    });
+
+    // Do not await connections — interactive prompt must not wait on MCP.
     return {
       mcp: {
         enabled: true,
-        servers: statuses.map((status) => ({
-          name: status.name,
-          ok: status.ok,
-          tools: status.toolNames,
-          error: status.error,
-          source: status.source,
-        })),
+        deferred: true,
+        servers: planned,
         warnings: loaded.warnings,
         sources: loaded.sources,
       },
@@ -345,12 +328,129 @@ export function registerMcpBridge(
     return { mcp: { closed: true } };
   });
 
-  return {
-    getLoaded: () => loaded,
-    getStatuses: () => statuses,
-    getToolNames: () => statuses.flatMap((status) => status.toolNames),
-    close: closeAll,
+  return registration;
+}
+
+async function connectServersInBackground(options: Readonly<{
+  servers: readonly ResolvedMcpServer[];
+  config: McpConfig;
+  cwd: string;
+  connect: typeof connectMcpServer;
+  warn: (message: string) => void;
+  registerTool: (tool: ToolDefinition) => void;
+  onToolsChanged?: () => void;
+  isClosed: () => boolean;
+  closeAll: () => Promise<void>;
+  setStatuses: (statuses: McpConnectionStatus[]) => void;
+  getLive: () => LiveConnection[];
+  ui?: Readonly<{
+    notify?: (message: string, level?: string) => unknown;
+    setStatus?: (key: string, text: string | undefined) => unknown;
+  }>;
+}>): Promise<void> {
+  const nextStatuses: McpConnectionStatus[] = options.servers.map((server) => ({
+    name: server.name,
+    ok: false,
+    toolNames: [],
+    source: server.source,
+  }));
+  options.setStatuses([...nextStatuses]);
+
+  let aborted = false;
+
+  const connectOne = async (server: ResolvedMcpServer, index: number): Promise<void> => {
+    if (options.isClosed() || aborted) {
+      return;
+    }
+    try {
+      const connection = await options.connect(server, {
+        cwd: options.cwd,
+        timeoutMs: options.config.timeoutMs,
+      });
+      if (options.isClosed() || aborted) {
+        await connection.close().catch(() => undefined);
+        return;
+      }
+      options.getLive().push(connection);
+
+      const listed = await withTimeout(
+        connection.client.listTools(),
+        options.config.timeoutMs,
+        `listTools(${server.name})`,
+      );
+      if (options.isClosed() || aborted) {
+        return;
+      }
+
+      const toolNames: string[] = [];
+      for (const tool of listed.tools ?? []) {
+        const name = mcpToolName(server.name, tool.name);
+        toolNames.push(name);
+        options.registerTool(createMcpToolDefinition({
+          toolName: name,
+          serverName: server.name,
+          mcpToolName: tool.name,
+          description: tool.description ?? `MCP tool ${tool.name} from ${server.name}`,
+          parameters: toJsonSchema(tool.inputSchema),
+          client: connection.client,
+          timeoutMs: options.config.timeoutMs,
+          isClosed: options.isClosed,
+        }));
+      }
+
+      connection.toolNames = toolNames;
+      nextStatuses[index] = {
+        name: server.name,
+        ok: true,
+        toolNames,
+        source: server.source,
+      };
+      options.setStatuses([...nextStatuses]);
+      options.onToolsChanged?.();
+      options.ui?.notify?.(
+        `mcp: ready ${server.name} (${toolNames.length} tool${toolNames.length === 1 ? "" : "s"})`,
+        "info",
+      );
+    } catch (error) {
+      const message = `mcp: failed to connect server "${server.name}": ${errorMessage(error)}`;
+      options.warn(message);
+      nextStatuses[index] = {
+        name: server.name,
+        ok: false,
+        toolNames: [],
+        error: errorMessage(error),
+        source: server.source,
+      };
+      options.setStatuses([...nextStatuses]);
+      options.ui?.notify?.(message, "warning");
+      if (options.config.failClosed) {
+        aborted = true;
+        await options.closeAll();
+        options.ui?.notify?.(`mcp: fail_closed — aborting after "${server.name}"`, "error");
+        options.ui?.setStatus?.("mcp", `mcp:failed(${server.name})`);
+      }
+    }
   };
+
+  await Promise.allSettled(options.servers.map((server, index) => connectOne(server, index)));
+
+  if (options.isClosed()) {
+    return;
+  }
+  options.setStatuses([...nextStatuses]);
+  const ready = nextStatuses.filter((status) => status.ok).length;
+  const failed = nextStatuses.filter((status) => !status.ok).length;
+  if (aborted) {
+    return;
+  }
+  if (options.servers.length === 0) {
+    options.ui?.setStatus?.("mcp", undefined);
+    return;
+  }
+  options.ui?.setStatus?.(
+    "mcp",
+    failed > 0 ? `mcp:${ready}ok/${failed}fail` : `mcp:ready(${ready})`,
+  );
 }
 
 export async function connectMcpServer(

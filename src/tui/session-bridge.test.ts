@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { TuiSessionBridge } from "./session-bridge.ts";
+import { TuiSessionBridge, type TuiEvent } from "./session-bridge.ts";
 
 describe("TuiSessionBridge", () => {
   it("resolves an interactive confirmation with the latest diff context", async () => {
@@ -22,6 +22,27 @@ describe("TuiSessionBridge", () => {
     expect(bridge.confirmPending).toBe(false);
   });
 
+  it("supports select and secret prompt without echoing the secret into notices", async () => {
+    const bridge = new TuiSessionBridge();
+    const events: TuiEvent[] = [];
+    bridge.subscribe((event) => events.push(event));
+
+    const selectPromise = bridge.select("Pick", [
+      { label: "DeepSeek", value: "deepseek" },
+      { label: "OpenAI", value: "openai" },
+    ]);
+    expect(bridge.selectPending).toBe(true);
+    bridge.answerSelect("deepseek");
+    await expect(selectPromise).resolves.toBe("deepseek");
+
+    const promptPromise = bridge.prompt("API key", { secret: true });
+    expect(bridge.promptPending).toBe(true);
+    expect(events.some((event) => event.kind === "prompt-open" && event.secret === true)).toBe(true);
+    bridge.answerPrompt("sk-should-not-appear-in-transcript");
+    await expect(promptPromise).resolves.toBe("sk-should-not-appear-in-transcript");
+    expect(events.filter((event) => event.kind === "notice")).toHaveLength(0);
+  });
+
   it("keeps bypass session-local and audits auto-approval", async () => {
     const bridge = new TuiSessionBridge();
     const notices: string[] = [];
@@ -40,5 +61,45 @@ describe("TuiSessionBridge", () => {
     bridge.answerConfirmation(false);
     await expect(confirmation).resolves.toBe(false);
     expect(new TuiSessionBridge().bypass).toBe(false);
+  });
+
+  it("emits thinking-delta and tool-end output from the sink", () => {
+    const bridge = new TuiSessionBridge();
+    const events: TuiEvent[] = [];
+    bridge.subscribe((event) => events.push(event));
+
+    bridge.sink.onThinkingDelta?.("reason");
+    bridge.sink.onToolStart?.({ id: "1", name: "bash", arguments: { command: "pwd" } });
+    bridge.sink.onToolEnd?.({ id: "1", name: "bash", arguments: { command: "pwd" } }, {
+      content: [{ type: "text", text: "/tmp" }],
+      isError: false,
+    });
+
+    expect(events).toContainEqual({ kind: "thinking-delta", text: "reason" });
+    expect(events).toContainEqual({ kind: "tool-start", name: "bash", detail: "pwd" });
+    expect(events).toContainEqual({ kind: "tool-end", name: "bash", error: false, output: "/tmp" });
+  });
+
+  it("forwards typed context compaction lifecycle events without parsing notices", () => {
+    const bridge = new TuiSessionBridge();
+    const events: TuiEvent[] = [];
+    bridge.subscribe((event) => events.push(event));
+    bridge.sink.onContextCompaction?.({ stage: "start", mode: "automatic", before: 80 });
+    bridge.sink.onContextCompaction?.({
+      stage: "success",
+      mode: "automatic",
+      before: 80,
+      after: 20,
+      usage: { inputTokens: 10, outputTokens: 2, cacheTokens: 0, reasoningTokens: 0 },
+    });
+
+    expect(events).toContainEqual({
+      kind: "context-compaction",
+      event: { stage: "start", mode: "automatic", before: 80 },
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: "context-compaction",
+      event: expect.objectContaining({ stage: "success", before: 80, after: 20 }),
+    }));
   });
 });

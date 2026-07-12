@@ -1,9 +1,20 @@
 import { createInterface } from "node:readline/promises";
+import { randomUUID } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 
+import { applyCredentialsToEnv } from "../cli/credentials.ts";
 import { ExtensionHost } from "./extension-host.ts";
 import { createLlmClient, resolveApiKey } from "./providers/client.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
+import { registerConnectCommands } from "./connect-commands.ts";
+import { registerThinkingCommands } from "./thinking-commands.ts";
+import { registerAgentCommands } from "./agent-commands.ts";
+import { registerRegressCommands } from "./regress-commands.ts";
+import { registerContextCommands } from "./context-commands.ts";
+import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
+import { resolveHighRiskPolicy } from "./tool-permission.ts";
+import { thinkingStatusLabel } from "./thinking.ts";
+import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
   createPromptRunner,
   createSessionCloser,
@@ -14,13 +25,19 @@ import {
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { createStdoutSessionUiSink } from "./session-ui.ts";
 import { MergeGate, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
+import { expandHome } from "../cli/config-parser.ts";
 
-import type { ChatMessage, ModelInfo, ProviderRegistration, SessionStartPayload, TokenUsage, XioExtensionAPI } from "./types.ts";
+import type { InteractiveIO } from "./interactive-io.ts";
+import type { ContextCompactionResult } from "./context-compaction.ts";
+import type { SessionExecution } from "./session-store.ts";
+import type { ChatMessage, ContextCompactionMode, ModelInfo, ProviderRegistration, SessionStartPayload, ThinkingLevel, TokenUsage, XioExtensionAPI } from "./types.ts";
 import type { DoneContract } from "./verify/done-contract.ts";
 import type { SessionUiSink } from "./session-ui.ts";
 import type { LlmClient } from "./types.ts";
 import type { AskFn } from "../../extensions/xio-sandbox/src/merge-gate.ts";
 import type { XioRuntimeConfig, XioVerifyConfig } from "../cli/config-parser.ts";
+import { applyThinkingLevel, cycleSessionThinkingLevel } from "./thinking-commands.ts";
+import { availableThinkingLevels, clampThinkingLevel, findProviderModel } from "./thinking.ts";
 
 export type SessionOptions = Readonly<{
   cwd?: string;
@@ -28,24 +45,36 @@ export type SessionOptions = Readonly<{
   runtimeConfig: XioRuntimeConfig;
   registerExtensions?: (api: XioExtensionAPI) => Promise<void> | void;
   promptOnce?: string;
+  /** Escape hatch for non-interactive high-risk tools (CLI/config). */
+  allowHighRisk?: boolean;
   env?: NodeJS.ProcessEnv;
   ask?: (question: string) => Promise<boolean>;
+  interactive?: InteractiveIO;
   maxTurns?: number;
   sessionStart?: SessionStartPayload;
   uiSink?: SessionUiSink;
   initialMessages?: readonly ChatMessage[];
   onSessionSnapshot?: (snapshot: SessionSnapshot) => Promise<void> | void;
   model?: ModelInfo;
+  initialExecution?: SessionExecution;
 }>;
 
 export type SessionSnapshot = Readonly<{
   model: ModelInfo;
   messages: readonly ChatMessage[];
+  execution?: SessionExecution;
+  workspaceLifecycle?: "active" | "retained" | "merged" | "discarded" | "clean_removed";
 }>;
 
 export type PreparedSession = Readonly<{
   host: ExtensionHost;
+  /** Live session model — prefer getModel() after /model switches. */
   model: ModelInfo;
+  getModel: () => ModelInfo;
+  setModel: (model: ModelInfo) => Promise<void>;
+  getThinkingLevel: () => ThinkingLevel;
+  cycleThinkingLevel: () => Promise<ThinkingLevel>;
+  compact: (focus?: string) => Promise<ContextCompactionResult>;
   runPrompt: (prompt: string) => Promise<{
     text: string;
     success: boolean;
@@ -65,52 +94,213 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = options.workspaceRoot ?? cwd;
   const env = options.env ?? process.env;
+  await applyCredentialsToEnv(env, options.runtimeConfig.providers);
   const model = options.model ?? resolveDefaultModel(options.runtimeConfig);
   const verify = options.runtimeConfig.verify ?? { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] };
   const ask = options.ask ?? defaultAsk;
   const sink = options.uiSink ?? createStdoutSessionUiSink();
+  const interactive = options.interactive ?? createReadlineInteractiveIO(ask);
   const { host, mergeGate } = await createConfiguredHost({
     options, model, sink, ask, cwd, workspaceRoot,
   });
-  const { client, registration } = createSessionClient({ host, model, env });
-  const providerConfig = options.runtimeConfig.providers[model.provider];
-  let turnAbort: AbortController | undefined;
-  let sessionMessages = options.initialMessages ? [...options.initialMessages] : [];
-  await options.onSessionSnapshot?.({ model, messages: sessionMessages });
 
-  return {
+  let currentModel = model;
+  let { client, registration } = createSessionClient({ host, model: currentModel, env });
+  let parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
+  let turnAbort: AbortController | undefined;
+  let currentExecution: SessionExecution = options.initialExecution ?? { phase: "idle" };
+  let workspaceLifecycle: SessionSnapshot["workspaceLifecycle"] = "active";
+  const maxSessionMessages = options.runtimeConfig.general.maxSessionMessages ?? 80;
+  const history = new SessionHistory({
+    initialMessages: options.initialMessages,
+    persist: async (messages) => {
+      await options.onSessionSnapshot?.({
+        model: currentModel,
+        messages,
+        execution: currentExecution,
+        workspaceLifecycle,
+      });
+    },
+  });
+  mergeGate?.setCheckpointClearedHandler(async () => {
+    currentExecution = { phase: "idle" };
+    await history.persist();
+  });
+  const createTurnSignal = () => {
+    turnAbort = new AbortController();
+    return turnAbort.signal;
+  };
+
+  const getModel = () => currentModel;
+  const thinkingOpts = {
     host,
-    model,
+    interactive,
+    sink,
+    getModel,
+    env,
+  };
+  const setModel = async (next: ModelInfo) => {
+    currentModel = next;
+    ({ client, registration } = createSessionClient({ host, model: currentModel, env }));
+    parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
+    await host.setModel(currentModel);
+    sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
+    const providerModel = findProviderModel(registration, currentModel.id);
+    const clamped = clampThinkingLevel(host.getThinkingLevel(), availableThinkingLevels(providerModel));
+    await applyThinkingLevel({ ...thinkingOpts, persist: false }, clamped);
+    await host.emit("model_change", { provider: currentModel.provider, model: currentModel.id });
+    await history.persist();
+  };
+
+  registerConnectCommands({
+    host,
+    interactive,
+    runtimeConfig: options.runtimeConfig,
+    env,
+    sink,
+    getModel,
+    setModel,
+  });
+  registerThinkingCommands({
+    host,
+    interactive,
+    sink,
+    getModel,
+    env,
+  });
+  // Agent mode filter + high-risk gate must be live before session_start so MCP hot-register respects plan/build.
+  const allowHighRisk =
+    options.allowHighRisk === true || options.runtimeConfig.permissions?.allowHighRisk === true;
+  registerAgentCommands({
+    host,
+    sink,
+    interactive,
+    highRiskPolicy: resolveHighRiskPolicy({
+      allowHighRisk,
+      promptOnce: options.promptOnce,
+    }),
+  });
+  const getRunId = async (): Promise<string | undefined> => {
+    try {
+      const status = await host.runCommand("status");
+      if (status && typeof status === "object" && "runId" in status) {
+        const id = (status as { runId?: unknown }).runId;
+        return typeof id === "string" ? id : undefined;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  };
+  registerRegressCommands({
+    host,
+    interactive,
+    sink,
+    runRoot: expandHome(options.runtimeConfig.general.runRoot),
+    env,
+    getRunId,
+  });
+
+  const contextCompaction = new ContextCompactionController({
+    history,
+    getClient: () => client,
+    getModel,
+    maxMessages: maxSessionMessages,
+    onUiEvent: (event) => sink.onContextCompaction?.(event),
+    onRuntimeEvent: async (event) => {
+      try {
+        await host.emit("context_compaction", event);
+      } catch (error) {
+        sink.notify?.(
+          `Context compaction telemetry failed: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      }
+    },
+  });
+  const compact = (mode: ContextCompactionMode, focus?: string) =>
+    contextCompaction.compact(mode, focus, createTurnSignal());
+  registerContextCommands({ host, compact });
+
+  await host.emit("session_start", {
+    ...(options.sessionStart ?? {}),
+    provider: currentModel.provider,
+    model: currentModel.id,
+  });
+
+  await history.persist();
+  sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
+  sink.setStatus?.("thinking", thinkingStatusLabel(host.getThinkingLevel()));
+
+  const session: PreparedSession = {
+    host,
+    get model() {
+      return currentModel;
+    },
+    getModel,
+    setModel,
+    getThinkingLevel: () => host.getThinkingLevel(),
+    cycleThinkingLevel: () => cycleSessionThinkingLevel(thinkingOpts),
+    compact: (focus) => compact("manual", focus),
     runPrompt: createPromptRunner({
       host,
-      client,
-      model,
-      providerApi: registration.api,
+      getClient: () => client,
+      getModel,
+      getProviderApi: () => registration.api,
       maxTurns: options.maxTurns,
       doneContract: toDoneContract(verify),
       verify,
-      parallelToolCalls: providerConfig?.parallelToolCalls ?? true,
-      maxSessionMessages: options.runtimeConfig.general.maxSessionMessages ?? 80,
-      getSignal: () => {
-        turnAbort = new AbortController();
-        return turnAbort.signal;
+      getParallelToolCalls: () => parallelToolCalls,
+      maxSessionMessages,
+      getSignal: createTurnSignal,
+      getRunId,
+      beforePrompt: mergeGate ? async () => {
+        const checkpoint = await mergeGate.captureTurnCheckpoint();
+        currentExecution = {
+          phase: "turn_started",
+          turn_id: randomUUID().replaceAll("-", ""),
+          checkpoint,
+        };
+      } : undefined,
+      onCheckpoint: async (checkpoint) => {
+        currentExecution = {
+          phase: checkpoint.phase === "turn_complete" ? "idle" : checkpoint.phase,
+          ...(currentExecution.turn_id ? { turn_id: currentExecution.turn_id } : {}),
+          ...(currentExecution.checkpoint ? { checkpoint: currentExecution.checkpoint } : {}),
+          ...(checkpoint.pendingTools && checkpoint.pendingTools.length > 0
+            ? { pending_tools: checkpoint.pendingTools.map((tool) => ({ ...tool })) }
+            : {}),
+        };
+        await options.onSessionSnapshot?.({
+          model: currentModel,
+          messages: checkpoint.messages,
+          execution: currentExecution,
+        });
       },
-      beforePrompt: mergeGate ? () => mergeGate.captureTurnCheckpoint() : undefined,
       sink,
-      initialMessages: sessionMessages,
-      onMessagesChanged: async (messages) => {
-        sessionMessages = [...messages];
-        await options.onSessionSnapshot?.({ model, messages });
-      },
+      history,
+      contextCompaction,
     }),
     close: createSessionCloser({
-      host, mergeGate, ask, retainOnReject: options.runtimeConfig.worktree.retainOnReject, sink,
+      host,
+      mergeGate,
+      ask,
+      retainOnReject: options.runtimeConfig.worktree.retainOnReject,
+      sink,
+      onFinalized: async (disposition) => {
+        workspaceLifecycle = disposition;
+        if (disposition !== "retained") {
+          currentExecution = { phase: "idle" };
+        }
+        await history.persist();
+      },
     }),
     abortTurn: () => {
       turnAbort?.abort();
     },
-    getMessages: () => [...sessionMessages],
+    getMessages: () => history.getMessages(),
   };
+  return session;
 }
 
 async function createConfiguredHost(input: Readonly<{
@@ -121,19 +311,24 @@ async function createConfiguredHost(input: Readonly<{
   cwd: string;
   workspaceRoot: string;
 }>): Promise<{ host: ExtensionHost; mergeGate?: MergeGate }> {
-  const host = createSessionHost(input.model, input.sink);
+  const host = createSessionHost(
+    input.model,
+    input.sink,
+    input.options.runtimeConfig.general.defaultThinkingLevel,
+  );
   for (const tool of createBuiltinTools({ cwd: input.cwd, workspaceRoot: input.workspaceRoot })) {
     host.registerTool(tool);
   }
   registerConfiguredProviders(host, input.options.runtimeConfig);
   const worktreeSession = input.options.runtimeConfig.worktree?.session;
-  const mergeGate = worktreeSession ? new MergeGate(worktreeSession) : undefined;
+  const restoredCheckpoint = input.options.initialExecution?.checkpoint;
+  const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
   await input.options.registerExtensions?.(host);
   if (mergeGate) {
     registerMergeCommand(host, mergeGate, input.ask, input.sink);
   }
   registerRollbackCommand(host, mergeGate, input.ask, input.sink);
-  await host.emit("session_start", input.options.sessionStart ?? {});
+  // session_start is emitted from prepareSession after /agent filter is installed.
   return { host, mergeGate };
 }
 
@@ -144,7 +339,9 @@ function createSessionClient(input: Readonly<{
 }>): { client: LlmClient; registration: ProviderRegistration } {
   const registration = input.host.getProvider(input.model.provider);
   if (!registration) {
-    throw new Error(`provider not registered: ${input.model.provider}. Add it under [providers.*] in config.toml`);
+    throw new Error(
+      `provider not registered: ${input.model.provider}. Run /connect or add it under [providers.*] in config.toml`,
+    );
   }
   const client = createLlmClient({
     registration,
@@ -206,7 +403,7 @@ async function runRepl(session: PreparedSession): Promise<number> {
         return 0;
       }
       if (line === "/help") {
-        output.write("Commands: /help /status /merge /rollback /sandbox /exit\nSlash commands map to registered extension commands when available.\n");
+        output.write("Commands: /help /compact /connect /model /thinking /agent /regress /status /merge /rollback /sandbox /exit\nSlash commands map to registered extension commands when available.\n");
         continue;
       }
       if (line.startsWith("/")) {
@@ -220,7 +417,9 @@ async function runRepl(session: PreparedSession): Promise<number> {
             output.write(`${typeof result === "string" ? result : JSON.stringify(result, null, 2)}\n`);
           }
         } catch (error) {
-          output.write(`${error instanceof Error ? error.message : String(error)}\n`);
+          if (!isContextCompactionError(error)) {
+            output.write(`${error instanceof Error ? error.message : String(error)}\n`);
+          }
         }
         continue;
       }
@@ -228,7 +427,9 @@ async function runRepl(session: PreparedSession): Promise<number> {
       try {
         await session.runPrompt(line);
       } catch (error) {
-        output.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+        if (!isContextCompactionError(error)) {
+          output.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
       } finally {
         busy = false;
       }

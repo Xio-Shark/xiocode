@@ -10,6 +10,7 @@ import {
   RegressionCompare,
   RegressionPreflight,
 } from "../../extensions/xio-regress/src/index.ts";
+import { RunStore } from "../../extensions/xio-evolve/src/run-store.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import {
   writeCapture,
@@ -21,16 +22,17 @@ import {
 import type { CaptureInput } from "../../extensions/xio-regress/src/types.ts";
 import type { PrivateRegressionCompare, PrivateRegressionPreflight } from "../../extensions/xio-regress/src/types.ts";
 
-type RegressCommand = "create" | "preflight" | "compare" | "help";
+type RegressCommand = "create" | "capture" | "preflight" | "compare" | "help";
 
 export type RegressCliArgs = Readonly<{
   command: RegressCommand;
   json: boolean;
   noPreflight: boolean;
+  useLastRun: boolean;
   caseId?: string;
   candidate?: string;
   before?: string;
-  capture?: CaptureInput;
+  capture?: Omit<CaptureInput, "run_id"> & Readonly<{ run_id?: string }>;
 }>;
 
 export type RegressCliOptions = Readonly<{
@@ -41,6 +43,14 @@ export type RegressCliOptions = Readonly<{
   store?: RegressionCaseStore;
   now?: () => Date;
 }>;
+
+export const DEFAULT_FAILURE_TYPE = "user_task_failure";
+
+export const VERIFIER_TEMPLATE_COMMANDS = [
+  "./test.sh",
+  "npm run check",
+  "npm test",
+] as const;
 
 export async function runRegressCli(
   argv: readonly string[],
@@ -76,7 +86,11 @@ export async function runRegressCli(
       return compareExit(result.status);
     }
     const runRoot = options.runRoot ?? await resolveRunRoot(options.cwd ?? process.cwd(), env);
-    const capture = await new RegressionCapture({ run_root: runRoot, store, now: options.now }).capture(args.capture!);
+    const runId = await resolveCaptureRunId(args, runRoot);
+    const capture = await new RegressionCapture({ run_root: runRoot, store, now: options.now }).capture({
+      ...args.capture!,
+      run_id: runId,
+    });
     const preflight = args.noPreflight
       ? undefined
       : await new RegressionPreflight({ store, env }).run(capture.case.case_id);
@@ -90,14 +104,18 @@ export async function runRegressCli(
 }
 
 export function parseRegressArgs(argv: readonly string[]): RegressCliArgs {
+  if (argv.some((arg) => arg === "--help" || arg === "-h")) {
+    return { command: "help", json: false, noPreflight: false, useLastRun: false };
+  }
   const command = parseCommand(argv[0]);
-  if (command === "help") return { command, json: false, noPreflight: false };
+  if (command === "help") return { command, json: false, noPreflight: false, useLastRun: false };
   const values = parseFlags(argv.slice(1));
   const json = values.has("--json");
   const noPreflight = values.has("--no-preflight");
+  const useLastRun = values.has("--last");
   if (command === "preflight") {
     assertOnly(values, new Set(["--case", "--json"]), "preflight");
-    return { command, json, noPreflight: false, caseId: required(values, "--case") };
+    return { command, json, noPreflight: false, useLastRun: false, caseId: required(values, "--case") };
   }
   if (command === "compare") {
     assertOnly(values, new Set(["--case", "--candidate", "--before", "--json"]), "compare");
@@ -105,6 +123,7 @@ export function parseRegressArgs(argv: readonly string[]): RegressCliArgs {
       command,
       json,
       noPreflight: false,
+      useLastRun: false,
       caseId: required(values, "--case"),
       candidate: required(values, "--candidate"),
       before: optional(values, "--before"),
@@ -114,15 +133,26 @@ export function parseRegressArgs(argv: readonly string[]): RegressCliArgs {
   if (values.has("--candidate") || values.has("--before")) {
     throw new Error("--candidate/--before are only valid for compare");
   }
+  const failureType = optional(values, "--failure-type") ?? (
+    command === "capture" ? DEFAULT_FAILURE_TYPE : undefined
+  );
+  if (!failureType) throw new Error("--failure-type is required");
+  const runId = optional(values, "--run");
+  if (!useLastRun && !runId) {
+    throw new Error(command === "capture"
+      ? "--run or --last is required"
+      : "--run is required");
+  }
   return {
     command,
     json,
     noPreflight,
+    useLastRun,
     capture: {
-      run_id: required(values, "--run"),
+      run_id: runId,
       repo_root: optional(values, "--repo"),
       base_commit: optional(values, "--base"),
-      failure_type: required(values, "--failure-type"),
+      failure_type: failureType,
       failure_statement: required(values, "--failure"),
       verifier_command: required(values, "--verify"),
       expected_exit: optionalInteger(values, "--expect-exit"),
@@ -131,9 +161,25 @@ export function parseRegressArgs(argv: readonly string[]): RegressCliArgs {
   };
 }
 
+export async function resolveLastRunId(runRoot: string): Promise<string> {
+  const recent = await new RunStore({ root: runRoot }).listRecent(1);
+  const runId = recent[0]?.run_id;
+  if (!runId) {
+    throw new InvalidRegressionCaseError(`no runs found under ${runRoot}`);
+  }
+  return runId;
+}
+
+async function resolveCaptureRunId(args: RegressCliArgs, runRoot: string): Promise<string> {
+  if (args.useLastRun) return resolveLastRunId(runRoot);
+  const runId = args.capture?.run_id;
+  if (!runId) throw new Error("--run is required");
+  return runId;
+}
+
 function parseFlags(argv: readonly string[]): Map<string, string | true> {
   const values = new Map<string, string | true>();
-  const booleans = new Set(["--json", "--no-preflight"]);
+  const booleans = new Set(["--json", "--no-preflight", "--last"]);
   const allowed = new Set([
     ...booleans,
     "--run", "--repo", "--base", "--failure-type", "--failure",
@@ -171,7 +217,9 @@ async function resolveRunRoot(cwd: string, env: NodeJS.ProcessEnv): Promise<stri
 }
 
 function parseCommand(value: string | undefined): RegressCommand {
-  if (value === "create" || value === "preflight" || value === "compare") return value;
+  if (value === "create" || value === "capture" || value === "preflight" || value === "compare") {
+    return value;
+  }
   if (value === undefined || value === "help" || value === "--help" || value === "-h") return "help";
   throw new Error(`unknown command: ${value}`);
 }
@@ -221,18 +269,28 @@ function compareExit(status: PrivateRegressionCompare["status"]): number {
   return 3;
 }
 
-function regressHelp(): string {
+export function regressHelp(): string {
   return [
     "xio regress — capture and compare private regressions",
     "",
     "Usage:",
+    "  xio regress capture --last --failure TEXT --verify CMD [--json]",
     "  xio regress create --run ID --failure-type TYPE --failure TEXT --verify CMD [--repo PATH --base SHA] [--json]",
     "  xio regress preflight --case ID [--json]",
     "  xio regress compare --case ID --candidate PATH [--before PATH] [--json]",
     "",
+    "Shortcuts:",
+    "  capture defaults --failure-type to user_task_failure",
+    "  --last uses the newest run under the run root",
+    "  --no-preflight skips auto base-red preflight after create/capture",
+    "",
+    "Verifier templates (examples):",
+    ...VERIFIER_TEMPLATE_COMMANDS.map((cmd) => `  ${cmd}`),
+    "",
     "Capture is local-only. Preflight proves base-red.",
     "Compare proves whether a candidate fixes the frozen verifier; FIXED does not authorize merge.",
     "Verifier commands run without OS-level isolation.",
+    "In a live session, /regress prompts for failure + verifier from the current run.",
     "",
   ].join("\n");
 }

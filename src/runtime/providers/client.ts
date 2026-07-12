@@ -5,11 +5,13 @@ import type {
   ChatToolCall,
   LlmClient,
   LlmCompleteOptions,
+  ProviderModelConfig,
   ProviderRegistration,
   StreamEvent,
   TokenUsage,
 } from "../types.ts";
 import { emptyTokenUsage, normalizeProviderUsage } from "../usage.ts";
+import { anthropicThinkingConfig, openAiReasoningEffort } from "../thinking.ts";
 
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
@@ -41,12 +43,11 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(openAiBody(request, false)),
+      body: JSON.stringify(openAiBody(request, false, modelConfig(options.registration, request.model))),
       signal: completeOptions?.signal,
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`LLM request failed (${response.status}): ${body}`);
+      throw await httpStatusError(response);
     }
     const json = await response.json() as {
       choices?: Array<{
@@ -80,11 +81,11 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(openAiBody(request, true)),
+      body: JSON.stringify(openAiBody(request, true, modelConfig(options.registration, request.model))),
       signal: completeOptions?.signal,
     });
     if (!response.ok) {
-      throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
+      throw await httpStatusError(response);
     }
     if (!response.body) {
       throw new Error("LLM stream failed: response body is empty");
@@ -94,6 +95,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     let content = "";
     let usage: TokenUsage = emptyTokenUsage();
     let raw: unknown;
+    const emitThinking = options.registration.thinkingDisplay !== "omitted";
 
     for await (const data of readSseDataLines(response.body, completeOptions?.signal)) {
       if (data === "[DONE]") {
@@ -108,6 +110,10 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
       raw = json;
       const choice = json.choices?.[0];
       const delta = choice?.delta;
+      const reasoning = openAiReasoningText(delta);
+      if (emitThinking && reasoning) {
+        yield { type: "thinking_delta", text: reasoning };
+      }
       if (typeof delta?.content === "string" && delta.content.length > 0) {
         content += delta.content;
         yield { type: "text_delta", text: delta.content };
@@ -155,7 +161,11 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
   return { complete, completeStream };
 }
 
-function openAiBody(request: ChatCompletionRequest, stream: boolean): Record<string, unknown> {
+function openAiBody(
+  request: ChatCompletionRequest,
+  stream: boolean,
+  model: ProviderModelConfig | undefined,
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
     messages: request.messages.map(toOpenAiMessage),
@@ -169,6 +179,10 @@ function openAiBody(request: ChatCompletionRequest, stream: boolean): Record<str
   }
   if (stream) {
     body.stream_options = { include_usage: true };
+  }
+  const effort = openAiReasoningEffort(request.thinkingLevel, model);
+  if (effort !== undefined) {
+    body.reasoning_effort = effort;
   }
   return body;
 }
@@ -193,6 +207,8 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
       fetchImpl,
       signal: completeOptions?.signal,
       stream: false,
+      model: modelConfig(options.registration, request.model),
+      thinkingDisplay: options.registration.thinkingDisplay,
     });
   }
 
@@ -203,11 +219,16 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
     const response = await fetchImpl(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers,
-      body: JSON.stringify(anthropicBody(request, true)),
+      body: JSON.stringify(anthropicBody(
+        request,
+        true,
+        modelConfig(options.registration, request.model),
+        options.registration.thinkingDisplay,
+      )),
       signal: completeOptions?.signal,
     });
     if (!response.ok) {
-      throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
+      throw await httpStatusError(response);
     }
     if (!response.body) {
       throw new Error("LLM stream failed: response body is empty");
@@ -217,6 +238,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
     let content = "";
     let usage: TokenUsage = emptyTokenUsage();
     let raw: unknown;
+    const emitThinking = options.registration.thinkingDisplay !== "omitted";
 
     for await (const event of readSseEvents(response.body, completeOptions?.signal)) {
       let json: AnthropicStreamEvent;
@@ -239,11 +261,25 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
           id: json.content_block.id,
           name: json.content_block.name,
         };
+      } else if (json.type === "content_block_start" && json.content_block?.type === "thinking") {
+        const seed = json.content_block.thinking;
+        if (emitThinking && typeof seed === "string" && seed.length > 0) {
+          yield { type: "thinking_delta", text: seed };
+        }
       } else if (json.type === "content_block_delta") {
         const index = json.index ?? 0;
         if (json.delta?.type === "text_delta" && typeof json.delta.text === "string") {
           content += json.delta.text;
           yield { type: "text_delta", text: json.delta.text };
+        } else if (json.delta?.type === "thinking_delta") {
+          const thinkingText = typeof json.delta.thinking === "string"
+            ? json.delta.thinking
+            : typeof json.delta.text === "string"
+              ? json.delta.text
+              : undefined;
+          if (emitThinking && thinkingText && thinkingText.length > 0) {
+            yield { type: "thinking_delta", text: thinkingText };
+          }
         } else if (json.delta?.type === "input_json_delta" && typeof json.delta.partial_json === "string") {
           const current = toolBuffers.get(index) ?? { id: "", name: "", inputJson: "" };
           current.inputJson += json.delta.partial_json;
@@ -287,24 +323,31 @@ async function completeAnthropic(
     fetchImpl: typeof fetch;
     signal?: AbortSignal;
     stream: boolean;
+    model?: ProviderModelConfig;
+    thinkingDisplay?: ProviderRegistration["thinkingDisplay"];
   }>,
 ): Promise<ChatCompletionResponse> {
   const response = await options.fetchImpl(`${options.baseUrl}/v1/messages`, {
     method: "POST",
     headers: options.headers,
-    body: JSON.stringify(anthropicBody(request, false)),
+    body: JSON.stringify(anthropicBody(request, false, options.model, options.thinkingDisplay)),
     signal: options.signal,
   });
   if (!response.ok) {
-    throw new Error(`LLM request failed (${response.status}): ${await response.text()}`);
+    throw await httpStatusError(response);
   }
   return fromAnthropicResponse(await response.json() as AnthropicResponse);
 }
 
-function anthropicBody(request: ChatCompletionRequest, stream: boolean): Record<string, unknown> {
+function anthropicBody(
+  request: ChatCompletionRequest,
+  stream: boolean,
+  model: ProviderModelConfig | undefined,
+  thinkingDisplay?: ProviderRegistration["thinkingDisplay"],
+): Record<string, unknown> {
   const system = request.messages.filter((message) => message.role === "system")
     .map((message) => message.content).join("\n\n");
-  return {
+  const body: Record<string, unknown> = {
     model: request.model,
     max_tokens: request.maxTokens ?? 8192,
     system: system.length > 0 ? system : undefined,
@@ -316,6 +359,18 @@ function anthropicBody(request: ChatCompletionRequest, stream: boolean): Record<
     })),
     stream,
   };
+  const thinking = anthropicThinkingConfig(request.thinkingLevel, model, thinkingDisplay);
+  if (thinking) {
+    body.thinking = thinking;
+  }
+  return body;
+}
+
+function modelConfig(
+  registration: ProviderRegistration,
+  modelId: string,
+): ProviderModelConfig | undefined {
+  return registration.models.find((model) => model.id === modelId);
 }
 
 function toAnthropicMessage(message: ChatMessage): Record<string, unknown> {
@@ -369,6 +424,8 @@ type OpenAiStreamChunk = {
   choices?: Array<{
     delta?: {
       content?: string | null;
+      reasoning_content?: string | null;
+      reasoning?: string | null;
       tool_calls?: Array<{
         index?: number;
         id?: string;
@@ -385,18 +442,33 @@ type AnthropicStreamEvent = {
   delta?: {
     type?: string;
     text?: string;
+    thinking?: string;
     partial_json?: string;
   };
   content_block?: {
     type?: string;
     id?: string;
     name?: string;
+    thinking?: string;
   };
   usage?: unknown;
   message?: {
     usage?: unknown;
   };
 };
+
+function openAiReasoningText(
+  delta: Readonly<{ reasoning_content?: string | null; reasoning?: string | null }> | undefined,
+): string | undefined {
+  if (!delta) return undefined;
+  if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+    return delta.reasoning_content;
+  }
+  if (typeof delta.reasoning === "string" && delta.reasoning.length > 0) {
+    return delta.reasoning;
+  }
+  return undefined;
+}
 
 function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   if (message.role === "tool") {
@@ -504,6 +576,12 @@ function parseSseBlock(block: string): { event?: string; data: string } | undefi
     return undefined;
   }
   return { event, data: dataLines.join("\n") };
+}
+
+/** Status-only failure — response bodies can echo API keys. */
+async function httpStatusError(response: Response): Promise<Error> {
+  await response.text().catch(() => undefined);
+  return new Error(`LLM request failed (${response.status})`);
 }
 
 export function resolveApiKey(registration: ProviderRegistration, env: NodeJS.ProcessEnv = process.env): string {

@@ -24,6 +24,7 @@ export type WorktreeCreateOptions = Readonly<{
 export type WorktreeConfig = Readonly<{
   enabled: boolean;
   retainOnReject: boolean;
+  allowDirty: boolean;
 }>;
 
 export type TurnCheckpoint = Readonly<{
@@ -31,9 +32,17 @@ export type TurnCheckpoint = Readonly<{
   tree: string;
 }>;
 
+export type DurableTurnCheckpoint = TurnCheckpoint & Readonly<{
+  ref: string;
+  commit: string;
+}>;
+export type WorktreeAttachOptions = Readonly<{
+  baseDir?: string;
+}>;
 export const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
   enabled: true,
   retainOnReject: false,
+  allowDirty: false,
 };
 
 export class WorktreeSandbox {
@@ -72,6 +81,24 @@ export class WorktreeSandbox {
     return { mainRoot, worktreePath, branch, sessionId, repoId, baseRef };
   }
 
+  static async attach(input: WorktreeSession, options: WorktreeAttachOptions = {}): Promise<WorktreeSession> {
+    const mainRoot = path.resolve(input.mainRoot);
+    const worktreePath = path.resolve(input.worktreePath);
+    const repoId = WorktreeSandbox.repoId(mainRoot);
+    if (input.repoId !== repoId) {
+      throw new Error(`worktree attach refused: repo id mismatch (${input.repoId} != ${repoId})`);
+    }
+    await WorktreeSandbox.assertExpectedWorktreePath({ ...input, mainRoot, worktreePath }, options.baseDir);
+    await WorktreeSandbox.assertSameRepository(mainRoot, worktreePath);
+    await WorktreeSandbox.assertRegisteredWorktree(mainRoot, worktreePath);
+    const branch = await gitOk(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (branch !== input.branch) {
+      throw new Error(`worktree attach refused: expected branch ${input.branch}, got ${branch}`);
+    }
+    await gitOk(worktreePath, ["rev-parse", "--verify", `${input.baseRef}^{commit}`]);
+    return { ...input, mainRoot, worktreePath, repoId };
+  }
+
   static async hasUncommittedChanges(session: WorktreeSession): Promise<boolean> {
     const status = await gitOk(session.worktreePath, ["status", "--porcelain"]);
     return status.trim().length > 0;
@@ -107,6 +134,69 @@ export class WorktreeSandbox {
       WorktreeSandbox.writeWorktreeTree(session.worktreePath),
     ]);
     return { head, tree };
+  }
+
+  static async captureDurableCheckpoint(
+    session: WorktreeSession,
+    checkpointId = randomUUID().replaceAll("-", ""),
+  ): Promise<DurableTurnCheckpoint> {
+    await WorktreeSandbox.assertWorktreeRoot(session);
+    assertRefComponent(checkpointId, "checkpoint id");
+    assertRefComponent(session.sessionId, "session id");
+    const [head, tree] = await Promise.all([
+      gitOk(session.worktreePath, ["rev-parse", "HEAD"]),
+      WorktreeSandbox.writeWorktreeTree(session.worktreePath),
+    ]);
+    const commit = await gitWithEnvOk(
+      session.worktreePath,
+      ["commit-tree", tree, "-p", head, "-m", `XioCode checkpoint ${checkpointId}`],
+      checkpointIdentityEnv(),
+    );
+    const ref = `refs/xiocode/checkpoints/${session.sessionId}/${checkpointId}`;
+    await gitOk(session.mainRoot, ["check-ref-format", ref]);
+    await gitOk(session.mainRoot, ["update-ref", ref, commit]);
+    return { head, tree, ref, commit };
+  }
+
+  static async releaseCheckpoint(session: WorktreeSession, checkpoint: DurableTurnCheckpoint): Promise<void> {
+    const prefix = `refs/xiocode/checkpoints/${session.sessionId}/`;
+    if (!checkpoint.ref.startsWith(prefix)) {
+      throw new Error(`checkpoint release refused: ref is outside session namespace: ${checkpoint.ref}`);
+    }
+    const current = await git(session.mainRoot, ["rev-parse", "--verify", checkpoint.ref]);
+    if (current.code !== 0) return;
+    if (current.stdout !== checkpoint.commit) {
+      throw new Error(`checkpoint release refused: ref ${checkpoint.ref} no longer points to ${checkpoint.commit}`);
+    }
+    await gitOk(session.mainRoot, ["update-ref", "-d", checkpoint.ref, checkpoint.commit]);
+  }
+
+  static async releaseSessionCheckpoints(input: Readonly<{ mainRoot: string; sessionId: string }>): Promise<void> {
+    assertRefComponent(input.sessionId, "session id");
+    const prefix = `refs/xiocode/checkpoints/${input.sessionId}/`;
+    const refs = await gitOk(input.mainRoot, ["for-each-ref", "--format=%(refname)", prefix]);
+    for (const ref of refs.split("\n").filter(Boolean)) {
+      if (!ref.startsWith(prefix)) {
+        throw new Error(`checkpoint cleanup refused: ref is outside session namespace: ${ref}`);
+      }
+      await gitOk(input.mainRoot, ["update-ref", "-d", ref]);
+    }
+  }
+
+  static async validateCheckpoint(session: WorktreeSession, checkpoint: DurableTurnCheckpoint): Promise<void> {
+    await WorktreeSandbox.assertWorktreeRoot(session);
+    const prefix = `refs/xiocode/checkpoints/${session.sessionId}/`;
+    if (!checkpoint.ref.startsWith(prefix)) {
+      throw new Error(`checkpoint validation refused: ref is outside session namespace: ${checkpoint.ref}`);
+    }
+    const [refCommit, tree, head] = await Promise.all([
+      gitOk(session.mainRoot, ["rev-parse", "--verify", checkpoint.ref]),
+      gitOk(session.mainRoot, ["rev-parse", `${checkpoint.commit}^{tree}`]),
+      gitOk(session.mainRoot, ["rev-parse", "--verify", `${checkpoint.head}^{commit}`]),
+    ]);
+    if (refCommit !== checkpoint.commit || tree !== checkpoint.tree || head !== checkpoint.head) {
+      throw new Error(`checkpoint validation failed for ${checkpoint.ref}`);
+    }
   }
 
   static async summarizeSinceCheckpoint(
@@ -157,6 +247,37 @@ export class WorktreeSandbox {
     }
   }
 
+  private static async assertExpectedWorktreePath(session: WorktreeSession, baseDir: string | undefined): Promise<void> {
+    const expected = baseDir
+      ? path.join(path.resolve(baseDir), session.repoId, session.sessionId)
+      : path.join(path.dirname(path.dirname(session.worktreePath)), session.repoId, session.sessionId);
+    const [expectedPath, actualPath] = await Promise.all([realpath(expected), realpath(session.worktreePath)]);
+    if (expectedPath !== actualPath) {
+      throw new Error(`worktree attach refused: expected path ${expectedPath}, got ${actualPath}`);
+    }
+  }
+
+  private static async assertSameRepository(mainRoot: string, worktreePath: string): Promise<void> {
+    const [mainCommonDir, worktreeCommonDir] = await Promise.all([
+      resolveGitPath(mainRoot, await gitOk(mainRoot, ["rev-parse", "--git-common-dir"])),
+      resolveGitPath(worktreePath, await gitOk(worktreePath, ["rev-parse", "--git-common-dir"])),
+    ]);
+    if (mainCommonDir !== worktreeCommonDir) {
+      throw new Error(`worktree attach refused: git common directory mismatch`);
+    }
+  }
+
+  private static async assertRegisteredWorktree(mainRoot: string, worktreePath: string): Promise<void> {
+    const listing = await gitOk(mainRoot, ["worktree", "list", "--porcelain"]);
+    const registered = await Promise.all(listing
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => realpath(path.resolve(line.slice("worktree ".length)))));
+    if (!registered.includes(await realpath(worktreePath))) {
+      throw new Error(`worktree attach refused: path is not registered with ${mainRoot}`);
+    }
+  }
+
   private static async writeWorktreeTree(worktreePath: string): Promise<string> {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "xio-turn-checkpoint-"));
     const env = { GIT_INDEX_FILE: path.join(tempDir, "index") };
@@ -167,6 +288,25 @@ export class WorktreeSandbox {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
+  }
+}
+
+async function resolveGitPath(cwd: string, value: string): Promise<string> {
+  return realpath(path.isAbsolute(value) ? value : path.resolve(cwd, value));
+}
+
+function checkpointIdentityEnv(): Readonly<Record<string, string>> {
+  return {
+    GIT_AUTHOR_NAME: "XioCode Checkpoint",
+    GIT_AUTHOR_EMAIL: "checkpoint@xiocode.local",
+    GIT_COMMITTER_NAME: "XioCode Checkpoint",
+    GIT_COMMITTER_EMAIL: "checkpoint@xiocode.local",
+  };
+}
+
+function assertRefComponent(value: string, label: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${label} contains unsafe ref characters: ${value}`);
   }
 }
 

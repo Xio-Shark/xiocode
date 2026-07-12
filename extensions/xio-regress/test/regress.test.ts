@@ -59,6 +59,20 @@ describe("private regression capture", () => {
     });
     expect(await readdir(path.dirname(first.case_path))).toEqual(["case.json"]);
     expect(await readFile(first.case_path, "utf8")).not.toContain("repair the private failure");
+    expect(await fixture.store.readLastCaseId()).toBe(first.case.case_id);
+    expect(await fixture.store.resolvePrivateCaseId("last")).toBe(first.case.case_id);
+  });
+
+  it("updates the durable last-case pointer on each successful capture", async () => {
+    const fixture = await createFixture("failed");
+    const first = await fixture.capture.capture(captureInput(fixture.repo, fixture.base, "false"));
+    const secondInput = {
+      ...captureInput(fixture.repo, fixture.base, "test ! -f other.txt"),
+      failure_statement: "a different failure",
+    };
+    const second = await fixture.capture.capture(secondInput);
+    expect(second.case.case_id).not.toBe(first.case.case_id);
+    expect(await fixture.store.readLastCaseId()).toBe(second.case.case_id);
   });
 
   it("accepts success telemetry only with an explicit verdict and rejects secrets", async () => {

@@ -43,11 +43,29 @@ export type CapabilityGate = Readonly<{
   }>) => Promise<CapabilityGateResult>;
 }>;
 
+export type PrivateGateStatus = "FIXED" | "STILL_RED" | "INVALID_CASE" | "INFRA_ERROR";
+
+export type PrivateGateResult = Readonly<{
+  status: PrivateGateStatus;
+  caseId: string;
+  concerns: readonly string[];
+  errors: readonly string[];
+}>;
+
+export type PrivateGate = Readonly<{
+  evaluate: (input: Readonly<{
+    caseId: string;
+    candidateRoot: string;
+  }>) => Promise<PrivateGateResult>;
+}>;
+
 export type MergeOutcome =
   | Readonly<{
     asked: false;
     reason: "verifier_red" | "no_changes" | "skipped_by_policy"
-      | "capability_gate_fail" | "capability_gate_concerns" | "capability_gate_infra";
+      | "capability_gate_fail" | "capability_gate_concerns" | "capability_gate_infra"
+      | "private_gate_requires_capability" | "private_gate_still_red"
+      | "private_gate_invalid" | "private_gate_infra";
   }>
   | Readonly<{ asked: true; approved: false }>
   | Readonly<{ asked: true; approved: true; merged: true; summary: string }>
@@ -58,5 +76,6 @@ export type ImproveRunResult = Readonly<{
   worktreePath: string;
   verifier: VerifierResult;
   capabilityGate?: CapabilityGateResult;
+  privateGate?: PrivateGateResult;
   merge: MergeOutcome;
 }>;
