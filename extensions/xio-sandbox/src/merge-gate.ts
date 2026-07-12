@@ -2,7 +2,7 @@ import { WorktreeSandbox } from "./worktree-sandbox.ts";
 
 import { git, gitOk } from "./git.ts";
 
-import type { TurnCheckpoint, WorktreeSession } from "./worktree-sandbox.ts";
+import type { DurableTurnCheckpoint, TurnCheckpoint, WorktreeSession } from "./worktree-sandbox.ts";
 
 export type DiffSummary = Readonly<{
   text: string;
@@ -22,14 +22,17 @@ export type RollbackResult = Readonly<{
 }>;
 
 export type AskFn = (question: string) => Promise<boolean>;
+export type WorktreeDisposition = "merged" | "clean_removed" | "retained" | "discarded";
 
 export class MergeGate {
   readonly #session: WorktreeSession;
   #merged = false;
-  #turnCheckpoint: TurnCheckpoint | undefined;
+  #turnCheckpoint: DurableTurnCheckpoint | TurnCheckpoint | undefined;
+  #checkpointCleared: (() => Promise<void> | void) | undefined;
 
-  constructor(session: WorktreeSession) {
+  constructor(session: WorktreeSession, checkpoint?: DurableTurnCheckpoint) {
     this.#session = session;
+    this.#turnCheckpoint = checkpoint;
   }
 
   get session(): WorktreeSession {
@@ -44,11 +47,17 @@ export class MergeGate {
     this.#merged = true;
   }
 
-  async captureTurnCheckpoint(): Promise<void> {
+  setCheckpointClearedHandler(handler: () => Promise<void> | void): void {
+    this.#checkpointCleared = handler;
+  }
+
+  async captureTurnCheckpoint(): Promise<DurableTurnCheckpoint> {
     if (this.#merged) {
       throw new Error("cannot checkpoint after this session has been merged into the main tree");
     }
-    this.#turnCheckpoint = await WorktreeSandbox.captureTurnCheckpoint(this.#session);
+    const checkpoint = await WorktreeSandbox.captureDurableCheckpoint(this.#session);
+    this.#turnCheckpoint = checkpoint;
+    return checkpoint;
   }
 
   async summarize(options: { includeIgnored?: boolean } = {}): Promise<DiffSummary> {
@@ -160,7 +169,20 @@ export class MergeGate {
     if (!approved) {
       return { ok: true, skipped: true, summary: "rollback skipped" };
     }
+    const checkpoint = this.#turnCheckpoint;
+    const recovery = await WorktreeSandbox.captureTurnCheckpoint(this.#session);
     await WorktreeSandbox.rollbackToSessionBaseline(this.#session);
+    this.#turnCheckpoint = undefined;
+    try {
+      await this.#checkpointCleared?.();
+    } catch (error) {
+      await WorktreeSandbox.rollbackToTurnCheckpoint(this.#session, recovery);
+      this.#turnCheckpoint = checkpoint;
+      throw error;
+    }
+    if (checkpoint && "ref" in checkpoint) {
+      await WorktreeSandbox.releaseCheckpoint(this.#session, checkpoint);
+    }
     return { ok: true, skipped: false, summary: `rolled back to session baseline ${this.#session.baseRef.slice(0, 12)}` };
   }
 
@@ -190,19 +212,34 @@ export class MergeGate {
     ask: AskFn,
     options: { retainOnReject: boolean },
     notify?: (message: string) => void,
-  ): Promise<void> {
+    beforeFinalize?: (disposition: WorktreeDisposition) => Promise<void> | void,
+  ): Promise<WorktreeDisposition> {
     if (this.#merged || await WorktreeSandbox.isMerged(this.#session)) {
       this.#merged = true;
-      await WorktreeSandbox.remove(this.#session, { force: true });
+      await beforeFinalize?.("merged");
+      try {
+        await WorktreeSandbox.remove(this.#session, { force: true });
+      } catch (error) {
+        await beforeFinalize?.("retained");
+        throw error;
+      }
+      await WorktreeSandbox.releaseSessionCheckpoints(this.#session);
       notify?.("Worktree removed after merge.");
-      return;
+      return "merged";
     }
 
     const dirty = await WorktreeSandbox.hasUnmergedChanges(this.#session);
     if (!dirty) {
-      await WorktreeSandbox.remove(this.#session, { force: true });
+      await beforeFinalize?.("clean_removed");
+      try {
+        await WorktreeSandbox.remove(this.#session, { force: true });
+      } catch (error) {
+        await beforeFinalize?.("retained");
+        throw error;
+      }
+      await WorktreeSandbox.releaseSessionCheckpoints(this.#session);
       notify?.("Clean worktree removed.");
-      return;
+      return "clean_removed";
     }
 
     const summary = await this.summarize();
@@ -211,20 +248,37 @@ export class MergeGate {
     if (approved) {
       const result = await this.merge();
       if (result.ok) {
-        await WorktreeSandbox.remove(this.#session, { force: true });
+        await beforeFinalize?.("merged");
+        try {
+          await WorktreeSandbox.remove(this.#session, { force: true });
+        } catch (error) {
+          await beforeFinalize?.("retained");
+          throw error;
+        }
+        await WorktreeSandbox.releaseSessionCheckpoints(this.#session);
         notify?.(result.summary);
-        return;
+        return "merged";
       }
       notify?.(result.error);
-      return;
+      await beforeFinalize?.("retained");
+      return "retained";
     }
 
     if (options.retainOnReject) {
+      await beforeFinalize?.("retained");
       notify?.(`Keeping worktree at ${this.#session.worktreePath}`);
-      return;
+      return "retained";
     }
-    await WorktreeSandbox.remove(this.#session, { force: true });
+    await beforeFinalize?.("discarded");
+    try {
+      await WorktreeSandbox.remove(this.#session, { force: true });
+    } catch (error) {
+      await beforeFinalize?.("retained");
+      throw error;
+    }
+    await WorktreeSandbox.releaseSessionCheckpoints(this.#session);
     notify?.("Discarded worktree changes.");
+    return "discarded";
   }
 
   async #commitWorktreeIfNeeded(): Promise<void> {

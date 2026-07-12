@@ -76,6 +76,33 @@ describe("parseXioConfig", () => {
     });
   });
 
+  it("parses default_thinking_level including ultra", () => {
+    const parsed = parseXioConfig(`
+[general]
+default_provider = "deepseek"
+default_model = "deepseek-chat"
+default_thinking_level = "ultra"
+run_root = "~/.xiocode/runs"
+
+[providers.deepseek]
+kind = "openai"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[providers.deepseek.thinking_level_map]
+ultra = "ultra"
+`);
+    expect(parsed.runtimeConfig.general.defaultThinkingLevel).toBe("ultra");
+    expect(parsed.runtimeConfig.providers.deepseek?.thinkingLevelMap).toEqual({ ultra: "ultra" });
+  });
+
+  it("rejects unsafe or fractional max_session_messages values", () => {
+    expect(() => parseXioConfig("[general]\nmax_session_messages = 3\n"))
+      .toThrow("general.max_session_messages must be an integer >= 4");
+    expect(() => parseXioConfig("[general]\nmax_session_messages = 4.5\n"))
+      .toThrow("general.max_session_messages must be an integer >= 4");
+  });
+
   it("rejects invalid provider input types and thinking map keys", () => {
     expect(() =>
       parseXioConfig(`
@@ -95,7 +122,7 @@ model = "bad"
 [providers.bad.thinking_level_map]
 turbo = "yes"
 `),
-    ).toThrow("providers.bad.thinking_level_map keys must be off, minimal, low, medium, high, xhigh, or max");
+    ).toThrow("providers.bad.thinking_level_map keys must be off, minimal, low, medium, high, xhigh, max, or ultra");
   });
 
   it("rejects invalid provider parallel tool call settings", () => {
@@ -148,6 +175,7 @@ thinking_display = "hidden"
     expect(parsed.runtimeConfig.worktree).toEqual({
       enabled: true,
       retainOnReject: true,
+      allowDirty: false,
     });
   });
 
@@ -171,7 +199,7 @@ thinking_display = "hidden"
     expect(parsed.runtimeConfig.extensions.evolve).toEqual({ enabled: true, options: {} });
     expect(parsed.runtimeConfig.extensions.sandbox).toEqual({ enabled: true, options: {} });
     expect(parsed.runtimeConfig.extensions["ace-tool"]).toBeUndefined();
-    expect(parsed.runtimeConfig.worktree).toEqual({ enabled: true, retainOnReject: false });
+    expect(parsed.runtimeConfig.worktree).toEqual({ enabled: true, retainOnReject: false, allowDirty: false });
     expect(parsed.runtimeConfig.verify).toEqual({
       enabled: false,
       requireAllPass: true,
@@ -293,6 +321,7 @@ Authorization = "Bearer x"
       readClaude: false,
       readCursor: true,
       failClosed: true,
+      unknownSourceFailClosed: false,
       timeoutMs: 12_000,
       servers: {
         echo: {
@@ -326,9 +355,53 @@ Authorization = "Bearer x"
       readClaude: true,
       readCursor: true,
       failClosed: false,
+      unknownSourceFailClosed: false,
       timeoutMs: 30_000,
       servers: {},
     });
+    expect(parsed.runtimeConfig.permissions).toEqual({ allowHighRisk: false });
+    expect(parsed.xio.improve).toEqual({ capabilityGate: false });
+  });
+
+  it("parses permissions and mcp unknown_source_fail_closed", () => {
+    const parsed = parseXioConfig(
+      `
+[permissions]
+allow_high_risk = true
+
+[mcp]
+unknown_source_fail_closed = true
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.permissions).toEqual({ allowHighRisk: true });
+    expect(parsed.runtimeConfig.mcp.unknownSourceFailClosed).toBe(true);
+  });
+
+  it("parses improve capability_gate and private_case defaults", () => {
+    const caseId = "d".repeat(64);
+    const parsed = parseXioConfig(
+      `
+[improve]
+capability_gate = true
+private_case = "last"
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.xio.improve).toEqual({ capabilityGate: true, privateCase: "last" });
+
+    const explicit = parseXioConfig(
+      `
+[improve]
+capability_gate = true
+private_case = "${caseId}"
+`,
+      { cwd: "/repo" },
+    );
+    expect(explicit.xio.improve).toEqual({ capabilityGate: true, privateCase: caseId });
+
+    expect(() => parseXioConfig(`[improve]\nprivate_case = "not-a-case"\n`, { cwd: "/repo" }))
+      .toThrow(/improve\.private_case/);
   });
 
   it("parses verify done-contract commands", () => {

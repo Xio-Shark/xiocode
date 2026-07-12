@@ -1,4 +1,7 @@
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/** Provider thinking transcript visibility (orthogonal to ThinkingLevel effort). */
+export type ThinkingDisplay = "summarized" | "omitted";
 
 export type JsonSchema = Readonly<{
   type?: string | readonly string[];
@@ -93,6 +96,8 @@ export type ProviderRegistration = Readonly<{
   baseUrl?: string;
   apiKey?: string;
   authHeader?: boolean;
+  /** When `omitted`, UI does not receive thinking text deltas (wire may still enable thinking). */
+  thinkingDisplay?: ThinkingDisplay;
   models: readonly ProviderModelConfig[];
 }>;
 
@@ -108,6 +113,26 @@ export type TokenUsage = Readonly<{
   reasoningTokens: number | null;
 }>;
 
+export type ContextCompactionMode = "manual" | "automatic";
+
+export type ContextCompactionUiEvent =
+  | Readonly<{ stage: "start"; mode: ContextCompactionMode; before: number }>
+  | Readonly<{
+    stage: "success";
+    mode: ContextCompactionMode;
+    before: number;
+    after: number;
+    usage: TokenUsage;
+  }>
+  | Readonly<{
+    stage: "skip";
+    mode: ContextCompactionMode;
+    before: number;
+    after: number;
+    usage: TokenUsage;
+  }>
+  | Readonly<{ stage: "failure"; mode: ContextCompactionMode; before: number; error: string }>;
+
 export type ProviderResponseEvent = Readonly<{
   providerApi: string;
   model: string;
@@ -119,6 +144,8 @@ export type UserBashEvent = Readonly<{
 }>;
 
 export type SessionStartPayload = Readonly<{
+  provider?: string;
+  model?: string;
   provenance?: Readonly<{
     schema_version: "xio-run-provenance.v1";
     workspace_root: string;
@@ -143,6 +170,7 @@ export type ExtensionEventMap = {
   tool_call: ToolCallEvent | Record<string, unknown>;
   tool_result: unknown;
   user_bash: UserBashEvent;
+  context_compaction: ContextCompactionUiEvent;
   agent_end: unknown;
   agent_start: unknown;
 };
@@ -198,6 +226,8 @@ export type ChatCompletionRequest = Readonly<{
   maxTokens?: number;
   temperature?: number;
   parallelToolCalls?: boolean;
+  /** Session thinking effort; providers map/clamp before the wire. */
+  thinkingLevel?: ThinkingLevel;
 }>;
 
 export type ChatCompletionResponse = Readonly<{
@@ -209,6 +239,7 @@ export type ChatCompletionResponse = Readonly<{
 
 export type StreamEvent =
   | Readonly<{ type: "text_delta"; text: string }>
+  | Readonly<{ type: "thinking_delta"; text: string }>
   | Readonly<{ type: "tool_call_delta"; index: number; id?: string; name?: string; argumentsDelta?: string }>
   | Readonly<{ type: "tool_calls_done"; toolCalls: readonly ChatToolCall[] }>
   | Readonly<{ type: "usage"; usage: TokenUsage }>

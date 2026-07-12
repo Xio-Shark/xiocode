@@ -87,6 +87,15 @@ export class TrajectoryRecorder {
     return record.metadata;
   }
 
+  async updateRunIdentity(patch: Partial<Pick<RunMetadata, "provider" | "model">>): Promise<RunMetadata | null> {
+    if (!this.metadata) {
+      return null;
+    }
+    const next = await this.store.updateMetadata(this.metadata.run_id, patch);
+    this.metadata = next;
+    return next;
+  }
+
   async recordToolCall(event: unknown): Promise<void> {
     const call = toToolCall(event);
     const nowMs = this.now().getTime();

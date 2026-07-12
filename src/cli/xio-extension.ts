@@ -29,7 +29,6 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
 
   const config = JSON.parse(await readFile(configPath, "utf8")) as XioRuntimeConfig;
   registerProviders(api, config);
-  let currentRunId: string | undefined;
   const [{ registerXioHygiene }, { registerXioEvolve, RunStore }] = await Promise.all([loadHygiene(), loadEvolve()]);
   const runStore = new RunStore({ root: config.general.runRoot });
   const workspaceCwd = config.worktree.session?.worktreePath
@@ -66,9 +65,6 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
   if (config.extensions.evolve?.enabled !== false) {
     registerXioEvolve(evolveApi, {
       runStore,
-      onRunStart(metadata) {
-        currentRunId = metadata.run_id;
-      },
     });
   }
 
@@ -79,11 +75,10 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
       worktreeConfig: {
         enabled: config.worktree.enabled,
         retainOnReject: config.worktree.retainOnReject,
+        allowDirty: config.worktree.allowDirty,
       },
     });
   }
-
-  void currentRunId;
 }
 
 function adaptEvolveApi(api: XioExtensionAPI): ExtensionContext {
@@ -180,6 +175,7 @@ function registerProviders(api: XioExtensionAPI, config: XioRuntimeConfig): void
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
       authHeader: true,
+      thinkingDisplay: provider.thinkingDisplay,
       models: [
         {
           id: provider.model,
@@ -236,6 +232,7 @@ function toHygieneMcp(mcp: XioMcpConfig | undefined): Partial<McpConfig> {
       readClaude: true,
       readCursor: true,
       failClosed: false,
+      unknownSourceFailClosed: false,
       timeoutMs: 30_000,
     };
   }
@@ -255,6 +252,7 @@ function toHygieneMcp(mcp: XioMcpConfig | undefined): Partial<McpConfig> {
     readClaude: mcp.readClaude,
     readCursor: mcp.readCursor,
     failClosed: mcp.failClosed,
+    unknownSourceFailClosed: mcp.unknownSourceFailClosed,
     timeoutMs: mcp.timeoutMs,
     servers: Object.keys(servers).length > 0 ? servers : undefined,
   };

@@ -58,7 +58,7 @@ api_key_env = "XIO_DEEPSEEK_KEY"
 
     const xioHome = path.join(root, ".xiocode");
     const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: xioHome, XIO_DEEPSEEK_KEY: "secret" };
-    const launch = await prepareLaunch(root, env);
+    const launch = await prepareLaunch(root, env, { allowDirty: true });
 
     expect(launch.runtimeConfig.general.defaultProvider).toBe("deepseek");
     expect(launch.runtimeConfigPath).toBe(path.join(xioHome, "runtime-config.json"));
@@ -97,6 +97,33 @@ api_key_env = "XIO_DEEPSEEK_KEY"
     await expect(prepareLaunch(root, env)).rejects.toThrow(/requires a git repository/i);
   });
 
+  it("blocks dirty main when worktree is enabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-dirty-"));
+    tempDirs.push(root);
+    await initGitRepo(root);
+    const configPath = path.join(root, "config.toml");
+    await writeFile(configPath, "[general]\ndefault_provider = \"deepseek\"\ndefault_model = \"deepseek-chat\"\n", "utf8");
+    const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: path.join(root, ".xiocode") };
+    await expect(prepareLaunch(root, env)).rejects.toThrow(/uncommitted changes/i);
+  });
+
+  it("allows dirty main when allowDirty is set", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-allow-dirty-"));
+    tempDirs.push(root);
+    await initGitRepo(root);
+    const configPath = path.join(root, "config.toml");
+    await writeFile(
+      configPath,
+      "[general]\ndefault_provider = \"deepseek\"\ndefault_model = \"deepseek-chat\"\n[worktree]\nallow_dirty = true\n",
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: path.join(root, ".xiocode") };
+    const launch = await prepareLaunch(root, env);
+    expect(launch.sessionStart.provenance?.dirty).toBe(true);
+    expect(launch.worktree).toBeDefined();
+    await WorktreeSandbox.remove(launch.worktree!, { force: true });
+  });
+
   it("skips runtime extensions in fast mode but still creates worktree", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-"));
     tempDirs.push(root);
@@ -114,11 +141,46 @@ run_root = "${root}/runs"
     );
 
     const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: path.join(root, ".xiocode") };
-    const launch = await prepareLaunch(root, env, { runtimeExtensionEnabled: false });
+    const launch = await prepareLaunch(root, env, { runtimeExtensionEnabled: false, allowDirty: true });
 
     expect(launch.runtimeExtensionEnabled).toBe(false);
     expect(launch.worktree).toBeDefined();
     await WorktreeSandbox.remove(launch.worktree!, { force: true });
+  });
+
+  it("attaches the saved worktree instead of creating a fresh resume checkout", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-resume-"));
+    tempDirs.push(root);
+    await initGitRepo(root);
+    const configPath = path.join(root, "config.toml");
+    const xioHome = path.join(root, ".xiocode");
+    await writeFile(
+      configPath,
+      "[general]\ndefault_provider = \"deepseek\"\ndefault_model = \"deepseek-chat\"\n",
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: xioHome };
+    const first = await prepareLaunch(root, env, { allowDirty: true, sessionId: "resume1" });
+    await writeFile(path.join(first.cwd, "interrupted.txt"), "preserved\n", "utf8");
+
+    const resumed = await prepareLaunch(root, env, {
+      allowDirty: true,
+      resumeWorkspace: {
+        mode: "worktree",
+        lifecycle: "active",
+        main_root: first.worktree!.mainRoot,
+        worktree_path: first.worktree!.worktreePath,
+        branch: first.worktree!.branch,
+        base_ref: first.worktree!.baseRef,
+        repo_id: first.worktree!.repoId,
+        session_id: first.worktree!.sessionId,
+        epoch: 0,
+      },
+    });
+
+    expect(resumed.cwd).toBe(first.cwd);
+    expect(await readFile(path.join(resumed.cwd, "interrupted.txt"), "utf8")).toBe("preserved\n");
+    await WorktreeSandbox.remove(resumed.worktree!, { force: true });
   });
 });
 
@@ -127,8 +189,18 @@ describe("parseXioArgs", () => {
     expect(parseXioArgs(["--xio-fast", "-p", "hello"])).toEqual({
       passthrough: [],
       runtimeExtensionEnabled: false,
+      allowDirty: false,
+      allowHighRisk: false,
       promptOnce: "hello",
     });
+  });
+
+  it("parses --allow-dirty", () => {
+    expect(parseXioArgs(["--allow-dirty", "-p", "hello"]).allowDirty).toBe(true);
+  });
+
+  it("parses --allow-high-risk", () => {
+    expect(parseXioArgs(["--allow-high-risk", "-p", "hello"]).allowHighRisk).toBe(true);
   });
 
   it("parses resume and continue entry points", () => {
@@ -180,6 +252,7 @@ describe("handleXioFlag", () => {
     expect(chunks.join("")).toContain("local-first coding agent");
     expect(chunks.join("")).toContain("worktree");
     expect(chunks.join("")).toContain("xio regress");
+    expect(chunks.join("")).toContain("xio models");
     expect(chunks.join("")).not.toContain("pi-agent");
   });
 });

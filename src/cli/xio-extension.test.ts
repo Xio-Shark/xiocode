@@ -54,7 +54,7 @@ describe("registerXioRuntime", () => {
             compat: { thinkingFormat: "deepseek" },
           },
         },
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: false, options: {} },
           sandbox: { enabled: false, options: {} },
@@ -97,7 +97,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: { code_model: "openai/codex" } },
           sandbox: { enabled: false, options: {} },
@@ -124,7 +124,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },
@@ -149,7 +149,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },
@@ -178,7 +178,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },
@@ -223,6 +223,7 @@ describe("registerXioRuntime", () => {
         worktree: {
           enabled: true,
           retainOnReject: false,
+          allowDirty: false,
           session: {
             mainRoot: root,
             worktreePath: root,
@@ -241,9 +242,11 @@ describe("registerXioRuntime", () => {
           readClaude: false,
           readCursor: false,
           failClosed: false,
+          unknownSourceFailClosed: false,
           timeoutMs: 30_000,
           servers: {},
         },
+        permissions: { allowHighRisk: false },
       }),
       "utf8",
     );
@@ -266,7 +269,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },
@@ -289,7 +292,7 @@ describe("registerXioRuntime", () => {
       JSON.stringify({
         general: { defaultProvider: "deepseek", defaultModel: "chat", runRoot: path.join(root, "runs") },
         providers: {},
-        worktree: { enabled: true, retainOnReject: false },
+        worktree: { enabled: true, retainOnReject: false, allowDirty: false },
         extensions: {
           evolve: { enabled: true, options: {} },
           sandbox: { enabled: false, options: {} },

@@ -3,11 +3,12 @@ import { cleanup, render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionPicker } from "./session-picker.ts";
+import { theme } from "./theme.ts";
 
 afterEach(() => cleanup());
 
 describe("SessionPicker", () => {
-  it("shows recent session identity, model, cwd, and active selection", () => {
+  it("shows brand count header, session identity, and accent selection", () => {
     const instance = render(React.createElement(SessionPicker, {
       sessions: [{
         schema_version: "xio-session.v1",
@@ -20,9 +21,17 @@ describe("SessionPicker", () => {
       }],
     }));
 
-    expect(instance.lastFrame()).toContain("Resume session");
-    expect(instance.lastFrame()).toContain("model-a");
-    expect(instance.lastFrame()).toContain("session1");
-    expect(instance.lastFrame()).toContain("> 2026-07-11");
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain(`${theme.sym.brand} Resume session (1)`);
+    expect(frame).toContain("model-a");
+    expect(frame).toContain("session1");
+    expect(frame).toContain(`${theme.sym.select} 2026-07-11`);
+  });
+
+  it("shows an empty-list message when there are no sessions", () => {
+    const instance = render(React.createElement(SessionPicker, { sessions: [] }));
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain(`${theme.sym.brand} Resume session (0)`);
+    expect(frame).toContain("No sessions to resume.");
   });
 });
