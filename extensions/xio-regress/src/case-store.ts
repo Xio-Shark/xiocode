@@ -14,6 +14,8 @@ export type CaseWriteResult = Readonly<{
   existing: boolean;
 }>;
 
+export const LAST_CASE_POINTER = ".last-case";
+
 export class RegressionCaseStore {
   readonly root: string;
 
@@ -28,6 +30,10 @@ export class RegressionCaseStore {
 
   casePath(caseId: string): string {
     return path.join(this.caseDirectory(caseId), "case.json");
+  }
+
+  lastCasePath(): string {
+    return path.join(this.root, LAST_CASE_POINTER);
   }
 
   async readCase(caseId: string): Promise<PrivateRegressionCase> {
@@ -49,21 +55,63 @@ export class RegressionCaseStore {
       assertIdentity(existing);
       return { case_path: casePath, existing: true };
     }
-    await atomicWrite(casePath, value);
+    await atomicWriteJson(casePath, value);
     return { case_path: casePath, existing: false };
+  }
+
+  /** Persist the durable last-captured case id (single line). */
+  async writeLastCaseId(caseId: string): Promise<void> {
+    assertCaseId(caseId);
+    await atomicWriteText(this.lastCasePath(), `${caseId}\n`);
+  }
+
+  /** Read last-captured case id, or null when missing/blank. */
+  async readLastCaseId(): Promise<string | null> {
+    try {
+      const value = (await readFile(this.lastCasePath(), "utf8")).trim();
+      if (!value) return null;
+      assertCaseId(value);
+      return value;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      if (code === "ENOENT") return null;
+      throw invalidRegressionCase(error);
+    }
+  }
+
+  /**
+   * Resolve `private_case` config/CLI values: `"last"` reads the pointer;
+   * anything else is treated as an explicit case id.
+   */
+  async resolvePrivateCaseId(value: string): Promise<string> {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new InvalidRegressionCaseError("private case id is required");
+    }
+    if (trimmed === "last") {
+      const last = await this.readLastCaseId();
+      if (!last) {
+        throw new InvalidRegressionCaseError(
+          "no last-captured private case; run /regress or xio regress capture first",
+        );
+      }
+      return last;
+    }
+    assertCaseId(trimmed);
+    return trimmed;
   }
 
   async writePreflight(value: PrivateRegressionPreflight): Promise<string> {
     decodePrivateRegressionPreflight(value);
     const output = path.join(this.caseDirectory(value.case_id), "preflight.json");
-    await atomicWrite(output, value);
+    await atomicWriteJson(output, value);
     return output;
   }
 
   async writeCompare(value: PrivateRegressionCompare): Promise<string> {
     decodePrivateRegressionCompare(value);
     const output = path.join(this.caseDirectory(value.case_id), "compare.json");
-    await atomicWrite(output, value);
+    await atomicWriteJson(output, value);
     return output;
   }
 }
@@ -87,11 +135,15 @@ async function readJson(filePath: string): Promise<unknown> {
   }
 }
 
-async function atomicWrite(filePath: string, value: unknown): Promise<void> {
+async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+  await atomicWriteText(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function atomicWriteText(filePath: string, contents: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(temporary, contents, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, filePath);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => undefined);

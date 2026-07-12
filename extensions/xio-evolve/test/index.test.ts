@@ -56,9 +56,70 @@ describe("registerXioEvolve", () => {
     expect(registration.handlers.has("tool_call")).toBe(true);
     expect(registration.handlers.has("tool_result")).toBe(true);
     expect(registration.handlers.has("provider_response")).toBe(true);
+    expect(registration.handlers.has("context_compaction")).toBe(true);
 
     await registration.handlers.get("session_start")?.[0]?.({});
     expect(registration.setActiveToolsCalls).toEqual([]);
+  });
+
+  it("records provider and model from session_start into metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-identity-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+
+    await registration.handlers.get("session_start")?.[0]?.({
+      provider: "opencode-go",
+      model: "deepseek-v4-flash",
+    });
+
+    const record = (await store.listRecent(1))[0]!;
+    expect(record.metadata.provider).toBe("opencode-go");
+    expect(record.metadata.model).toBe("deepseek-v4-flash");
+  });
+
+  it("updates metadata when model_change fires", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-model-change-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+
+    await registration.handlers.get("session_start")?.[0]?.({ provider: "a", model: "m1" });
+    await registration.handlers.get("model_change")?.[0]?.({ provider: "b", model: "m2" });
+
+    const record = (await store.listRecent(1))[0]!;
+    expect(record.metadata.provider).toBe("b");
+    expect(record.metadata.model).toBe("m2");
+  });
+
+  it("keeps numeric usage fields in provider.usage events", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-usage-events-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+    await registration.handlers.get("session_start")?.[0]?.({ provider: "openai", model: "gpt" });
+    registration.handlers.get("provider_response")?.[0]?.({
+      providerApi: "openai-completions",
+      model: "gpt",
+      usage: { inputTokens: 15, outputTokens: 4, cacheTokens: 3, reasoningTokens: 2 },
+    });
+    await registration.handlers.get("agent_end")?.[0]?.({});
+
+    const record = (await store.listRecent(1))[0]!;
+    const events = (await readFile(path.join(record.path, "events.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; payload?: { usage?: Record<string, unknown> } });
+    const usageEvent = events.find((event) => event.event === "provider.usage");
+    expect(usageEvent?.payload?.usage).toEqual({
+      inputTokens: 15,
+      outputTokens: 4,
+      cacheTokens: 3,
+      reasoningTokens: 2,
+    });
   });
 
   it("persists normalized provider usage in the existing run summary", async () => {
@@ -83,6 +144,34 @@ describe("registerXioEvolve", () => {
       outputTokens: 4,
       cacheTokens: 3,
       reasoningTokens: 2,
+    });
+  });
+
+  it("records successful context compaction usage in the run summary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-compact-usage-"));
+    tempDirs.push(root);
+    const registration = createRegistration();
+    const store = new RunStore({ root });
+    registerXioEvolve(registration.api, { runStore: store });
+    await registration.handlers.get("session_start")?.[0]?.({});
+    registration.handlers.get("context_compaction")?.[0]?.({
+      stage: "success",
+      mode: "manual",
+      before: 40,
+      after: 12,
+      usage: { inputTokens: 9, outputTokens: 2, cacheTokens: 0, reasoningTokens: 0 },
+    });
+    await registration.handlers.get("agent_end")?.[0]?.({});
+
+    const record = (await store.listRecent(1))[0]!;
+    const summary = JSON.parse(await readFile(path.join(record.path, "summary.json"), "utf8")) as {
+      usage: unknown;
+    };
+    expect(summary.usage).toEqual({
+      inputTokens: 9,
+      outputTokens: 2,
+      cacheTokens: 0,
+      reasoningTokens: 0,
     });
   });
 

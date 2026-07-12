@@ -29,6 +29,7 @@ describe("xio regress CLI", () => {
     ])).toMatchObject({
       command: "create",
       json: true,
+      useLastRun: false,
       capture: {
         run_id: "run-1",
         failure_type: "user_task_failure",
@@ -36,6 +37,58 @@ describe("xio regress CLI", () => {
         expected_exit: 0,
         timeout_ms: 5000,
       },
+    });
+  });
+
+  it("treats create --help as help, not INVALID_CASE", async () => {
+    const chunks: string[] = [];
+    const code = await runRegressCli(["create", "--help"], {
+      write: (chunk) => chunks.push(chunk),
+    });
+    expect(code).toBe(0);
+    expect(chunks.join("")).toContain("xio regress capture --last");
+    expect(chunks.join("")).not.toContain("INVALID_CASE");
+  });
+
+  it("parses capture --last with default failure type", () => {
+    expect(parseRegressArgs([
+      "capture",
+      "--last",
+      "--failure", "behavior missing",
+      "--verify", "./test.sh",
+      "--json",
+    ])).toMatchObject({
+      command: "capture",
+      useLastRun: true,
+      json: true,
+      capture: {
+        failure_type: "user_task_failure",
+        failure_statement: "behavior missing",
+        verifier_command: "./test.sh",
+      },
+    });
+  });
+
+  it("captures from --last run id", async () => {
+    const fixture = await createFixture(temporaryRoots, "success");
+    const chunks: string[] = [];
+    const code = await runRegressCli([
+      "capture",
+      "--last",
+      "--failure", "behavior missing",
+      "--verify", "false",
+      "--json",
+    ], {
+      env: { SHELL: "/bin/sh" },
+      runRoot: fixture.runRoot,
+      store: fixture.store,
+      now: () => new Date("2026-07-11T00:00:00.000Z"),
+      write: (chunk) => chunks.push(chunk),
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(chunks.join(""))).toMatchObject({
+      status: "BASE_RED",
+      capture_status: "CAPTURED",
     });
   });
 
@@ -119,6 +172,7 @@ describe("xio regress CLI", () => {
       command: "preflight",
       json: true,
       noPreflight: false,
+      useLastRun: false,
       caseId: "a".repeat(64),
     });
     expect(() => parseRegressArgs(["preflight", "--case", "id", "--verify", "true"]))

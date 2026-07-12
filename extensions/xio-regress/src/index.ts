@@ -1,5 +1,5 @@
 export { RegressionCapture } from "./capture.ts";
-export { RegressionCaseStore } from "./case-store.ts";
+export { LAST_CASE_POINTER, RegressionCaseStore } from "./case-store.ts";
 export { RegressionCompare } from "./compare.ts";
 export { InvalidRegressionCaseError } from "./errors.ts";
 export {

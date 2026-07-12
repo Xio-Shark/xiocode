@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 
 import type { SessionMetadata } from "../runtime/session-store.ts";
+import { theme } from "./theme.ts";
 
 const h = React.createElement;
 
@@ -27,15 +28,24 @@ export function SessionPicker(props: Readonly<{ sessions: readonly SessionMetada
       exit(undefined);
       return;
     }
+    if (props.sessions.length === 0) return;
     if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
     if (key.downArrow) setSelected((value) => Math.min(props.sessions.length - 1, value + 1));
     if (key.return) exit(props.sessions[selected]?.id);
   });
+  const header = h(Text, null,
+    h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
+    h(Text, { bold: true }, `Resume session (${props.sessions.length})`));
+  if (props.sessions.length === 0) {
+    return h(Box, { flexDirection: "column", height: rows },
+      header,
+      h(Text, { dimColor: true }, "No sessions to resume."));
+  }
   const visibleCount = Math.max(1, rows - 2);
   const start = Math.min(Math.max(0, selected - visibleCount + 1), Math.max(0, props.sessions.length - visibleCount));
   const visible = props.sessions.slice(start, start + visibleCount);
   return h(Box, { flexDirection: "column", height: rows },
-    h(Text, { bold: true }, "Resume session"),
+    header,
     ...visible.map((session, index) => h(SessionRow, {
       key: session.id,
       session,
@@ -46,5 +56,10 @@ export function SessionPicker(props: Readonly<{ sessions: readonly SessionMetada
 function SessionRow(props: Readonly<{ session: SessionMetadata; active: boolean }>): React.JSX.Element {
   const updated = props.session.updated_at.replace("T", " ").slice(0, 19);
   const text = `${updated} | ${props.session.model.id} | ${props.session.cwd} | ${props.session.id}`;
-  return h(Text, { inverse: props.active, wrap: "truncate-end" }, `${props.active ? ">" : " "} ${text}`);
+  const marker = props.active ? `${theme.sym.select} ` : "  ";
+  return h(Text, {
+    color: props.active ? theme.accent : undefined,
+    dimColor: !props.active,
+    wrap: "truncate-end",
+  }, `${marker}${text}`);
 }

@@ -10,14 +10,17 @@ import type { EvalReport, GraderResult, LoadedFixture, PriceTable, TrialReport }
 
 const LOG_REDACTOR = new SecretRedactor();
 
-export type EvalContext = Readonly<{
+export type EvalContext = {
   suite: LoadedSuite;
   createdAt: string;
   evalId: string;
+  evalRoot: string;
   reportRoot: string;
   provisionalSeriesId: string;
   priceTable?: PriceTable;
-}>;
+  repeat: number;
+  pinnedIdentity?: import("./eval-identity.ts").PinnedEvalIdentity;
+};
 
 export function selectedHoldouts(suite: LoadedSuite, caseIds?: readonly string[]): readonly LoadedFixture[] {
   const fixtures = suite.fixtures.filter((fixture) => fixture.visibility === "holdout");
@@ -68,9 +71,23 @@ export function hiddenGraderOutside(worktree: string | undefined, trustedRoot: s
   return path.relative(worktree, grader).startsWith("..");
 }
 
-export function finalSeriesId(context: EvalContext, trials: readonly TrialReport[]): string {
+export function finalSeriesId(
+  context: EvalContext,
+  trials: readonly TrialReport[],
+  pinnedIdentity?: import("./eval-identity.ts").PinnedEvalIdentity,
+  repeat = context.repeat,
+): string {
   return hashValue({
     suite: context.suite.identity,
+    pinned: pinnedIdentity
+      ? {
+        provider: pinnedIdentity.provider,
+        exact_model_id: pinnedIdentity.exact_model_id,
+        provider_api: pinnedIdentity.provider_api,
+        inference_settings: pinnedIdentity.inference_settings,
+      }
+      : null,
+    repeat,
     trials: trials.map((trial) => ({
       contract: comparableTrialContract(trial),
       system_prompt_sha: trial.identity.system_prompt_sha,

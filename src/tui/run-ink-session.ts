@@ -9,7 +9,12 @@ import type { SessionOptions } from "../runtime/session.ts";
 
 export async function runInkSession(options: SessionOptions): Promise<number> {
   const bridge = new TuiSessionBridge();
-  const session = await prepareSession({ ...options, ask: bridge.ask, uiSink: bridge.sink });
+  const session = await prepareSession({
+    ...options,
+    ask: bridge.ask,
+    interactive: bridge,
+    uiSink: bridge.sink,
+  });
   let exitCode = 0;
   let closed = false;
   const instance = render(React.createElement(App, {

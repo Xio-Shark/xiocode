@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createStdoutSessionUiSink } from "./session-ui.ts";
+import { createStdoutSessionUiSink, previewText, toolCallDetail, toolResultOutput } from "./session-ui.ts";
 
 describe("createStdoutSessionUiSink", () => {
   it("preserves streaming, tool, status, and cancellation output", () => {
@@ -18,5 +18,67 @@ describe("createStdoutSessionUiSink", () => {
     expect(chunks.join("")).toContain("hello");
     expect(chunks.join("")).toContain("> read");
     expect(chunks.join("")).toContain("(cancelled)");
+  });
+
+  it("streams thinking then prints collapse marker before answer text", () => {
+    const chunks: string[] = [];
+    const sink = createStdoutSessionUiSink((chunk) => chunks.push(chunk));
+    sink.onThinkingDelta?.("step ");
+    sink.onThinkingDelta?.("two");
+    sink.onAssistantDelta?.("done");
+    const out = chunks.join("");
+    expect(out).toContain("[think] step two");
+    expect(out).toContain("[think collapsed]");
+    expect(out).toContain("done");
+  });
+
+  it("prints tool result preview on tool-end", () => {
+    const chunks: string[] = [];
+    const sink = createStdoutSessionUiSink((chunk) => chunks.push(chunk));
+    sink.onToolStart?.({ id: "1", name: "bash", arguments: { command: "ls -la" } });
+    sink.onToolEnd?.({ id: "1", name: "bash", arguments: { command: "ls -la" } }, {
+      content: [{ type: "text", text: "a\nb\nc" }],
+    });
+    const out = chunks.join("");
+    expect(out).toContain("> bash(ls -la)");
+    expect(out).toContain("bash done");
+    expect(out).toContain("a\nb\nc");
+  });
+
+  it("prints explicit context compaction lifecycle output", () => {
+    const chunks: string[] = [];
+    const sink = createStdoutSessionUiSink((chunk) => chunks.push(chunk));
+    sink.onContextCompaction?.({ stage: "start", mode: "manual", before: 40 });
+    sink.onContextCompaction?.({
+      stage: "success",
+      mode: "manual",
+      before: 40,
+      after: 12,
+      usage: { inputTokens: 10, outputTokens: 2, cacheTokens: 0, reasoningTokens: 0 },
+    });
+    const out = chunks.join("");
+    expect(out).toContain("[context] compacting...");
+    expect(out).toContain("[context] compacted 40 -> 12 messages");
+  });
+});
+
+describe("tool transcript helpers", () => {
+  it("prefers bash command in tool detail", () => {
+    expect(toolCallDetail({ id: "1", name: "bash", arguments: { command: "echo hi", description: "x" } }))
+      .toBe("echo hi");
+  });
+
+  it("joins tool result content parts", () => {
+    expect(toolResultOutput({
+      content: [{ type: "text", text: "a" }, { type: "text", text: "b" }],
+    })).toBe("ab");
+  });
+
+  it("previews long tool output", () => {
+    const text = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
+    const preview = previewText(text, 8);
+    expect(preview.truncated).toBe(true);
+    expect(preview.text.split("\n")).toHaveLength(9);
+    expect(preview.text).toContain("4 more lines");
   });
 });
