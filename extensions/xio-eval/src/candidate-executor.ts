@@ -1,13 +1,39 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { assertArtifactsOmitSecret } from "./credentialed-env.ts";
 import { spawnCommand } from "./process.ts";
 import { emptyUsage } from "./types.ts";
 
 import type { CandidateExecutorOptions, CandidateInput, CandidateResult, UsageMetrics } from "./types.ts";
 
 const RESULT_MARKER = "XIO_EVAL_RESULT=";
+
+const REAL_CHILD_ENV_ALLOWLIST = new Set([
+  "PATH",
+  "PATHEXT",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "TZ",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "SystemRoot",
+  "ComSpec",
+  "PROCESSOR_ARCHITECTURE",
+]);
 
 export type ExecutedCandidate = Readonly<{
   result: CandidateResult;
@@ -18,15 +44,32 @@ export type ExecutedCandidate = Readonly<{
 export async function executeCandidate(options: CandidateExecutorOptions): Promise<ExecutedCandidate> {
   const trialHome = path.join(options.trial_root, "home");
   await mkdir(path.join(trialHome, ".xiocode"), { recursive: true });
+  let baseChildEnv: NodeJS.ProcessEnv;
   if (options.mode === "real") {
-    const configError = await copyUserConfig(trialHome, options.env ?? process.env);
+    const configError = await writeTrialConfig(trialHome, options);
     if (configError) {
       return { result: infraResult(configError), stdout: "", stderr: "" };
     }
+    const preparedEnv = prepareRealChildEnv(options.child_env, options.secret_for_scan);
+    if ("error" in preparedEnv) {
+      return { result: infraResult(preparedEnv.error), stdout: "", stderr: "" };
+    }
+    baseChildEnv = preparedEnv.env;
+  } else {
+    baseChildEnv = { ...(options.env ?? process.env) };
   }
   const inputPath = path.join(options.trial_root, "candidate-input.json");
-  await writeFile(inputPath, `${JSON.stringify(createCandidateInput(options), null, 2)}\n`, "utf8");
+  const input = createCandidateInput(options);
+  await writeFile(inputPath, `${JSON.stringify(input, null, 2)}\n`, "utf8");
   const entry = path.join(options.trusted_root, "extensions", "xio-eval", "src", "candidate-child.ts");
+  const childEnv: NodeJS.ProcessEnv = {
+    ...baseChildEnv,
+    HOME: trialHome,
+    XIO_HOME: path.join(trialHome, ".xiocode"),
+    XIO_CONFIG: path.join(trialHome, ".xiocode", "config.toml"),
+  };
+  // Never expose the host credentials path to the candidate child.
+  delete childEnv.XIO_CREDENTIALS;
   const result = await spawnCommand({
     command: process.execPath,
     args: [
@@ -38,9 +81,23 @@ export async function executeCandidate(options: CandidateExecutorOptions): Promi
       inputPath,
     ],
     cwd: options.trusted_root,
-    env: { ...(options.env ?? process.env), HOME: trialHome, XIO_HOME: path.join(trialHome, ".xiocode") },
+    env: childEnv,
     timeoutMs: options.fixture.wall_timeout_ms,
   });
+  if (options.secret_for_scan) {
+    const leaks = assertArtifactsOmitSecret(options.secret_for_scan, {
+      "candidate-input.json": JSON.stringify(input),
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+    if (leaks.length > 0) {
+      return {
+        result: infraResult(leaks.join("; ")),
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
+    }
+  }
   if (result.cleanupError) {
     return {
       result: infraResult(result.cleanupError),
@@ -73,9 +130,52 @@ function createCandidateInput(options: CandidateExecutorOptions): CandidateInput
     prompt: options.fixture.prompt,
     max_turns: options.fixture.max_turns,
   };
-  return options.mode === "stub"
-    ? { ...common, mode: "stub", oracle_files: options.fixture.oracle_files }
-    : { ...common, mode: "real" };
+  if (options.mode === "stub") {
+    return { ...common, mode: "stub", oracle_files: options.fixture.oracle_files };
+  }
+  return {
+    ...common,
+    mode: "real",
+    ...(options.pinned_provider ? { provider: options.pinned_provider } : {}),
+    ...(options.pinned_model ? { model: options.pinned_model } : {}),
+  };
+}
+
+async function writeTrialConfig(
+  trialHome: string,
+  options: CandidateExecutorOptions,
+): Promise<string | undefined> {
+  if (!options.config_content) {
+    return "real eval missing pinned config content from trusted controller";
+  }
+  if (options.secret_for_scan && options.config_content.includes(options.secret_for_scan)) {
+    return "config content unexpectedly contains provider secret";
+  }
+  await writeFile(path.join(trialHome, ".xiocode", "config.toml"), options.config_content, "utf8");
+  return undefined;
+}
+
+function prepareRealChildEnv(
+  source: NodeJS.ProcessEnv | undefined,
+  selectedSecret: string | undefined,
+): Readonly<{ env: NodeJS.ProcessEnv }> | Readonly<{ error: string }> {
+  if (!source || !selectedSecret) {
+    return { error: "real eval missing selected-provider child environment from trusted controller" };
+  }
+  const selectedKeyEntries = Object.entries(source)
+    .filter(([, value]) => value === selectedSecret);
+  if (selectedKeyEntries.length !== 1) {
+    return { error: "real eval child environment does not identify exactly one selected provider key" };
+  }
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined && REAL_CHILD_ENV_ALLOWLIST.has(key)) {
+      env[key] = value;
+    }
+  }
+  const [apiKeyEnv] = selectedKeyEntries[0]!;
+  env[apiKeyEnv] = selectedSecret;
+  return { env };
 }
 
 function decodeCandidateOutput(stdout: string, stderr: string, exitCode: number | null): CandidateResult {
@@ -122,28 +222,6 @@ function decodeUsage(value: unknown): UsageMetrics {
     }
   }
   return value as UsageMetrics;
-}
-
-async function copyUserConfig(trialHome: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
-  const home = env.HOME ?? os.homedir();
-  const configured = env.XIO_CONFIG ?? path.join(home, ".xiocode", "config.toml");
-  const source = path.resolve(expandHome(configured, home));
-  let content: string;
-  try {
-    content = await readFile(source, "utf8");
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-    return code === "ENOENT" ? `missing XioCode config: ${source}` : `cannot read XioCode config: ${String(error)}`;
-  }
-  await writeFile(path.join(trialHome, ".xiocode", "config.toml"), content, "utf8");
-  return undefined;
-}
-
-function expandHome(value: string, home: string): string {
-  if (value === "~") {
-    return home;
-  }
-  return value.startsWith("~/") ? path.join(home, value.slice(2)) : value;
 }
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {

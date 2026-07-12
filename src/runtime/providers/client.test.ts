@@ -5,6 +5,21 @@ import { createLlmClient } from "./client.ts";
 import type { ProviderRegistration } from "../types.ts";
 
 describe("provider usage normalization", () => {
+  it("omits HTTP response bodies from LLM failure messages", async () => {
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "sk-live-secret",
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: { message: "bad key sk-live-secret" } }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    await expect(client.complete({ model: "test", messages: [] })).rejects.toThrow(
+      /^LLM request failed \(401\)$/,
+    );
+  });
+
   it("normalizes OpenAI-compatible usage once at the client boundary", async () => {
     const client = createLlmClient({
       registration: registration("openai-completions"),
@@ -145,6 +160,126 @@ describe("provider usage normalization", () => {
     )).toEqual(["Hi", "!"]);
     const done = events.find((event) => event.type === "done");
     expect(done).toMatchObject({ type: "done", content: "Hi!" });
+  });
+  it("parses Anthropic thinking_delta events without mixing into content", async () => {
+    const sse = [
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("");
+    const client = createLlmClient({
+      registration: registration("anthropic-messages"),
+      apiKey: "test",
+      fetchImpl: async () => streamResponse(sse),
+    });
+    const events = [];
+    for await (const event of client.completeStream!({ model: "test", messages: [] })) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === "thinking_delta")).toEqual([
+      { type: "thinking_delta", text: "plan" },
+    ]);
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "answer" },
+    ]);
+    const done = events.find((event) => event.type === "done");
+    expect(done).toMatchObject({ type: "done", content: "answer" });
+  });
+
+  it("parses OpenAI reasoning_content as thinking_delta", async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"reasoning_content":"why"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => streamResponse(sse),
+    });
+    const events = [];
+    for await (const event of client.completeStream!({ model: "test", messages: [] })) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === "thinking_delta")).toEqual([
+      { type: "thinking_delta", text: "why" },
+    ]);
+  });
+
+  it("suppresses thinking_delta text when thinkingDisplay is omitted", async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"reasoning_content":"secret"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"visible"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const client = createLlmClient({
+      registration: { ...registration("openai-completions"), thinkingDisplay: "omitted" },
+      apiKey: "test",
+      fetchImpl: async () => streamResponse(sse),
+    });
+    const events = [];
+    for await (const event of client.completeStream!({ model: "test", messages: [] })) {
+      events.push(event);
+    }
+    expect(events.filter((event) => event.type === "thinking_delta")).toEqual([]);
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "visible" },
+    ]);
+  });
+
+  it("passes Anthropic thinking display on the wire when configured", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: { ...registration("anthropic-messages"), thinkingDisplay: "omitted" },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+    await client.complete({ model: "test", messages: [{ role: "user", content: "hi" }], thinkingLevel: "high" });
+    expect(body?.thinking).toEqual({ type: "enabled", budget_tokens: 16_384, display: "omitted" });
+  });
+
+  it("injects reasoning_effort for non-off thinking levels", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        name: "test",
+        api: "openai-completions",
+        baseUrl: "https://example.test",
+        models: [{
+          id: "test",
+          name: "test",
+          reasoning: true,
+          thinkingLevelMap: { high: "large", ultra: "ultra" },
+        }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ choices: [{ message: { content: "ok", tool_calls: [] } }] });
+      },
+    });
+    await client.complete({ model: "test", messages: [], thinkingLevel: "high" });
+    expect(body?.reasoning_effort).toBe("large");
+    await client.complete({ model: "test", messages: [], thinkingLevel: "off" });
+    expect(body?.reasoning_effort).toBeUndefined();
+  });
+
+  it("injects Anthropic thinking budget for non-off levels", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: registration("anthropic-messages"),
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+    await client.complete({ model: "test", messages: [{ role: "user", content: "hi" }], thinkingLevel: "ultra" });
+    expect(body?.thinking).toEqual({ type: "enabled", budget_tokens: 128_000 });
   });
 });
 

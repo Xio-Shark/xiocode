@@ -52,6 +52,21 @@ describe("WorktreeSandbox", () => {
     await expect(WorktreeSandbox.resolveMainRoot(root)).rejects.toThrow(/requires a git repository/i);
   });
 
+  it("attaches only to the registered worktree with matching repository identity", async () => {
+    const mainRoot = await initGitRepo();
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "attach1" });
+
+    await expect(WorktreeSandbox.attach(session, { baseDir })).resolves.toEqual(session);
+    await expect(WorktreeSandbox.attach({ ...session, repoId: "wrong-repo" }, { baseDir }))
+      .rejects.toThrow(/repo id mismatch/i);
+    await expect(WorktreeSandbox.attach({ ...session, branch: "xio/wrong" }, { baseDir }))
+      .rejects.toThrow(/expected branch/i);
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
   it("restores committed, tracked, untracked, and ignored files to the immutable session baseline", async () => {
     const mainRoot = await initGitRepo();
     await writeFile(path.join(mainRoot, ".gitignore"), "*.ignored\n", "utf8");
@@ -122,6 +137,31 @@ describe("WorktreeSandbox", () => {
     await expect(readFile(path.join(session.worktreePath, "created.txt"), "utf8")).rejects.toThrow();
     expect(await gitOk(mainRoot, ["rev-parse", "HEAD"])).toBe(mainHead);
 
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("keeps durable checkpoint trees reachable until the checkpoint ref is released", async () => {
+    const mainRoot = await initGitRepo();
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "durable1" });
+    await writeFile(path.join(session.worktreePath, "README.md"), "checkpoint\n", "utf8");
+    await writeFile(path.join(session.worktreePath, "untracked.txt"), "keep\n", "utf8");
+
+    const checkpoint = await WorktreeSandbox.captureDurableCheckpoint(session, "turn1");
+    expect(await gitOk(mainRoot, ["rev-parse", checkpoint.ref])).toBe(checkpoint.commit);
+    await expect(WorktreeSandbox.validateCheckpoint(session, checkpoint)).resolves.toBeUndefined();
+    await gitOk(mainRoot, ["gc", "--prune=now"]);
+    expect(await gitOk(mainRoot, ["cat-file", "-e", `${checkpoint.tree}^{tree}`])).toBe("");
+
+    await writeFile(path.join(session.worktreePath, "README.md"), "changed\n", "utf8");
+    await rm(path.join(session.worktreePath, "untracked.txt"));
+    await WorktreeSandbox.rollbackToTurnCheckpoint(session, checkpoint);
+    expect(await readFile(path.join(session.worktreePath, "README.md"), "utf8")).toBe("checkpoint\n");
+    expect(await readFile(path.join(session.worktreePath, "untracked.txt"), "utf8")).toBe("keep\n");
+
+    await WorktreeSandbox.releaseCheckpoint(session, checkpoint);
+    await expect(gitOk(mainRoot, ["rev-parse", "--verify", checkpoint.ref])).rejects.toThrow();
     await WorktreeSandbox.remove(session, { force: true });
   });
 });

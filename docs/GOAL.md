@@ -29,6 +29,14 @@
 
 冷启动时先靠公共 baseline 与最短「导入/标注第一条失败」路径；专属感来自之后累积的私有回归与能力曲线，不来自不可审计的神秘 prompt。
 
+### 身份–行为缺口（2026-07-11 审计）
+
+定位写的是失败复利机；默认日常路径仍像 Claude 兼容 coding CLI。dogfood 曾出现：有 runs、无 `~/.xiocode/regress`；run metadata 常为 `unknown`；usage 事件被密钥脱敏误伤；dirty main silently 用 HEAD worktree；worktree/MergeGate 被口头当成「沙盒」，而 `bash`/MCP 仍达宿主。
+
+**纠偏优先级（高于再堆兼容面）**：证据完整性 → dirty-main 显式策略 → bash/MCP 风险门禁 → 失败→regress 最短路径 → private FIXED × trusted PASS 联合门禁。任务树：`.trellis/tasks/07-11-harness-flywheel-gap/`。
+
+Claude/Cursor 兼容（MCP / skills / hooks）仍是市场准入，**不是**北星；G10 日常化入口已交付（失败 nudge + last-case + `[improve]` 默认），但仍需用户显式 failure/verifier 与 MergeGate 同意，不得写成全自动专属 harness。
+
 ---
 
 ## 目标用户与 JTBD
@@ -49,11 +57,13 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 ### 2. 安全改码
 
-会话在外层 git worktree 中隔离（`~/.xiocode/worktrees/...`）。合入主树必须经用户 **MergeGate** 同意（`/merge` 或会话结束询问）。禁止「测绿即合」。非 git 目录硬失败，不进入 agent loop。worktree 不是 OS sandbox；`host_isolation` 在评测报告中标为 `unsupported`。
+会话在外层 git worktree 中隔离（`~/.xiocode/worktrees/...`）。合入主树必须经用户 **MergeGate** 同意（`/merge` 或会话结束询问）。禁止「测绿即合」。非 git 目录硬失败，不进入 agent loop。
+
+**诚实边界**：worktree 保护的是主树合入，**不是** OS sandbox。`bash` 与 MCP 默认可达宿主（网络、家目录、外发）；`host_isolation` 在评测报告中标为 `unsupported`。产品不得把 MergeGate 说成「已沙盒」。dirty main 必须有显式会话策略（警告/阻断/opt-in），禁止默默用干净 HEAD 冒充当前工作区。
 
 ### 3. 可观测
 
-每次 run 留下可回溯轨迹（`~/.xiocode/runs/`：events、trajectory、元数据）。Provider usage 在客户端边界规范化一次（input/output/cache/reasoning；不可得则为 `null`，不以字符数伪造）。证据是专属 harness 的原料：调试、信任、私有回归与后续演进，不是装饰性日志。
+每次 run 留下可回溯轨迹（`~/.xiocode/runs/`：events、trajectory、元数据）。Provider usage 在客户端边界规范化一次（input/output/cache/reasoning；不可得则为 `null`，不以字符数伪造）。**metadata 的 provider/model 与 usage 数值不得被密钥脱敏误伤**；否则私有回归与自改进没有可信原料。证据是专属 harness 的原料，不是装饰性日志。
 
 ### 4. 可自改进
 
@@ -95,11 +105,11 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 |--------|------------|-------------------------|
 | Agent loop + tool schema/dispatch | harness 本体 | ✅ 自有 `src/runtime` + 内置工具；流式 + 并行工具调度（H1–H5）已落地 |
 | Sandbox / 隔离 | coding agent 安全底线 | 🟡 worktree + MergeGate 已有；**host 级隔离 unsupported** |
-| Permissions / lifecycle hooks | 危险动作门禁 | 🟡 合入门禁强；**user hooks MVP**（SessionStart / PreToolUse / PostToolUse / Stop）；细粒度风险分级（G7）与全量 Claude hooks 面未做 |
-| Context / session / checkpoint | 长任务不崩 | 🟡 持久 chat resume + trim notice、**会话起点 `/rollback` + 最新 turn `/rollback turn`** 已有；compaction、execution checkpoint-resume 未交付 |
+| Permissions / lifecycle hooks | 危险动作门禁 | 🟡 合入门禁强；**user hooks MVP**；**G7 风险类 + 会话审批已交付**（非全量 Claude hooks） |
+| Context / session / checkpoint | 长任务不崩 | ✅ 持久 chat/model + **G4 compaction** + **G5 execution/file resume** + 会话/turn rollback 已交付 |
 | Observability + cost | 生产可排障、可控费 | 🟡 轨迹 + usage 规范化有；**价格表/成本曲线、span 级 tracing 未齐** |
-| Eval harness | 评的是 model+harness | ✅ `xio eval` + capability gate；🟡 credentialed 序列与公开数字不足 |
-| Private regression / failure flywheel | 少见但高信号 | ✅ `xio regress` MVP + `compare`；🟡 improve 联合门禁与日常 dogfood 未闭环 |
+| Eval harness | 评的是 model+harness | ✅ `xio eval` + capability gate + credentialed-series.v1；公开材料只写系列能证明的结论 |
+| Private regression / failure flywheel | 少见但高信号 | ✅ `xio regress` + compare + G10 dogfood 默认（nudge / last-case / `[improve]`）；仍需显式 verdict + MergeGate ask |
 | MCP / skills / AGENTS.md | 2026 生态标配 | ✅ tools-first MCP + 本地 skills discovery + AGENTS.md/CLAUDE.md 注入（`xio-hygiene`）；非 marketplace / 非全量 resources·prompts / 非嵌套 memory 克隆 |
 | Interactive TUI | 长会话可操作面 | ✅ Ink core + diff/merge/rollback confirm + session bypass + session resume picker 已交付 |
 | 多租户 / K8s / 队列规模 | 资深平台岗 | ❌ **产品非目标**（本地个人闭环优先）；面试需能讲升级路径，不在本仓默认交付 |
@@ -118,28 +128,28 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 ### 欠缺与深化（相对中级 Agent Infra / Coding Agent JD）
 
-下列是**仍缺或仅 MVP、且会削弱 JD 对齐**的项；实现优先级以 [ROADMAP.md](../ROADMAP.md) 为准。G1–G3 已有可演示 MVP（边界见 STATUS）；下表「现状」列区分 ✅ / 🟡 / 📋。
+下列是**仍缺或仅 MVP、且会削弱 JD 对齐**的项；实现优先级以 [ROADMAP.md](../ROADMAP.md) 为准。G1–G5 已有可演示实现（边界见 STATUS）；下表「现状」列区分 ✅ / 🟡 / 📋。
 
 | ID | 缺口 | 为何卡 JD | 目标状态（完成定义） | 现状 |
 |----|------|-----------|----------------------|------|
 | G1 | MCP client | 工具生态面试标配 | Agent 可配置并调用 MCP tools；失败可观测、可拒绝 | ✅ MVP：stdio/SSE/HTTP；`mcp__*`；fail-open；非 resources/prompts/OAuth 全量 |
 | G2 | User / lifecycle hooks | PreToolUse 类门禁是 harness 八股 | 至少支持工具调用前后 hook；可阻断危险动作 | ✅ MVP：Claude settings 子集四事件；command handler；PreToolUse exit 2 可阻断 |
 | G3 | Skills / AGENTS.md 注入 | 与 AGENTS.md / skills 生态对齐 | 可发现并注入项目/用户 skills 与规格，行为可测 | ✅ MVP：本地 `SKILL.md` + `skill` tool；AGENTS.md/CLAUDE.md 注入；非 plugins market |
-| G4 | Context compaction | 「窗口满了怎么办」必问 | 可演示的 compaction（或等价卸载）策略；长会话不静默截断无说明 | 📋 仅有 `max_session_messages` trim notice |
-| G5 | Session checkpoint-resume | 长任务 / 崩溃恢复 | 中断后可从持久状态恢复关键步骤，不丢合入边界 | 🟡 持久 chat/model resume 已交付；execution/file checkpoint-resume 仍待完成 |
+| G4 | Context compaction | 「窗口满了怎么办」必问 | 可演示的 compaction（或等价卸载）策略；长会话不静默截断无说明 | ✅ `/compact [focus]` + 自动 message-budget trigger；事务式同 provider summary；持久 resume marker；非 token 精确 `/context` |
+| G5 | Session checkpoint-resume | 长任务 / 崩溃恢复 | 中断后可从持久状态恢复关键步骤，不丢合入边界 | ✅ 原子 v2 state；原 worktree attach；durable turn checkpoint；中断 tool completion unknown 且不重放；MergeGate 边界保留 |
 | G5b | Session code rollback | 「改坏了怎么撤」必问 | 可回滚本会话 worktree 改动（会话起点或最新 turn）；不擅自改主树 | ✅ `/rollback` 恢复 immutable session baseline；`/rollback turn` 恢复 prompt 起点 Git tree checkpoint；均保留 chat |
 | G6 | 隔离升级叙事与可选原型 | host isolation 被追问 | 文档写清 worktree → container → microVM 阶梯与威胁模型；**默认路径仍是 worktree**；评测报告继续诚实标 `unsupported`，除非某条可选路径真正落地 | 📋 |
-| G7 | 工具风险分级 / 审批钩子 | 细粒度权限故事偏薄 | 危险 bash / 外发 / 合入等有明确风险类与审批点（不必复活已删 PathGuard 全量设计） | 🟡 PreToolUse 可阻断；无正式风险类 / Ink 权限 UX |
-| G8 | Cost + tracing 完整度 | 生产 harness 基本功 | 版本化 price table → 非 null 成本估计；关键 model/tool 跨度可追溯 | 📋 |
-| G9 | Credentialed 能力证据 | 无真实数字难过简历关 | 固定 provider/model 下可重复的 smoke/compare 序列；公开材料只写有证据的结论 | 📋 |
-| G10 | 私有失败 → 改进默认路径 | 差异化尚未「日常化」 | 失败 run → regress →（可选）improve/gate 的最短操作路径可 dogfood | 🟡 `create`/`preflight`/`compare` 已有；improve 联合门禁未接线 |
+| G7 | 工具风险分级 / 审批钩子 | 细粒度权限故事偏薄；与「安全改码」叙事冲突 | 危险 bash / 外发 / 宿主 MCP 等有明确风险类与审批点（不必复活 PathGuard）；默认不把 IDE MCP 面无门禁热插进 agent | ✅ 风险类 + plan 拒绝 write/exec/MCP；interactive 会话审批；`-p` 需 `--allow-high-risk`；`unknown_source_fail_closed`；仍非 OS sandbox |
+| G8 | Cost + tracing 完整度 | 生产 harness 基本功 | 版本化 price table → 非 null 成本估计；关键 model/tool 跨度可追溯 | 📋 **先修证据误脱敏与 metadata**，再做价格表 |
+| G9 | Credentialed 能力证据 | 无真实数字难过简历关 | 固定 provider/model 下可重复的 smoke/compare 序列；公开材料只写有证据的结论 | ✅ |
+| G10 | 私有失败 → 改进默认路径 | 差异化尚未「日常化」 | 失败 run → 低摩擦 regress → private FIXED × trusted PASS → improve merge-ask 可 dogfood | ✅ 失败 nudge + `.last-case` + `[improve]` 默认；FIXED × PASS 仍 ask-only；case ≠ ImproveGoal |
 | G11 | Interactive TUI | 可讲述的操作面 | Ink/React：流式输出、工具行、slash、diff/权限、session resume | ✅ Core、diff/permission/bypass、resume picker 全部交付 |
 
 ### 面向 JD 的目标档位
 
 | 档位 | 目标 | 本仓要做到 | 明确不做（本仓） |
 |------|------|------------|------------------|
-| A. 作品集 / 中级 coding-agent 岗 | 证明「能从零做完整 harness」 | 五条最终目标保持；**G1–G3 已 MVP**；补齐 **G4–G5/G5b、G9–G10**（及可选 G11 TUI）；叙事用差异点 1–5 | 不宣称全面超越商业产品 |
+| A. 作品集 / 中级 coding-agent 岗 | 证明「能从零做完整 harness」 | 五条最终目标保持；**G1–G5、G5b、G9–G11 已交付**；叙事用差异点 1–5 | 不宣称全面超越商业产品 |
 | B. Agent Infra 深挖 | 能答隔离、上下文、eval、失败恢复 | 在 A 基础上完成 **G6–G8** 的可讲述 + 可演示最小实现 | 不把 Docker 恢复为默认沙盒 |
 | C. 资深平台 / 多租户 harness | K8s、队列、多租户 SLA | **超出本产品终点**；仅保留「若平台化会如何切」的设计笔记即可 | 不在默认路径做云协同专属或大规模编排 |
 
@@ -147,7 +157,7 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 - 能用一张图把 XioCode 映射到行业七件套：loop / tools / context / sandbox / permissions / telemetry / eval，并标「已有 / 刻意不做 / 下一步」  
 - 能在不吹竞品的前提下，用 MergeGate + `xio eval` + `xio regress` 讲完「如何把失败变成可证明的 harness 改进」  
-- G1–G3 已可演示；**G4–G5/G5b + G9–G10** 有可运行证据后，再投「Agent Harness / Agent Runtime」类岗位；G6–G8 决定能否扛住系统设计深挖
+- G1–G5、G5b、G9–G11 已可演示；再投「Agent Harness / Agent Runtime」类岗位时，G6–G8 决定能否扛住系统设计深挖
 
 近期执行拆条仍见 [ROADMAP.md](../ROADMAP.md)；交付是否完成以 [STATUS.md](./STATUS.md) 为准。
 
@@ -175,16 +185,16 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 | 目标条 | 当前状态（摘要） |
 |--------|------------------|
 | 1 自有闭环 | ✅ `src/runtime` 已交付；流式 / 并行工具 / 多轮 session（H1–H5）已落地 |
-| 2 安全改码 | ✅ WorktreeSandbox + MergeGate；user hooks MVP；host isolation unsupported |
-| 3 可观测 | ✅ TrajectoryRecorder + RunStore + provider usage；需积累真实语料与价格快照 |
-| 4 可自改进 | ✅ MVP + 本地 trusted baseline（`xio eval`）+ opt-in `--capability-gate`；credentialed 长期序列与外部 benchmark 尚未建立 |
-| 5 诚实交付 | ✅ 以 STATUS 为准；stub smoke = harness-only；hygiene 边界写清（非 Claude 全量克隆） |
-| 专属 harness | 🟡 定位已写入本文件；私有失败 → 回归入口与长期个人能力曲线尚未成为默认日常路径 |
-| JD 对齐 A | 🟡 **G1–G3 MVP + G5b + G11 + regress compare 已交付**；仍缺 G4 compaction、G5 execution checkpoint-resume、G9 credentialed、G10 improve 联合门禁 |
-| JD 对齐 B（G6–G8） | 📋 隔离阶梯文档、风险分级深化、cost/tracing 完整度待补 |
+| 2 安全改码 | 🟡 Worktree + MergeGate + dirty-main；**G7 工具风险门禁已交付**；host isolation 仍 unsupported |
+| 3 可观测 | 🟡 轨迹落盘有；**证据完整性（metadata / usage 误脱敏）优先于 G8 价格表** |
+| 4 可自改进 | 🟡 MVP + trusted gate + **private FIXED × PASS 联合门禁** + G10 dogfood 默认（仍需显式 verdict / MergeGate ask） |
+| 5 诚实交付 | ✅ 以 STATUS 为准；stub = harness-only；身份–行为缺口已写明 |
+| 专属 harness | 🟡 日常入口已交付；case ≠ goal、无自动 capture/merge；见 STATUS known gaps |
+| JD 对齐 A | ✅ G1–G5、G5b、G9–G11 已交付；公开能力声明仍受 series 证据约束 |
+| JD 对齐 B（G6–G8） | 🟡 G7 ✅；G6/G8 仍待；叙事不得掩盖 bash 宿主可达 |
 | JD 对齐 C | ❌ 产品非目标；仅面试升级路径 |
 
-近期待办（compaction / checkpoint-resume / session rollback、Ink TUI、credentialed series、语料、私有回归日常化、外评接线、H6/H8 工具层）服务于上述终点与 JD 档位 A/B，见 [ROADMAP.md](../ROADMAP.md)。
+近期待办 **P0**：证据完整性 ✅、dirty-main 策略 ✅、工具风险门禁 ✅、regress 激活 ✅、improve 联合门禁 ✅（`.trellis/tasks/07-11-harness-flywheel-gap/` 收尾）。其余见 [ROADMAP.md](../ROADMAP.md)。
 
 ---
 

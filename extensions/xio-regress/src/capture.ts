@@ -45,6 +45,7 @@ export class RegressionCapture {
       created_at: this.now().toISOString(),
     };
     const written = await this.store.writeCase(regression);
+    await this.store.writeLastCaseId(regression.case_id);
     return { status: "CAPTURED", case: regression, ...written };
   }
 }

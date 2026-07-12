@@ -69,13 +69,27 @@ async function runReal(
   const started = Date.now();
   const api = await loadCandidateApi(candidateRoot);
   const prepared = await prepareCandidateSession(api, fixtureRoot, trialHome, input.max_turns);
+  if (input.provider && input.model) {
+    const desired = {
+      provider: input.provider,
+      id: input.model,
+      name: input.model,
+      api: prepared.session.model.api ?? "openai-completions",
+    };
+    if (prepared.session.model.provider !== desired.provider || prepared.session.model.id !== desired.id) {
+      await prepared.session.setModel(desired);
+    }
+  }
   let promptResult: RuntimePromptResult;
   let systemPrompt = "";
   try {
     promptResult = await prepared.session.runPrompt(input.prompt);
     systemPrompt = prepared.session.host.createContext().getSystemPrompt?.() ?? "";
   } finally {
-    await prepared.session.close();
+    // Keep the candidate worktree for the trusted out-of-tree grader. Session close
+    // finalizes MergeGate and removes clean/ancestor worktrees; trial root cleanup
+    // owns deletion after grading.
+    await prepared.session.host.emit("session_end", {}).catch(() => undefined);
   }
   const runId = await findRunId(prepared.runRoot);
   return {
@@ -184,7 +198,17 @@ function decodeCandidateInput(value: unknown): CandidateInput {
   if (input.mode === "stub" && !isStringRecord(input.oracle_files)) {
     throw new Error("stub candidate input requires oracle_files");
   }
+  if (input.mode === "real") {
+    assertOptionalString(input.provider, "candidate input provider");
+    assertOptionalString(input.model, "candidate input model");
+  }
   return value as CandidateInput;
+}
+
+function assertOptionalString(value: unknown, label: string): void {
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`${label} must be a string or absent`);
+  }
 }
 
 function requiredExport(module: Record<string, unknown>, name: string): unknown {
@@ -285,8 +309,12 @@ type RuntimePromptResult = {
 };
 
 type RuntimeSession = {
-  model: { provider: string; id: string };
-  host: { createContext: () => { getSystemPrompt?: () => string } };
+  model: { provider: string; id: string; api?: string };
+  host: {
+    createContext: () => { getSystemPrompt?: () => string };
+    emit: (event: string, payload?: unknown) => Promise<unknown>;
+  };
   runPrompt: (prompt: string) => Promise<RuntimePromptResult>;
+  setModel: (model: { provider: string; id: string; name: string; api: string }) => Promise<void>;
   close: () => Promise<void>;
 };

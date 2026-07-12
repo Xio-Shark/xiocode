@@ -8,7 +8,12 @@ import { gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { MergeGate } from "../../extensions/xio-sandbox/src/merge-gate.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { ExtensionHost } from "./extension-host.ts";
-import { createPromptRunner, registerRollbackCommand } from "./session-lifecycle.ts";
+import {
+  CONTEXT_SUMMARY_NAME,
+  ContextCompactionController,
+  SessionHistory,
+} from "./context-compaction.ts";
+import { createPromptRunner, formatRegressCaptureHint, registerRollbackCommand } from "./session-lifecycle.ts";
 
 import type { ChatMessage, LlmClient, ModelInfo } from "./types.ts";
 
@@ -135,5 +140,192 @@ describe("registerRollbackCommand", () => {
     expect(requests[1]!.some((message) => message.content === "turn to undo")).toBe(true);
     expect(requests[1]!.some((message) => message.content === "continue after rollback")).toBe(true);
     await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("clears the turn checkpoint after a full session rollback", async () => {
+    const session = await createWorktree();
+    const gate = new MergeGate(session);
+    const host = new ExtensionHost();
+    registerRollbackCommand(host, gate, async () => true);
+    await writeFile(path.join(session.worktreePath, "prior.txt"), "prior\n", "utf8");
+    await gate.captureTurnCheckpoint();
+    await writeFile(path.join(session.worktreePath, "later.txt"), "later\n", "utf8");
+
+    await expect(host.runCommand("rollback")).resolves.toMatch(/session baseline/);
+    await expect(host.runCommand("rollback", "turn")).rejects.toThrow(/unavailable/i);
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("restores pre-rollback files when checkpoint persistence fails", async () => {
+    const session = await createWorktree();
+    const gate = new MergeGate(session);
+    await writeFile(path.join(session.worktreePath, "prior.txt"), "prior\n", "utf8");
+    await gate.captureTurnCheckpoint();
+    await writeFile(path.join(session.worktreePath, "later.txt"), "later\n", "utf8");
+    gate.setCheckpointClearedHandler(() => {
+      throw new Error("snapshot failed");
+    });
+
+    await expect(gate.promptRollback(async () => true)).rejects.toThrow(/snapshot failed/i);
+    expect(await readFile(path.join(session.worktreePath, "later.txt"), "utf8")).toBe("later\n");
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+});
+
+describe("createPromptRunner context compaction", () => {
+  it("automatically compacts through the shared history before the provider request", async () => {
+    const host = new ExtensionHost();
+    const requests: ChatMessage[][] = [];
+    const snapshots: ChatMessage[][] = [];
+    const history = new SessionHistory({
+      initialMessages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "old" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: "middle" },
+        { role: "assistant", content: "middle answer" },
+        { role: "user", content: "latest" },
+        { role: "assistant", content: "latest answer" },
+      ],
+      persist: (messages) => {
+        snapshots.push([...messages]);
+      },
+    });
+    const client: LlmClient = {
+      async complete(request) {
+        if (request.messages[0]?.content.includes("compact XioCode")) {
+          return {
+            content: "summary",
+            toolCalls: [],
+            usage: { inputTokens: 2, outputTokens: 1, cacheTokens: 0, reasoningTokens: 0 },
+          };
+        }
+        requests.push([...request.messages]);
+        return {
+          content: "continued",
+          toolCalls: [],
+          usage: { inputTokens: 3, outputTokens: 1, cacheTokens: 0, reasoningTokens: 0 },
+        };
+      },
+    };
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => client,
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 8,
+    });
+    const runPrompt = createPromptRunner({
+      host,
+      client,
+      model: { provider: "test", id: "stub" },
+      providerApi: "openai-completions",
+      verify: { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] },
+      maxSessionMessages: 8,
+      history,
+      contextCompaction: controller,
+    });
+
+    const result = await runPrompt("next");
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.some((message) => message.name === CONTEXT_SUMMARY_NAME)).toBe(true);
+    expect(requests[0]!.some((message) => message.content === "latest")).toBe(true);
+    expect(requests[0]!.some((message) => message.content === "next")).toBe(true);
+    expect(snapshots).toHaveLength(2);
+    expect(history.getMessages().some((message) => message.content === "continued")).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2, cacheTokens: 0, reasoningTokens: 0 });
+  });
+
+  it("blocks the user provider request when automatic compaction fails", async () => {
+    const host = new ExtensionHost();
+    const history = new SessionHistory({
+      initialMessages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "old" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: "middle" },
+        { role: "assistant", content: "middle answer" },
+        { role: "user", content: "latest" },
+        { role: "assistant", content: "latest answer" },
+      ],
+    });
+    let providerCalls = 0;
+    const client: LlmClient = {
+      async complete() {
+        providerCalls += 1;
+        throw new Error("summary unavailable");
+      },
+    };
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => client,
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 8,
+    });
+    const runPrompt = createPromptRunner({
+      host,
+      client,
+      model: { provider: "test", id: "stub" },
+      providerApi: "openai-completions",
+      verify: { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] },
+      maxSessionMessages: 8,
+      history,
+      contextCompaction: controller,
+    });
+
+    await expect(runPrompt("next")).rejects.toThrow("summary unavailable");
+    expect(providerCalls).toBe(1);
+    expect(history.getMessages().some((message) => message.content === "next")).toBe(false);
+  });
+});
+
+describe("formatRegressCaptureHint", () => {
+  it("includes run id when known", () => {
+    expect(formatRegressCaptureHint()).toBe(
+      "hint: capture private regression — /regress  or  xio regress capture --last",
+    );
+    expect(formatRegressCaptureHint("run-abc")).toBe(
+      "hint: capture private regression — /regress  or  xio regress capture --last  (run=run-abc)",
+    );
+  });
+});
+
+describe("createPromptRunner failure nudge", () => {
+  it("notifies regress hint when the loop returns success=false", async () => {
+    const host = new ExtensionHost();
+    const notices: string[] = [];
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        return { content: "done", toolCalls: [] };
+      },
+    };
+    const runPrompt = createPromptRunner({
+      host,
+      client,
+      model: { provider: "test", id: "stub" },
+      providerApi: "openai-completions",
+      verify: {
+        enabled: true,
+        requireAllPass: true,
+        repairTurns: 0,
+        commands: [{ name: "fail", argv: ["false"] }],
+      },
+      doneContract: {
+        requireAllPass: true,
+        commands: [{ name: "fail", argv: ["false"] }],
+      },
+      getRunId: () => "run-42",
+      sink: {
+        notify: (message) => notices.push(message),
+      },
+    });
+
+    const result = await runPrompt("verify me");
+    expect(result.success).toBe(false);
+    expect(calls).toBeGreaterThan(0);
+    expect(notices.some((n) => n.includes("/regress") && n.includes("run=run-42"))).toBe(true);
+    expect(notices.filter((n) => n.startsWith("hint: capture private regression")).length).toBe(1);
   });
 });

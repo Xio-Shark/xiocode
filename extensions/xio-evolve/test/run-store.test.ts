@@ -38,4 +38,18 @@ describe("RunStore", () => {
 
     expect(recent[0]?.run_id).toBe("new");
   });
+
+  it("updates provider and model on an existing run", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "xio-runs-"));
+    const store = new RunStore({ root: tempDir, randomId: () => "id" });
+    const run = await store.createRun({ run_id: "run-1", provider: "a", model: "m1" });
+
+    const updated = await store.updateMetadata(run.run_id, { provider: "b", model: "m2" });
+    const disk = JSON.parse(await readFile(path.join(run.path, "metadata.json"), "utf8")) as Record<string, unknown>;
+
+    expect(updated.provider).toBe("b");
+    expect(updated.model).toBe("m2");
+    expect(disk.provider).toBe("b");
+    expect(disk.model).toBe("m2");
+  });
 });

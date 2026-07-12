@@ -1,9 +1,17 @@
 export { ExtensionHost } from "./extension-host.ts";
 export { defineTool } from "./define-tool.ts";
 export { Type } from "./schema.ts";
-export { runAgentLoop, trimSessionMessages } from "./agent-loop.ts";
+export { runAgentLoop } from "./agent-loop.ts";
+export {
+  CONTEXT_SUMMARY_NAME,
+  ContextCompactionError,
+  ContextCompactionController,
+  SessionHistory,
+  compactSessionMessages,
+  isContextCompactionError,
+} from "./context-compaction.ts";
 export { prepareSession, runSession, toDoneContract } from "./session.ts";
-export { createStdoutSessionUiSink } from "./session-ui.ts";
+export { createStdoutSessionUiSink, TOOL_OUTPUT_PREVIEW_LINES, previewText, toolCallDetail, toolResultOutput } from "./session-ui.ts";
 export { SessionStore } from "./session-store.ts";
 export { createBuiltinTools } from "./tools/builtin.ts";
 export { createLlmClient, resolveApiKey } from "./providers/client.ts";
@@ -17,6 +25,8 @@ export type {
   ChatToolCall,
   CommandHandlerContext,
   CommandOptions,
+  ContextCompactionMode,
+  ContextCompactionUiEvent,
   ExtensionHandler,
   JsonSchema,
   LlmClient,
@@ -25,6 +35,7 @@ export type {
   ProviderModelConfig,
   ProviderRegistration,
   StreamEvent,
+  ThinkingDisplay,
   ThinkingLevel,
   ToolCallEvent,
   ToolDefinition,
@@ -37,6 +48,14 @@ export type {
 
 export type { DoneContract, DoneContractResult, DoneCommand } from "./verify/done-contract.ts";
 export type { SessionUiSink } from "./session-ui.ts";
-export type { SaveSessionInput, SessionMetadata, StoredSession } from "./session-store.ts";
+export type { ContextCompactionResult } from "./context-compaction.ts";
+export type { AgentLoopCheckpoint } from "./agent-loop.ts";
+export type {
+  SaveSessionInput,
+  SessionExecution,
+  SessionMetadata,
+  SessionWorkspace,
+  StoredSession,
+} from "./session-store.ts";
 export type { SessionOptions, SessionSnapshot } from "./session.ts";
 export type { WriteBackResult } from "./verify/write-back.ts";

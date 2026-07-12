@@ -48,7 +48,11 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
 
   ctx.on?.("session_start", async (payload) => {
     const provenance = sessionProvenance(payload);
-    const metadata = await recorder.start();
+    const identity = sessionIdentity(payload);
+    const metadata = await recorder.start({
+      ...(identity.provider ? { provider: identity.provider } : {}),
+      ...(identity.model ? { model: identity.model } : {}),
+    });
     currentRun = metadata;
     promptArtifactWritten = false;
     if (provenance) {
@@ -56,6 +60,24 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     }
     options.onRunStart?.(metadata);
     return metadata;
+  });
+
+  ctx.on?.("model_change", async (payload) => {
+    const identity = sessionIdentity(payload);
+    if (!currentRun || !identity.provider || !identity.model) {
+      return undefined;
+    }
+    if (currentRun.provider === identity.provider && currentRun.model === identity.model) {
+      return undefined;
+    }
+    const updated = await recorder.updateRunIdentity({
+      provider: identity.provider,
+      model: identity.model,
+    });
+    if (updated) {
+      currentRun = updated;
+    }
+    return updated;
   });
 
   ctx.on?.("before_agent_start", async (payload, eventCtx) => {
@@ -120,16 +142,28 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   });
 
   ctx.on?.("provider_response", (payload) => recorder.recordProviderUsage(payload));
+  ctx.on?.("context_compaction", (payload) => {
+    const event = asRecord(payload);
+    if (event.stage === "success") recorder.recordProviderUsage({ usage: event.usage });
+  });
   ctx.on?.("turn_end", (payload) => recorder.recordTurnEnd(payload));
   ctx.on?.("agent_end", () => recorder.finish());
 
   ctx.registerCommand?.("status", {
     description: "Show XioCode runtime and run status.",
     handler: async (_args, commandCtx) => {
+      const provider = commandCtx?.model?.provider;
+      const model = commandCtx?.model?.id;
+      if (currentRun && provider && model && (currentRun.provider !== provider || currentRun.model !== model)) {
+        const updated = await recorder.updateRunIdentity({ provider, model });
+        if (updated) {
+          currentRun = updated;
+        }
+      }
       const status = await collectRuntimeStatus({
         runStore,
-        provider: commandCtx?.model?.provider,
-        model: commandCtx?.model?.id,
+        provider,
+        model,
         currentRun,
       });
       commandCtx?.ui?.setWidget?.("xiocode-status", formatStatusWidget(status), { placement: "above" });
@@ -243,6 +277,14 @@ function sessionProvenance(payload: unknown) {
     return null;
   }
   return decodeRunProvenance(event.provenance);
+}
+
+function sessionIdentity(payload: unknown): Readonly<{ provider?: string; model?: string }> {
+  const event = asRecord(payload);
+  return {
+    provider: stringValue(event.provider),
+    model: stringValue(event.model),
+  };
 }
 
 export { ContextInjector, ResultDenoiser, RunStore, TodoEnforcer, TrajectoryRecorder };

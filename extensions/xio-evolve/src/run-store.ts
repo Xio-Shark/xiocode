@@ -40,6 +40,20 @@ export class RunStore {
     return { run_id: metadata.run_id, path: runPath, metadata };
   }
 
+  async updateMetadata(runId: string, patch: Partial<Pick<RunMetadata, "provider" | "model">>): Promise<RunMetadata> {
+    const current = await this.readRecord(runId);
+    if (!current) {
+      throw new Error(`run not found: ${runId}`);
+    }
+    const metadata: RunMetadata = {
+      ...current.metadata,
+      ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+    };
+    await this.writeJson(runId, "metadata.json", metadata);
+    return metadata;
+  }
+
   async listRecent(limit: number): Promise<readonly RunRecord[]> {
     await mkdir(this.root, { recursive: true });
     const entries = await readdir(this.root, { withFileTypes: true });

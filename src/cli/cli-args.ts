@@ -5,13 +5,20 @@ import type { ResumeRequest } from "./session-resume.ts";
 export type XioArgs = Readonly<{
   passthrough: readonly string[];
   runtimeExtensionEnabled: boolean;
+  allowDirty: boolean;
+  allowHighRisk: boolean;
   promptOnce?: string;
   resume?: ResumeRequest;
 }>;
 
 export function parseXioArgs(args: readonly string[]): XioArgs {
   const runtimeExtensionEnabled = !args.includes("--xio-fast");
-  const parsedResume = parseResumeRequest(args.filter((arg) => arg !== "--xio-fast"));
+  const allowDirty = args.includes("--allow-dirty");
+  const allowHighRisk = args.includes("--allow-high-risk");
+  const withoutFlags = args.filter(
+    (arg) => arg !== "--xio-fast" && arg !== "--allow-dirty" && arg !== "--allow-high-risk",
+  );
+  const parsedResume = parseResumeRequest(withoutFlags);
   const remaining = parsedResume.remaining;
   let promptOnce: string | undefined;
   const passthrough: string[] = [];
@@ -32,6 +39,8 @@ export function parseXioArgs(args: readonly string[]): XioArgs {
   return {
     passthrough,
     runtimeExtensionEnabled,
+    allowDirty,
+    allowHighRisk,
     promptOnce,
     ...(parsedResume.request ? { resume: parsedResume.request } : {}),
   };

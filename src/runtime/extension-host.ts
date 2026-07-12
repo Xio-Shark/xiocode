@@ -33,6 +33,7 @@ export class ExtensionHost implements XioExtensionAPI {
   #model: ModelInfo | undefined;
   #thinkingLevel: ThinkingLevel;
   #systemPrompt = "";
+  #activationFilter: ((name: string) => boolean) | undefined;
   readonly #ui: CommandHandlerContext["ui"];
   readonly #getSystemPrompt: (() => string) | undefined;
 
@@ -50,9 +51,18 @@ export class ExtensionHost implements XioExtensionAPI {
 
   registerTool(tool: ToolDefinition): void {
     this.#tools.set(tool.name, tool);
-    if (!this.#activeTools.includes(tool.name)) {
+    const allowed = !this.#activationFilter || this.#activationFilter(tool.name);
+    if (allowed && !this.#activeTools.includes(tool.name)) {
       this.#activeTools.push(tool.name);
     }
+  }
+
+  /**
+   * When set, newly registered tools only join the active set if the filter returns true.
+   * Does not remove already-active tools — call setActiveTools / re-apply after changing.
+   */
+  setToolActivationFilter(filter: ((name: string) => boolean) | undefined): void {
+    this.#activationFilter = filter;
   }
 
   registerCommand(name: string, options: CommandOptions): void {
@@ -115,6 +125,15 @@ export class ExtensionHost implements XioExtensionAPI {
 
   listCommands(): readonly string[] {
     return [...this.#commands.keys()];
+  }
+
+  listCommandEntries(): readonly Readonly<{ name: string; description: string }>[] {
+    return [...this.#commands.entries()]
+      .map(([name, options]) => ({
+        name,
+        description: options.description?.trim() || "",
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   setSystemPrompt(prompt: string): void {

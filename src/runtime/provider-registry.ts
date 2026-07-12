@@ -28,6 +28,7 @@ export function registerConfiguredProviders(host: ExtensionHost, config: XioRunt
       baseUrl: provider.baseUrl,
       apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
       authHeader: true,
+      thinkingDisplay: provider.thinkingDisplay,
       models: [{
         id: provider.model,
         name: provider.model,
@@ -44,7 +45,7 @@ export function registerConfiguredProviders(host: ExtensionHost, config: XioRunt
   }
 }
 
-function providerApi(kind: string): string {
+export function providerApi(kind: string): string {
   if (kind === "anthropic") return "anthropic-messages";
   if (kind === "mistral") return "mistral-conversations";
   if (kind === "google") return "google-generative-ai";

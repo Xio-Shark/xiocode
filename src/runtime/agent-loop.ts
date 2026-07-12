@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
   ToolExecuteResult,
 } from "./types.ts";
+import { assertMessageBudget } from "./context-compaction.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
 
@@ -16,8 +17,6 @@ import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts
 
 const WRITE_SERIAL_TOOLS = new Set(["write", "edit"]);
 const DEFAULT_MAX_SESSION_MESSAGES = 80;
-const CONTEXT_TRIM_NOTICE =
-  "[context trimmed] Older session messages were removed to stay under max_session_messages. Continue from the remaining conversation.";
 
 export type AgentLoopOptions = Readonly<{
   host: ExtensionHost;
@@ -31,6 +30,7 @@ export type AgentLoopOptions = Readonly<{
   verifyRepairTurns?: number;
   onAssistantText?: (text: string) => void;
   onAssistantDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
   onToolStart?: (call: ChatToolCall) => void;
   onToolEnd?: (call: ChatToolCall, result: ToolExecuteResult) => void;
   signal?: AbortSignal;
@@ -40,6 +40,13 @@ export type AgentLoopOptions = Readonly<{
   priorMessages?: readonly ChatMessage[];
   /** Hard cap on retained session messages; trim inserts an explicit notice. */
   maxSessionMessages?: number;
+  onCheckpoint?: (checkpoint: AgentLoopCheckpoint) => Promise<void> | void;
+}>;
+
+export type AgentLoopCheckpoint = Readonly<{
+  phase: "turn_started" | "awaiting_provider" | "tool_batch_running" | "turn_complete";
+  messages: readonly ChatMessage[];
+  pendingTools?: readonly Readonly<{ id: string; name: string }>[];
 }>;
 
 export type AgentLoopResult = Readonly<{
@@ -96,6 +103,7 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     priorMessages: options.priorMessages,
     maxSessionMessages: Math.max(4, options.maxSessionMessages ?? DEFAULT_MAX_SESSION_MESSAGES),
   });
+  await publishCheckpoint(options, { phase: "turn_started", messages });
 
   if (options.signal?.aborted) {
     await emitCancelledEnd(options, undefined);
@@ -112,6 +120,7 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
   }
 
   const progress = await runSegments(messages, options, { maxTurns, repairTurns: verifyRepairTurns });
+  await publishCheckpoint(options, { phase: "turn_complete", messages });
 
   await options.host.emit("turn_end", { prompt: userPrompt });
   await options.host.emit("agent_end", {
@@ -161,26 +170,8 @@ function buildMessages(input: Readonly<{
     }
     messages.push({ role: "user", content: input.userPrompt });
   }
-  return trimSessionMessages(messages, input.maxSessionMessages);
-}
-
-export function trimSessionMessages(messages: ChatMessage[], maxSessionMessages: number): ChatMessage[] {
-  if (messages.length <= maxSessionMessages) {
-    return messages;
-  }
-  const systemPrefix: ChatMessage[] = [];
-  let index = 0;
-  while (index < messages.length && messages[index]?.role === "system") {
-    systemPrefix.push(messages[index]!);
-    index += 1;
-  }
-  const tailBudget = Math.max(1, maxSessionMessages - systemPrefix.length - 1);
-  const tail = messages.slice(Math.max(index, messages.length - tailBudget));
-  return [
-    ...systemPrefix,
-    { role: "user" as const, content: CONTEXT_TRIM_NOTICE },
-    ...tail,
-  ].slice(0, maxSessionMessages);
+  assertMessageBudget(messages, input.maxSessionMessages);
+  return messages;
 }
 
 function collectTurnStartContext(results: readonly unknown[]): string {
@@ -250,6 +241,7 @@ async function runUntilIdle(
     const tools = options.host.listTools();
     let completion: ChatCompletionResponse;
     try {
+      await publishCheckpoint(options, { phase: "awaiting_provider", messages });
       completion = await requestCompletion(messages, options, tools);
     } catch (error) {
       if (isAbortError(error) || options.signal?.aborted) {
@@ -267,6 +259,7 @@ async function runUntilIdle(
 
     if (completion.toolCalls.length === 0) {
       messages.push({ role: "assistant", content: completion.content });
+      await publishCheckpoint(options, { phase: "turn_complete", messages });
       turns += 1;
       break;
     }
@@ -275,6 +268,11 @@ async function runUntilIdle(
       role: "assistant",
       content: completion.content,
       toolCalls: completion.toolCalls,
+    });
+    await publishCheckpoint(options, {
+      phase: "tool_batch_running",
+      messages,
+      pendingTools: completion.toolCalls.map(({ id, name }) => ({ id, name })),
     });
 
     const metrics = await appendToolResults(messages, options, completion.toolCalls);
@@ -313,6 +311,7 @@ async function requestCompletion(
     messages: requestMessages,
     tools: requestTools,
     parallelToolCalls,
+    thinkingLevel: options.host.getThinkingLevel(),
   };
 
   let completion: ChatCompletionResponse;
@@ -344,7 +343,9 @@ async function consumeStream(
   let raw: unknown;
   let sawDelta = false;
   for await (const event of client.completeStream(request, { signal: options.signal })) {
-    if (event.type === "text_delta") {
+    if (event.type === "thinking_delta") {
+      options.onThinkingDelta?.(event.text);
+    } else if (event.type === "text_delta") {
       sawDelta = true;
       options.onAssistantDelta?.(event.text);
       content += event.text;
@@ -381,7 +382,8 @@ async function appendToolResults(
   if (!parallel || calls.length <= 1) {
     for (let index = 0; index < calls.length; index += 1) {
       if (options.signal?.aborted) {
-        return { calls: index, errors, cancelled: true };
+        await appendInterruptedResults(messages, options, calls.slice(index));
+        return { calls: index, errors: errors + calls.length - index, cancelled: true };
       }
       const call = calls[index]!;
       options.onToolStart?.(call);
@@ -391,6 +393,12 @@ async function appendToolResults(
         errors += 1;
       }
       options.onToolEnd?.(call, result);
+      appendToolResult(messages, call, result);
+      await publishCheckpoint(options, {
+        phase: "tool_batch_running",
+        messages,
+        pendingTools: calls.slice(index + 1).map(({ id, name }) => ({ id, name })),
+      });
     }
   } else {
     let writeChain: Promise<void> = Promise.resolve();
@@ -446,20 +454,16 @@ async function appendToolResults(
         errors += 1;
       }
     }
-  }
-
-  for (let index = 0; index < calls.length; index += 1) {
-    const call = calls[index]!;
-    const result = results[index] ?? {
-      content: [{ type: "text", text: `tool result missing for ${call.name}` }],
-      isError: true,
-    };
-    messages.push({
-      role: "tool",
-      toolCallId: call.id,
-      name: call.name,
-      content: result.content.map((part) => part.text).join("\n"),
-    });
+    for (let index = 0; index < calls.length; index += 1) {
+      const call = calls[index]!;
+      const result = results[index] ?? interruptedToolResult(call);
+      appendToolResult(messages, call, result);
+      await publishCheckpoint(options, {
+        phase: "tool_batch_running",
+        messages,
+        pendingTools: calls.slice(index + 1).map(({ id, name }) => ({ id, name })),
+      });
+    }
   }
 
   return {
@@ -467,6 +471,54 @@ async function appendToolResults(
     errors,
     cancelled: options.signal?.aborted === true,
   };
+}
+
+function appendToolResult(messages: ChatMessage[], call: ChatToolCall, result: ToolExecuteResult): void {
+  messages.push({
+    role: "tool",
+    toolCallId: call.id,
+    name: call.name,
+    content: result.content.map((part) => part.text).join("\n"),
+  });
+}
+
+async function appendInterruptedResults(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+  calls: readonly ChatToolCall[],
+): Promise<void> {
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index]!;
+    appendToolResult(messages, call, interruptedToolResult(call));
+    await publishCheckpoint(options, {
+      phase: "tool_batch_running",
+      messages,
+      pendingTools: calls.slice(index + 1).map(({ id, name }) => ({ id, name })),
+    });
+  }
+}
+
+function interruptedToolResult(call: ChatToolCall): ToolExecuteResult {
+  return {
+    content: [{
+      type: "text",
+      text: `tool interrupted: completion unknown for ${call.name}; inspect workspace state before retrying`,
+    }],
+    isError: true,
+  };
+}
+
+async function publishCheckpoint(
+  options: AgentLoopOptions,
+  checkpoint: AgentLoopCheckpoint,
+): Promise<void> {
+  await options.onCheckpoint?.({
+    ...checkpoint,
+    messages: checkpoint.messages.map((message) => ({
+      ...message,
+      ...(message.toolCalls ? { toolCalls: message.toolCalls.map((call) => ({ ...call, arguments: { ...call.arguments } })) } : {}),
+    })),
+  });
 }
 
 async function executeToolCall(

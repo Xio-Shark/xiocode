@@ -3,12 +3,13 @@ import path from "node:path";
 
 import { parse } from "smol-toml";
 
+import { assertMaxSessionMessages } from "../runtime/context-compaction.ts";
 import { DEFAULT_WORKTREE_CONFIG } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 import type { WorktreeConfig, WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 export type ProviderKind = "openai" | "anthropic" | "mistral" | "google" | "google-vertex" | "bedrock" | string;
-export type XioThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type XioThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type XioProviderToolChoice = "auto" | "required" | "any";
 export type XioProviderToolChoiceScope = "always" | "non_simple" | "never";
 export type XioThinkingDisplay = "summarized" | "omitted";
@@ -17,8 +18,10 @@ export type XioGeneralConfig = Readonly<{
   defaultProvider?: string;
   defaultModel?: string;
   runRoot: string;
-  /** Hard cap on retained ChatMessage count across REPL prompts. Default 80. */
+  /** Message budget that triggers automatic context compaction. Default 80. */
   maxSessionMessages?: number;
+  /** Default session thinking effort (off|minimal|low|medium|high|xhigh|max|ultra). */
+  defaultThinkingLevel?: XioThinkingLevel;
 }>;
 
 export type XioProviderConfig = Readonly<{
@@ -98,8 +101,23 @@ export type XioMcpConfig = Readonly<{
   readClaude: boolean;
   readCursor: boolean;
   failClosed: boolean;
+  /** When true, skip auto-import from Claude/Cursor user configs (config/project only). */
+  unknownSourceFailClosed: boolean;
   timeoutMs: number;
   servers: Readonly<Record<string, XioMcpServerConfig>>;
+}>;
+
+export type XioPermissionsConfig = Readonly<{
+  /** When true, high-risk tools (exec/network/MCP) skip session ask / non-interactive deny. */
+  allowHighRisk: boolean;
+}>;
+
+/** Dogfood defaults for `xio improve` when CLI flags are omitted. */
+export type XioImproveConfig = Readonly<{
+  /** Opt-in trusted capability gate before MergeGate ask. Default false. */
+  capabilityGate: boolean;
+  /** Optional private case id, or `"last"` for the durable last-captured pointer. */
+  privateCase?: string;
 }>;
 
 export type XioConfig = Readonly<{
@@ -112,6 +130,8 @@ export type XioConfig = Readonly<{
   skills: XioSkillsConfig;
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
+  permissions: XioPermissionsConfig;
+  improve: XioImproveConfig;
 }>;
 
 export type XioRuntimeConfig = Readonly<{
@@ -124,6 +144,7 @@ export type XioRuntimeConfig = Readonly<{
   skills: XioSkillsConfig;
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
+  permissions: XioPermissionsConfig;
 }>;
 
 export type ParsedXioConfig = Readonly<{
@@ -162,8 +183,17 @@ const DEFAULT_MCP: XioMcpConfig = {
   readClaude: true,
   readCursor: true,
   failClosed: false,
+  unknownSourceFailClosed: false,
   timeoutMs: 30_000,
   servers: {},
+};
+
+const DEFAULT_PERMISSIONS: XioPermissionsConfig = {
+  allowHighRisk: false,
+};
+
+const DEFAULT_IMPROVE: XioImproveConfig = {
+  capabilityGate: false,
 };
 
 export function parseXioConfig(content: string, options: ParseConfigOptions = {}): ParsedXioConfig {
@@ -179,7 +209,21 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const skills = parseSkills(getTable(data, "skills"));
   const hooks = parseHooks(getTable(data, "hooks"));
   const mcp = parseMcp(getTable(data, "mcp"));
-  const xio: XioConfig = { general, providers, worktree, extensions, verify, agentsMd, skills, hooks, mcp };
+  const permissions = parsePermissions(getTable(data, "permissions"));
+  const improve = parseImprove(getTable(data, "improve"));
+  const xio: XioConfig = {
+    general,
+    providers,
+    worktree,
+    extensions,
+    verify,
+    agentsMd,
+    skills,
+    hooks,
+    mcp,
+    permissions,
+    improve,
+  };
   return {
     xio,
     runtimeConfig: toRuntimeConfig(xio),
@@ -197,6 +241,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     skills: config.skills,
     hooks: config.hooks,
     mcp: config.mcp,
+    permissions: config.permissions,
   };
 }
 
@@ -211,11 +256,14 @@ export function expandHome(value: string): string {
 }
 
 function parseGeneral(table: Record<string, unknown> | undefined): XioGeneralConfig {
+  const maxSessionMessages = getOptionalNumber(table, "max_session_messages");
+  if (maxSessionMessages !== undefined) assertMaxSessionMessages(maxSessionMessages);
   return {
     defaultProvider: getOptionalString(table, "default_provider"),
     defaultModel: getOptionalString(table, "default_model"),
     runRoot: getOptionalString(table, "run_root") ?? DEFAULT_RUN_ROOT,
-    maxSessionMessages: getOptionalNumber(table, "max_session_messages"),
+    maxSessionMessages,
+    defaultThinkingLevel: getOptionalThinkingLevel(table, "default_thinking_level"),
   };
 }
 
@@ -252,6 +300,7 @@ function parseWorktree(table: Record<string, unknown> | undefined): WorktreeConf
   return {
     enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_WORKTREE_CONFIG.enabled,
     retainOnReject: getOptionalBoolean(table, "retain_on_reject") ?? DEFAULT_WORKTREE_CONFIG.retainOnReject,
+    allowDirty: getOptionalBoolean(table, "allow_dirty") ?? DEFAULT_WORKTREE_CONFIG.allowDirty,
   };
 }
 
@@ -314,8 +363,30 @@ function parseMcp(table: Record<string, unknown> | undefined): XioMcpConfig {
     readClaude: getOptionalBoolean(table, "read_claude") ?? DEFAULT_MCP.readClaude,
     readCursor: getOptionalBoolean(table, "read_cursor") ?? DEFAULT_MCP.readCursor,
     failClosed: getOptionalBoolean(table, "fail_closed") ?? DEFAULT_MCP.failClosed,
+    unknownSourceFailClosed:
+      getOptionalBoolean(table, "unknown_source_fail_closed") ?? DEFAULT_MCP.unknownSourceFailClosed,
     timeoutMs: getOptionalNumber(table, "timeout_ms") ?? DEFAULT_MCP.timeoutMs,
     servers: parseMcpServers(table ? getTable(table, "servers") : undefined),
+  };
+}
+
+function parsePermissions(table: Record<string, unknown> | undefined): XioPermissionsConfig {
+  return {
+    allowHighRisk: getOptionalBoolean(table, "allow_high_risk") ?? DEFAULT_PERMISSIONS.allowHighRisk,
+  };
+}
+
+function parseImprove(table: Record<string, unknown> | undefined): XioImproveConfig {
+  const privateCase = getOptionalString(table, "private_case")?.trim();
+  if (privateCase !== undefined && privateCase.length === 0) {
+    throw new Error("improve.private_case must be a non-empty string when set");
+  }
+  if (privateCase !== undefined && privateCase !== "last" && !/^[a-f0-9]{64}$/.test(privateCase)) {
+    throw new Error('improve.private_case must be "last" or a 64-char hex case id');
+  }
+  return {
+    capabilityGate: getOptionalBoolean(table, "capability_gate") ?? DEFAULT_IMPROVE.capabilityGate,
+    ...(privateCase ? { privateCase } : {}),
   };
 }
 
@@ -483,7 +554,7 @@ function getThinkingLevelMap(value: unknown, context: string): Readonly<Partial<
   }
   for (const key of Object.keys(record)) {
     if (!isThinkingLevel(key)) {
-      throw new Error(`${context} keys must be off, minimal, low, medium, high, xhigh, or max`);
+      throw new Error(`${context} keys must be off, minimal, low, medium, high, xhigh, max, or ultra`);
     }
   }
   return record as Partial<Record<XioThinkingLevel, string>>;
@@ -524,5 +595,17 @@ function getRecord(value: unknown, context: string): Readonly<Record<string, unk
 }
 
 function isThinkingLevel(value: string): value is XioThinkingLevel {
-  return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+  return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra";
+}
+
+function getOptionalThinkingLevel(
+  table: Record<string, unknown> | undefined,
+  key: string,
+): XioThinkingLevel | undefined {
+  if (!table || !(key in table)) return undefined;
+  const value = table[key];
+  if (typeof value !== "string" || !isThinkingLevel(value)) {
+    throw new Error(`general.${key} must be off, minimal, low, medium, high, xhigh, max, or ultra`);
+  }
+  return value;
 }

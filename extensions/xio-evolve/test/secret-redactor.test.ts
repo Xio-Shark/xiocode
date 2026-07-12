@@ -105,6 +105,28 @@ describe("SecretRedactor", () => {
       expect(redacted.AUTH_TOKEN).toBe("***REDACTED***");
     });
 
+    it("preserves provider usage token counters", () => {
+      const redactor = new SecretRedactor();
+      const obj = {
+        usage: {
+          inputTokens: 9905,
+          outputTokens: 17,
+          cacheTokens: 3712,
+          reasoningTokens: 15,
+        },
+        accessToken: "secret-access",
+      };
+
+      const redacted = redactor.redact(obj) as Record<string, unknown>;
+      const usage = redacted.usage as Record<string, unknown>;
+
+      expect(usage.inputTokens).toBe(9905);
+      expect(usage.outputTokens).toBe(17);
+      expect(usage.cacheTokens).toBe(3712);
+      expect(usage.reasoningTokens).toBe(15);
+      expect(redacted.accessToken).toBe("***REDACTED***");
+    });
+
     it("redacts *PASSWORD pattern keys", () => {
       const redactor = new SecretRedactor();
       const obj = {

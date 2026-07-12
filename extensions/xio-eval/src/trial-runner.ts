@@ -9,6 +9,7 @@ import { gradeWorkspace } from "./grader.ts";
 import { estimateUsageCost } from "./price-table.ts";
 
 import type { ExecutedCandidate } from "./candidate-executor.ts";
+import type { PinnedEvalIdentity } from "./eval-identity.ts";
 import type { EvalContext } from "./eval-support.ts";
 import type { CandidateMode, GraderResult, LoadedFixture, SafetyResult, TrialReport } from "./types.ts";
 
@@ -21,6 +22,10 @@ export async function runTrial(options: Readonly<{
   candidateMode: CandidateMode;
   fixture: LoadedFixture;
   env?: NodeJS.ProcessEnv;
+  childEnv?: NodeJS.ProcessEnv;
+  configContent?: string;
+  pinnedIdentity?: PinnedEvalIdentity;
+  secretForScan?: string;
 }>): Promise<TrialReport> {
   const trialRoot = trialPath(options.context.reportRoot, options.fixture.id, options.candidateLabel);
   const fixtureRoot = await materializeFixture(options.fixture, trialRoot);
@@ -34,6 +39,11 @@ export async function runTrial(options: Readonly<{
     fixture: options.fixture,
     mode: options.candidateMode,
     env: options.env,
+    child_env: options.childEnv,
+    config_content: options.configContent,
+    pinned_provider: options.pinnedIdentity?.provider,
+    pinned_model: options.pinnedIdentity?.exact_model_id,
+    secret_for_scan: options.secretForScan,
   });
   const execution = await trustCandidateWorktree(rawExecution, fixtureRoot, trialRoot);
   const grader = await gradeAfterExit(options.trustedRoot, options.fixture, execution);
@@ -45,7 +55,7 @@ export async function runTrial(options: Readonly<{
     grader,
     execution,
     options.trustedRoot,
-    secretRedactionOk(options.candidateMode, execution, runEvidence),
+    secretRedactionOk(options.candidateMode, execution, runEvidence, options.secretForScan, trialRoot),
   );
   return buildTrialReport(options, execution, grader, safety, {
     wallMs: Date.now() - started,
@@ -116,9 +126,15 @@ function secretRedactionOk(
   mode: CandidateMode,
   execution: ExecutedCandidate,
   runEvidence: Readonly<{ secretRedactionOk: boolean }>,
+  secretForScan: string | undefined,
+  _trialRoot: string,
 ): boolean {
   if (mode === "stub") {
     return true;
+  }
+  if (secretForScan
+    && (execution.stdout.includes(secretForScan) || execution.stderr.includes(secretForScan))) {
+    return false;
   }
   // No run artifact means the agent never produced evidence to redact.
   if (!execution.result.run_id) {
@@ -141,13 +157,16 @@ function buildTrialReport(
 ): TrialReport {
   const result = execution.result;
   const outcomeStatus = classifyOutcome(result.status, grader, safety);
+  const provider = options.pinnedIdentity?.provider ?? result.provider;
+  const model = options.pinnedIdentity?.exact_model_id ?? result.model;
   return {
     schema_version: "xio-eval-trial.v1",
     identity: trialIdentity(options, result.system_prompt_sha),
     environment: trialEnvironment(
       options.fixture,
-      result.provider,
-      result.model,
+      provider,
+      model,
+      options.pinnedIdentity,
       options.context.priceTable?.version ?? null,
     ),
     outcome: {
@@ -168,8 +187,8 @@ function buildTrialReport(
     },
     usage: estimateUsageCost(
       result.usage,
-      result.provider,
-      result.model,
+      provider,
+      model,
       options.context.priceTable,
     ),
     evidence: trialEvidence(options.candidateMode, execution, grader, evidence),
@@ -201,12 +220,16 @@ function trialEnvironment(
   fixture: LoadedFixture,
   provider: string | null,
   model: string | null,
+  pinned: PinnedEvalIdentity | undefined,
   priceTableVersion: string | null,
 ): TrialReport["environment"] {
   return {
     provider,
     exact_model_id: model,
-    inference_settings: { temperature: "provider-default", seed: "unsupported" },
+    inference_settings: pinned?.inference_settings ?? {
+      temperature: "provider-default",
+      seed: "unsupported",
+    },
     node: process.version,
     os: process.platform,
     arch: process.arch,

@@ -95,8 +95,10 @@ describe("trusted capability evaluator", () => {
       suite,
       createdAt: report.created_at,
       evalId: report.eval_id,
+      evalRoot,
       reportRoot: evalRoot,
       provisionalSeriesId: "unused",
+      repeat: 1,
     }, report.candidates[0]!.trials)).toBe(report.series_id);
     const trial = report.candidates[0]!.trials[0]!;
     const incompatible = {
@@ -128,10 +130,48 @@ describe("trusted capability evaluator", () => {
         candidateMode: "stub",
         caseIds: ["local-bug-holdout"],
         json: true,
+        repeat: 1,
       });
+    expect(parseEvalArgs(["smoke", "--provider", "stub"]).deprecations[0]).toMatch(/deprecated/);
+    expect(parseEvalArgs([
+      "smoke",
+      "--candidate-mode",
+      "real",
+      "--model",
+      "deepseek/deepseek-chat",
+      "--repeat",
+      "3",
+    ])).toMatchObject({
+      candidateMode: "real",
+      model: "deepseek/deepseek-chat",
+      repeat: 3,
+      deprecations: [],
+    });
     expect(parseEvalArgs(["compare", "--before", "main", "--candidate", "candidate"]))
       .toMatchObject({ command: "compare", beforeRoot: "main", candidateRoot: "candidate" });
     expect(() => parseEvalArgs(["compare"])).toThrow(/requires --before/);
+    expect(() => parseEvalArgs(["smoke", "--repeat", "0"])).toThrow(/integer from 1 to 10/);
+    expect(() => parseEvalArgs(["smoke", "--repeat", "11"])).toThrow(/integer from 1 to 10/);
+    expect(() => parseEvalArgs(["smoke", "--repeat", "1.5"])).toThrow(/integer from 1 to 10/);
+    expect(() => parseEvalArgs(["smoke", "--model", "noscale"])).toThrow(/provider\/model/);
+    expect(() => parseEvalArgs(["smoke", "--candidate-mode", "stub", "--model", "fake/model"]))
+      .toThrow(/requires --candidate-mode real/);
+    expect(() => parseEvalArgs(["smoke", "--provider", "stub", "--candidate-mode", "stub"]))
+      .toThrow(/cannot be combined/);
+    expect(() => parseEvalArgs(["smoke", "--repeat", "2", "--repeat", "3"]))
+      .toThrow(/duplicate argument/);
+  });
+
+  it("prints an explicit warning for the legacy --provider alias", async () => {
+    let warning = "";
+    const code = await runEvalCli(["help", "--provider", "stub"], {
+      write: () => undefined,
+      writeErr: (chunk) => {
+        warning += chunk;
+      },
+    });
+    expect(code).toBe(0);
+    expect(warning).toMatch(/warning: --provider real\|stub is deprecated/);
   });
 
   it("defaults smoke candidate code to the trusted package root", async () => {
@@ -147,6 +187,7 @@ describe("trusted capability evaluator", () => {
         write: (chunk) => {
           output += chunk;
         },
+        writeErr: () => undefined,
       },
     );
     expect(code).toBe(0);
@@ -326,6 +367,7 @@ describe("trusted capability evaluator", () => {
       trusted_root: trustedRoot,
       candidate_root: trustedRoot,
       candidate_mode: "real",
+      model: "broken/broken-model",
       eval_root: evalRoot,
       case_ids: ["local-bug-holdout"],
       env: {

@@ -12,20 +12,12 @@ package-lock.json.bak
 .pi/
 *.sock
 
-# Local IDE / agent adapter (not product)
+# Local IDE / agent adapter (not product — never publish)
 .cursor/
 .claude/
-
-# Trellis personal / session state (keep shared spec + scripts)
-.trellis/workspace/
-.trellis/tasks/
-.trellis/.developer
-.trellis/.current-task
-.trellis/.runtime/
-.trellis/.ralph-state.json
-.trellis/.agents/
-.trellis/.agent-log
-.trellis/.session-id
+.codex/
+.gitnexus/
+.trellis/
 
 # IDE
 .idea/

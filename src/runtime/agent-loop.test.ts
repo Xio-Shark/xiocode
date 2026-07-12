@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ExtensionHost } from "./extension-host.ts";
 import { defineTool } from "./define-tool.ts";
 import { Type } from "./schema.ts";
-import { runAgentLoop, trimSessionMessages } from "./agent-loop.ts";
+import { runAgentLoop } from "./agent-loop.ts";
 
 import type { ChatMessage, LlmClient, StreamEvent } from "./types.ts";
 
@@ -152,18 +152,31 @@ describe("runAgentLoop session history", () => {
     expect(second.messages.some((message) => message.content === "second")).toBe(true);
   });
 
-  it("inserts an explicit trim notice when max_session_messages is exceeded", () => {
-    const messages: ChatMessage[] = [
+  it("fails explicitly instead of trimming when max_session_messages is exceeded", async () => {
+    const priorMessages: ChatMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: "u1" },
       { role: "assistant", content: "a1" },
       { role: "user", content: "u2" },
       { role: "assistant", content: "a2" },
       { role: "user", content: "u3" },
+      { role: "assistant", content: "a3" },
+      { role: "user", content: "u4" },
+      { role: "assistant", content: "a4" },
     ];
-    const trimmed = trimSessionMessages(messages, 4);
-    expect(trimmed.some((message) => message.content.includes("context trimmed"))).toBe(true);
-    expect(trimmed.length).toBeLessThanOrEqual(4);
+    const host = new ExtensionHost();
+    const client: LlmClient = {
+      async complete() {
+        return { content: "should not run", toolCalls: [] };
+      },
+    };
+    await expect(runAgentLoop("next", {
+      host,
+      client,
+      model: "stub",
+      priorMessages,
+      maxSessionMessages: 8,
+    })).rejects.toThrow(/run \/compact or start a new session/i);
   });
 });
 
@@ -194,6 +207,92 @@ describe("runAgentLoop abort", () => {
     expect(result.cancelled).toBe(true);
     expect(result.success).toBe(false);
   });
+
+  it("closes remaining tool calls with interrupted results instead of leaving orphan history", async () => {
+    const host = new ExtensionHost();
+    const controller = new AbortController();
+    host.registerTool(defineTool({
+      name: "step",
+      description: "step",
+      parameters: Type.Object({ index: Type.Number() }),
+      async execute(_id, params) {
+        if (params.index === 1) controller.abort();
+        return { content: [{ type: "text", text: `step ${String(params.index)}` }] };
+      },
+    }));
+    const client: LlmClient = {
+      async complete() {
+        return {
+          content: "",
+          toolCalls: [
+            { id: "one", name: "step", arguments: { index: 1 } },
+            { id: "two", name: "step", arguments: { index: 2 } },
+          ],
+        };
+      },
+    };
+
+    const result = await runAgentLoop("cancel tools", {
+      host,
+      client,
+      model: "stub",
+      signal: controller.signal,
+      parallelToolCalls: false,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(result.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId))
+      .toEqual(["one", "two"]);
+    expect(result.messages.find((message) => message.toolCallId === "two")?.content)
+      .toMatch(/completion unknown/i);
+  });
+});
+
+describe("runAgentLoop checkpoints", () => {
+  it("publishes provider-valid snapshots around a tool batch", async () => {
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "read_once",
+      description: "read once",
+      parameters: Type.Object({}),
+      async execute() {
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        return calls === 1
+          ? { content: "", toolCalls: [{ id: "read-1", name: "read_once", arguments: {} }] }
+          : { content: "done", toolCalls: [] };
+      },
+    };
+    const checkpoints: Array<{ phase: string; pending: readonly string[]; messages: readonly ChatMessage[] }> = [];
+
+    await runAgentLoop("checkpoint", {
+      host,
+      client,
+      model: "stub",
+      onCheckpoint: (checkpoint) => {
+        checkpoints.push({
+          phase: checkpoint.phase,
+          pending: checkpoint.pendingTools?.map((tool) => tool.id) ?? [],
+          messages: checkpoint.messages,
+        });
+      },
+    });
+
+    expect(checkpoints.some((checkpoint) => checkpoint.phase === "turn_started")).toBe(true);
+    expect(checkpoints.some((checkpoint) =>
+      checkpoint.phase === "tool_batch_running" && checkpoint.pending.includes("read-1")
+    )).toBe(true);
+    const completedTool = checkpoints.find((checkpoint) =>
+      checkpoint.phase === "tool_batch_running" && checkpoint.pending.length === 0
+    );
+    expect(completedTool?.messages.some((message) => message.toolCallId === "read-1")).toBe(true);
+    expect(checkpoints.at(-1)?.phase).toBe("turn_complete");
+  });
 });
 
 describe("runAgentLoop streaming", () => {
@@ -223,5 +322,37 @@ describe("runAgentLoop streaming", () => {
     });
     expect(deltas).toEqual(["hello", " world"]);
     expect(result.finalText).toBe("hello world");
+  });
+
+  it("forwards thinking_delta without mixing into assistant content", async () => {
+    const host = new ExtensionHost();
+    const thinking: string[] = [];
+    const deltas: string[] = [];
+    const client: LlmClient = {
+      async complete() {
+        return { content: "answer", toolCalls: [] };
+      },
+      async *completeStream(): AsyncIterable<StreamEvent> {
+        yield { type: "thinking_delta", text: "reason" };
+        yield { type: "text_delta", text: "answer" };
+        yield {
+          type: "done",
+          content: "answer",
+          toolCalls: [],
+          usage: { inputTokens: 1, outputTokens: 1, cacheTokens: null, reasoningTokens: null },
+        };
+      },
+    };
+    const result = await runAgentLoop("stream", {
+      host,
+      client,
+      model: "stub",
+      onThinkingDelta: (text) => thinking.push(text),
+      onAssistantDelta: (text) => deltas.push(text),
+    });
+    expect(thinking).toEqual(["reason"]);
+    expect(deltas).toEqual(["answer"]);
+    expect(result.finalText).toBe("answer");
+    expect(result.messages.some((message) => message.content.includes("reason"))).toBe(false);
   });
 });

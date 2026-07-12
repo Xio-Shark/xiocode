@@ -108,8 +108,12 @@ export class SecretRedactor {
 
   private isSensitiveKey(key: string): boolean {
     const upperKey = key.toUpperCase();
+    // Provider usage counters (inputTokens / outputTokens / …) end in TOKENS — not secrets.
+    if (upperKey.endsWith("TOKENS")) {
+      return false;
+    }
     return ENV_VAR_PATTERNS.some((pattern) => {
-      const regex = new RegExp(pattern.replace("*", ".*"), "i");
+      const regex = new RegExp(`^${pattern.replaceAll("*", ".*")}$`, "i");
       return regex.test(upperKey);
     });
   }

@@ -8,9 +8,11 @@ import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandb
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
 import { setupProviderEnv } from "./env-setup.ts";
+import { applyCredentialsToEnv } from "./credentials.ts";
 
 import type { WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import type { SessionStartPayload } from "../runtime/types.ts";
+import type { SessionWorkspace } from "../runtime/session-store.ts";
 import type { XioRuntimeConfig } from "./config-parser.ts";
 
 export const XIO_VERSION = readPackageVersion();
@@ -29,7 +31,12 @@ export type LaunchPlan = Readonly<{
 export async function prepareLaunch(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: { runtimeExtensionEnabled?: boolean } = {},
+  options: {
+    runtimeExtensionEnabled?: boolean;
+    allowDirty?: boolean;
+    sessionId?: string;
+    resumeWorkspace?: SessionWorkspace;
+  } = {},
 ): Promise<LaunchPlan> {
   const ensured = await ensureConfigFile(env);
   const parsed = parseXioConfig(ensured.content, { cwd });
@@ -37,11 +44,25 @@ export async function prepareLaunch(
   const runtimeConfigPath = path.join(configRoot, "runtime-config.json");
   const mainRoot = await WorktreeSandbox.resolveMainRoot(cwd);
   const sourceProvenance = await collectSourceProvenance(mainRoot);
-  const workspace = await createWorkspace({ mainRoot, configRoot, runtimeConfig: parsed.runtimeConfig });
+  const allowDirty = options.allowDirty === true || parsed.runtimeConfig.worktree.allowDirty;
+  assertDirtyMainPolicy({
+    worktreeEnabled: parsed.runtimeConfig.worktree.enabled,
+    dirty: sourceProvenance.dirty,
+    allowDirty,
+    mainRoot,
+  });
+  const workspace = await createWorkspace({
+    mainRoot,
+    configRoot,
+    runtimeConfig: parsed.runtimeConfig,
+    sessionId: options.sessionId,
+    resumeWorkspace: options.resumeWorkspace,
+  });
 
   await mkdir(configRoot, { recursive: true });
   await mkdir(expandHome(parsed.xio.general.runRoot), { recursive: true });
   await writeJson(runtimeConfigPath, workspace.runtimeConfig);
+  await applyCredentialsToEnv(env, parsed.xio.providers);
   setupProviderEnv(parsed.xio.providers, env);
 
   return {
@@ -61,18 +82,43 @@ export async function prepareLaunch(
   };
 }
 
+export function assertDirtyMainPolicy(input: Readonly<{
+  worktreeEnabled: boolean;
+  dirty: boolean;
+  allowDirty: boolean;
+  mainRoot: string;
+}>): void {
+  if (!input.worktreeEnabled || !input.dirty || input.allowDirty) {
+    return;
+  }
+  throw new Error(
+    [
+      "XioCode refused to start: the main git tree has uncommitted changes.",
+      `Main tree: ${input.mainRoot}`,
+      "Worktree sessions check out a clean HEAD and would ignore your dirty files.",
+      "Commit/stash your changes, or opt in with `xio --allow-dirty` or `[worktree] allow_dirty = true`.",
+    ].join("\n"),
+  );
+}
+
 async function createWorkspace(input: Readonly<{
   mainRoot: string;
   configRoot: string;
   runtimeConfig: XioRuntimeConfig;
+  sessionId?: string;
+  resumeWorkspace?: SessionWorkspace;
 }>): Promise<{ runtimeConfig: XioRuntimeConfig; cwd: string; worktree?: WorktreeSession }> {
+  if (input.resumeWorkspace?.mode === "worktree" && !input.runtimeConfig.worktree.enabled) {
+    throw new Error("saved session requires worktree mode, but worktree.enabled is false");
+  }
   if (!input.runtimeConfig.worktree.enabled) {
     return { runtimeConfig: input.runtimeConfig, cwd: input.mainRoot };
   }
-  const worktree = await WorktreeSandbox.create({
-    mainRoot: input.mainRoot,
-    baseDir: path.join(input.configRoot, "worktrees"),
-  });
+  const baseDir = path.join(input.configRoot, "worktrees");
+  const resumed = toStoredWorktree(input.resumeWorkspace, input.mainRoot);
+  const worktree = resumed
+    ? await WorktreeSandbox.attach(resumed, { baseDir })
+    : await WorktreeSandbox.create({ mainRoot: input.mainRoot, baseDir, sessionId: input.sessionId });
   return {
     cwd: worktree.worktreePath,
     worktree,
@@ -81,6 +127,28 @@ async function createWorkspace(input: Readonly<{
       worktree: { ...input.runtimeConfig.worktree, session: worktree },
     },
   };
+}
+
+function toStoredWorktree(workspace: SessionWorkspace | undefined, mainRoot: string): WorktreeSession | undefined {
+  if (!workspace || workspace.mode !== "worktree") return undefined;
+  if (workspace.lifecycle !== "active" && workspace.lifecycle !== "retained") {
+    throw new Error(`saved worktree is not resumable: ${workspace.lifecycle}`);
+  }
+  if (path.resolve(workspace.main_root) !== path.resolve(mainRoot)) {
+    throw new Error(`saved worktree belongs to another repository: ${workspace.main_root}`);
+  }
+  const fields = {
+    mainRoot: workspace.main_root,
+    worktreePath: workspace.worktree_path,
+    branch: workspace.branch,
+    sessionId: workspace.session_id,
+    repoId: workspace.repo_id,
+    baseRef: workspace.base_ref,
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (!value) throw new Error(`saved worktree is missing ${key}`);
+  }
+  return fields as WorktreeSession;
 }
 
 async function collectSourceProvenance(

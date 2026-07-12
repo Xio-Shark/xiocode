@@ -170,6 +170,8 @@ export type CandidateInput =
     case_id: string;
     prompt: string;
     max_turns: number;
+    provider?: string;
+    model?: string;
   }>
   | Readonly<{
     schema_version: "xio-eval-candidate-input.v1";
@@ -202,6 +204,13 @@ export type CandidateExecutorOptions = Readonly<{
   fixture: LoadedFixture;
   mode: CandidateMode;
   env?: NodeJS.ProcessEnv;
+  /** Pre-resolved child env (selected-provider allowlist). When set, skips parent env passthrough. */
+  child_env?: NodeJS.ProcessEnv;
+  /** Pinned config.toml content for real mode (already mutated; no secrets). */
+  config_content?: string;
+  pinned_provider?: string;
+  pinned_model?: string;
+  secret_for_scan?: string;
 }>;
 
 export type EvalRunOptions = Readonly<{
@@ -209,6 +218,10 @@ export type EvalRunOptions = Readonly<{
   candidate_root?: string;
   before_root?: string;
   candidate_mode?: CandidateMode;
+  /** Exact `provider/model` identity for real runs. */
+  model?: string;
+  /** Fixed trial repeats per fixture (default 1). */
+  repeat?: number;
   eval_root?: string;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
