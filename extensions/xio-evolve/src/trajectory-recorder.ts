@@ -411,10 +411,12 @@ export class TrajectoryRecorder {
 
 function toToolCall(event: unknown): ToolCall {
   const record = asRecord(event);
+  const nested = asRecord(record.call);
+  const source = nested ?? record;
   return {
-    id: stringValue(record.toolCallId ?? record.id),
-    name: stringValue(record.toolName ?? record.name) ?? "unknown",
-    args: asRecord(record.input ?? record.args),
+    id: stringValue(source.toolCallId ?? source.id ?? record.toolCallId ?? record.id),
+    name: stringValue(source.toolName ?? source.name ?? record.toolName ?? record.name) ?? "unknown",
+    args: asRecord(source.input ?? source.args ?? record.input ?? record.args),
   };
 }
 

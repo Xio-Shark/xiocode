@@ -1,4 +1,5 @@
 import { emptyTokenUsage } from "./usage.ts";
+import { estimateMessagesTokens } from "./providers/token-estimate.ts";
 
 import type {
   ChatMessage,
@@ -78,6 +79,8 @@ export class ContextCompactionController {
   readonly #getClient: () => LlmClient;
   readonly #getModel: () => ModelInfo;
   readonly #maxMessages: number;
+  readonly #maxTokens: number | undefined;
+  readonly #getMaxTokens?: () => number | undefined;
   readonly #onUiEvent?: (event: ContextCompactionUiEvent) => void;
   readonly #onRuntimeEvent?: (event: ContextCompactionUiEvent) => Promise<void> | void;
   #running = false;
@@ -87,6 +90,9 @@ export class ContextCompactionController {
     getClient: () => LlmClient;
     getModel: () => ModelInfo;
     maxMessages: number;
+    /** Approximate session token budget; when set, triggers compaction with message budget. */
+    maxTokens?: number;
+    getMaxTokens?: () => number | undefined;
     onUiEvent?: (event: ContextCompactionUiEvent) => void;
     onRuntimeEvent?: (event: ContextCompactionUiEvent) => Promise<void> | void;
   }>) {
@@ -95,12 +101,18 @@ export class ContextCompactionController {
     this.#getClient = options.getClient;
     this.#getModel = options.getModel;
     this.#maxMessages = options.maxMessages;
+    this.#maxTokens = options.maxTokens;
+    this.#getMaxTokens = options.getMaxTokens;
     this.#onUiEvent = options.onUiEvent;
     this.#onRuntimeEvent = options.onRuntimeEvent;
   }
 
-  needsAutomaticCompaction(incomingMessages = 2): boolean {
-    return this.#history.length + incomingMessages > this.#maxMessages;
+  needsAutomaticCompaction(incomingMessages = 2, incomingTokenEstimate = 256): boolean {
+    if (this.#history.length + incomingMessages > this.#maxMessages) return true;
+    const tokenBudget = this.#getMaxTokens?.() ?? this.#maxTokens;
+    if (tokenBudget === undefined) return false;
+    const current = estimateMessagesTokens(this.#history.getMessages());
+    return current + incomingTokenEstimate > tokenBudget;
   }
 
   async compact(
@@ -118,6 +130,7 @@ export class ContextCompactionController {
         client: this.#getClient(),
         model: this.#getModel().id,
         maxMessages: this.#maxMessages,
+        maxTokens: this.#getMaxTokens?.() ?? this.#maxTokens,
         focus,
         signal,
       });
@@ -157,11 +170,18 @@ export async function compactSessionMessages(options: Readonly<{
   client: LlmClient;
   model: string;
   maxMessages: number;
+  /** When set, prefer a tighter recent window under token pressure. */
+  maxTokens?: number;
   focus?: string;
   signal?: AbortSignal;
 }>): Promise<ContextCompactionResult> {
   assertMaxSessionMessages(options.maxMessages);
-  const plan = planCompaction(options.messages, options.maxMessages);
+  const tokenPressure = options.maxTokens !== undefined
+    && estimateMessagesTokens(options.messages) > options.maxTokens;
+  const plan = planCompaction(options.messages, options.maxMessages, {
+    force: tokenPressure,
+    maxTokens: options.maxTokens,
+  });
   if (!plan) {
     return {
       compacted: false,
@@ -190,8 +210,12 @@ export async function compactSessionMessages(options: Readonly<{
   };
   const messages = [...plan.baseSystem, summaryMessage, ...plan.recent.flatMap((turn) => turn)];
   assertMessageBudget(messages, options.maxMessages);
-  if (messages.length >= options.messages.length) {
+  if (messages.length >= options.messages.length && !tokenPressure) {
     throw new Error("context compaction did not reduce the session history");
+  }
+  if (tokenPressure && estimateMessagesTokens(messages) >= estimateMessagesTokens(options.messages)
+    && messages.length >= options.messages.length) {
+    throw new Error("context compaction did not reduce the session history under token budget");
   }
   return {
     compacted: true,
@@ -223,7 +247,11 @@ type CompactionPlan = Readonly<{
   recent: readonly (readonly ChatMessage[])[];
 }>;
 
-function planCompaction(messages: readonly ChatMessage[], maxMessages: number): CompactionPlan | undefined {
+function planCompaction(
+  messages: readonly ChatMessage[],
+  maxMessages: number,
+  options: Readonly<{ force?: boolean; maxTokens?: number }> = {},
+): CompactionPlan | undefined {
   const { baseSystem, prelude, turns } = splitIntoTurns(messages);
   if (turns.length < 2 && prelude.length === 0) return undefined;
   const hardRecentBudget = maxMessages - baseSystem.length - 1;
@@ -231,21 +259,37 @@ function planCompaction(messages: readonly ChatMessage[], maxMessages: number): 
   if (!latest || latest.length > hardRecentBudget) {
     throw new Error("the latest complete turn is too large to retain after context compaction");
   }
-  const preferredRecentBudget = Math.max(
+  let preferredRecentBudget = Math.max(
     latest.length,
     Math.floor(maxMessages * 0.4) - baseSystem.length - 1,
   );
+  // Under token pressure keep a smaller recent window (still complete turns / tool pairs).
+  if (options.force && options.maxTokens !== undefined) {
+    preferredRecentBudget = Math.max(latest.length, Math.min(preferredRecentBudget, Math.floor(maxMessages * 0.25)));
+  }
   const recent: (readonly ChatMessage[])[] = [latest];
   let recentCount = latest.length;
+  let recentTokens = estimateMessagesTokens(latest);
+  const tokenCap = options.maxTokens !== undefined
+    ? Math.floor(options.maxTokens * 0.45)
+    : undefined;
   for (let index = turns.length - 2; index >= 0; index -= 1) {
     const turn = turns[index]!;
     if (recentCount + turn.length > preferredRecentBudget) break;
+    if (tokenCap !== undefined) {
+      const turnTokens = estimateMessagesTokens(turn);
+      if (recentTokens + turnTokens > tokenCap) break;
+      recentTokens += turnTokens;
+    }
     recent.unshift(turn);
     recentCount += turn.length;
   }
   const olderTurnCount = turns.length - recent.length;
   const older = [...prelude, ...turns.slice(0, olderTurnCount).flatMap((turn) => turn)];
-  if (baseSystem.length + 1 + recentCount >= messages.length) return undefined;
+  if (!options.force && baseSystem.length + 1 + recentCount >= messages.length) return undefined;
+  if (options.force && older.length === 0 && prelude.length === 0 && olderTurnCount === 0) {
+    return undefined;
+  }
   return older.length > 0 ? { baseSystem, older, recent } : undefined;
 }
 

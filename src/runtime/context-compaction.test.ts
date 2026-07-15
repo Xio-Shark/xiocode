@@ -192,6 +192,41 @@ describe("ContextCompactionController", () => {
     });
     expect(controller.needsAutomaticCompaction()).toBe(true);
   });
+
+  it("triggers automatic compaction when the token budget is exceeded", () => {
+    const history = new SessionHistory({
+      initialMessages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "x".repeat(400) },
+        { role: "assistant", content: "y".repeat(400) },
+      ],
+    });
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => ({ async complete() { return { content: "summary", toolCalls: [] }; } }),
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 80,
+      maxTokens: 100,
+    });
+    expect(controller.needsAutomaticCompaction(0, 0)).toBe(true);
+  });
+
+  it("does not token-trigger when under both message and token budgets", () => {
+    const history = new SessionHistory({
+      initialMessages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => ({ async complete() { return { content: "summary", toolCalls: [] }; } }),
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 80,
+      maxTokens: 50_000,
+    });
+    expect(controller.needsAutomaticCompaction()).toBe(false);
+  });
 });
 
 describe("registerContextCommands", () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Fail pack/publish when installable entrypoints are missing.
- * Runtime ships TypeScript sources executed via Node --experimental-strip-types.
+ * Production installs prefer AOT bundles under dist/; TypeScript sources remain for dev fallback.
  */
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -11,7 +11,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
   "bin/xio",
   "bin/xio-improve",
-  "src/cli/index.ts",
+  "dist/xio.js",
+  "dist/xio-improve.js",
+  "src/cli/entry.ts",
   "src/cli/improve-entry.ts",
   "package.json",
   "LICENSE",

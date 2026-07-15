@@ -9,7 +9,10 @@ export const DEFAULT_CONFIG_TOML = `# XioCode local config — edit providers to
 default_provider = "deepseek"
 default_model = "deepseek-chat"
 # max_session_messages = 80  # auto-compact before the next prompt would exceed this message budget
-# default_thinking_level = "medium"  # off|minimal|low|medium|high|xhigh|max|ultra
+# max_session_tokens = 48000 # optional token-aware compact budget; else ~75% of model context_window
+# default_thinking_level = "medium"  # off|minimal|low|medium|high|xhigh|max|ultra — UI ladder
+# max/ultra stay product levels: deepseek* models wire them as reasoning_effort=max;
+# other OpenAI-compat models wire them as xhigh. Override with providers.*.thinking_level_map.
 # max_turns = 24                 # per-prompt agent↔model turns (1–40; default 24)
 # repeat_tool_limit = 3          # block identical tool+args after N in a row; 0 = off
 #
@@ -23,6 +26,11 @@ kind = "openai"
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
+# Optional explicit wire map (defaults already map max/ultra → "max" for deepseek* ids):
+# [providers.deepseek.thinking_level_map]
+# high = "high"
+# max = "max"
+# ultra = "max"
 
 # Optional OpenAI-compatible example (uncomment to use):
 # [providers.openai]
@@ -35,20 +43,26 @@ api_key_env = "DEEPSEEK_API_KEY"
 # default_provider = "openai"
 # default_model = "gpt-4.1"
 
+# Outer worktree sandbox is opt-in. Default: run in the launch directory (git optional).
 [worktree]
-enabled = true
+enabled = false
 retain_on_reject = false
+# allow_dirty = true   # only matters when enabled = true
 
-# Multi-explore: primary model keeps the session; Flash (or other) workers survey tiny slices.
-# Enable and set explore.model (same provider or provider/model). Primary should be the stronger model.
-# max_concurrency is a hard cap 1–16 (default 4). Runtime suggests fewer/more by project scale within the cap.
+# Multi-explore: primary model keeps the session; cheaper workers survey tiny slices.
+# thinking=ultra AUTO-ENABLES explore even when enabled=false (uses explore.model or the session model).
+# For non-ultra sessions, set enabled=true + model to opt in.
+# max_concurrency is the absolute ceiling 1–16 (default 16). Live policy:
+#   - default (thinking ≠ ultra): at most 4 concurrent explores (only if enabled)
+#   - thinking=ultra: auto-on, MUST call explore for repo work, actively 8+ (up to max_concurrency)
+#   - user explicitly asks for N / 16 workers: allow that high fan-out for the turn
 # Optional partition_hint tells the primary how you want slices chosen (API / feature / package / …).
 # [explore]
-# enabled = true
-# model = "deepseek-v4-flash"       # or "opencode-go/deepseek-v4-flash"
+# enabled = false                  # ultra still auto-enables; set true for explore at any effort
+# model = "deepseek-v4-flash"       # or "opencode-go/deepseek-v4-flash"; fallback = session primary
 # # provider = "opencode-go"        # optional when model has no provider prefix
 # max_turns = 12
-# max_concurrency = 4
+# max_concurrency = 16
 # max_output_chars = 64000          # verbatim file excerpts back to primary; raise if reports truncate
 # # partition_hint = "按 API 边界拆成小片；用户另有说明时以用户为准"
 # timeout_ms = 180000
@@ -59,6 +73,8 @@ retain_on_reject = false
 
 # [mcp]
 # unknown_source_fail_closed = false  # set true to skip Claude/Cursor user MCP auto-import
+# # read_cursor = true               # auto-loads ~/.cursor/mcp.json (broken command paths will warn)
+# # timeout_ms = 30000               # per-server connect/listTools; close force-kills stdio after ~1.5s
 
 # [improve]
 # capability_gate = false  # set true so bare xio improve requires trusted PASS before merge ask

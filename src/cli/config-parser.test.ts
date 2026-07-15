@@ -56,6 +56,7 @@ describe("parseXioConfig", () => {
     expect(parsed.runtimeConfig.general.defaultProvider).toBe("deepseek");
     expect(parsed.runtimeConfig.general.defaultModel).toBe("deepseek-chat");
     expect(parsed.runtimeConfig.general.maxSessionMessages).toBe(40);
+    expect(parsed.runtimeConfig.general.maxSessionTokens).toBeUndefined();
     expect(parsed.runtimeConfig.providers.deepseek).toMatchObject({
       name: "deepseek",
       kind: "openai",
@@ -101,6 +102,17 @@ ultra = "ultra"
       .toThrow("general.max_session_messages must be an integer >= 4");
     expect(() => parseXioConfig("[general]\nmax_session_messages = 4.5\n"))
       .toThrow("general.max_session_messages must be an integer >= 4");
+  });
+
+  it("parses max_session_tokens and rejects values below 1024", () => {
+    const parsed = parseXioConfig(`
+[general]
+max_session_tokens = 12000
+run_root = "~/.xiocode/runs"
+`);
+    expect(parsed.runtimeConfig.general.maxSessionTokens).toBe(12000);
+    expect(() => parseXioConfig("[general]\nmax_session_tokens = 100\n"))
+      .toThrow("general.max_session_tokens must be an integer >= 1024");
   });
 
   it("rejects invalid provider input types and thinking map keys", () => {
@@ -199,7 +211,7 @@ thinking_display = "hidden"
     expect(parsed.runtimeConfig.extensions.evolve).toEqual({ enabled: true, options: {} });
     expect(parsed.runtimeConfig.extensions.sandbox).toEqual({ enabled: true, options: {} });
     expect(parsed.runtimeConfig.extensions["ace-tool"]).toBeUndefined();
-    expect(parsed.runtimeConfig.worktree).toEqual({ enabled: true, retainOnReject: false, allowDirty: false });
+    expect(parsed.runtimeConfig.worktree).toEqual({ enabled: false, retainOnReject: false, allowDirty: false });
     expect(parsed.runtimeConfig.verify).toEqual({
       enabled: false,
       requireAllPass: true,
@@ -227,7 +239,7 @@ thinking_display = "hidden"
       enabled: false,
       maxTurns: 12,
       timeoutMs: 180_000,
-      maxConcurrency: 4,
+      maxConcurrency: 16,
       maxOutputChars: 64_000,
       allowBash: false,
     });

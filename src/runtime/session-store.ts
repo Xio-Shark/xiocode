@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
 
+import {
+  appendJournal,
+  applyJournal,
+  readJournal,
+  truncateJournal,
+  writeJsonAtomicDurable,
+} from "./session-wal.ts";
 import type { ChatMessage, ModelInfo } from "./types.ts";
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
@@ -33,6 +40,8 @@ const workspaceSchema = z.object({
   worktree_path: z.string().optional(),
   branch: z.string().optional(),
   base_ref: z.string().optional(),
+  /** Visible-tree oid at session start; optional on legacy v2 records. */
+  baseline_tree: z.string().optional(),
   repo_id: z.string().optional(),
   session_id: z.string().optional(),
   epoch: z.number().int().nonnegative(),
@@ -92,6 +101,9 @@ export type SessionMetadataV1 = z.infer<typeof metadataV1Schema>;
 export type SessionMetadataV2 = z.infer<typeof metadataV2Schema>;
 export type SessionMetadata = SessionMetadataV1 | SessionMetadataV2;
 
+/** Snapshot rewrites state.json; journal appends O(delta) WAL records. */
+export type SessionDurability = "snapshot" | "journal";
+
 export type StoredSession = Readonly<{
   metadata: SessionMetadata;
   messages: readonly ChatMessage[];
@@ -109,6 +121,12 @@ export type SaveSessionInput = Readonly<{
   createdAt?: string;
   workspace?: SessionWorkspace;
   execution?: SessionExecution;
+  /**
+   * `snapshot` (default): atomic full state.json + truncate journal.
+   * `journal`: append-only WAL for mid-turn checkpoints; falls back to snapshot
+   * when message history is not a pure append of the last materialization.
+   */
+  durability?: SessionDurability;
 }>;
 
 export function decodeSessionState(value: unknown): StoredSession {
@@ -120,6 +138,10 @@ export function decodeSessionState(value: unknown): StoredSession {
 export class SessionStore {
   readonly #root: string;
   readonly #now: () => Date;
+  /** Next journal seq per session id (1-based next write). */
+  readonly #nextSeq = new Map<string, number>();
+  /** Message count of last materialized view (snapshot + journal). */
+  readonly #messageCount = new Map<string, number>();
 
   constructor(options: Readonly<{ root: string; now?: () => Date }>) {
     this.#root = path.resolve(options.root);
@@ -158,28 +180,10 @@ export class SessionStore {
 
   async save(input: SaveSessionInput): Promise<StoredSession> {
     assertSessionId(input.id);
-    const existing = await this.#loadIfPresent(input.id);
-    const now = this.#now().toISOString();
-    const workspace = workspaceSchema.parse(input.workspace ?? existing?.workspace ?? defaultWorkspace(input));
-    const execution = executionSchema.parse(input.execution ?? existing?.execution ?? { phase: "idle" });
-    const state = stateV2Schema.parse({
-      schema_version: "xio-session.v2",
-      revision: previousRevision(existing) + 1,
-      id: input.id,
-      model: { provider: input.model.provider, id: input.model.id },
-      cwd: input.cwd,
-      main_root: input.mainRoot,
-      worktree_path: input.worktreePath ?? workspace.worktree_path,
-      created_at: input.createdAt ?? existing?.metadata.created_at ?? now,
-      updated_at: now,
-      workspace,
-      execution,
-      messages: input.messages,
-    });
-    const directory = this.#sessionDirectory(input.id);
-    await mkdir(directory, { recursive: true });
-    await writeJsonAtomic(path.join(directory, STATE_FILE), state);
-    return decodeSessionState(state);
+    if (input.durability === "journal") {
+      return this.#saveJournal(input);
+    }
+    return this.#saveSnapshot(input);
   }
 
   async load(id: string): Promise<StoredSession> {
@@ -217,14 +221,151 @@ export class SessionStore {
 
   async remove(id: string): Promise<void> {
     assertSessionId(id);
+    this.#nextSeq.delete(id);
+    this.#messageCount.delete(id);
     await rm(this.#sessionDirectory(id), { recursive: true, force: true });
+  }
+
+  async #saveSnapshot(input: SaveSessionInput): Promise<StoredSession> {
+    const existing = await this.#loadIfPresent(input.id);
+    const now = this.#now().toISOString();
+    const workspace = workspaceSchema.parse(input.workspace ?? existing?.workspace ?? defaultWorkspace(input));
+    const execution = executionSchema.parse(input.execution ?? existing?.execution ?? { phase: "idle" });
+    const state = stateV2Schema.parse({
+      schema_version: "xio-session.v2",
+      revision: previousRevision(existing) + 1,
+      id: input.id,
+      model: { provider: input.model.provider, id: input.model.id },
+      cwd: input.cwd,
+      main_root: input.mainRoot,
+      worktree_path: input.worktreePath ?? workspace.worktree_path,
+      created_at: input.createdAt ?? existing?.metadata.created_at ?? now,
+      updated_at: now,
+      workspace,
+      execution,
+      messages: input.messages,
+    });
+    const directory = this.#sessionDirectory(input.id);
+    await mkdir(directory, { recursive: true });
+    await writeJsonAtomicDurable(path.join(directory, STATE_FILE), state);
+    await truncateJournal(directory);
+    this.#nextSeq.set(input.id, 1);
+    this.#messageCount.set(input.id, input.messages.length);
+    return decodeSessionState(state);
+  }
+
+  async #saveJournal(input: SaveSessionInput): Promise<StoredSession> {
+    const existing = await this.#loadIfPresent(input.id);
+    if (!existing || existing.metadata.schema_version !== "xio-session.v2") {
+      // First write or still on v1: must establish a durable snapshot baseline.
+      return this.#saveSnapshot(input);
+    }
+
+    const priorMessages = existing.messages;
+    const priorCount = priorMessages.length;
+    const isPureAppend = input.messages.length >= priorCount
+      && messagesPrefixEqual(priorMessages, input.messages, priorCount);
+
+    if (!isPureAppend) {
+      return this.#saveSnapshot(input);
+    }
+
+    const appendMessages = input.messages.slice(priorCount);
+    const workspace = input.workspace
+      ? workspaceSchema.parse(input.workspace)
+      : existing.workspace;
+    const execution = input.execution
+      ? executionSchema.parse(input.execution)
+      : existing.execution;
+    const modelChanged = input.model.provider !== existing.metadata.model.provider
+      || input.model.id !== existing.metadata.model.id;
+    const workspaceChanged = input.workspace !== undefined
+      && JSON.stringify(input.workspace) !== JSON.stringify(existing.workspace);
+
+    if (
+      appendMessages.length === 0
+      && !input.execution
+      && !modelChanged
+      && !workspaceChanged
+    ) {
+      return existing;
+    }
+
+    const directory = this.#sessionDirectory(input.id);
+    await mkdir(directory, { recursive: true });
+    let nextSeq = this.#nextSeq.get(input.id);
+    if (nextSeq === undefined) {
+      const records = await readJournal(directory);
+      nextSeq = records.length > 0 ? records[records.length - 1]!.seq + 1 : 1;
+    }
+
+    nextSeq = await appendJournal({
+      directory,
+      nextSeq,
+      now: this.#now,
+      ...(input.execution ? { execution } : {}),
+      ...(appendMessages.length > 0 ? { appendMessages } : {}),
+      ...(modelChanged ? { model: input.model } : {}),
+      ...(workspaceChanged && workspace ? { workspace } : {}),
+    });
+    this.#nextSeq.set(input.id, nextSeq);
+    this.#messageCount.set(input.id, input.messages.length);
+
+    const metadata: SessionMetadataV2 = {
+      ...existing.metadata,
+      model: { provider: input.model.provider, id: input.model.id },
+      cwd: input.cwd,
+      main_root: input.mainRoot,
+      worktree_path: input.worktreePath ?? workspace?.worktree_path ?? existing.metadata.worktree_path,
+      updated_at: this.#now().toISOString(),
+      workspace: workspace ?? existing.workspace!,
+      execution: execution ?? existing.execution ?? { phase: "idle" },
+    };
+    return {
+      metadata,
+      messages: input.messages,
+      workspace: metadata.workspace,
+      execution: metadata.execution,
+    };
   }
 
   async #loadVersioned(id: string): Promise<StoredSession> {
     const directory = this.#sessionDirectory(id);
     try {
       const text = await readFile(path.join(directory, STATE_FILE), "utf8");
-      return decodeSessionState(JSON.parse(text));
+      const base = decodeSessionState(JSON.parse(text));
+      const journal = await readJournal(directory);
+      if (journal.length === 0) {
+        this.#nextSeq.set(id, 1);
+        this.#messageCount.set(id, base.messages.length);
+        return base;
+      }
+      const applied = applyJournal({
+        messages: base.messages,
+        model: base.metadata.model,
+        workspace: base.workspace,
+        execution: base.execution,
+      }, journal);
+      this.#nextSeq.set(id, applied.lastSeq + 1);
+      this.#messageCount.set(id, applied.messages.length);
+      if (base.metadata.schema_version !== "xio-session.v2") {
+        throw new Error("journal present without xio-session.v2 snapshot");
+      }
+      const lastJournalTime = journal[journal.length - 1]?.t;
+      const metadata: SessionMetadataV2 = {
+        ...base.metadata,
+        model: applied.model ?? base.metadata.model,
+        workspace: applied.workspace ?? base.workspace!,
+        execution: applied.execution ?? base.execution ?? { phase: "idle" },
+        // Journal advances content; revision stays snapshot revision until next snapshot.
+        ...(lastJournalTime ? { updated_at: lastJournalTime } : {}),
+      };
+      return {
+        metadata,
+        messages: applied.messages,
+        workspace: metadata.workspace,
+        execution: metadata.execution,
+      };
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
@@ -290,15 +431,17 @@ function previousRevision(session: StoredSession | undefined): number {
   return session?.metadata.schema_version === "xio-session.v2" ? session.metadata.revision : 0;
 }
 
-async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await rename(tempPath, filePath);
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
+/** True when `next` starts with the first `count` messages of `prior` (by JSON identity). */
+function messagesPrefixEqual(
+  prior: readonly ChatMessage[],
+  next: readonly ChatMessage[],
+  count: number,
+): boolean {
+  if (prior.length < count || next.length < count) return false;
+  for (let index = 0; index < count; index += 1) {
+    if (JSON.stringify(prior[index]) !== JSON.stringify(next[index])) return false;
   }
+  return true;
 }
 
 function assertSessionId(id: string): void {

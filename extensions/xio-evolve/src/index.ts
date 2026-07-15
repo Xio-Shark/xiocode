@@ -259,14 +259,28 @@ function startContextInjection(
   return injected;
 }
 
+/**
+ * Normalize tool_result payload shapes:
+ * - agent-loop: `{ call: { id, name, args }, result: { content, isError, metadata } }`
+ * - legacy/flat: `{ toolName, toolCallId, content, isError, input }`
+ *
+ * Reading only top-level `content` (legacy) against nested payloads fed empty
+ * text into ResultDenoiser and wiped tool output for the model + TUI.
+ */
 function toToolHookEvent(payload: unknown): ToolHookEvent {
   const record = asRecord(payload);
+  const nested = asRecord(record.result);
+  const content = nested && "content" in nested ? nested.content : record.content;
+  const isError = nested?.isError === true || record.isError === true;
+  const metadata = asRecord(
+    nested?.metadata ?? nested?.details ?? record.metadata ?? record.details,
+  );
   return {
     call: toToolCall(payload),
     result: {
-      content: record.content,
-      isError: record.isError === true,
-      metadata: asRecord(record.details),
+      content,
+      isError,
+      metadata,
     },
   };
 }
@@ -306,10 +320,12 @@ function shouldInvalidateContext(event: ToolHookEvent): boolean {
 
 function toToolCall(payload: unknown) {
   const record = asRecord(payload);
+  const nested = asRecord(record.call);
+  const source = nested ?? record;
   return {
-    id: stringValue(record.toolCallId ?? record.id),
-    name: stringValue(record.toolName ?? record.name) ?? "unknown",
-    args: asRecord(record.input ?? record.args),
+    id: stringValue(source.toolCallId ?? source.id ?? record.toolCallId ?? record.id),
+    name: stringValue(source.toolName ?? source.name ?? record.toolName ?? record.name) ?? "unknown",
+    args: asRecord(source.input ?? source.args ?? record.input ?? record.args),
   };
 }
 

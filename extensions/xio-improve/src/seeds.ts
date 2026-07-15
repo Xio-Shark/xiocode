@@ -1,8 +1,8 @@
 import type { ImproveGoal } from "./types.ts";
 
 /**
- * In-repo S4 seed: adapt xiocode docs/harness clarity from an external-eval-style
- * failure signal. Only touches xiocode; never merges external repo patches.
+ * In-repo S4 seed: prompt-only. Production seeds must not overwrite docs via
+ * scriptedChange; tests may still construct scripted goals explicitly.
  */
 export const BUILTIN_SEEDS: readonly ImproveGoal[] = [
   {
@@ -10,46 +10,10 @@ export const BUILTIN_SEEDS: readonly ImproveGoal[] = [
     source: "seed",
     title: "Document self-improve merge-ask (never auto-merge on green)",
     prompt:
-      "Ensure XioCode self-improve docs state that a green verifier only triggers a MergeGate ask; never auto-merge into the main tree. Only change xiocode files.",
-    scriptedChange: {
-      path: "docs/self-improve.md",
-      content: [
-        "# XioCode Self-Improve Loop",
-        "",
-        "> Outer code-modification loop: pick a goal (T4) → edit inside a worktree → run verifier → **MergeGate ask**.",
-        "",
-        "## Flow",
-        "",
-        "1. **T4 schedule** — queue → red-test placeholders → seeds",
-        "2. **WorktreeSandbox** — all edits happen in `~/.xiocode/worktrees/...`",
-        "3. **Verifier** — default `npm run check` (optional extra commands)",
-        "4. **MergeGate** — on green, ask the user; on red, do not merge",
-        "",
-        "## Merge policy (A1)",
-        "",
-        "- Green verifier **does not** merge into the main tree.",
-        "- Merge requires explicit user consent via MergeGate (`/merge`, session-end ask, or `xio improve` prompt).",
-        "- Rejecting the ask leaves the main tree unchanged.",
-        "- External-eval failures may become Goals; external repo patches are never merged into xiocode.",
-        "",
-        "## CLI",
-        "",
-        "```bash",
-        "xio improve              # runOnce",
-        "xio improve --max 3      # runLoop",
-        "./bin/xio-improve --max 1",
-        "```",
-        "",
-        "## Out of scope",
-        "",
-        "- Auto-merge on green (revoked G4)",
-        "- Default StrategyLearner / PromptEvolver / SpeculativeExecutor",
-        "",
-      ].join("\n"),
-    },
+      "Ensure XioCode self-improve docs state that a green verifier only triggers a MergeGate ask; never auto-merge into the main tree. Only change xiocode files. Prefer a small, precise edit to docs/self-improve.md if needed.",
     meta: {
       seedKind: "S4",
-      note: "in-repo adaptation; external patches stay out",
+      note: "prompt-only seed; scriptedChange reserved for tests/explicit determinism",
     },
   },
 ];
