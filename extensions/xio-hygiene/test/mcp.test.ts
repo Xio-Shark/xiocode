@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MCP_CONFIG,
+  forceKillPid,
   loadMcpConfigs,
   mcpToolName,
   parseServerSpec,
+  readTransportPid,
   registerMcpBridge,
   sanitizeMcpSegment,
   type McpConfig,
@@ -50,6 +52,61 @@ describe("mcp naming", () => {
   });
 });
 
+describe("mcp force-kill helpers", () => {
+  it("reads transport pid when present", () => {
+    expect(readTransportPid({ pid: 12345 })).toBe(12345);
+    expect(readTransportPid({ pid: null })).toBeNull();
+    expect(readTransportPid({})).toBeNull();
+    expect(readTransportPid(null)).toBeNull();
+  });
+
+  it("forceKillPid ignores invalid pids and missing processes", () => {
+    expect(() => forceKillPid(null)).not.toThrow();
+    expect(() => forceKillPid(-1)).not.toThrow();
+    // Extremely unlikely to exist; ESRCH must not throw.
+    expect(() => forceKillPid(2_147_483_646)).not.toThrow();
+  });
+
+  it("session_end returns quickly after stdio connect", async () => {
+    const root = await tempRoot("xio-mcp-close-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(
+      path.join(cwd, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          echo: {
+            command: process.execPath,
+            args: [STDIO_FIXTURE],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const host = new ExtensionHost();
+    const bridge = registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({ readClaude: false, readCursor: false }),
+        registerTool: (tool) => host.registerTool(tool),
+      },
+    );
+
+    await host.emit("session_start", {});
+    await bridge.waitUntilSettled();
+    expect(bridge.getToolNames().length).toBeGreaterThan(0);
+
+    const started = Date.now();
+    await host.emit("session_end", {});
+    const elapsed = Date.now() - started;
+    // Graceful close + force-kill must not approach multi-minute hangs.
+    expect(elapsed).toBeLessThan(5_000);
+  });
+});
+
 describe("parseServerSpec", () => {
   it("parses stdio and url transports", () => {
     const warnings: string[] = [];
@@ -68,6 +125,14 @@ describe("parseServerSpec", () => {
     expect(parseServerSpec("c", { url: "http://127.0.0.1/mcp", type: "http" }, warnings)?.transport).toBe("http");
     expect(parseServerSpec("d", { nope: true }, warnings)).toBeUndefined();
     expect(warnings.some((w) => w.includes("needs command"))).toBe(true);
+  });
+
+  it("skips disabled Cursor/Claude server entries", () => {
+    const warnings: string[] = [];
+    expect(parseServerSpec("x", { command: "/missing/python", disable: true }, warnings)).toBeUndefined();
+    expect(parseServerSpec("y", { command: "/missing/python", disabled: true }, warnings)).toBeUndefined();
+    expect(parseServerSpec("z", { command: "/missing/python", enabled: false }, warnings)).toBeUndefined();
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -408,6 +473,8 @@ describe("registerMcpBridge transports", () => {
               close: async () => undefined,
             } as never,
             toolNames: [],
+            pid: null,
+            forceKill: () => undefined,
             close: async () => undefined,
           };
         },
@@ -471,6 +538,8 @@ describe("registerMcpBridge transports", () => {
               close: async () => undefined,
             } as never,
             toolNames: [],
+            pid: null,
+            forceKill: () => undefined,
             close: async () => undefined,
           };
         },
@@ -484,6 +553,104 @@ describe("registerMcpBridge transports", () => {
       "mcp__a__echo",
       "mcp__b__echo",
     ]));
+  });
+
+
+  it("listTools failure closes connection and removes it from live registry", async () => {
+    const root = await tempRoot("xio-mcp-listfail-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+
+    let closed = false;
+    let forceKilled = false;
+    const host = new ExtensionHost();
+    const bridge = registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({
+          readClaude: false,
+          readCursor: false,
+          timeoutMs: 2_000,
+          servers: {
+            bad: { transport: "stdio", command: "bad" },
+          },
+        }),
+        registerTool: (tool) => host.registerTool(tool),
+        connectServer: async (server) => ({
+          name: server.name,
+          client: {
+            listTools: async () => {
+              throw new Error("listTools boom");
+            },
+            callTool: async () => ({ content: [] }),
+            close: async () => undefined,
+          } as never,
+          toolNames: [],
+          pid: null,
+          forceKill: () => {
+            forceKilled = true;
+          },
+          close: async () => {
+            closed = true;
+          },
+        }),
+      },
+    );
+
+    await host.emit("session_start", {});
+    await bridge.waitUntilSettled();
+    expect(bridge.getToolNames()).toEqual([]);
+    expect(bridge.getStatuses()[0]?.ok).toBe(false);
+    expect(closed).toBe(true);
+    expect(bridge.getToolNames().length).toBe(0);
+
+    const started = Date.now();
+    await host.emit("session_end", {});
+    expect(Date.now() - started).toBeLessThan(3_000);
+    void forceKilled;
+  });
+
+  it("connect timeout mock path closes connection within bound", async () => {
+    const root = await tempRoot("xio-mcp-timeout-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+
+    let closed = 0;
+    const host = new ExtensionHost();
+    const bridge = registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({
+          readClaude: false,
+          readCursor: false,
+          timeoutMs: 50,
+          servers: {
+            hang: { transport: "stdio", command: "hang" },
+          },
+        }),
+        registerTool: (tool) => host.registerTool(tool),
+        connectServer: async () => {
+          await new Promise((_, reject) => {
+            setTimeout(() => reject(new Error("mcp timeout after 50ms: connect(hang)")), 50);
+          });
+          throw new Error("unreachable");
+        },
+      },
+    );
+
+    // Simulate connectMcpServer cleanup contract: injectors that throw after timeout
+    // still leave no live tools; session_end is bounded.
+    await host.emit("session_start", {});
+    await bridge.waitUntilSettled();
+    expect(bridge.getToolNames()).toEqual([]);
+    const t0 = Date.now();
+    await host.emit("session_end", {});
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    void closed;
   });
 
   it("coexists with skill tool and is blockable via PreToolUse hooks", async () => {

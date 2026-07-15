@@ -6,19 +6,64 @@ import type { XioExtensionAPI } from "../runtime/index.ts";
 import type { CommandHandlerContext, ExtensionContext } from "../../extensions/xio-evolve/src/types.ts";
 import { parseServerSpec, type McpConfig, type McpServerSpec } from "../../extensions/xio-hygiene/src/mcp.ts";
 
+/**
+ * Load runtime config from XIO_RUNTIME_CONFIG (or minimal defaults) and register extensions.
+ * CLI interactive path continues to use this entry.
+ */
 export default async function registerXioRuntime(api: XioExtensionAPI): Promise<void> {
   const configPath = process.env.XIO_RUNTIME_CONFIG;
-  const evolveApi = adaptEvolveApi(api);
   if (!configPath) {
+    await registerRuntimeFromConfig(api, {
+      general: { runRoot: pathJoinHome(".xiocode", "runs") },
+      providers: {},
+      worktree: { enabled: false, retainOnReject: false, allowDirty: false },
+      extensions: {},
+    } as XioRuntimeConfig, {
+      workspaceCwd: process.env.XIO_MAIN_ROOT ?? process.cwd(),
+      home: os.homedir(),
+      minimal: true,
+    });
+    return;
+  }
+
+  const config = JSON.parse(await readFile(configPath, "utf8")) as XioRuntimeConfig;
+  await registerRuntimeFromConfig(api, config, {
+    workspaceCwd: config.worktree.session?.worktreePath
+      ?? process.env.XIO_WORKTREE
+      ?? process.env.XIO_MAIN_ROOT
+      ?? process.cwd(),
+    home: os.homedir(),
+  });
+}
+
+/**
+ * Config-bound extension registration (hygiene / evolve / MCP / optional sandbox).
+ * Used by interactive CLI (via file) and self-improve agent (in-memory, no worktree session).
+ */
+export async function registerRuntimeFromConfig(
+  api: XioExtensionAPI,
+  config: XioRuntimeConfig,
+  options: Readonly<{
+    workspaceCwd: string;
+    home?: string;
+    configRoot?: string;
+    /** When true, skip provider registration and use default hygiene only (no config file). */
+    minimal?: boolean;
+  }>,
+): Promise<void> {
+  const evolveApi = adaptEvolveApi(api);
+  const home = options.home ?? os.homedir();
+  const workspaceCwd = options.workspaceCwd;
+
+  if (options.minimal) {
     const [{ registerXioHygiene }, { registerXioEvolve }, { registerXioSandbox }] = await Promise.all([
       loadHygiene(),
       loadEvolve(),
       loadSandbox(),
     ]);
-    // Hygiene before evolve so TodoEnforcer appends after agents_md / skills catalog.
     registerXioHygiene(evolveApi, {
-      cwd: process.env.XIO_MAIN_ROOT ?? process.cwd(),
-      home: os.homedir(),
+      cwd: workspaceCwd,
+      home,
       registerTool: (tool) => api.registerTool(tool),
       warn: (message) => console.warn(message),
     });
@@ -27,19 +72,13 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
     return;
   }
 
-  const config = JSON.parse(await readFile(configPath, "utf8")) as XioRuntimeConfig;
   registerProviders(api, config);
   const [{ registerXioHygiene }, { registerXioEvolve, RunStore }] = await Promise.all([loadHygiene(), loadEvolve()]);
   const runStore = new RunStore({ root: config.general.runRoot });
-  const workspaceCwd = config.worktree.session?.worktreePath
-    ?? process.env.XIO_WORKTREE
-    ?? process.env.XIO_MAIN_ROOT
-    ?? process.cwd();
 
-  // Hygiene before evolve: agents_md + skills catalog → TodoEnforcer (progressive emit).
   registerXioHygiene(evolveApi, {
     cwd: workspaceCwd,
-    home: os.homedir(),
+    home,
     agentsMd: config.agentsMd ?? {
       enabled: true,
       readClaudeDirs: true,
@@ -80,6 +119,10 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
       },
     });
   }
+}
+
+function pathJoinHome(...parts: string[]): string {
+  return [os.homedir(), ...parts].join("/");
 }
 
 function adaptEvolveApi(api: XioExtensionAPI): ExtensionContext {
@@ -177,11 +220,14 @@ function registerProviders(api: XioExtensionAPI, config: XioRuntimeConfig): void
       apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
       authHeader: true,
       thinkingDisplay: provider.thinkingDisplay,
+      toolChoice: provider.toolChoice,
+      toolChoiceScope: provider.toolChoiceScope,
       models: [
         {
           id: provider.model,
           name: provider.model,
-          reasoning: provider.reasoning ?? false,
+          // Default true so effort UI works without per-provider flags; set reasoning = false to document non-reasoning models.
+          reasoning: provider.reasoning ?? true,
           thinkingLevelMap: provider.thinkingLevelMap,
           input: provider.input ? [...provider.input] : ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

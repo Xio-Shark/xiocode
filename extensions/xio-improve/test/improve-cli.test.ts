@@ -46,6 +46,14 @@ describe("parseImproveArgs", () => {
     });
     expect(parseImproveArgs(["--private-case=abc"]).privateCaseId).toBe("abc");
   });
+
+  it("fails closed on unknown options and missing values", () => {
+    expect(() => parseImproveArgs(["--nope"])).toThrow(/unknown improve option/i);
+    expect(() => parseImproveArgs(["--max"])).toThrow(/missing value for --max/i);
+    expect(() => parseImproveArgs(["--max", "0"])).toThrow(/invalid --max/i);
+    expect(() => parseImproveArgs(["--check"])).toThrow(/missing value for --check/i);
+    expect(() => parseImproveArgs(["--private-case"])).toThrow(/missing value for --private-case/i);
+  });
 });
 
 describe("resolveImproveArgs", () => {

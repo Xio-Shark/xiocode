@@ -182,6 +182,59 @@ export type CandidateInput =
     oracle_files: Readonly<Record<string, string>>;
   }>;
 
+export type PerformanceMetricDelta = Readonly<{
+  before_p50_ms: number | null;
+  candidate_p50_ms: number | null;
+  before_p95_ms: number | null;
+  candidate_p95_ms: number | null;
+  delta_p50_ms: number | null;
+  delta_p95_ms: number | null;
+}>;
+
+export type PerformanceSection = Readonly<{
+  schema_version: "xio-eval-performance.v1";
+  before_bench_id: string | null;
+  candidate_bench_id: string | null;
+  deltas: Readonly<Record<string, PerformanceMetricDelta>>;
+  resource?: Readonly<{
+    before_rss_bytes: number | null;
+    candidate_rss_bytes: number | null;
+  }>;
+  hard_regressions: readonly string[];
+  soft_regressions: readonly string[];
+}>;
+
+export type AwarenessSection = Readonly<{
+  schema_version: "xio-eval-awareness.v1";
+  evidence_coverage: number | null;
+  overlap: number | null;
+  task_resolution: number | null;
+  gaps: readonly string[];
+}>;
+
+export type PrivateJoinCase = Readonly<{
+  case_id: string;
+  family: string;
+  status: string;
+}>;
+
+export type PrivateJoinSection = Readonly<{
+  schema_version: "xio-eval-private-join.v1";
+  cases: readonly PrivateJoinCase[];
+  all_fixed: boolean;
+  /** Literal false — private join never authorizes auto-merge. */
+  auto_merge_authorized: false;
+}>;
+
+export type GateAxisStatus = "pass" | "fail" | "concern" | "infra" | "skipped";
+
+export type GateSection = Readonly<{
+  schema_version: "xio-eval-gate.v1";
+  manifest_id: string;
+  manifest_version: string;
+  axes: Readonly<Record<string, GateAxisStatus>>;
+}>;
+
 export type EvalReport = Readonly<{
   schema_version: "xio-eval-report.v1";
   eval_id: string;
@@ -194,6 +247,14 @@ export type EvalReport = Readonly<{
   paired_deltas: Readonly<Record<string, number>>;
   concerns: readonly string[];
   errors: readonly string[];
+  /** Optional multi-axis performance deltas from independent bench reports. */
+  performance?: PerformanceSection;
+  /** Optional workspace-awareness / coverage metrics. */
+  awareness?: AwarenessSection;
+  /** Optional private regression join (evidence only; never auto-merge). */
+  private_join?: PrivateJoinSection;
+  /** Optional gate manifest axis summary. */
+  gate?: GateSection;
 }>;
 
 export type CandidateExecutorOptions = Readonly<{
@@ -227,6 +288,13 @@ export type EvalRunOptions = Readonly<{
   now?: () => Date;
   case_ids?: readonly string[];
   price_table_path?: string;
+  /** Multi-axis gate manifest path (defaults when perf/private flags used). */
+  gate_manifest_path?: string;
+  /** Independent before/candidate `xio bench` report.json paths. */
+  perf_before_path?: string;
+  perf_candidate_path?: string;
+  /** Private regression case ids to join (evidence only; never auto-merge). */
+  private_case_ids?: readonly string[];
 }>;
 
 export function emptyUsage(): UsageMetrics {

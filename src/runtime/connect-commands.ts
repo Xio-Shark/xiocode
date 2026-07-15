@@ -274,16 +274,24 @@ async function persistModelDefault(
   const existing = options.host.getProvider(providerName);
   if (existing) {
     const models = uniqueModels([modelId, ...existing.models.map((model) => model.id)]);
+    const template = existing.models[0];
     options.host.registerProvider(providerName, {
       ...existing,
-      models: models.map((id) => ({
-        id,
-        name: id,
-        reasoning: false,
-        input: ["text"] as ("text" | "image")[],
-        contextWindow: 128_000,
-        maxTokens: 8192,
-      })),
+      models: models.map((id) => {
+        const prev = existing.models.find((model) => model.id === id);
+        return {
+          id,
+          name: id,
+          reasoning: prev?.reasoning ?? template?.reasoning ?? true,
+          thinkingLevelMap: prev?.thinkingLevelMap ?? template?.thinkingLevelMap,
+          input: prev?.input ?? template?.input ?? (["text"] as ("text" | "image")[]),
+          contextWindow: prev?.contextWindow ?? template?.contextWindow ?? 128_000,
+          maxTokens: prev?.maxTokens ?? template?.maxTokens ?? 8192,
+          headers: prev?.headers ?? template?.headers,
+          compat: prev?.compat ?? template?.compat,
+          cost: prev?.cost ?? template?.cost,
+        };
+      }),
     });
   }
 }
@@ -362,13 +370,19 @@ function toRegistration(provider: XioProviderConfig, models: readonly string[]):
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
     authHeader: true,
+    thinkingDisplay: provider.thinkingDisplay,
+    toolChoice: provider.toolChoice,
+    toolChoiceScope: provider.toolChoiceScope,
     models: modelIds.map((id) => ({
       id,
       name: id,
-      reasoning: false,
+      reasoning: provider.reasoning ?? true,
+      thinkingLevelMap: provider.thinkingLevelMap,
       input: ["text"] as ("text" | "image")[],
-      contextWindow: 128_000,
-      maxTokens: 8192,
+      contextWindow: provider.contextWindow ?? 128_000,
+      maxTokens: provider.maxTokens ?? 8192,
+      headers: provider.headers,
+      compat: provider.compat,
     })),
   };
 }

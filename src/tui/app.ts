@@ -1,16 +1,55 @@
 import { createRequire } from "node:module";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useWindowSize } from "ink";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
 
-import { TOOL_OUTPUT_PREVIEW_LINES, previewText } from "../runtime/session-ui.ts";
+import {
+  TOOL_OUTPUT_PREVIEW_LINES,
+  formatExploreToolLabel,
+  formatToolOutputForDisplay,
+  isExploreToolName,
+  previewText,
+} from "../runtime/session-ui.ts";
+import { isMouseLeakChunk, stripMouseLeak } from "./mouse-scroll.ts";
 import { CONTEXT_SUMMARY_NAME, isContextCompactionError } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import type { PreparedSession } from "../runtime/session.ts";
 import type { SelectChoice } from "../runtime/interactive-io.ts";
 import type { TuiEvent, TuiSessionBridge } from "./session-bridge.ts";
+import {
+  applyInputChunk,
+  clearQueue,
+  deleteBackward,
+  emptyComposer,
+  historyDown,
+  historyUp,
+  loadQueueIntoDraft,
+  moveCursor,
+  queueWhileBusy,
+  rememberSubmission,
+  setComposerText,
+  type ComposerState,
+} from "./composer.ts";
+import {
+  appendUserBlock,
+  blocksFromRestoredMessages,
+  emptyScrollbackState,
+  formatLiveLines,
+  latestExpandableToolBlock,
+  reduceScrollback,
+  toggleLatestScrollbackExpandable,
+  type HistoryBlock,
+  type ScrollbackState,
+} from "./transcript-log.ts";
+import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
 import type { ChatMessage, ContextCompactionUiEvent } from "../runtime/types.ts";
-import { collapseNoticesForDisplay, formatShortCwd, padSlashName, theme } from "./theme.ts";
+import {
+  collapseNoticesForDisplay,
+  formatShortCwd,
+  padSlashName,
+  theme,
+  truncateToolDetail,
+} from "./theme.ts";
 
 const h = React.createElement;
 const require = createRequire(import.meta.url);
@@ -55,6 +94,11 @@ export type AppProps = Readonly<{
   bridge: TuiSessionBridge;
   cwd: string;
   onExit: (code: number) => Promise<void>;
+  /**
+   * Route B (interactive `xio`): finalized transcript via Ink `<Static>` into the
+   * main buffer (native wheel/search). Tests keep `false` for on-tree transcript rows.
+   */
+  appendScrollback?: boolean;
 }>;
 
 export type SlashCommand = Readonly<{ name: string; description: string }>;
@@ -70,9 +114,79 @@ const SLASH_MENU_VISIBLE = 8;
 
 export function App(props: AppProps): React.JSX.Element {
   const { rows } = useWindowSize();
-  const [view, setView] = useState<ViewState>(() => createInitialView(props.session.getMessages()));
-  useEffect(() => props.bridge.subscribe((event) => setView((current) => reduceEvent(current, event))), [props.bridge]);
-  const { input, busy, slashIndex, setSlashIndex } = useSessionInteraction(props, setView);
+  const appendScrollback = props.appendScrollback === true;
+  const [view, setView] = useState<ViewState>(() =>
+    appendScrollback
+      ? { entries: [], statuses: {}, widgets: {}, bypass: false }
+      : createInitialView(props.session.getMessages()),
+  );
+  // Route B: finalized blocks → <Static>; live stream + in-flight tools stay sticky above the prompt.
+  const [scrollback, setScrollback] = useState<ScrollbackState>(() =>
+    appendScrollback
+      ? blocksFromRestoredMessages(props.session.getMessages())
+      : emptyScrollbackState(),
+  );
+  // Route A only: 0 = stick to latest; >0 = lines scrolled up in self-viewport.
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  useEffect(() => {
+    const applyBridgeEvent = (event: TuiEvent) => {
+      if (appendScrollback) {
+        // Chrome status/modals still via reduceEvent; transcript via scrollback state.
+        if (
+          event.kind === "status"
+          || event.kind === "widget"
+          || event.kind === "confirm-open"
+          || event.kind === "confirm-close"
+          || event.kind === "select-open"
+          || event.kind === "select-close"
+          || event.kind === "prompt-open"
+          || event.kind === "prompt-close"
+          || event.kind === "bypass"
+        ) {
+          setView((current) => reduceEvent(current, event));
+          return;
+        }
+        setScrollback((current) => reduceScrollback(current, event));
+        return;
+      }
+      setView((current) => reduceEvent(current, event));
+    };
+
+    const coalescer = createDeltaCoalescer((events) => {
+      const batch = mergeSoftDeltas(events);
+      for (const event of batch) applyBridgeEvent(event);
+    });
+
+    const unsubscribe = props.bridge.subscribe((event) => {
+      if (appendScrollback) {
+        coalescer.push(event);
+        return;
+      }
+      // Route A (tests): apply immediately for deterministic reducers.
+      applyBridgeEvent(event);
+    });
+    return () => {
+      coalescer.dispose();
+      unsubscribe();
+    };
+  }, [props.bridge, appendScrollback]);
+
+  const {
+    input,
+    busy,
+    slashIndex,
+    setSlashIndex,
+    transcriptViewer,
+    setTranscriptViewer,
+  } = useSessionInteraction(
+    props,
+    setView,
+    setScrollOffset,
+    appendScrollback,
+    setScrollback,
+    scrollback,
+  );
 
   const slashItems = useMemo(
     () => filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(input)),
@@ -84,20 +198,68 @@ export function App(props: AppProps): React.JSX.Element {
     : 0;
 
   const tasklist = view.widgets.tasklist;
-  // TasklistPanel: content (≤10) + marginTop(1) + border top/bottom (2)
-  const tasklistRows = tasklist && tasklist.length > 0 ? Math.min(tasklist.length, 10) + 3 : 0;
-  const chromeRows = (slashOpen ? 5 + Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1 : 5)
-    + tasklistRows;
-  const visibleEntries = useMemo(
-    () => collapseNoticesForDisplay(view.entries).slice(-Math.max(4, rows - chromeRows)),
-    [rows, view.entries, chromeRows],
+  const collapsedEntries = useMemo(
+    () => collapseNoticesForDisplay(view.entries),
+    [view.entries],
   );
+
+  // --- Route A (tests / optional): self-managed line window ---
+  const window = useMemo(() => {
+    if (appendScrollback) {
+      return {
+        visible: [] as typeof collapsedEntries,
+        offset: 0,
+        maxOffset: 0,
+        hiddenAbove: 0,
+        hiddenBelow: 0,
+        viewport: 0,
+        totalLines: 0,
+      };
+    }
+    const tasklistRows = tasklist && tasklist.length > 0 ? Math.min(tasklist.length, 10) + 3 : 0;
+    const baseChrome = (slashOpen ? 7 + Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1 : 7)
+      + tasklistRows;
+    const viewportLines = Math.max(4, rows - baseChrome);
+    return sliceTranscriptWindow(
+      collapsedEntries,
+      viewportLines,
+      scrollOffset,
+      (entry) => estimateTranscriptEntryLines(entry, 80),
+    );
+  }, [appendScrollback, collapsedEntries, rows, scrollOffset, slashOpen, slashItems, tasklist]);
+
+  useEffect(() => {
+    if (appendScrollback) return;
+    if (scrollOffset > window.maxOffset) {
+      setScrollOffset(window.maxOffset);
+    }
+  }, [appendScrollback, scrollOffset, window.maxOffset]);
+
   const modelLabel = view.statuses.model ?? `${props.session.getModel().provider}/${props.session.getModel().id}`;
   const thinkingLabel = view.statuses.thinking ?? `think:${props.session.getThinkingLevel()}`;
   const permissionLabel = view.statuses.permission
     ?? `perm:${props.session.getPermissionMode()}`;
   const planLabel = view.statuses.plan;
-  return h(Box, { flexDirection: "column", height: rows },
+  const workspaceLabel = view.statuses.workspace
+    ?? view.statuses.isolation
+    ?? undefined;
+  const scrolled = !appendScrollback && window.offset > 0;
+
+  // Scrollback mode: natural height (Static history + chrome). Do not pin to full screen.
+  const rootProps = appendScrollback
+    ? { flexDirection: "column" as const }
+    : { flexDirection: "column" as const, height: rows };
+
+  const liveLines = formatLiveLines(scrollback.live, scrollback.inFlightTools);
+
+  return h(Box, rootProps,
+    appendScrollback
+      ? h(Static as React.FC<{ items: HistoryBlock[]; children: (block: HistoryBlock) => React.ReactNode }>, {
+        // Ink Static mutates its items prop type; blocks array is only replaced on hard boundaries.
+        items: scrollback.blocks as HistoryBlock[],
+        children: (block: HistoryBlock) => h(HistoryBlockRow, { key: block.id, block }),
+      })
+      : null,
     h(SessionHeader, {
       version: PACKAGE_VERSION,
       model: modelLabel,
@@ -106,16 +268,46 @@ export function App(props: AppProps): React.JSX.Element {
       plan: planLabel,
       cwd: props.cwd,
       context: view.statuses.context,
+      explore: view.statuses.explore,
+      workspace: workspaceLabel,
       busy,
     }),
-    view.confirm
-      ? h(ConfirmView, { confirm: view.confirm, rows })
-      : view.select
-        ? h(SelectView, { select: view.select, rows })
-        : view.prompt
-          ? h(PromptView, { prompt: view.prompt })
-          : h(Box, { flexDirection: "column", flexGrow: 1 },
-            ...visibleEntries.map((entry) => h(TranscriptRow, { key: entry.id, entry }))),
+    transcriptViewer
+      ? h(TranscriptViewerOverlay, {
+        block: transcriptViewer,
+        rows,
+        onClose: () => setTranscriptViewer(undefined),
+      })
+      : view.confirm
+        ? h(ConfirmView, { confirm: view.confirm, rows })
+        : view.select
+          ? h(SelectView, { select: view.select, rows })
+          : view.prompt
+            ? h(PromptView, { prompt: view.prompt })
+            : appendScrollback
+              ? (liveLines.length > 0
+                ? h(Box, { flexDirection: "column", marginY: 0 },
+                  ...liveLines.map((line, index) =>
+                    h(Text, {
+                      key: `live-${index}`,
+                      dimColor: true,
+                      wrap: "wrap",
+                      color: line.includes(theme.sym.think)
+                        ? theme.think
+                        : line.includes(theme.sym.explore) || line.includes(theme.sym.tool)
+                          ? theme.tool
+                          : undefined,
+                    }, line)))
+                : null)
+              : h(Box, { flexDirection: "column", flexGrow: 1 },
+                scrolled
+                  ? h(Text, { dimColor: true },
+                    `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
+                  : null,
+                ...window.visible.map((entry) => h(TranscriptRow, { key: entry.id, entry })),
+                window.hiddenBelow > 0
+                  ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
+                  : null),
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
@@ -127,85 +319,350 @@ export function App(props: AppProps): React.JSX.Element {
       : null,
     h(FooterHints, {
       bypass: view.bypass || Boolean(view.statuses.bypass),
+      scrolled,
+      appendScrollback,
     }));
+}
+
+const HistoryBlockRow = memo(function HistoryBlockRow(
+  props: Readonly<{ block: HistoryBlock }>,
+): React.JSX.Element {
+  const color = props.block.error
+    ? theme.error
+    : props.block.kind === "tool"
+      ? theme.tool
+      : props.block.kind === "thinking"
+        ? theme.think
+        : props.block.kind === "assistant"
+          ? undefined
+          : undefined;
+  const bold = props.block.kind === "assistant";
+  return h(Box, { flexDirection: "column", flexShrink: 0 },
+    ...props.block.lines.map((line, index) =>
+      h(Text, {
+        key: `${props.block.id}-${index}`,
+        color,
+        bold: bold && index === 0,
+        dimColor: props.block.kind === "tool" || props.block.kind === "thinking" || props.block.kind === "notice",
+        wrap: "wrap",
+      }, line)));
+});
+
+/**
+ * Window into the transcript for alternate-screen (no terminal scrollback).
+ * offset=0 → latest (bottom); offset increases as the user scrolls up (in **lines**).
+ *
+ * @param lineHeight per-entry terminal row estimate (default 1 = legacy entry-count mode)
+ */
+export function sliceTranscriptWindow<T>(
+  entries: readonly T[],
+  viewport: number,
+  offset: number,
+  lineHeight: (entry: T, index: number) => number = () => 1,
+): Readonly<{
+  visible: readonly T[];
+  offset: number;
+  maxOffset: number;
+  hiddenAbove: number;
+  hiddenBelow: number;
+  viewport: number;
+  totalLines: number;
+}> {
+  const size = Math.max(1, viewport);
+  if (entries.length === 0) {
+    return {
+      visible: [],
+      offset: 0,
+      maxOffset: 0,
+      hiddenAbove: 0,
+      hiddenBelow: 0,
+      viewport: size,
+      totalLines: 0,
+    };
+  }
+
+  const heights = entries.map((entry, index) => Math.max(1, Math.floor(lineHeight(entry, index))));
+  let totalLines = 0;
+  for (const hgt of heights) totalLines += hgt;
+
+  const maxOffset = Math.max(0, totalLines - size);
+  const clamped = Math.max(0, Math.min(offset, maxOffset));
+
+  // Skip `clamped` lines from the bottom, then fill upward up to `size` lines.
+  let skip = clamped;
+  let endExclusive = entries.length;
+  while (endExclusive > 0 && skip > 0) {
+    const hgt = heights[endExclusive - 1]!;
+    if (skip >= hgt) {
+      skip -= hgt;
+      endExclusive -= 1;
+    } else {
+      // Partial skip of the bottom-most visible entry: still include the whole entry.
+      skip = 0;
+    }
+  }
+
+  let used = 0;
+  let start = endExclusive;
+  while (start > 0) {
+    const hgt = heights[start - 1]!;
+    if (used > 0 && used + hgt > size) break;
+    used += hgt;
+    start -= 1;
+    if (used >= size) break;
+  }
+
+  const visible = entries.slice(start, endExclusive);
+
+  // Lines above the first visible entry / lines scrolled off the bottom.
+  let hiddenAbove = 0;
+  for (let i = 0; i < start; i += 1) hiddenAbove += heights[i]!;
+  const hiddenBelow = clamped;
+
+  return {
+    visible,
+    offset: clamped,
+    maxOffset,
+    hiddenAbove,
+    hiddenBelow,
+    viewport: size,
+    totalLines,
+  };
+}
+
+/**
+ * Estimate how many terminal rows a transcript entry occupies (for line-based scroll).
+ * Accounts for tool preview bodies and rough wrap width — not pixel-perfect, enough for maxOffset > 0
+ * when a few tall tool rows fill the screen.
+ */
+export function estimateTranscriptEntryLines(
+  entry: TranscriptEntry,
+  columns = 80,
+): number {
+  const cols = Math.max(20, columns);
+  if (entry.kind === "thinking") {
+    if (entry.collapsed) return 1;
+    return 1 + Math.max(1, wrappedLineCount(entry.text, cols - 2));
+  }
+  if (entry.kind === "tool") {
+    const output = entry.output ?? "";
+    const finished = entry.text === "done" || entry.text === "failed";
+    const body = formatToolOutputBody(output, entry.previewCollapsed !== false, finished);
+    const showExpand = entry.previewCollapsed === true
+      && output.length > 0
+      && output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES;
+    // title row + body rows + optional expand hint
+    let lines = 1;
+    for (const row of body) {
+      lines += wrappedLineCount(row, cols);
+    }
+    if (showExpand) lines += 1;
+    return Math.max(1, lines);
+  }
+  if (entry.kind === "user" || entry.kind === "command") {
+    // user bar + wrap + marginBottom ≈ content rows + 1
+    return 1 + wrappedLineCount(entry.text, cols - 4);
+  }
+  if (entry.kind === "assistant") {
+    return 1 + Math.max(1, wrappedLineCount(entry.text, cols - 2));
+  }
+  return Math.max(1, wrappedLineCount(entry.text || " ", cols - 2));
+}
+
+function wrappedLineCount(text: string, columns: number): number {
+  if (text.length === 0) return 0;
+  const width = Math.max(8, columns);
+  let total = 0;
+  for (const line of text.split("\n")) {
+    // Visual width ≈ code units; good enough for scroll budgeting.
+    total += Math.max(1, Math.ceil(Math.max(line.length, 1) / width));
+  }
+  return total;
 }
 
 function useSessionInteraction(
   props: AppProps,
   setView: React.Dispatch<React.SetStateAction<ViewState>>,
+  setScrollOffset: React.Dispatch<React.SetStateAction<number>>,
+  appendScrollback: boolean,
+  setScrollback: React.Dispatch<React.SetStateAction<ScrollbackState>>,
+  scrollback: ScrollbackState,
 ): Readonly<{
   input: string;
   busy: boolean;
   slashIndex: number;
   setSlashIndex: React.Dispatch<React.SetStateAction<number>>;
+  transcriptViewer: HistoryBlock | undefined;
+  setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
 }> {
   const { exit } = useApp();
-  const [input, setInput] = useState("");
-  const inputRef = useRef("");
+  const [composer, setComposer] = useState<ComposerState>(emptyComposer);
+  const composerRef = useRef(composer);
+  composerRef.current = composer;
+  const [transcriptViewer, setTranscriptViewer] = useState<HistoryBlock | undefined>(undefined);
+  const transcriptViewerRef = useRef(transcriptViewer);
+  transcriptViewerRef.current = transcriptViewer;
+  const scrollbackRef = useRef(scrollback);
+  scrollbackRef.current = scrollback;
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const slashIndexRef = useRef(0);
-  const setInputValue = (value: string) => {
-    inputRef.current = value;
-    setInput(value);
+  const setComposerState = (next: ComposerState) => {
+    const cleanedText = stripMouseLeak(next.text);
+    const cleaned: ComposerState = cleanedText === next.text
+      ? next
+      : { ...next, text: cleanedText, cursor: Math.min(next.cursor, cleanedText.length) };
+    composerRef.current = cleaned;
+    setComposer(cleaned);
     setSlashIndex(0);
     slashIndexRef.current = 0;
   };
+  const setInputValue = (value: string) => {
+    setComposerState(setComposerText(composerRef.current, stripMouseLeak(value)));
+  };
   const moveSlash = (delta: number) => {
     setSlashIndex((current) => {
-      const items = filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(inputRef.current));
+      const items = filterSlashCommands(
+        collectSlashCommands(props.session.host),
+        slashQuery(composerRef.current.text),
+      );
       if (!items || items.length === 0) return 0;
       const next = (current + delta + items.length) % items.length;
       slashIndexRef.current = next;
       return next;
     });
   };
+  const scrollTranscript = (delta: number) => {
+    if (appendScrollback) return; // terminal owns scroll
+    setScrollOffset((current) => Math.max(0, current + delta));
+  };
   const close = async (code: number) => {
     await props.onExit(code);
     exit(code);
   };
-  const submit = async (rawValue = inputRef.current) => {
+  const submit = async (rawValue = composerRef.current.text) => {
     const value = rawValue.trim();
-    if (value.length === 0 || busy) return;
-    setInputValue("");
-    setView((current) => appendEntry(current, value.startsWith("/") ? "command" : "user", value));
+    if (value.length === 0) return;
+    // Busy turn: queue explicitly (steer not provider-safe yet). Never silent no-op.
+    if (busyRef.current) {
+      if (value === "/exit" || value === "/quit") {
+        props.session.abortTurn();
+        await close(0);
+        return;
+      }
+      setComposerState(queueWhileBusy(composerRef.current, value));
+      const notice = `Queued for next turn (steer unavailable): ${value.slice(0, 80)}`;
+      if (appendScrollback) {
+        setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
+      } else {
+        setView((current) => appendEntry(current, "notice", notice));
+      }
+      setView((current) => reduceEvent(current, {
+        kind: "status",
+        key: "queue",
+        text: "queued",
+      }));
+      return;
+    }
+    setComposerState(rememberSubmission(composerRef.current, value));
+    setScrollOffset(0);
+    const isCommand = value.startsWith("/");
+    if (appendScrollback) {
+      setScrollback((current) => appendUserBlock(current, value));
+    } else {
+      setView((current) => appendEntry(current, isCommand ? "command" : "user", value));
+    }
     if (value === "/exit" || value === "/quit") {
       await close(0);
       return;
     }
     const startedAt = Date.now();
-    const isPrompt = !value.startsWith("/");
+    const isPrompt = !isCommand;
+    busyRef.current = true;
     setBusy(true);
     try {
       await runInput(props.session, value, props.bridge);
     } finally {
+      busyRef.current = false;
       setBusy(false);
       if (isPrompt) {
         const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-        setView((current) => appendEntry(current, "notice", `* Done in ${seconds}s`));
+        const done = `* Done in ${seconds}s`;
+        if (appendScrollback) {
+          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: done }));
+        } else {
+          setView((current) => appendEntry(current, "notice", done));
+        }
+      }
+      // Restore queued input into the draft so it can be inspected/edited/submitted.
+      const queued = composerRef.current.queue;
+      if (queued) {
+        setComposerState(loadQueueIntoDraft(composerRef.current));
+        setView((current) => reduceEvent(current, { kind: "status", key: "queue", text: undefined }));
       }
     }
   };
   useInput((character, key) => handleInput({
     character,
     key,
-    input: inputRef.current,
-    busy,
+    composer: composerRef.current,
+    busy: busyRef.current,
     interaction: interactionMode(props.bridge),
     slashIndex: slashIndexRef.current,
-    slashItems: filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(inputRef.current)),
+    slashItems: filterSlashCommands(
+      collectSlashCommands(props.session.host),
+      slashQuery(composerRef.current.text),
+    ),
     setInputValue,
+    setComposerState,
     moveSlash,
     submit,
     close,
     session: props.session,
     bridge: props.bridge,
     scrollConfirm: (delta) => setView((current) => scrollConfirmation(current, delta)),
+    scrollTranscript,
+    appendScrollback,
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
-    toggleExpandable: () => setView((current) => toggleLatestExpandable(current)),
+    toggleExpandable: () => {
+      if (appendScrollback) {
+        // Toggle overlay closed if already open.
+        if (transcriptViewerRef.current) {
+          setTranscriptViewer(undefined);
+          return;
+        }
+        const current = scrollbackRef.current;
+        const next = toggleLatestScrollbackExpandable(current);
+        const block = latestExpandableToolBlock(next);
+        setScrollback(next);
+        if (block?.output) setTranscriptViewer(block);
+        return;
+      }
+      setView((current) => toggleLatestExpandable(current));
+    },
+    closeTranscriptViewer: () => {
+      if (!transcriptViewerRef.current) return false;
+      setTranscriptViewer(undefined);
+      return true;
+    },
+    clearQueued: () => {
+      setComposerState(clearQueue(composerRef.current));
+      setView((current) => reduceEvent(current, { kind: "status", key: "queue", text: undefined }));
+    },
   }));
-  return { input, busy, slashIndex, setSlashIndex };
+  const inputDisplay = composer.queue
+    ? `${composer.text}${composer.text ? " " : ""}[queued: ${composer.queue.slice(0, 40)}${composer.queue.length > 40 ? "…" : ""}]`
+    : composer.text;
+  return {
+    input: inputDisplay,
+    busy,
+    slashIndex,
+    setSlashIndex,
+    transcriptViewer,
+    setTranscriptViewer,
+  };
 }
 
 function interactionMode(bridge: TuiSessionBridge): "confirm" | "select" | "prompt" | "none" {
@@ -225,15 +682,18 @@ function handleInput(options: Readonly<{
     backspace: boolean;
     delete: boolean;
     escape?: boolean;
+    leftArrow?: boolean;
+    rightArrow?: boolean;
     upArrow?: boolean;
     downArrow?: boolean;
     pageUp?: boolean;
     pageDown?: boolean;
     tab?: boolean;
   }>;
-  input: string;
+  composer: ComposerState;
   busy: boolean;
   setInputValue: (value: string) => void;
+  setComposerState: (state: ComposerState) => void;
   moveSlash: (delta: number) => void;
   submit: (value?: string) => Promise<void>;
   close: (code: number) => Promise<void>;
@@ -243,9 +703,14 @@ function handleInput(options: Readonly<{
   slashIndex: number;
   slashItems: readonly SlashCommand[] | undefined;
   scrollConfirm: (delta: number) => void;
+  scrollTranscript: (delta: number) => void;
+  appendScrollback?: boolean;
   moveSelect: (delta: number) => void;
   setPromptValue: (value: string) => void;
   toggleExpandable: () => void;
+  /** Returns true when an open transcript overlay was closed. */
+  closeTranscriptViewer?: () => boolean;
+  clearQueued: () => void;
 }>): void {
   if (options.interaction === "confirm") {
     handleConfirmInput(options);
@@ -266,6 +731,14 @@ function handleInput(options: Readonly<{
   }
   if (options.key.ctrl && options.character === "o") {
     options.toggleExpandable();
+    return;
+  }
+  if (options.key.escape && options.closeTranscriptViewer?.()) {
+    return;
+  }
+  // Ctrl+X drops the busy-turn queue without submitting.
+  if (options.key.ctrl && options.character === "x" && options.composer.queue) {
+    options.clearQueued();
     return;
   }
 
@@ -292,31 +765,92 @@ function handleInput(options: Readonly<{
     }
     if (options.key.return) {
       const picked = options.slashItems[Math.min(options.slashIndex, options.slashItems.length - 1)];
-      void options.submit(picked ? `/${picked.name}` : options.input);
+      void options.submit(picked ? `/${picked.name}` : options.composer.text);
       return;
     }
+  }
+
+  // Route A only: self-managed transcript scroll. Route B: composer history + cursor.
+  if (!options.appendScrollback) {
+    if (options.key.pageUp) {
+      options.scrollTranscript(20);
+      return;
+    }
+    if (options.key.pageDown) {
+      options.scrollTranscript(-20);
+      return;
+    }
+    if (options.key.upArrow) {
+      options.scrollTranscript(3);
+      return;
+    }
+    if (options.key.downArrow) {
+      options.scrollTranscript(-3);
+      return;
+    }
+    if (options.key.ctrl && options.character === "g") {
+      options.scrollTranscript(100_000);
+      return;
+    }
+    if (options.key.ctrl && options.character === "e") {
+      options.scrollTranscript(-100_000);
+      return;
+    }
+  } else {
+    // Route B: up/down walk prompt history when draft is single-line idle.
+    if (options.key.upArrow && !options.busy) {
+      options.setComposerState(historyUp(options.composer));
+      return;
+    }
+    if (options.key.downArrow && !options.busy) {
+      options.setComposerState(historyDown(options.composer));
+      return;
+    }
+  }
+
+  if (options.key.leftArrow) {
+    options.setComposerState(moveCursor(options.composer, -1));
+    return;
+  }
+  if (options.key.rightArrow) {
+    options.setComposerState(moveCursor(options.composer, 1));
+    return;
   }
 
   if (options.key.tab && !options.busy) {
     void options.session.cycleThinkingLevel();
     return;
   }
-  const newline = options.character.search(/[\r\n]/);
-  if (options.key.return || newline >= 0) {
-    const value = newline >= 0 ? options.input + options.character.slice(0, newline) : options.input;
-    void options.submit(value);
+  // Multi-char chunks (paste / whole-line entry) and embedded newlines.
+  if (options.character.length > 1 || (options.character.search(/[\r\n]/) >= 0 && !options.key.return)) {
+    if (isMouseLeakChunk(options.character)) return;
+    const applied = applyInputChunk(options.composer, options.character, {
+      return: options.key.return,
+    });
+    options.setComposerState(applied.state);
+    if (applied.submit) void options.submit(applied.state.text);
+    return;
+  }
+  if (options.key.return) {
+    void options.submit(options.composer.text);
     return;
   }
   if (options.key.backspace || options.key.delete) {
-    options.setInputValue([...options.input].slice(0, -1).join(""));
+    options.setComposerState(deleteBackward(options.composer));
     return;
   }
   if (options.key.ctrl && options.character === "u") {
     options.setInputValue("");
     return;
   }
+  // Ignore pure mouse-SGR chunks (trackpad/wheel) so they never append to the prompt.
+  if (isMouseLeakChunk(options.character)) {
+    return;
+  }
   if (!options.key.ctrl && !options.key.meta && options.character.length > 0) {
-    options.setInputValue(options.input + options.character);
+    const applied = applyInputChunk(options.composer, options.character, options.key);
+    if (applied.submit) void options.submit(applied.state.text);
+    else options.setComposerState(applied.state);
   }
 }
 
@@ -325,7 +859,7 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
     if (value === "/help") {
       const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
       bridge.sink.notify?.(
-        `Commands: ${names} · Shift+Tab 权限 · Tab 思考 · Ctrl+O 展开`,
+        `Commands: ${names} · ▸think ⚙run ●answer · Shift+Tab 权限 · Tab 思考 · Ctrl+O`,
         "info",
       );
       return;
@@ -397,9 +931,12 @@ export function reduceEvent(state: ViewState, event: TuiEvent): ViewState {
   if (event.kind === "assistant-delta") return appendAssistantDelta(collapseOpenThinking(state), event.text);
   if (event.kind === "assistant-text") return finalizeAssistant(collapseOpenThinking(state), event.text);
   if (event.kind === "tool-start") {
+    // Collapse open CoT before tools so Thinking… never shares a visual line with ⚙ rows
+    // (terminal overwrite artifacts like "Thought for 45sn\":\"**/*").
+    const base = collapseOpenThinking(state);
     return {
-      ...state,
-      entries: [...state.entries, {
+      ...base,
+      entries: [...base.entries, {
         id: nextEntryId(),
         kind: "tool" as const,
         text: "",
@@ -578,40 +1115,47 @@ function finalizeTool(
   state: ViewState,
   event: Extract<TuiEvent, { kind: "tool-end" }>,
 ): ViewState {
+  const output = event.output ?? "";
+  const lineCount = output.length === 0 ? 0 : output.split("\n").length;
+  const patch = {
+    text: event.error ? "failed" : "done",
+    error: event.error,
+    output,
+    previewCollapsed: lineCount > TOOL_OUTPUT_PREVIEW_LINES,
+    ...(event.callId ? { callId: event.callId } : {}),
+  } as const;
+
+  // 1) Prefer exact tool_call id (parallel same-name tools).
+  if (event.callId) {
+    for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+      const entry = state.entries[index]!;
+      if (entry.kind !== "tool" || (entry.output ?? "") !== "") continue;
+      if (entry.callId !== event.callId) continue;
+      const next = [...state.entries];
+      next[index] = { ...entry, ...patch };
+      return { ...state, entries: next };
+    }
+  }
+
+  // 2) Fallback: latest unfinished tool with the same name (missing/mismatched ids).
   for (let index = state.entries.length - 1; index >= 0; index -= 1) {
     const entry = state.entries[index]!;
     if (entry.kind !== "tool" || (entry.output ?? "") !== "") continue;
-    // Prefer tool_call id when present so parallel same-name tools pair correctly.
-    if (event.callId) {
-      if (entry.callId !== event.callId) continue;
-    } else if (entry.title !== event.name) {
-      continue;
-    }
+    if (entry.title !== event.name) continue;
     const next = [...state.entries];
-    const output = event.output;
-    const lineCount = output.length === 0 ? 0 : output.split("\n").length;
-    next[index] = {
-      ...entry,
-      text: event.error ? "failed" : "done",
-      error: event.error,
-      output,
-      previewCollapsed: lineCount > TOOL_OUTPUT_PREVIEW_LINES,
-      ...(event.callId ? { callId: event.callId } : {}),
-    };
+    next[index] = { ...entry, ...patch };
     return { ...state, entries: next };
   }
+
+  // 3) No open start row — still show the finished tool with its body.
   return {
     ...state,
     entries: [...state.entries, {
       id: nextEntryId(),
       kind: "tool" as const,
-      text: event.error ? "failed" : "done",
-      error: event.error,
       title: event.name,
       detail: "",
-      output: event.output,
-      previewCollapsed: event.output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES,
-      ...(event.callId ? { callId: event.callId } : {}),
+      ...patch,
     }],
   };
 }
@@ -677,40 +1221,10 @@ function nextEntryId(): number {
 
 function TranscriptRow({ entry }: Readonly<{ entry: TranscriptEntry }>): React.JSX.Element {
   if (entry.kind === "thinking") {
-    const label = thoughtLabel(entry);
-    if (entry.collapsed) {
-      return h(Box, { marginY: 0 }, h(Text, { dimColor: true }, label));
-    }
-    return h(Box, { flexDirection: "column", marginBottom: 0 },
-      h(Text, { dimColor: true }, label),
-      h(Text, { dimColor: true, wrap: "wrap" }, entry.text));
+    return renderThinkingRow(entry);
   }
   if (entry.kind === "tool") {
-    const title = entry.title ?? "tool";
-    const detail = entry.detail ? ` ${entry.detail}` : "";
-    const status = entry.text ? ` ${entry.text}` : "";
-    const output = entry.output ?? "";
-    const body = output.length === 0
-      ? undefined
-      : entry.previewCollapsed === false
-        ? output
-        : previewText(output).text;
-    return h(Box, { flexDirection: "column", marginY: 0 },
-      h(Text, {
-        color: entry.error ? theme.error : theme.tool,
-        dimColor: !entry.error,
-        wrap: "wrap",
-      }, `${theme.sym.tool} ${title}${detail}${status}`),
-      body
-        ? h(Text, {
-          color: entry.error ? theme.error : undefined,
-          dimColor: true,
-          wrap: "wrap",
-        }, body)
-        : null,
-      entry.previewCollapsed === true && output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES
-        ? h(Text, { dimColor: true }, "Ctrl+O expand")
-        : null);
+    return renderToolRow(entry);
   }
   if (entry.kind === "user" || entry.kind === "command") {
     const bar = theme.userBar;
@@ -719,9 +1233,11 @@ function TranscriptRow({ entry }: Readonly<{ entry: TranscriptEntry }>): React.J
       h(Text, { backgroundColor: bar, wrap: "wrap" }, entry.text));
   }
   if (entry.kind === "assistant") {
-    return h(Box, { marginBottom: 1 },
-      h(Text, null, `${theme.sym.answer} `),
-      h(Text, { wrap: "wrap" }, entry.text));
+    // Main-agent final answer — highest visual weight.
+    return h(Box, { flexDirection: "column", marginTop: 1, marginBottom: 1 },
+      h(Box, null,
+        h(Text, { color: theme.accent, bold: true }, `${theme.sym.answer} `),
+        h(Text, { bold: true, wrap: "wrap" }, entry.text)));
   }
   if (entry.text.startsWith("* ")) {
     return h(Text, { dimColor: true }, entry.text);
@@ -732,17 +1248,94 @@ function TranscriptRow({ entry }: Readonly<{ entry: TranscriptEntry }>): React.J
     h(Text, { color, dimColor: !entry.error, wrap: "wrap" }, entry.text));
 }
 
-function thoughtLabel(entry: TranscriptEntry): string {
+function renderThinkingRow(entry: TranscriptEntry): React.JSX.Element {
+  const label = thoughtLabel(entry);
+  // Dedicated row + prefix so collapse never visually merges with following ⚙ lines.
+  if (entry.collapsed) {
+    return h(Box, { marginY: 0, flexShrink: 0 },
+      h(Text, { color: theme.think, dimColor: true }, `${theme.sym.think} ${label}`));
+  }
+  return h(Box, { flexDirection: "column", marginBottom: 0, flexShrink: 0 },
+    h(Text, { color: theme.think, dimColor: true }, `${theme.sym.think} ${label}`),
+    h(Text, { color: theme.think, dimColor: true, wrap: "wrap" },
+      indentBlock(entry.text, "  ")));
+}
+
+function renderToolRow(entry: TranscriptEntry): React.JSX.Element {
+  const rawTitle = entry.title ?? "tool";
+  const explore = isExploreTool(rawTitle);
+  const mark = explore ? theme.sym.explore : theme.sym.tool;
+  const color = entry.error ? theme.error : explore ? theme.explore : theme.tool;
+  const detailRaw = entry.detail?.trim() ?? "";
+  const detail = detailRaw.length > 0 ? ` ${truncateToolDetail(detailRaw)}` : "";
+  const finished = entry.text === "done" || entry.text === "failed";
+  const title = explore
+    ? formatExploreToolLabel({
+      running: !finished,
+      status: entry.text === "failed" ? "failed" : entry.text === "done" ? "done" : "…",
+    })
+    : rawTitle;
+  const status = explore ? "" : (entry.text ? ` ${entry.text}` : " …");
+  const output = entry.output ?? "";
+  const bodyLines = formatToolOutputBody(output, entry.previewCollapsed !== false, finished);
+  const showExpand = entry.previewCollapsed === true
+    && output.length > 0
+    && output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES;
+
+  return h(Box, { flexDirection: "column", marginY: 0, flexShrink: 0 },
+    h(Text, {
+      color,
+      dimColor: !entry.error,
+      wrap: "wrap",
+    }, `${mark} ${title}${detail}${status}`),
+    ...bodyLines.map((line, index) =>
+      h(Text, {
+        key: `out-${index}`,
+        color: entry.error ? theme.error : undefined,
+        dimColor: true,
+        wrap: "wrap",
+      }, line)),
+    showExpand
+      ? h(Text, { dimColor: true }, `  ${theme.sym.nest} Ctrl+O expand`)
+      : null);
+}
+
+/** Explore tool = primary→worker fan-out; label as subagent row. */
+export function isExploreTool(name: string | undefined): boolean {
+  return isExploreToolName(name);
+}
+
+export function thoughtLabel(entry: Readonly<{ collapsed?: boolean; thoughtSeconds?: number }>): string {
   if (entry.collapsed) {
     const seconds = entry.thoughtSeconds;
     return typeof seconds === "number" && seconds > 0
-      ? `Thought for ${seconds}s`
-      : "Thought";
+      ? `think ${seconds}s`
+      : "think";
   }
-  return "Thinking…";
+  return "thinking…";
 }
 
-function SessionHeader(props: Readonly<{
+/** Tool output under the title: always show a nest line when finished (incl. empty). */
+export function formatToolOutputBody(
+  output: string,
+  previewCollapsed: boolean,
+  finished: boolean,
+): readonly string[] {
+  if (!finished && output.length === 0) return [];
+  const display = formatToolOutputForDisplay(output) || output;
+  if (display.length === 0) {
+    return [`  ${theme.sym.nest} (empty)`];
+  }
+  const text = previewCollapsed ? previewText(display).text : display;
+  return indentBlock(text, `  ${theme.sym.nest} `).split("\n");
+}
+
+function indentBlock(text: string, prefix: string): string {
+  if (text.length === 0) return text;
+  return text.split("\n").map((line) => `${prefix}${line}`).join("\n");
+}
+
+const SessionHeader = memo(function SessionHeader(props: Readonly<{
   version: string;
   model: string;
   thinking: string;
@@ -750,22 +1343,79 @@ function SessionHeader(props: Readonly<{
   plan?: string;
   cwd: string;
   context?: string;
+  /** Active explore subagents, e.g. "subs:3". */
+  explore?: string;
+  /** Persistent isolation badge: DIRECT / NO MERGEGATE or WORKTREE. */
+  workspace?: string;
   busy?: boolean;
 }>): React.JSX.Element {
+  const parts = [
+    props.model,
+    props.thinking,
+    props.permission,
+    props.workspace,
+    props.plan,
+    props.explore,
+    props.busy ? "working…" : undefined,
+    props.context,
+    formatShortCwd(props.cwd),
+  ].filter((part): part is string => typeof part === "string" && part.length > 0);
+
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Text, null,
       h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
       h(Text, { bold: true }, `XioCode v${props.version}`)),
     h(Text, { dimColor: true, wrap: "truncate-end" },
-      [
-        props.model,
-        props.thinking,
-        props.permission,
-        props.plan,
-        props.busy ? "working…" : undefined,
-        props.context,
-        formatShortCwd(props.cwd),
-      ].filter(Boolean).join(" · ")));
+      ...parts.flatMap((part, index) => {
+        const sep = index > 0 ? " · " : "";
+        if (props.explore && part === props.explore) {
+          return [sep, h(Text, { key: `h-${index}`, color: theme.explore, dimColor: false }, part)];
+        }
+        if (props.workspace && part === props.workspace) {
+          const warn = part.includes("DIRECT");
+          return [sep, h(Text, {
+            key: `h-${index}`,
+            color: warn ? theme.error : theme.tool,
+            dimColor: false,
+            bold: true,
+          }, part)];
+        }
+        return [`${sep}${part}`];
+      })));
+});
+
+/** Route B Ctrl+O overlay: full retained tool output without mutating Static history. */
+function TranscriptViewerOverlay(props: Readonly<{
+  block: HistoryBlock;
+  rows: number;
+  onClose: () => void;
+}>): React.JSX.Element {
+  const body = props.block.output ?? props.block.lines.join("\n");
+  const lines = body.split("\n");
+  const viewport = Math.max(6, props.rows - 8);
+  const visible = lines.slice(0, viewport);
+  const truncated = lines.length > viewport;
+  const title = props.block.title
+    ? `${props.block.title}${props.block.detail ? ` ${props.block.detail}` : ""}`
+    : "tool output";
+  return h(Box, {
+    flexDirection: "column",
+    borderStyle: "round",
+    paddingX: 1,
+    marginY: 1,
+  },
+    h(Text, { bold: true }, `Transcript · ${title}`),
+    h(Text, { dimColor: true }, "Ctrl+O / Esc closes · full retained output (not Static preview)"),
+    ...visible.map((line, index) =>
+      h(Text, {
+        key: `tv-${index}`,
+        color: props.block.error ? theme.error : undefined,
+        wrap: "truncate-end",
+      }, line || " ")),
+    truncated
+      ? h(Text, { dimColor: true }, `… ${lines.length - viewport} more lines`)
+      : null,
+  );
 }
 
 function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX.Element {
@@ -781,12 +1431,21 @@ function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX
 }
 
 /** Footer is hints (+ bypass) only — model/think/cwd/perm live in the header (D2). */
-function FooterHints(props: Readonly<{ bypass: boolean }>): React.JSX.Element {
+function FooterHints(props: Readonly<{
+  bypass: boolean;
+  scrolled?: boolean;
+  appendScrollback?: boolean;
+}>): React.JSX.Element {
+  const scrollHint = props.appendScrollback
+    ? " · 触控板/滚轮=终端滚动"
+    : props.scrolled
+      ? " · ↑scrolled PgUp/PgDn"
+      : " · ↑↓/PgUp PgDn 滚动";
   return h(Box, { flexDirection: "column", marginTop: 1 },
     h(Text, { dimColor: true },
       props.bypass
-        ? "▶▶ bypass on · Shift+Tab 权限 · Tab 思考 · Ctrl+O · Ctrl+C"
-        : "Shift+Tab 权限 · Tab 思考 · Ctrl+O · Ctrl+C"));
+        ? `▶▶ bypass on · ▸think ⚙run ●answer · Ctrl+O · Ctrl+C${scrollHint}`
+        : `▸think ⚙run ●answer · Shift+Tab · Tab 思考 · Ctrl+O · Ctrl+C${scrollHint}`));
 }
 
 function SlashMenu(props: Readonly<{

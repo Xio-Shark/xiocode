@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve this script through npm global symlinks, then run the TS entry with Node strip-types.
+# Prefer AOT split bundle (dist/xio.js); fall back to TypeScript strip-types for local dev.
 set -euo pipefail
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
@@ -8,4 +8,11 @@ while [ -L "$SOURCE" ]; do
   [[ "$LINK" != /* ]] && SOURCE="$DIR/$LINK" || SOURCE="$LINK"
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
-exec node --experimental-strip-types "$ROOT/src/cli/index.ts" "$@"
+if [ -f "$ROOT/dist/xio.js" ]; then
+  exec node "$ROOT/dist/xio.js" "$@"
+fi
+# Legacy single-file name from earlier builds
+if [ -f "$ROOT/dist/xio.mjs" ]; then
+  exec node "$ROOT/dist/xio.mjs" "$@"
+fi
+exec node --experimental-strip-types "$ROOT/src/cli/entry.ts" "$@"

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, constants, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -31,6 +31,15 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
   unknownSourceFailClosed: false,
   timeoutMs: 30_000,
 };
+
+/**
+ * Bound exit latency for graceful MCP close.
+ * After this, stdio children are force-killed so Node is not held open by pipes.
+ */
+export const MCP_CLOSE_TIMEOUT_MS = 1_500;
+
+/** Wait after SIGTERM before SIGKILL on force-kill. */
+const MCP_FORCE_KILL_GRACE_MS = 400;
 
 export type McpTransportKind = "stdio" | "sse" | "http";
 
@@ -109,7 +118,11 @@ type LiveConnection = {
   name: string;
   client: Client;
   close: () => Promise<void>;
+  /** Best-effort force-kill (stdio pid); always safe to call more than once. */
+  forceKill: () => void;
   toolNames: string[];
+  /** stdio child pid when known (for force-kill after timeout). */
+  pid: number | null;
 };
 
 /**
@@ -252,16 +265,40 @@ export function registerMcpBridge(
   let closed = false;
   let settlePromise: Promise<void> = Promise.resolve();
 
+  const forceKillAll = (entries: readonly LiveConnection[]): void => {
+    for (const entry of entries) {
+      try {
+        entry.forceKill();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   const closeAll = async (): Promise<void> => {
     closed = true;
     const pending = live.splice(0);
-    await Promise.all(pending.map(async (entry) => {
-      try {
-        await entry.close();
-      } catch (error) {
-        warn(`mcp: error closing server "${entry.name}": ${errorMessage(error)}`);
-      }
-    }));
+    if (pending.length === 0) {
+      return;
+    }
+    try {
+      await withTimeout(
+        Promise.all(pending.map(async (entry) => {
+          try {
+            await entry.close();
+          } catch (error) {
+            warn(`mcp: error closing server "${entry.name}": ${errorMessage(error)}`);
+          }
+        })),
+        MCP_CLOSE_TIMEOUT_MS + 500,
+        "closeAll",
+      );
+    } catch (error) {
+      warn(`mcp: closeAll timed out: ${errorMessage(error)}`);
+    } finally {
+      // Always force-kill: timed-out Promise.race leaves stdio children holding pipes.
+      forceKillAll(pending);
+    }
   };
 
   const registration: McpBridgeRegistration = {
@@ -324,7 +361,19 @@ export function registerMcpBridge(
   });
 
   ctx.on?.("session_end", async () => {
-    await closeAll();
+    closed = true;
+    // Stop in-flight connects quickly so they hit isClosed and tear down.
+    try {
+      await withTimeout(settlePromise, 500, "mcp settle before close");
+    } catch {
+      // ignore — closeAll force-kills whatever is live
+    }
+    try {
+      await withTimeout(closeAll(), MCP_CLOSE_TIMEOUT_MS + 800, "mcp closeAll");
+    } catch (error) {
+      warn(`mcp: session_end close timed out: ${errorMessage(error)}`);
+      forceKillAll(live.splice(0));
+    }
     return { mcp: { closed: true } };
   });
 
@@ -358,12 +407,21 @@ async function connectServersInBackground(options: Readonly<{
 
   let aborted = false;
 
+  const removeLive = (connection: LiveConnection): void => {
+    const live = options.getLive();
+    const index = live.indexOf(connection);
+    if (index >= 0) {
+      live.splice(index, 1);
+    }
+  };
+
   const connectOne = async (server: ResolvedMcpServer, index: number): Promise<void> => {
     if (options.isClosed() || aborted) {
       return;
     }
+    let connection: LiveConnection | undefined;
     try {
-      const connection = await options.connect(server, {
+      connection = await options.connect(server, {
         cwd: options.cwd,
         timeoutMs: options.config.timeoutMs,
       });
@@ -373,12 +431,22 @@ async function connectServersInBackground(options: Readonly<{
       }
       options.getLive().push(connection);
 
-      const listed = await withTimeout(
-        connection.client.listTools(),
-        options.config.timeoutMs,
-        `listTools(${server.name})`,
-      );
+      let listed: Awaited<ReturnType<Client["listTools"]>>;
+      try {
+        listed = await withTimeout(
+          connection.client.listTools(),
+          options.config.timeoutMs,
+          `listTools(${server.name})`,
+        );
+      } catch (listError) {
+        removeLive(connection);
+        await connection.close().catch(() => undefined);
+        connection = undefined;
+        throw listError;
+      }
       if (options.isClosed() || aborted) {
+        removeLive(connection);
+        await connection.close().catch(() => undefined);
         return;
       }
 
@@ -412,6 +480,10 @@ async function connectServersInBackground(options: Readonly<{
         "info",
       );
     } catch (error) {
+      if (connection) {
+        removeLive(connection);
+        await connection.close().catch(() => undefined);
+      }
       const message = `mcp: failed to connect server "${server.name}": ${errorMessage(error)}`;
       options.warn(message);
       nextStatuses[index] = {
@@ -457,27 +529,110 @@ export async function connectMcpServer(
   server: ResolvedMcpServer,
   options: Readonly<{ cwd: string; timeoutMs: number }>,
 ): Promise<LiveConnection> {
+  if (server.spec.transport === "stdio") {
+    await assertStdioCommandExists(server.spec.command);
+  }
+
   const client = new Client({ name: "xiocode", version: "1.1.0" });
   const transport = createTransport(server.spec, options.cwd);
 
-  await withTimeout(
-    client.connect(transport),
-    options.timeoutMs,
-    `connect(${server.name})`,
-  );
+  // Ownership starts at transport creation — connect timeout must still tear down the child.
+  let initialPid: number | null = null;
+  const forceKill = (): void => {
+    const pid = readTransportPid(transport) ?? initialPid;
+    forceKillPid(pid);
+  };
+
+  const close = async (): Promise<void> => {
+    try {
+      await withTimeout(
+        (async () => {
+          await client.close().catch(() => undefined);
+          await transport.close().catch(() => undefined);
+        })(),
+        MCP_CLOSE_TIMEOUT_MS,
+        `close(${server.name})`,
+      );
+    } catch {
+      // Graceful close hung — force-kill below.
+    } finally {
+      forceKill();
+      await withTimeout(
+        transport.close().catch(() => undefined),
+        300,
+        `transport.close(${server.name})`,
+      ).catch(() => undefined);
+    }
+  };
+
+  try {
+    await withTimeout(
+      client.connect(transport),
+      options.timeoutMs,
+      `connect(${server.name})`,
+    );
+  } catch (error) {
+    await close();
+    throw error;
+  }
+
+  // Capture pid before close() nulls transport._process.
+  initialPid = readTransportPid(transport);
 
   return {
     name: server.name,
     client,
     toolNames: [],
-    close: async () => {
-      try {
-        await client.close();
-      } finally {
-        await transport.close().catch(() => undefined);
-      }
-    },
+    pid: initialPid,
+    forceKill,
+    close,
   };
+}
+
+/** Read stdio child pid from MCP SDK transport when available. */
+export function readTransportPid(transport: unknown): number | null {
+  if (!transport || typeof transport !== "object") return null;
+  const pid = (transport as { pid?: number | null }).pid;
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * Force-kill a hung MCP stdio child so open pipes do not pin the Node event loop.
+ * SIGTERM then SIGKILL; errors ignored (process may already be gone).
+ */
+export function forceKillPid(pid: number | null | undefined): void {
+  if (pid == null || !Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const killer = setTimeout(() => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }, MCP_FORCE_KILL_GRACE_MS);
+  // Keep the timer referenced briefly so SIGKILL still runs if this is the last work;
+  // parent ensureProcessExit is the final backstop.
+  void killer;
+}
+
+/** Fail fast when a stdio command path is missing (common Cursor leftover). */
+export async function assertStdioCommandExists(command: string): Promise<void> {
+  const looksLikePath = command.includes("/") || command.startsWith(".") || path.isAbsolute(command);
+  if (!looksLikePath) {
+    return;
+  }
+  const resolved = path.resolve(command);
+  try {
+    await access(resolved, constants.F_OK);
+  } catch {
+    const err = new Error(`spawn ${command} ENOENT`);
+    (err as NodeJS.ErrnoException).code = "ENOENT";
+    throw err;
+  }
 }
 
 function createTransport(spec: McpServerSpec, cwd: string) {
@@ -622,6 +777,11 @@ export function parseServerSpec(
     const message = `mcp: server "${name}" must be an object`;
     warnings.push(message);
     warn?.(message);
+    return undefined;
+  }
+
+  // Cursor/Claude often leave stale servers with disable/disabled=true.
+  if (entry.disabled === true || entry.disable === true || entry.enabled === false) {
     return undefined;
   }
 

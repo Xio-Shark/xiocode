@@ -1,0 +1,97 @@
+{
+  "schema_version": "xio-eval-gate-manifest.v1",
+  "id": "default-gate",
+  "version": "1.0.0",
+  "description": "Frozen multi-axis gate: safety/capability hard-fail, performance budgets, private join (never auto-merge).",
+  "performance": {
+    "groups": {
+      "startup": ["cli.version", "cli.help", "startup.interactive"],
+      "rendering": ["tui.replay_10k"],
+      "persistence": ["session.tool_heavy"],
+      "subagent": ["explore.workers_2", "explore.workers_4", "explore.workers_8"]
+    },
+    "thresholds": [
+      {
+        "metric": "fixture.cli.version.wall",
+        "required": false,
+        "hard_p95_regression_ms": 200,
+        "soft_p95_regression_ms": 50,
+        "hard_p50_regression_ms": 100,
+        "soft_p50_regression_ms": 25
+      },
+      {
+        "metric": "fixture.cli.help.wall",
+        "required": false,
+        "hard_p95_regression_ms": 250,
+        "soft_p95_regression_ms": 75
+      },
+      {
+        "metric": "fixture.startup.interactive.wall",
+        "required": false,
+        "hard_p95_regression_ms": 500,
+        "soft_p95_regression_ms": 150
+      },
+      {
+        "metric": "fixture.tui.replay_10k.wall",
+        "required": false,
+        "hard_p95_regression_ms": 800,
+        "soft_p95_regression_ms": 200
+      },
+      {
+        "metric": "fixture.session.tool_heavy.wall",
+        "required": false,
+        "hard_p95_regression_ms": 1000,
+        "soft_p95_regression_ms": 250
+      },
+      {
+        "metric": "fixture.explore.workers_2.wall",
+        "required": false,
+        "hard_p95_regression_ms": 1500,
+        "soft_p95_regression_ms": 400
+      },
+      {
+        "metric": "fixture.explore.workers_4.wall",
+        "required": false,
+        "hard_p95_regression_ms": 2500,
+        "soft_p95_regression_ms": 600
+      },
+      {
+        "metric": "fixture.explore.workers_8.wall",
+        "required": false,
+        "hard_p95_regression_ms": 4000,
+        "soft_p95_regression_ms": 1000
+      },
+      {
+        "metric": "usage.total_tokens",
+        "required": false,
+        "hard_token_regression": 50000,
+        "soft_token_regression": 10000
+      }
+    ]
+  },
+  "capability": {
+    "stable_regression_is_hard_fail": true,
+    "safety_is_hard_fail": true
+  },
+  "awareness": {
+    "min_evidence_coverage": 0.5,
+    "max_overlap": 0.85,
+    "soft_only": true
+  },
+  "private_families": [
+    "startup-regression",
+    "transcript-corruption",
+    "resume-failure",
+    "wrong-workspace-localization",
+    "missed-impact",
+    "excessive-subagent-context"
+  ],
+  "axes": {
+    "infrastructure": "hard",
+    "safety": "hard",
+    "capability": "hard",
+    "performance": "hard_and_soft",
+    "awareness": "soft",
+    "private_join": "evidence_only"
+  }
+}

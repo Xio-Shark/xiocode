@@ -24,6 +24,7 @@ describe("SelfImproveRunner private × capability joint gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       privateCaseId: "case-1",
       privateGate: {
@@ -63,6 +64,7 @@ describe("SelfImproveRunner private × capability joint gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       privateCaseId: "case-1",
       privateGate: {
@@ -100,6 +102,7 @@ describe("SelfImproveRunner private × capability joint gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       privateCaseId: "case-1",
       privateGate: {
@@ -136,6 +139,7 @@ describe("SelfImproveRunner private × capability joint gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       privateCaseId: "case-1",
       privateGate: {

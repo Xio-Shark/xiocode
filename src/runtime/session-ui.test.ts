@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { createStdoutSessionUiSink, previewText, toolCallDetail, toolResultOutput } from "./session-ui.ts";
+import {
+  createStdoutSessionUiSink,
+  formatToolOutputForDisplay,
+  previewText,
+  toolCallDetail,
+  toolResultOutput,
+} from "./session-ui.ts";
 
 describe("createStdoutSessionUiSink", () => {
   it("preserves streaming, tool, status, and cancellation output", () => {
@@ -64,6 +70,11 @@ describe("createStdoutSessionUiSink", () => {
 
 describe("tool transcript helpers", () => {
   it("prefers bash command in tool detail", () => {
+    expect(toolCallDetail({
+      id: "e1",
+      name: "explore",
+      arguments: { goal: "find auth entrypoints", focus_paths: ["src/auth"] },
+    })).toContain("find auth entrypoints");
     expect(toolCallDetail({ id: "1", name: "bash", arguments: { command: "echo hi", description: "x" } }))
       .toBe("echo hi");
   });

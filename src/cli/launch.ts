@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 import { git, gitOk } from "../../extensions/xio-sandbox/src/git.ts";
@@ -9,13 +8,14 @@ import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
 import { setupProviderEnv } from "./env-setup.ts";
 import { applyCredentialsToEnv } from "./credentials.ts";
+import { XIO_VERSION } from "./version.ts";
 
 import type { WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import type { SessionStartPayload } from "../runtime/types.ts";
 import type { SessionWorkspace } from "../runtime/session-store.ts";
 import type { XioRuntimeConfig } from "./config-parser.ts";
 
-export const XIO_VERSION = readPackageVersion();
+export { XIO_VERSION };
 
 export type LaunchPlan = Readonly<{
   runtimeConfig: XioRuntimeConfig;
@@ -36,23 +36,45 @@ export async function prepareLaunch(
     allowDirty?: boolean;
     sessionId?: string;
     resumeWorkspace?: SessionWorkspace;
+    /** Pre-resolved git toplevel when caller already looked it up (avoids duplicate git). */
+    gitRoot?: string | null;
   } = {},
 ): Promise<LaunchPlan> {
   const ensured = await ensureConfigFile(env);
   const parsed = parseXioConfig(ensured.content, { cwd });
   const configRoot = expandHome(env.XIO_HOME ?? "~/.xiocode");
   const runtimeConfigPath = path.join(configRoot, "runtime-config.json");
-  const mainRoot = await WorktreeSandbox.resolveMainRoot(cwd);
-  const sourceProvenance = await collectSourceProvenance(mainRoot);
+  // Launch directory is the user-visible workspace (not forced to git toplevel).
+  const workspacePath = path.resolve(cwd);
+  const worktreeEnabled = parsed.runtimeConfig.worktree.enabled;
+  const gitRoot = options.gitRoot !== undefined
+    ? options.gitRoot
+    : await WorktreeSandbox.tryResolveMainRoot(workspacePath);
+
+  if (worktreeEnabled && !gitRoot) {
+    throw new Error(
+      [
+        "XioCode worktree mode requires a git repository.",
+        `Started in: ${workspacePath}`,
+        "Initialize with `git init` (and an initial commit), or set `[worktree] enabled = false`",
+        "to run directly in the current directory without a sandbox worktree.",
+      ].join("\n"),
+    );
+  }
+
+  // mainRoot: git toplevel when available; otherwise the launch cwd.
+  const mainRoot = gitRoot ?? workspacePath;
+  const sourceProvenance = await collectSourceProvenance(mainRoot, workspacePath, Boolean(gitRoot));
   const allowDirty = options.allowDirty === true || parsed.runtimeConfig.worktree.allowDirty;
   assertDirtyMainPolicy({
-    worktreeEnabled: parsed.runtimeConfig.worktree.enabled,
+    worktreeEnabled,
     dirty: sourceProvenance.dirty,
     allowDirty,
     mainRoot,
   });
   const workspace = await createWorkspace({
     mainRoot,
+    workspacePath,
     configRoot,
     runtimeConfig: parsed.runtimeConfig,
     sessionId: options.sessionId,
@@ -97,12 +119,14 @@ export function assertDirtyMainPolicy(input: Readonly<{
       `Main tree: ${input.mainRoot}`,
       "Worktree sessions check out a clean HEAD and would ignore your dirty files.",
       "Commit/stash your changes, or opt in with `xio --allow-dirty` or `[worktree] allow_dirty = true`.",
+      "Or set `[worktree] enabled = false` to work directly in the current directory.",
     ].join("\n"),
   );
 }
 
 async function createWorkspace(input: Readonly<{
   mainRoot: string;
+  workspacePath: string;
   configRoot: string;
   runtimeConfig: XioRuntimeConfig;
   sessionId?: string;
@@ -112,7 +136,8 @@ async function createWorkspace(input: Readonly<{
     throw new Error("saved session requires worktree mode, but worktree.enabled is false");
   }
   if (!input.runtimeConfig.worktree.enabled) {
-    return { runtimeConfig: input.runtimeConfig, cwd: input.mainRoot };
+    // Main mode: stay in the directory the user launched from.
+    return { runtimeConfig: input.runtimeConfig, cwd: input.workspacePath };
   }
   const baseDir = path.join(input.configRoot, "worktrees");
   const resumed = toStoredWorktree(input.resumeWorkspace, input.mainRoot);
@@ -148,12 +173,32 @@ function toStoredWorktree(workspace: SessionWorkspace | undefined, mainRoot: str
   for (const [key, value] of Object.entries(fields)) {
     if (!value) throw new Error(`saved worktree is missing ${key}`);
   }
-  return fields as WorktreeSession;
+  // baseline_tree is optional for legacy v2; attach materializes baseRef^{tree} when absent.
+  return {
+    ...fields,
+    baselineTree: workspace.baseline_tree ?? "",
+  } as WorktreeSession;
 }
 
 async function collectSourceProvenance(
   mainRoot: string,
+  workspacePath: string,
+  isGit: boolean,
 ): Promise<NonNullable<SessionStartPayload["provenance"]>> {
+  if (!isGit) {
+    return {
+      schema_version: "xio-run-provenance.v1",
+      workspace_root: workspacePath,
+      main_root: mainRoot,
+      base_commit: "nogit",
+      branch: null,
+      dirty: false,
+      dirty_summary_sha: createHash("sha256").update("nogit").digest("hex"),
+      xiocode_revision: XIO_VERSION,
+      created_at: new Date().toISOString(),
+    };
+  }
+
   const [baseCommit, status, branch] = await Promise.all([
     gitOk(mainRoot, ["rev-parse", "HEAD"]),
     gitOk(mainRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
@@ -161,7 +206,7 @@ async function collectSourceProvenance(
   ]);
   return {
     schema_version: "xio-run-provenance.v1",
-    workspace_root: mainRoot,
+    workspace_root: workspacePath,
     main_root: mainRoot,
     base_commit: baseCommit,
     branch: branch.code === 0 && branch.stdout.length > 0 ? branch.stdout : null,
@@ -170,16 +215,6 @@ async function collectSourceProvenance(
     xiocode_revision: XIO_VERSION,
     created_at: new Date().toISOString(),
   };
-}
-
-function readPackageVersion(): string {
-  try {
-    const require = createRequire(import.meta.url);
-    const pkg = require("../../package.json") as { version?: string };
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {

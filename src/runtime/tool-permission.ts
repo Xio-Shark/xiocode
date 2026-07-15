@@ -88,6 +88,7 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
 
     const ok = await options.interactive.ask(
       `Allow high-risk ${risk} tool "${name}" for this session? [y/N] `,
+      `tool: ${name}\nrisk: ${risk}\nscope: session`,
     );
     if (!ok) {
       return {
