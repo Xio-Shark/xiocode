@@ -18,6 +18,11 @@ package-lock.json.bak
 .codex/
 .gitnexus/
 .trellis/
+.grok/
+.agents/
+# personal global-style dumps sometimes copied into repo root
+AGENTS.local.md
+CLAUDE.local.md
 
 # IDE
 .idea/
