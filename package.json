@@ -12,11 +12,14 @@
     "bin",
     "src",
     "extensions",
-    "install.sh",
     "LICENSE",
     "README.md",
     "!**/*.test.ts",
-    "!**/test/**"
+    "!**/test/**",
+    "!**/package.json",
+    "!install.sh",
+    "!scripts/**",
+    "!docs/**"
   ],
   "repository": {
     "type": "git",
