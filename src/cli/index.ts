@@ -23,6 +23,8 @@ async function main(): Promise<void> {
     const result = await ensureConfigFile(process.env, { write: writeStdout });
     if (!result.created) {
       writeStdout(`Config already exists: ${result.path}\n`);
+      const { formatRecommendedCliToolsNotice } = await import("../runtime/tools/search-backend.ts");
+      writeStdout(`\n${await formatRecommendedCliToolsNotice()}`);
     }
     process.exitCode = 0;
     return;
@@ -97,7 +99,7 @@ function xioHelp(): string {
     "",
     "Usage:",
     "  xio                 Start the interactive Ink TUI",
-    "  xio init            Create ~/.xiocode/config.toml if missing",
+    "  xio init            Create ~/.xiocode/config.toml if missing; print recommended CLI tools",
     "  xio -p \"prompt\"     Run a single prompt",
     "  xio resume          Resume the most recent session for this repository",
     "  xio resume <id>     Resume a specific session",
@@ -122,7 +124,7 @@ function xioHelp(): string {
     "Self-improve never auto-merges on green verifier — MergeGate ask only.",
     "Non-git directories are rejected (initialize a repo first).",
     "MCP servers connect in the background after the prompt is ready.",
-    "Session modes: /agent build (default) | /agent plan (read-oriented tools).",
+    "Permission modes: /permission auto|full|strict (Shift+Tab cycles; default auto).",
     "",
   ].join("\n");
 }

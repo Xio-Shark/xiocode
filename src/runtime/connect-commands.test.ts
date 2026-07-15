@@ -61,6 +61,22 @@ function baseRuntime(configPath: string): XioRuntimeConfig {
     hooks: { enabled: true, readClaude: true, timeoutMs: 1 },
     mcp: { enabled: false, readClaude: false, readCursor: false, failClosed: false, unknownSourceFailClosed: false, timeoutMs: 1, servers: {} },
     permissions: { allowHighRisk: false },
+    explore: {
+      enabled: false,
+      maxTurns: 12,
+      timeoutMs: 180_000,
+      maxConcurrency: 4,
+      maxOutputChars: 16_000,
+      allowBash: false,
+    },
+    retrospective: {
+      enabled: true,
+      skipTrivial: true,
+      minToolCalls: 1,
+      autoInject: true,
+      enqueueImprove: true,
+      useLlm: false,
+    },
   };
 }
 

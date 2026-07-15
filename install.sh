@@ -2,6 +2,9 @@
 # XioCode one-line installer.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
+# Pin a release tag:
+#   export XIO_INSTALL_REF=v1.1.0
+#   curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/${XIO_INSTALL_REF}/install.sh | bash
 set -euo pipefail
 
 REPO="${XIO_INSTALL_REPO:-Xio-Shark/xiocode}"
