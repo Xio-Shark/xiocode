@@ -265,7 +265,7 @@ npm run check
 ./test.sh
 ```
 
-TypeScript is erasable-only (Node strip-only). See [AGENTS.md](./AGENTS.md).
+TypeScript is erasable-only (Node strip-only): no `enum` / `namespace` / `import =` / `export =`.
 
 ## License
 
