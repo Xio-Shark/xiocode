@@ -20,7 +20,11 @@ package-lock.json.bak
 .trellis/
 .grok/
 .agents/
-# personal global-style dumps sometimes copied into repo root
+# personal / local agent instruction files — never publish product norms
+AGENTS.md
+CLAUDE.md
+Agents.md
+Claude.md
 AGENTS.local.md
 CLAUDE.local.md
 
