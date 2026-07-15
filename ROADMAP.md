@@ -82,6 +82,5 @@
 | CONTEXT.md | Glossary |
 | docs/STATUS.md | Delivery status |
 | docs/adr/ | Decisions |
-| docs/archive/ | Historical plans, contracts, migration notes |
 
 See [docs/STATUS.md](./docs/STATUS.md) for the single status snapshot.

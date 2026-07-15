@@ -106,11 +106,7 @@ extensions/
   xio-improve      # Self-improve runner (T4 + verifier + merge-ask)
   xio-eval         # Trusted fixtures, hidden graders, before/after gate
   xio-regress      # Private run capture + zero-model base-red preflight
-docs/adr/          # Architecture decisions
-docs/GOAL.md       # Final product goal (north star)
-docs/STATUS.md     # Current delivery status
-docs/self-improve.md
-docs/archive/      # Historical plans / contracts
+docs/              # Product goal / status / ADRs (GitHub only; not installed)
 ```
 
 Default `xio-evolve` path records runs and denoise/injects context. It does **not** register StrategyLearner, PromptEvolver, the old strategy-layer EvalComparator, SpeculativeExecutor, or ActiveTools.
@@ -236,7 +232,7 @@ timeout_ms = 30000
 
 ## Evidence
 
-Runs land under `~/.xiocode/runs/<run_id>/` (`metadata.json`, `events.jsonl`, `trajectory.json`, `provenance.json`, `prompt.json`, …). `prompt.json` contains the redacted replayable prompt and a hash of that exact content. Private cases reference these artifacts from `~/.xiocode/regressions/<case_id>/case.json`; they copy neither prompt text nor trajectories. Legacy runs are replayable only when one user prompt can be recovered unambiguously from the trajectory. Historical interop notes live in `docs/archive/contracts/` (archived; no runtime consumers).
+Runs land under `~/.xiocode/runs/<run_id>/` (`metadata.json`, `events.jsonl`, `trajectory.json`, `provenance.json`, `prompt.json`, …). `prompt.json` contains the redacted replayable prompt and a hash of that exact content. Private cases reference these artifacts from `~/.xiocode/regressions/<case_id>/case.json`; they copy neither prompt text nor trajectories. Legacy runs are replayable only when one user prompt can be recovered unambiguously from the trajectory.
 
 Interactive sessions persist atomic `~/.xiocode/sessions/<session_id>/state.json` records with model, messages, workspace identity, execution phase, and durable turn checkpoint. `xio resume` restores the latest session for the current repository, `xio resume <id>` restores an exact record, `xio resume --list` opens the history picker, and `xio resume --delete <id>` removes a bad or unwanted record. A v2 interrupted session reattaches its validated original worktree; uncertain tool calls are marked `completion unknown` and are never replayed automatically. Legacy v1 chat-only sessions remain loadable and start a new isolated worktree. Resume does not reuse `runs/` evidence or weaken MergeGate.
 
@@ -254,7 +250,6 @@ Eval reports land under `~/.xiocode/evals/<eval_id>/` and reference the existing
 | [docs/self-improve.md](./docs/self-improve.md) | Self-modify loop + merge-ask |
 | [ROADMAP.md](./ROADMAP.md) | Near-term priorities |
 | [docs/adr/](./docs/adr/) | ADRs |
-| [docs/archive/](./docs/archive/) | Historical plans / contracts |
 
 ---
 
