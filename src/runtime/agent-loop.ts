@@ -9,14 +9,23 @@ import type {
   ToolExecuteResult,
 } from "./types.ts";
 import { assertMessageBudget } from "./context-compaction.ts";
+import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
 
 import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
 
-const WRITE_SERIAL_TOOLS = new Set(["write", "edit"]);
+/** Tools that mutate workspace files and must not race each other (or each other by path). */
+const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
 const DEFAULT_MAX_SESSION_MESSAGES = 80;
+/** Per user-prompt agent↔model turns (provider requests). Configurable via general.max_turns. */
+export const DEFAULT_MAX_TURNS = 24;
+/**
+ * Block identical tool name+args after this many consecutive executions.
+ * 0 disables. Configurable via general.repeat_tool_limit.
+ */
+export const DEFAULT_REPEAT_TOOL_LIMIT = 3;
 
 export type AgentLoopOptions = Readonly<{
   host: ExtensionHost;
@@ -28,6 +37,11 @@ export type AgentLoopOptions = Readonly<{
   doneContract?: DoneContract;
   /** Extra turns allowed after a failed done contract to attempt fixes. Default 3. */
   verifyRepairTurns?: number;
+  /**
+   * Max consecutive identical tool+args before blocking (isError, no execute).
+   * Default 3; set 0 to disable.
+   */
+  repeatToolLimit?: number;
   onAssistantText?: (text: string) => void;
   onAssistantDelta?: (text: string) => void;
   onThinkingDelta?: (text: string) => void;
@@ -75,9 +89,10 @@ type LoopProgress = SegmentResult & Readonly<{
 }>;
 
 export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions): Promise<AgentLoopResult> {
-  const maxTurns = options.maxTurns ?? 40;
+  const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
   const verifyRepairTurns = options.verifyRepairTurns ?? 3;
-  let systemPrompt = options.systemPrompt ?? "You are XioCode, a local-first coding agent.";
+  const repeatToolLimit = options.repeatToolLimit ?? DEFAULT_REPEAT_TOOL_LIMIT;
+  let systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
   options.host.setSystemPrompt(systemPrompt);
 
   const beforeStart = await options.host.emit("before_agent_start", {
@@ -119,7 +134,11 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     };
   }
 
-  const progress = await runSegments(messages, options, { maxTurns, repairTurns: verifyRepairTurns });
+  const progress = await runSegments(messages, options, {
+    maxTurns,
+    repairTurns: verifyRepairTurns,
+    repeatToolLimit,
+  });
   await publishCheckpoint(options, { phase: "turn_complete", messages });
 
   await options.host.emit("turn_end", { prompt: userPrompt });
@@ -200,9 +219,10 @@ async function emitCancelledEnd(options: AgentLoopOptions, doneContract: DoneCon
 async function runSegments(
   messages: ChatMessage[],
   options: AgentLoopOptions,
-  budget: Readonly<{ maxTurns: number; repairTurns: number }>,
+  budget: Readonly<{ maxTurns: number; repairTurns: number; repeatToolLimit: number }>,
 ): Promise<LoopProgress> {
-  const primary = await runUntilIdle(messages, options, budget.maxTurns);
+  const guard = createRepeatToolGuard(budget.repeatToolLimit);
+  const primary = await runUntilIdle(messages, options, budget.maxTurns, guard);
   if (primary.cancelled || !options.doneContract) {
     return primary;
   }
@@ -212,7 +232,9 @@ async function runSegments(
     return { ...primary, doneContract: firstCheck };
   }
   messages.push({ role: "user", content: formatDoneContractFeedback(firstCheck) });
-  const repair = await runUntilIdle(messages, options, repairBudget);
+  // Fresh guard for repair segment so verify feedback is not blocked by prior streaks.
+  const repairGuard = createRepeatToolGuard(budget.repeatToolLimit);
+  const repair = await runUntilIdle(messages, options, repairBudget, repairGuard);
   return {
     turns: primary.turns + repair.turns,
     finalText: repair.finalText || primary.finalText,
@@ -228,6 +250,7 @@ async function runUntilIdle(
   messages: ChatMessage[],
   options: AgentLoopOptions,
   maxTurns: number,
+  guard: RepeatToolGuard,
 ): Promise<SegmentResult> {
   let finalText = "";
   let turns = 0;
@@ -275,7 +298,7 @@ async function runUntilIdle(
       pendingTools: completion.toolCalls.map(({ id, name }) => ({ id, name })),
     });
 
-    const metrics = await appendToolResults(messages, options, completion.toolCalls);
+    const metrics = await appendToolResults(messages, options, completion.toolCalls, guard);
     toolCalls += metrics.calls;
     toolErrors += metrics.errors;
     if (metrics.cancelled) {
@@ -370,9 +393,17 @@ async function appendToolResults(
   messages: ChatMessage[],
   options: AgentLoopOptions,
   calls: readonly ChatToolCall[],
+  guard: RepeatToolGuard,
 ): Promise<{ calls: number; errors: number; cancelled?: boolean }> {
   if (options.signal?.aborted) {
     return { calls: 0, errors: 0, cancelled: true };
+  }
+
+  // Consume fingerprints in declaration order so parallel batches still count consecutive dups.
+  const blocked = new Map<number, string>();
+  for (let index = 0; index < calls.length; index += 1) {
+    const reason = guard.consume(calls[index]!);
+    if (reason) blocked.set(index, reason);
   }
 
   const parallel = options.parallelToolCalls !== false;
@@ -387,7 +418,10 @@ async function appendToolResults(
       }
       const call = calls[index]!;
       options.onToolStart?.(call);
-      const result = await executeToolCall(options.host, call, options.signal);
+      const blockReason = blocked.get(index);
+      const result = blockReason
+        ? blockedToolCallResult(blockReason)
+        : await executeToolCall(options.host, call, options.signal);
       results[index] = result;
       if (result.isError === true) {
         errors += 1;
@@ -415,7 +449,10 @@ async function appendToolResults(
 
       const run = async (): Promise<ToolExecuteResult> => {
         options.onToolStart?.(call);
-        const result = await executeToolCall(options.host, call, options.signal);
+        const blockReason = blocked.get(index);
+        const result = blockReason
+          ? blockedToolCallResult(blockReason)
+          : await executeToolCall(options.host, call, options.signal);
         options.onToolEnd?.(call, result);
         return result;
       };
@@ -470,6 +507,59 @@ async function appendToolResults(
     calls: calls.length,
     errors,
     cancelled: options.signal?.aborted === true,
+  };
+}
+
+type RepeatToolGuard = Readonly<{
+  consume: (call: ChatToolCall) => string | undefined;
+}>;
+
+function createRepeatToolGuard(limit: number): RepeatToolGuard {
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return { consume: () => undefined };
+  }
+  const max = Math.floor(limit);
+  let lastKey: string | undefined;
+  let count = 0;
+  return {
+    consume(call) {
+      const key = toolCallFingerprint(call);
+      if (key === lastKey) {
+        count += 1;
+      } else {
+        lastKey = key;
+        count = 1;
+      }
+      if (count <= max) return undefined;
+      return [
+        `repeated tool blocked: ${call.name} identical args called ${count} times in a row (limit ${max}).`,
+        "Change arguments, use a different tool, or answer the user without re-running the same call.",
+      ].join(" ");
+    },
+  };
+}
+
+/** Exported for unit tests. */
+export function toolCallFingerprint(call: Readonly<{ name: string; arguments: Record<string, unknown> }>): string {
+  return `${call.name}\0${stableJson(call.arguments)}`;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+}
+
+function blockedToolCallResult(reason: string): ToolExecuteResult {
+  return {
+    content: [{ type: "text", text: reason }],
+    isError: true,
   };
 }
 

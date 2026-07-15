@@ -33,6 +33,8 @@ type TranscriptEntry = Readonly<{
   title?: string;
   detail?: string;
   output?: string;
+  /** Provider tool_call id — pairs tool-start/end when multiple same-name tools run. */
+  callId?: string;
   startedAt?: number;
   thoughtSeconds?: number;
 }>;
@@ -40,6 +42,8 @@ type TranscriptEntry = Readonly<{
 export type ViewState = Readonly<{
   entries: readonly TranscriptEntry[];
   statuses: Readonly<Record<string, string>>;
+  /** Sticky panels keyed by widget id (e.g. tasklist). */
+  widgets: Readonly<Record<string, readonly string[]>>;
   confirm?: Readonly<{ question: string; detail: string; scroll: number }>;
   select?: Readonly<{ question: string; choices: readonly SelectChoice[]; selected: number }>;
   prompt?: Readonly<{ question: string; secret: boolean; value: string }>;
@@ -79,18 +83,27 @@ export function App(props: AppProps): React.JSX.Element {
     ? Math.min(slashIndex, slashItems.length - 1)
     : 0;
 
-  const chromeRows = slashOpen ? 5 + Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1 : 5;
+  const tasklist = view.widgets.tasklist;
+  // TasklistPanel: content (≤10) + marginTop(1) + border top/bottom (2)
+  const tasklistRows = tasklist && tasklist.length > 0 ? Math.min(tasklist.length, 10) + 3 : 0;
+  const chromeRows = (slashOpen ? 5 + Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1 : 5)
+    + tasklistRows;
   const visibleEntries = useMemo(
     () => collapseNoticesForDisplay(view.entries).slice(-Math.max(4, rows - chromeRows)),
     [rows, view.entries, chromeRows],
   );
   const modelLabel = view.statuses.model ?? `${props.session.getModel().provider}/${props.session.getModel().id}`;
   const thinkingLabel = view.statuses.thinking ?? `think:${props.session.getThinkingLevel()}`;
+  const permissionLabel = view.statuses.permission
+    ?? `perm:${props.session.getPermissionMode()}`;
+  const planLabel = view.statuses.plan;
   return h(Box, { flexDirection: "column", height: rows },
     h(SessionHeader, {
       version: PACKAGE_VERSION,
       model: modelLabel,
       thinking: thinkingLabel,
+      permission: permissionLabel,
+      plan: planLabel,
       cwd: props.cwd,
       context: view.statuses.context,
       busy,
@@ -103,6 +116,9 @@ export function App(props: AppProps): React.JSX.Element {
           ? h(PromptView, { prompt: view.prompt })
           : h(Box, { flexDirection: "column", flexGrow: 1 },
             ...visibleEntries.map((entry) => h(TranscriptRow, { key: entry.id, entry }))),
+    tasklist && tasklist.length > 0
+      ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
+      : null,
     h(Box, { marginTop: 1 },
       h(Text, { dimColor: busy }, busy ? theme.sym.busy : theme.sym.prompt),
       h(Text, null, ` ${view.prompt ? maskPromptDisplay(view.prompt) : input}`)),
@@ -204,6 +220,7 @@ function handleInput(options: Readonly<{
   key: Readonly<{
     ctrl: boolean;
     meta: boolean;
+    shift?: boolean;
     return: boolean;
     backspace: boolean;
     delete: boolean;
@@ -249,6 +266,12 @@ function handleInput(options: Readonly<{
   }
   if (options.key.ctrl && options.character === "o") {
     options.toggleExpandable();
+    return;
+  }
+
+  // Shift+Tab: permission mode (auto → full → strict), even while slash menu is open.
+  if (options.key.tab && options.key.shift && !options.busy) {
+    options.session.cyclePermissionMode();
     return;
   }
 
@@ -302,7 +325,7 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
     if (value === "/help") {
       const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
       bridge.sink.notify?.(
-        `Commands: ${names} · Tab cycles thinking · Ctrl+O expands Thought/tool`,
+        `Commands: ${names} · Shift+Tab 权限 · Tab 思考 · Ctrl+O 展开`,
         "info",
       );
       return;
@@ -362,6 +385,12 @@ export function reduceEvent(state: ViewState, event: TuiEvent): ViewState {
     return { ...state, statuses };
   }
   if (event.kind === "widget") {
+    if (event.key === "tasklist") {
+      const widgets = { ...state.widgets };
+      if (event.lines && event.lines.length > 0) widgets.tasklist = event.lines;
+      else delete widgets.tasklist;
+      return { ...state, widgets };
+    }
     return event.lines ? appendEntry(state, "notice", event.lines.join("\n")) : state;
   }
   if (event.kind === "thinking-delta") return appendThinkingDelta(state, event.text);
@@ -378,6 +407,7 @@ export function reduceEvent(state: ViewState, event: TuiEvent): ViewState {
         detail: event.detail,
         output: "",
         previewCollapsed: true,
+        ...(event.callId ? { callId: event.callId } : {}),
       }],
     };
   }
@@ -550,19 +580,25 @@ function finalizeTool(
 ): ViewState {
   for (let index = state.entries.length - 1; index >= 0; index -= 1) {
     const entry = state.entries[index]!;
-    if (entry.kind === "tool" && entry.title === event.name && (entry.output ?? "") === "") {
-      const next = [...state.entries];
-      const output = event.output;
-      const lineCount = output.length === 0 ? 0 : output.split("\n").length;
-      next[index] = {
-        ...entry,
-        text: event.error ? "failed" : "done",
-        error: event.error,
-        output,
-        previewCollapsed: lineCount > TOOL_OUTPUT_PREVIEW_LINES,
-      };
-      return { ...state, entries: next };
+    if (entry.kind !== "tool" || (entry.output ?? "") !== "") continue;
+    // Prefer tool_call id when present so parallel same-name tools pair correctly.
+    if (event.callId) {
+      if (entry.callId !== event.callId) continue;
+    } else if (entry.title !== event.name) {
+      continue;
     }
+    const next = [...state.entries];
+    const output = event.output;
+    const lineCount = output.length === 0 ? 0 : output.split("\n").length;
+    next[index] = {
+      ...entry,
+      text: event.error ? "failed" : "done",
+      error: event.error,
+      output,
+      previewCollapsed: lineCount > TOOL_OUTPUT_PREVIEW_LINES,
+      ...(event.callId ? { callId: event.callId } : {}),
+    };
+    return { ...state, entries: next };
   }
   return {
     ...state,
@@ -575,6 +611,7 @@ function finalizeTool(
       detail: "",
       output: event.output,
       previewCollapsed: event.output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES,
+      ...(event.callId ? { callId: event.callId } : {}),
     }],
   };
 }
@@ -709,6 +746,8 @@ function SessionHeader(props: Readonly<{
   version: string;
   model: string;
   thinking: string;
+  permission: string;
+  plan?: string;
   cwd: string;
   context?: string;
   busy?: boolean;
@@ -721,19 +760,33 @@ function SessionHeader(props: Readonly<{
       [
         props.model,
         props.thinking,
+        props.permission,
+        props.plan,
         props.busy ? "working…" : undefined,
         props.context,
         formatShortCwd(props.cwd),
       ].filter(Boolean).join(" · ")));
 }
 
-/** Footer is hints (+ bypass) only — model/think/cwd live in the header (D2). */
+function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX.Element {
+  return h(Box, {
+    flexDirection: "column",
+    marginTop: 1,
+    borderStyle: "single",
+    borderColor: "gray",
+    paddingX: 1,
+  },
+    ...props.lines.map((line, index) =>
+      h(Text, { key: `tl-${index}`, dimColor: index > 0, wrap: "truncate-end" }, line)));
+}
+
+/** Footer is hints (+ bypass) only — model/think/cwd/perm live in the header (D2). */
 function FooterHints(props: Readonly<{ bypass: boolean }>): React.JSX.Element {
   return h(Box, { flexDirection: "column", marginTop: 1 },
     h(Text, { dimColor: true },
       props.bypass
-        ? "▶▶ bypass on · Tab · Ctrl+O · Ctrl+C"
-        : "Tab · Ctrl+O · Ctrl+C"));
+        ? "▶▶ bypass on · Shift+Tab 权限 · Tab 思考 · Ctrl+O · Ctrl+C"
+        : "Shift+Tab 权限 · Tab 思考 · Ctrl+O · Ctrl+C"));
 }
 
 function SlashMenu(props: Readonly<{
@@ -887,5 +940,5 @@ function createInitialView(messages: readonly ChatMessage[]): ViewState {
     const kind = message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "tool";
     return [{ id: nextEntryId(), kind, text: message.content }];
   });
-  return { entries, statuses: {}, bypass: false };
+  return { entries, statuses: {}, widgets: {}, bypass: false };
 }

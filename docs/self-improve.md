@@ -70,6 +70,19 @@ xio improve --private-case <id|last> --capability-gate  # FIXED × PASS joint ga
 
 The trusted gate is opt-in until credentialed real-model series are established. Stub evaluation exercises controller → child → worktree → hidden grader → report, but is always reported with concerns and cannot authorize merge. Candidate package scripts and tests are advisory; they do not define the trusted outcome.
 
+## Post-task retrospective (evolve)
+
+After each **full** agent task (`agent_end`, non-trivial tool use), xio-evolve runs a deterministic post-task pipeline (subagent-style evidence gatherer + wash):
+
+1. **Extract blockers** from trajectory events / failure_reasons → `blockers.log.json` under the run dir
+2. **Wash report** → `retrospective-report.json` + `retrospective-report.md` (locations, causes, optimize actions: config vs xio code)
+3. **Inject** the report into the **next** `turn_start` so the **primary agent** can optimize XioCode or `~/.xiocode/config.toml`
+4. **Enqueue** high/medium actions as entropy-keyed ImproveGoal drafts (`~/.xiocode/improve/queue/entropy-<action_id>.json`) for `xio improve` (loaded before seeds; same key overwrites with fresher evidence + `seen` count; never auto-merge)
+
+Commands: `/retrospect` (show latest markdown), `/retrospect rerun` (rebuild from last run summary).
+
+Config (`[retrospective]`): `enabled`, `skip_trivial`, `min_tool_calls`, `auto_inject`, `enqueue_improve`, `use_llm` (reserved; wash is always deterministic first).
+
 ## Out of scope
 
 - Auto-merge on green (revoked G4 — do not resurrect)
@@ -80,3 +93,4 @@ The trusted gate is opt-in until credentialed real-model series are established.
 - Treating private base-red or `FIXED` alone as a capability PASS or automatic improve trigger
 - Treating private cases as ImproveGoal inputs
 - Treating MergeGate as proof of sandboxing
+- Auto-applying retrospective fixes without primary agent / MergeGate

@@ -1,33 +1,48 @@
-import { isToolAllowedInMode, type AgentMode } from "./agent-mode.ts";
+import {
+  isToolAllowedInMode,
+  type PermissionMode,
+} from "./permission-mode.ts";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
 
 import type { ExtensionHost } from "./extension-host.ts";
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { SessionUiSink } from "./session-ui.ts";
 
-/** How to treat high-risk (exec/network) tools in build mode. */
+/** How to treat high-risk (exec/network) tools under auto mode. */
 export type HighRiskPolicy = "ask" | "deny" | "allow";
 
 export type ToolPermissionGateOptions = Readonly<{
   host: ExtensionHost;
   interactive: InteractiveIO;
   sink: SessionUiSink;
-  getMode: () => AgentMode;
-  /** Static policy for this session (CLI/config). */
-  highRiskPolicy: HighRiskPolicy;
+  getMode: () => PermissionMode;
+  /**
+   * When set, overrides mode-derived high-risk policy (tests / CLI escape hatches).
+   * Prefer leaving undefined so strict/auto/full fully control behavior.
+   */
+  highRiskPolicy?: HighRiskPolicy;
+  /** false for `xio -p` non-interactive: auto mode denies high-risk instead of asking. */
+  interactiveSession?: boolean;
 }>;
 
 export type ToolPermissionGate = Readonly<{
   getApprovedTools: () => readonly string[];
   getHighRiskPolicy: () => HighRiskPolicy;
+  clearApprovals: () => void;
 }>;
 
 /**
- * Enforce plan-mode denial and build-mode high-risk approval on tool_call.
+ * Enforce permission-mode tool filters and high-risk approval on tool_call.
  * Uses the same `{ block, reason }` contract as PreToolUse hooks.
  */
 export function registerToolPermissionGate(options: ToolPermissionGateOptions): ToolPermissionGate {
   const approved = new Set<string>();
+  const interactiveSession = options.interactiveSession !== false;
+
+  const resolvePolicy = (): HighRiskPolicy => {
+    if (options.highRiskPolicy) return options.highRiskPolicy;
+    return highRiskPolicyForMode(options.getMode(), interactiveSession);
+  };
 
   options.host.on("tool_call", async (event) => {
     const record = asRecord(event);
@@ -38,7 +53,7 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     if (!isToolAllowedInMode(name, mode)) {
       return {
         block: true,
-        reason: `tool blocked in agent mode ${mode}: ${name}`,
+        reason: `tool blocked in permission mode ${mode}: ${name}`,
       };
     }
 
@@ -51,7 +66,7 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     }
 
     const risk = toolRisk(name) ?? "exec";
-    const policy = options.highRiskPolicy;
+    const policy = resolvePolicy();
 
     if (policy === "allow") {
       approved.add(name);
@@ -66,7 +81,8 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
       return {
         block: true,
         reason:
-          `high-risk tool denied: ${name} (${risk}). Use an interactive session or pass --allow-high-risk / [permissions] allow_high_risk = true.`,
+          `high-risk tool denied: ${name} (${risk}). Switch to full permission (Shift+Tab) `
+          + "or pass --allow-high-risk / [permissions] allow_high_risk = true.",
       };
     }
 
@@ -85,10 +101,21 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
 
   return {
     getApprovedTools: () => [...approved],
-    getHighRiskPolicy: () => options.highRiskPolicy,
+    getHighRiskPolicy: () => resolvePolicy(),
+    clearApprovals: () => approved.clear(),
   };
 }
 
+export function highRiskPolicyForMode(
+  mode: PermissionMode,
+  interactiveSession: boolean,
+): HighRiskPolicy {
+  if (mode === "full") return "allow";
+  if (mode === "strict") return "deny";
+  return interactiveSession ? "ask" : "deny";
+}
+
+/** @deprecated Prefer permission mode; kept for CLI flag mapping. */
 export function resolveHighRiskPolicy(input: Readonly<{
   allowHighRisk: boolean;
   promptOnce?: string;

@@ -37,11 +37,12 @@ docs/self-improve.md
 - 合入主树须用户同意（`/merge` 或会话结束询问）；冲突则保留 worktree
 - `xio improve` 走 MergeGate ask；禁止测绿即合
 - 内置 write/edit：`assertInsideWorkspace`
-- 运行记录：`~/.xiocode/runs/`；配置：`~/.xiocode/config.toml`
+- 运行记录：`~/.xiocode/runs/`；配置：`~/.xiocode/config.toml`（**仅运行态**；不是第二套 agent 规范树）
+- Agent 配置对齐 **Claude Code**：`~/.claude/` + 项目 `.claude/` + 根 `CLAUDE.md`/`AGENTS.md`；plan 写在 `.claude/plan/`
 - 默认 evolve 路径不注册 StrategyLearner / PromptEvolver / EvalComparator / SpeculativeExecutor
 
 内置工具：`read` / `write` / `edit` / `bash` / `grep` / `glob`。  
-Hygiene（`xio-hygiene`）：AGENTS.md/CLAUDE.md 注入；`skill`；用户 hooks（SessionStart / PreToolUse / PostToolUse / Stop）；MCP client（`mcp__*`）。
+Hygiene（`xio-hygiene`）：Claude 结构指令/skills/hooks/MCP；`skill` 工具；hooks（SessionStart / PreToolUse / PostToolUse / Stop）。
 
 ## 4. 开发与验证
 

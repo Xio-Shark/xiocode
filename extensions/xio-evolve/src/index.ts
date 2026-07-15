@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { decodeRunProvenance } from "../../xio-regress/src/decoder.ts";
 import { ContextInjector } from "./context-injector.ts";
 import { ResultDenoiser } from "./result-denoiser.ts";
+import { RetrospectiveRunner } from "./retrospective/runner.ts";
+import type { BlockerLog, RetrospectiveConfig } from "./retrospective/types.ts";
 import { collectRuntimeStatus, formatStatusWidget } from "./runtime-status.ts";
 import { RunStore } from "./run-store.ts";
 import { SecretRedactor } from "./secret-redactor.ts";
@@ -19,6 +21,13 @@ export type XioEvolveOptions = Readonly<{
   runStore?: RunStore;
   trajectoryRecorder?: TrajectoryRecorder;
   onRunStart?: (metadata: RunMetadata) => void;
+  /** Post-task retrospective (blockers → log → washed report → inject/improve queue). */
+  retrospective?: Partial<RetrospectiveConfig> & Readonly<{
+    summarizeWithLlm?: (input: Readonly<{
+      log: BlockerLog;
+      draftMarkdown: string;
+    }>) => Promise<string | undefined>;
+  }>;
 }>;
 
 const CONTEXT_INVALIDATING_TOOLS = new Set(["bash", "edit", "write"]);
@@ -37,6 +46,15 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   const recorder = options.trajectoryRecorder ?? new TrajectoryRecorder({
     store: runStore,
     errorTracker: contextInjector.getErrorTracker(),
+  });
+  const retrospective = new RetrospectiveRunner({
+    runStore,
+    config: options.retrospective,
+    summarizeWithLlm: options.retrospective?.summarizeWithLlm,
+    notify: (message) => {
+      // best-effort; command UI may not be available during agent_end
+      void message;
+    },
   });
 
   let currentRun: RunMetadata | undefined;
@@ -111,12 +129,17 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
       promptArtifactWritten = true;
     }
     lastRoute = classifyPrompt(prompt);
+    const retroContext = retrospective.consumeInjection();
     if (lastRoute.taskClass === "simple") {
-      return "";
+      return retroContext ?? "";
     }
-    return startContextInjection(contextInjector, (error) => {
+    const injected = await startContextInjection(contextInjector, (error) => {
       lastContextInjectionError = error;
     }, { allowExpiredCache: true, allowMissingCache: true });
+    if (retroContext && retroContext.length > 0) {
+      return injected.length > 0 ? `${injected}\n\n${retroContext}` : retroContext;
+    }
+    return injected;
   });
 
   ctx.on?.("tool_call", async (payload) => {
@@ -147,7 +170,58 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     if (event.stage === "success") recorder.recordProviderUsage({ usage: event.usage });
   });
   ctx.on?.("turn_end", (payload) => recorder.recordTurnEnd(payload));
-  ctx.on?.("agent_end", () => recorder.finish());
+  ctx.on?.("agent_end", async (payload) => {
+    const event = asRecord(payload);
+    const cancelled = event.cancelled === true;
+    const agentSuccess = event.success === true;
+    const summary = await recorder.finish(agentSuccess && !cancelled ? "success" : "failed");
+    if (!currentRun) {
+      return summary;
+    }
+    // Post-task "subagent": extract blockers → log → wash report for main agent / improve queue.
+    await retrospective.runForFinishedTask({
+      runId: currentRun.run_id,
+      summary,
+      agentSuccess,
+      cancelled,
+    });
+    return summary;
+  });
+
+  ctx.registerCommand?.("retrospect", {
+    description: "Show or re-run the latest post-task retrospective report.",
+    handler: async (args, commandCtx) => {
+      const recent = await runStore.listRecent(1);
+      const run = recent[0];
+      if (!run) {
+        return "no runs yet";
+      }
+      const arg = typeof args === "string" ? args.trim() : "";
+      if (arg === "rerun" || arg === "run") {
+        const summaryRaw = await runStoreReadJson(runStore, run.run_id, "summary.json");
+        if (!summaryRaw || typeof summaryRaw !== "object") {
+          return `no summary for ${run.run_id}`;
+        }
+        const result = await retrospective.runForFinishedTask({
+          runId: run.run_id,
+          summary: summaryRaw as import("./types.ts").RunSummary,
+          agentSuccess: (summaryRaw as { success?: boolean }).success === true,
+        });
+        if (result.skipped) {
+          return `retrospective skipped: ${result.reason ?? "unknown"}`;
+        }
+        commandCtx?.ui?.notify?.(`retrospective refreshed for ${run.run_id}`, "info");
+        return result.report?.markdown ?? "ok";
+      }
+      try {
+        const { readFile } = await import("node:fs/promises");
+        const md = await readFile(runStore.filePath(run.run_id, "retrospective-report.md"), "utf8");
+        return md;
+      } catch {
+        return `no retrospective yet for ${run.run_id} — complete a multi-step task first, or /retrospect rerun`;
+      }
+    },
+  });
 
   ctx.registerCommand?.("status", {
     description: "Show XioCode runtime and run status.",
@@ -287,5 +361,26 @@ function sessionIdentity(payload: unknown): Readonly<{ provider?: string; model?
   };
 }
 
+async function runStoreReadJson(
+  store: RunStore,
+  runId: string,
+  fileName: string,
+): Promise<unknown> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    return JSON.parse(await readFile(store.filePath(runId, fileName), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 export { ContextInjector, ResultDenoiser, RunStore, TodoEnforcer, TrajectoryRecorder };
+export { RetrospectiveRunner, loadRetrospectiveImproveGoals } from "./retrospective/runner.ts";
+export { extractBlockerLog } from "./retrospective/extract.ts";
+export { washRetrospectiveReport, formatInjectionContext } from "./retrospective/wash.ts";
 export type { ToolCall, ToolResult } from "./types.ts";
+export type {
+  BlockerLog,
+  RetrospectiveConfig,
+  RetrospectiveReport,
+} from "./retrospective/types.ts";

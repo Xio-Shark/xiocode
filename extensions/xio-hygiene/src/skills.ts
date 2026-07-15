@@ -15,7 +15,7 @@ export type SkillsConfig = Readonly<{
   maxBodyBytes: number;
 }>;
 
-export type SkillSourceKind = "user-claude" | "user-xio" | "project-cursor" | "project-claude";
+export type SkillSourceKind = "user-claude" | "project-cursor" | "project-claude";
 
 export type SkillEntry = Readonly<{
   name: string;
@@ -49,14 +49,14 @@ export const DEFAULT_SKILLS_CONFIG: SkillsConfig = {
 
 const SOURCE_PRIORITY: Readonly<Record<SkillSourceKind, number>> = {
   "user-claude": 10,
-  "user-xio": 20,
-  "project-cursor": 30,
-  "project-claude": 40,
+  "project-cursor": 20,
+  "project-claude": 30,
 };
 
 /**
- * Discover SKILL.md files from Claude / Cursor / Xio skill roots.
- * Same-name resolution: project .claude > project .cursor > ~/.xiocode/skills > ~/.claude/skills.
+ * Discover SKILL.md using Claude Code layout (+ optional Cursor).
+ * Same-name resolution: project .claude > project .cursor > ~/.claude/skills.
+ * No ~/.xiocode/skills — agent extensions live in Claude paths only.
  */
 export async function discoverSkills(options: DiscoverSkillsOptions): Promise<SkillsIndex> {
   const config = options.config;
@@ -105,7 +105,6 @@ function listSkillRoots(
   if (config.readClaude) {
     roots.push({ dir: path.join(home, ".claude", "skills"), kind: "user-claude" });
   }
-  roots.push({ dir: path.join(home, ".xiocode", "skills"), kind: "user-xio" });
   if (config.readCursor) {
     roots.push({ dir: path.join(cwd, ".cursor", "skills"), kind: "project-cursor" });
   }

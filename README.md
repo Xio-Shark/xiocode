@@ -2,6 +2,8 @@
 
 > A local-first AI coding agent with a self-owned TypeScript runtime, outer git worktree isolation, and run evidence recording.
 
+**中文说明（推荐）→ [README.zh-CN.md](./README.zh-CN.md)**
+
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](./LICENSE)
 
@@ -26,7 +28,7 @@ XioCode is a terminal coding agent. The agent loop, builtin tools, and LLM clien
 | Skills discovery (`skill` tool) | ✅ short catalog in prompt; load body on demand; `[skills]` config |
 | User hooks (Claude settings subset) | ✅ SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]` config |
 | MCP client (tools-first) | ✅ deferred parallel connect; `.mcp.json` + Claude/Cursor; stdio/SSE/HTTP; `mcp__*`; `[mcp]` |
-| Agent modes (`/agent` build\|plan) | ✅ plan denies write/edit/bash/MCP; status shows mode + risks |
+| Permission modes (Shift+Tab / `/permission`) | ✅ auto (default) / full / strict; no plan/build split |
 | `xio models` | ✅ catalog (+ discovery) lines; no worktree session |
 | Self-improve outer loop (`xio improve`) | ✅ MVP — merge-ask only |
 | Trusted local capability baseline (`xio eval`) | ✅ preflight / smoke / compare |
@@ -52,10 +54,19 @@ Requires **Node.js ≥ 22.6** (uses `--experimental-strip-types`).
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
-Or with npm directly:
+Pin a GitHub Release tag (example `v1.1.0`):
+
+```bash
+export XIO_INSTALL_REF=v1.1.0
+curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/${XIO_INSTALL_REF}/install.sh | bash
+```
+
+Or with npm (GitHub install; no npmjs publish required):
 
 ```bash
 npm install -g github:Xio-Shark/xiocode
+# pin:
+npm install -g github:Xio-Shark/xiocode#v1.1.0
 ```
 
 Then from **any git repository**:
@@ -122,10 +133,9 @@ Workspace writes stay inside the worktree via `assertInsideWorkspace` (no separa
 |------|------|
 | `.claude/skills/**/SKILL.md` | `[skills].read_claude` |
 | `~/.claude/skills/**/SKILL.md` | `[skills].read_claude` |
-| `.cursor/skills/**/SKILL.md` | `[skills].read_cursor` |
-| `~/.xiocode/skills/**/SKILL.md` | always on when skills enabled |
+| `.cursor/skills/**/SKILL.md` | `[skills].read_cursor` (optional) |
 
-Same-name priority: project `.claude` > project `.cursor` > `~/.xiocode/skills` > `~/.claude/skills`. System prompt gets a short catalog (name + description only). Full body is loaded via the `skill` tool:
+Same-name priority: project `.claude` > project `.cursor` > `~/.claude/skills`. Agent layout follows **Claude Code** (no parallel `~/.xiocode/skills`). System prompt gets a short catalog (name + description only). Full body is loaded via the `skill` tool:
 
 | Param | Values |
 |-------|--------|
@@ -204,7 +214,7 @@ timeout_ms = 30000
 | `/connect` | runtime | Select provider, enter API key (saved to `~/.xiocode/credentials.json`), validate, use immediately |
 | `/model` | runtime | Switch session model among connected providers; updates config defaults |
 | `/thinking` (`/effort`) | runtime | Set thinking effort (`off`…`ultra`); Tab cycles; persists `general.default_thinking_level` |
-| `/agent` | runtime | Session mode `build` (default, full tools) or `plan` (read/grep/glob/skill; deny write/edit/bash/MCP) |
+| `/permission` | runtime | `auto` (default) / `full` / `strict`; Shift+Tab cycles. `/agent` is an alias |
 | `/regress` | runtime | Capture private case from current run (prompts failure + verifier; auto-preflight) |
 | `/compact [focus]` | runtime | Summarize older complete turns with the active provider/model; visible, cancellable, persisted, and never silently trims on failure |
 | `/status` | xio-evolve + runtime | Runtime + current run; includes `agent` mode, risk classes, `high_risk_policy`, `host_isolation: unsupported` |

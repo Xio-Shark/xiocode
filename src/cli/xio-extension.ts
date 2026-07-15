@@ -65,6 +65,7 @@ export default async function registerXioRuntime(api: XioExtensionAPI): Promise<
   if (config.extensions.evolve?.enabled !== false) {
     registerXioEvolve(evolveApi, {
       runStore,
+      retrospective: config.retrospective,
     });
   }
 

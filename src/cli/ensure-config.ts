@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { DEFAULT_CONFIG_TOML } from "./default-config.ts";
 import { expandHome } from "./config-parser.ts";
+import { formatRecommendedCliToolsNotice } from "../runtime/tools/search-backend.ts";
 
 export type EnsureConfigResult = Readonly<{
   path: string;
@@ -33,7 +34,9 @@ export async function ensureConfigFile(
   const write = options.write ?? writeStderr;
   write(
     `Created ${configPath}\n`
-      + "Set your provider API key env (default: DEEPSEEK_API_KEY), then re-run `xio` in a git repo.\n",
+      + "Set your provider API key env (default: DEEPSEEK_API_KEY), then re-run `xio` in a git repo.\n"
+      + "\n"
+      + await formatRecommendedCliToolsNotice(),
   );
   return { path: configPath, created: true, content: DEFAULT_CONFIG_TOML };
 }

@@ -26,7 +26,10 @@ describe("ensureConfigFile", () => {
     expect(created.created).toBe(true);
     expect(created.path).toBe(configPath);
     expect(await readFile(configPath, "utf8")).toBe(DEFAULT_CONFIG_TOML);
-    expect(notices.join("")).toContain("DEEPSEEK_API_KEY");
+    const noticeText = notices.join("");
+    expect(noticeText).toContain("DEEPSEEK_API_KEY");
+    expect(noticeText).toContain("Recommended CLI tools");
+    expect(noticeText).toMatch(/ugrep → rg → grep/);
 
     await writeFile(configPath, "custom = true\n", "utf8");
     const second = await ensureConfigFile(env, { write: (chunk) => notices.push(chunk) });

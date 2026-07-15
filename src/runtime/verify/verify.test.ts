@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { runDoneContract } from "./done-contract.ts";
+import { formatDoneContractFeedback, runDoneContract } from "./done-contract.ts";
 import { hashContent, verifyWriteBack } from "./write-back.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 
@@ -30,6 +30,16 @@ describe("runDoneContract", () => {
     });
     expect(result.passed).toBe(false);
     expect(result.summary).toContain("FAIL");
+  });
+
+  it("formats failure feedback with Fix guidance", async () => {
+    const result = await runDoneContract({
+      commands: [{ name: "false", argv: ["false"] }],
+    });
+    const feedback = formatDoneContractFeedback(result);
+    expect(feedback).toContain("DONE CONTRACT FAILED");
+    expect(feedback).toMatch(/Fix:/i);
+    expect(feedback.toLowerCase()).toMatch(/exit 0|do not claim/);
   });
 });
 

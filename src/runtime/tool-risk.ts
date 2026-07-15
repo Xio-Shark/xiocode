@@ -6,6 +6,10 @@ const BUILTIN_RISK: Readonly<Record<string, ToolRiskClass>> = {
   grep: "search",
   glob: "search",
   skill: "read",
+  /** Read-only multi-subagent research (explore model). */
+  explore: "search",
+  /** Workspace plan board (PRD/implement/tasks.json). */
+  plan: "write",
   write: "write",
   edit: "write",
   bash: "exec",

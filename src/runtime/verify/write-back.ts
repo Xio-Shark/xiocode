@@ -33,14 +33,18 @@ export async function verifyWriteBack(filePath: string, expectedContent: string)
       path: filePath,
       expectedHash,
       actualHash,
-      message: `write-back mismatch for ${filePath}: expected sha256=${expectedHash.slice(0, 12)} actual=${actualHash.slice(0, 12)}`,
+      message:
+        `write-back mismatch for ${filePath}: expected sha256=${expectedHash.slice(0, 12)} actual=${actualHash.slice(0, 12)}. `
+        + "Disk content differs from what was written — re-read before claiming success.",
     };
   } catch (error) {
     return {
       ok: false,
       path: filePath,
       expectedHash,
-      message: `write-back failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+      message:
+        `write-back failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}. `
+        + "Confirm path and permissions under the workspace.",
     };
   }
 }

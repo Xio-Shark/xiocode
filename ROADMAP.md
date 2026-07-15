@@ -13,6 +13,7 @@
 |------|--------|-------|
 | Self-owned runtime | ✅ | `src/runtime` — no `@earendil-works/pi-*` |
 | Builtin tools | ✅ | read/write/edit/bash/grep/glob |
+| Multi-explore subagents | ✅ | Opt-in `[explore]`; parallel read-only Flash-style workers via `explore` tool |
 | WorktreeSandbox + MergeGate | ✅ | Outer isolation; merge-ask |
 | TrajectoryRecorder + RunStore | ✅ | Default evolve path |
 | ResultDenoiser + ContextInjector | ✅ | Default evolve path; `turn_start` → provider messages |
@@ -34,7 +35,8 @@
 | Skills discovery (`skill` tool) | ✅ | Local `SKILL.md` roots; catalog in prompt; load on demand; `[skills]` |
 | User hooks (Claude subset) | ✅ | SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]` |
 | MCP client (tools-first) | ✅ | `.mcp.json` + Claude/Cursor configs; stdio/SSE/HTTP; `mcp__*`; deferred parallel connect |
-| Agent modes (`/agent`) | ✅ | `build` / `plan`; plan denies write/exec/MCP |
+| Permission modes | ✅ | `auto` / `full` / `strict`; Shift+Tab cycle; no plan/build |
+| Plan board + TUI todo | ✅ | PRD/implement/tasks.json; sticky tasklist; optional CSV |
 | Tool risk permissions (G7) | ✅ | Session ask / `-p` deny / `--allow-high-risk`; MCP unknown_source_fail_closed |
 | `xio models` | ✅ | Catalog (+ discovery) `provider/model` lines; no worktree |
 | StrategyLearner / PromptEvolver / old strategy EvalComparator | ❌ | Removed from default path |
@@ -60,7 +62,7 @@
 | Execution checkpoint-resume | ✅ | Atomic v2 state, original worktree attach, durable turn checkpoint, no uncertain tool replay |
 | Ink TUI diff/permission + bypass | ✅ | Merge/rollback/finalize modal, scrollable unified diff, session-only audited bypass |
 | Ink TUI session resume picker | ✅ | Repository-filtered history picker plus latest/id CLI entry points |
-| Tool-layer throughput (ripgrep grep/glob) | ✅ | H6: prefer system `rg`; Node fallback with backend marker |
+| Tool-layer throughput (host grep/glob) | ✅ | H6: ugrep→rg→grep / ugrep→rg→bfs→find; Node fallback; init recommends tools |
 | Edit robustness (patch / fuzzy) | ✅ | H8: exact unique default; `replace_all`; whitespace fuzzy retry; unified `patch` |
 | Isolation ladder docs (+ optional host path) | P1 | JD tier B; default sandbox stays worktree (G6); G7 risk gate shipped |
 | Price table + richer tracing | P1 | Cost/observability completeness (G8) |

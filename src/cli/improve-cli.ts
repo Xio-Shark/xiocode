@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createTrustedCapabilityGate } from "../../extensions/xio-eval/src/index.ts";
+import { loadRetrospectiveImproveGoals } from "../../extensions/xio-evolve/src/index.ts";
 import {
   createPrivateRegressionGate,
   GoalStore,
@@ -17,6 +18,7 @@ import { defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 
 import type { XioImproveConfig } from "./config-parser.ts";
+import type { ImproveGoal } from "../../extensions/xio-improve/src/types.ts";
 
 export type ImproveCliArgs = Readonly<{
   max: number;
@@ -70,7 +72,7 @@ export async function runImproveCli(
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const runner = createRunner({ parsed: resolved, cwd, env, ask: options.ask ?? defaultAsk, write });
+  const runner = await createRunner({ parsed: resolved, cwd, env, ask: options.ask ?? defaultAsk, write });
 
   write(
     `Self-improve: T4 schedule, verifier default npm run check, merge via MergeGate ask only (never auto-merge on green).\n`,
@@ -97,18 +99,27 @@ export async function runImproveCli(
   return results.every((result) => result.verifier.ok && gatesPassed(result)) ? 0 : 2;
 }
 
-function createRunner(options: Readonly<{
+async function createRunner(options: Readonly<{
   parsed: ImproveCliArgs;
   cwd: string;
   env: NodeJS.ProcessEnv;
   ask: (question: string) => Promise<boolean>;
   write: (chunk: string) => void;
-}>): SelfImproveRunner {
+}>): Promise<SelfImproveRunner> {
   const { parsed, cwd, env } = options;
   const xioHome = env.XIO_HOME ? expandHome(env.XIO_HOME) : path.join(os.homedir(), ".xiocode");
+  const goalStore = new GoalStore({ loadBuiltinSeeds: !parsed.noBuiltinSeeds });
+  // Prefer post-task retrospective goals (from evolve) over seeds when present.
+  const retroGoals = await loadRetrospectiveImproveGoals(path.join(xioHome, "improve", "queue"));
+  for (const goal of retroGoals) {
+    goalStore.enqueue(goal as ImproveGoal);
+  }
+  if (retroGoals.length > 0) {
+    options.write(`Loaded ${retroGoals.length} retrospective improve goal(s) from ~/.xiocode/improve/queue\n`);
+  }
   return new SelfImproveRunner({
     mainRoot: cwd,
-    goalStore: new GoalStore({ loadBuiltinSeeds: !parsed.noBuiltinSeeds }),
+    goalStore,
     worktreeBaseDir: path.join(xioHome, "worktrees"),
     verifierCommands: parsed.verifierCommands.length > 0 ? parsed.verifierCommands : undefined,
     ask: options.ask,

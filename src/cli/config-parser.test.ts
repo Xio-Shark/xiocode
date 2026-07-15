@@ -223,6 +223,75 @@ thinking_display = "hidden"
       readClaude: true,
       timeoutMs: 5_000,
     });
+    expect(parsed.runtimeConfig.explore).toEqual({
+      enabled: false,
+      maxTurns: 12,
+      timeoutMs: 180_000,
+      maxConcurrency: 4,
+      maxOutputChars: 64_000,
+      allowBash: false,
+    });
+  });
+
+  it("parses explore multi-subagent config", () => {
+    const parsed = parseXioConfig(
+      `
+[explore]
+enabled = true
+model = "deepseek-v4-flash"
+provider = "opencode-go"
+max_turns = 8
+max_concurrency = 3
+timeout_ms = 60000
+max_output_chars = 8000
+allow_bash = true
+partition_hint = "按 API 边界划分"
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.explore).toEqual({
+      enabled: true,
+      model: "deepseek-v4-flash",
+      provider: "opencode-go",
+      maxTurns: 8,
+      timeoutMs: 60_000,
+      maxConcurrency: 3,
+      maxOutputChars: 8_000,
+      allowBash: true,
+      partitionHint: "按 API 边界划分",
+    });
+  });
+
+  it("parses general.max_turns and repeat_tool_limit", () => {
+    const parsed = parseXioConfig(
+      `
+[general]
+max_turns = 18
+repeat_tool_limit = 2
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.general.maxTurns).toBe(18);
+    expect(parsed.runtimeConfig.general.repeatToolLimit).toBe(2);
+  });
+
+  it("rejects invalid general.max_turns", () => {
+    expect(() => parseXioConfig(`[general]\nmax_turns = 0\n`, { cwd: "/repo" }))
+      .toThrow(/general\.max_turns/);
+    expect(() => parseXioConfig(`[general]\nmax_turns = 41\n`, { cwd: "/repo" }))
+      .toThrow(/general\.max_turns/);
+  });
+
+  it("rejects explore.max_concurrency above 16", () => {
+    expect(() => parseXioConfig(
+      `[explore]\nenabled = true\nmodel = "flash"\nmax_concurrency = 17\n`,
+      { cwd: "/repo" },
+    )).toThrow(/max_concurrency/);
+  });
+
+  it("rejects explore.enabled without model", () => {
+    expect(() => parseXioConfig(`[explore]\nenabled = true\n`, { cwd: "/repo" }))
+      .toThrow(/explore\.model is required/);
   });
 
   it("parses agents_md kill-switch and limits", () => {

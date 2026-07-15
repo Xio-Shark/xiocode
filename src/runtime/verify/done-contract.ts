@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { withFixHint } from "../tools/error-guidance.ts";
+
 export type DoneCommand = Readonly<{
   name: string;
   argv: readonly string[];
@@ -57,13 +59,21 @@ export function formatDoneContractFeedback(result: DoneContractResult): string {
   const failed = result.results.filter((item) => !item.passed);
   const details = failed.map((item) => {
     const out = [item.stderr.trim(), item.stdout.trim()].filter((part) => part.length > 0).join("\n");
-    return `- ${item.name} (${item.argv.join(" ")}) exit=${item.exitCode}\n${out}`;
+    const body = out.length > 0
+      ? `- ${item.name} (${item.argv.join(" ")}) exit=${item.exitCode}\n${out}`
+      : `- ${item.name} (${item.argv.join(" ")}) exit=${item.exitCode}`;
+    return body;
   }).join("\n");
-  return [
-    "DONE CONTRACT FAILED. Fix the failures below, then continue. Do not claim the task is complete.",
-    result.summary,
-    details,
-  ].join("\n");
+  return withFixHint(
+    "done",
+    [
+      "DONE CONTRACT FAILED. Do not claim the task is complete.",
+      result.summary,
+      details,
+      "",
+      "Next: repair root causes so each failing command exits 0, then re-check the contract.",
+    ].join("\n"),
+  );
 }
 
 async function runCommand(

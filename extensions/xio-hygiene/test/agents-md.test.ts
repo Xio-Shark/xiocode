@@ -87,20 +87,19 @@ describe("loadAgentsMd", () => {
     expect(bundle.sources).toHaveLength(2);
   });
 
-  it("merges global Claude + global Xio + project files", async () => {
+  it("merges Claude Code layout: global + project .claude + root files", async () => {
     const root = await tempRoot("xio-agents-global-");
     const home = path.join(root, "home");
     const cwd = path.join(root, "project");
     await mkdir(path.join(home, ".claude"), { recursive: true });
-    await mkdir(path.join(home, ".xiocode"), { recursive: true });
-    await mkdir(cwd, { recursive: true });
+    await mkdir(path.join(cwd, ".claude"), { recursive: true });
     await writeFile(path.join(home, ".claude", "CLAUDE.md"), "GLOBAL_CLAUDE\n", "utf8");
-    await writeFile(path.join(home, ".xiocode", "AGENTS.md"), "GLOBAL_XIO\n", "utf8");
+    await writeFile(path.join(cwd, ".claude", "CLAUDE.md"), "DOT_CLAUDE\n", "utf8");
     await writeFile(path.join(cwd, "CLAUDE.md"), "PROJECT_CLAUDE\n", "utf8");
     await writeFile(path.join(cwd, "AGENTS.md"), "PROJECT_AGENTS\n", "utf8");
 
     const bundle = await loadAgentsMd({ cwd, home, config: config() });
-    const order = ["GLOBAL_CLAUDE", "GLOBAL_XIO", "PROJECT_CLAUDE", "PROJECT_AGENTS"].map((marker) =>
+    const order = ["GLOBAL_CLAUDE", "DOT_CLAUDE", "PROJECT_CLAUDE", "PROJECT_AGENTS"].map((marker) =>
       bundle.text.indexOf(marker),
     );
     expect(order.every((index) => index >= 0)).toBe(true);
@@ -148,18 +147,18 @@ describe("loadAgentsMd", () => {
     expect(warnings.some((message) => message.includes("cycle"))).toBe(true);
   });
 
-  it("expands ~/ imports against the configured home", async () => {
+  it("expands ~/ imports against the configured home (.claude)", async () => {
     const root = await tempRoot("xio-agents-tilde-");
     const home = path.join(root, "home");
     const cwd = path.join(root, "project");
-    await mkdir(path.join(home, ".xiocode"), { recursive: true });
+    await mkdir(path.join(home, ".claude"), { recursive: true });
     await mkdir(cwd, { recursive: true });
-    await writeFile(path.join(home, ".xiocode", "shared.md"), "HOME_SHARED\n", "utf8");
-    await writeFile(path.join(cwd, "AGENTS.md"), "@~/.xiocode/shared.md\n", "utf8");
+    await writeFile(path.join(home, ".claude", "shared.md"), "HOME_SHARED\n", "utf8");
+    await writeFile(path.join(cwd, "AGENTS.md"), "@~/.claude/shared.md\n", "utf8");
 
     const bundle = await loadAgentsMd({ cwd, home, config: config() });
     expect(bundle.text).toContain("HOME_SHARED");
-    expect(bundle.sources.some((source) => source.path.endsWith(path.join(".xiocode", "shared.md")))).toBe(true);
+    expect(bundle.sources.some((source) => source.path.endsWith(path.join(".claude", "shared.md")))).toBe(true);
   });
 
   it("truncates oversized content under max_bytes", async () => {

@@ -7,6 +7,15 @@ import { applyPatch, parsePatch } from "diff";
 import { defineTool } from "../define-tool.ts";
 import { Type } from "../schema.ts";
 import { verifyWriteBack } from "../verify/write-back.ts";
+import { withFixHint } from "./error-guidance.ts";
+import {
+  matchGlob,
+  nodeBackendNote,
+  resolveGlobEngine,
+  resolveGrepEngine,
+  runGlobWithEngine,
+  runGrepWithEngine,
+} from "./search-backend.ts";
 
 import type { ToolDefinition } from "../types.ts";
 
@@ -16,64 +25,42 @@ export type BuiltinToolsOptions = Readonly<{
   workspaceRoot?: string;
   writeBackVerify?: boolean;
   /**
-   * Override ripgrep binary. `null` forces the Node walker fallback.
-   * Omit to resolve `rg` once per process from PATH.
+   * Override search backend for tests:
+   * - `null` / `"node"` → Node walker
+   * - `"ugrep"` | `"rg"` | `"grep"` → force that engine if present
+   * - absolute path → treat as rg-compatible binary (legacy)
+   * - omit → auto: ugrep → rg → grep → node (grep); ugrep → rg → bfs → find → node (glob)
+   */
+  searchEngine?: string | null;
+  /**
+   * @deprecated Use `searchEngine`. Kept for tests: `null` forces Node; path forces rg-compatible binary.
    */
   rgBinary?: string | null;
 }>;
 
-const NODE_BACKEND_NOTE = "backend=node (rg unavailable)";
-
-let rgBinaryPromise: Promise<string | null> | undefined;
-
-/** Resolve system `rg` once per process. Returns null when unavailable. */
-export async function resolveRgBinary(): Promise<string | null> {
-  if (!rgBinaryPromise) {
-    rgBinaryPromise = probeRgBinary();
-  }
-  return rgBinaryPromise;
-}
-
-/** Test-only: clear the process-wide rg resolution cache. */
-export function resetRgBinaryCacheForTests(): void {
-  rgBinaryPromise = undefined;
-}
-
-async function probeRgBinary(): Promise<string | null> {
-  return new Promise((resolve) => {
-    const child = spawn("rg", ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
-    let settled = false;
-    const finish = (value: string | null) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve(value);
-    };
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? "rg" : null));
-  });
-}
-
-async function resolveToolRgBinary(override: string | null | undefined): Promise<string | null> {
-  if (override !== undefined) {
-    return override;
-  }
-  return resolveRgBinary();
-}
+export {
+  resolveRgBinary,
+  resolveGrepEngine,
+  resolveGlobEngine,
+  resetRgBinaryCacheForTests,
+  resetSearchBackendCacheForTests,
+  formatRecommendedCliToolsNotice,
+  probeRecommendedTools,
+  RECOMMENDED_CLI_TOOLS,
+} from "./search-backend.ts";
 
 export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly ToolDefinition[] {
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : path.resolve(cwd);
   const writeBackVerify = options.writeBackVerify !== false;
-  const rgBinary = options.rgBinary;
+  const searchOverride = options.searchEngine !== undefined ? options.searchEngine : options.rgBinary;
   return [
     createReadTool(cwd),
     createWriteTool(cwd, workspaceRoot, writeBackVerify),
     createEditTool(cwd, workspaceRoot, writeBackVerify),
     createBashTool(cwd),
-    createGrepTool(cwd, rgBinary),
-    createGlobTool(cwd, rgBinary),
+    createGrepTool(cwd, searchOverride),
+    createGlobTool(cwd, searchOverride),
   ];
 }
 
@@ -111,7 +98,7 @@ function createWriteTool(cwd: string, workspaceRoot: string, writeBackVerify: bo
       const filePath = resolvePath(cwd, String(params.path));
       const containment = assertInsideWorkspace(filePath, workspaceRoot);
       if (containment) {
-        return textResult(containment, true);
+        return errorResult("write", containment);
       }
       const content = String(params.content ?? "");
       await mkdir(path.dirname(filePath), { recursive: true });
@@ -120,7 +107,10 @@ function createWriteTool(cwd: string, workspaceRoot: string, writeBackVerify: bo
         return textResult(`wrote ${filePath}`);
       }
       const verified = await verifyWriteBack(filePath, content);
-      return textResult(verified.ok ? `wrote ${filePath}; ${verified.message}` : verified.message, !verified.ok);
+      if (!verified.ok) {
+        return errorResult("write", verified.message);
+      }
+      return textResult(`wrote ${filePath}; ${verified.message}`);
     },
   });
 }
@@ -143,27 +133,27 @@ function createEditTool(cwd: string, workspaceRoot: string, writeBackVerify: boo
       const filePath = resolvePath(cwd, String(params.path));
       const containment = assertInsideWorkspace(filePath, workspaceRoot);
       if (containment) {
-        return textResult(containment, true);
+        return errorResult("edit", containment);
       }
       const content = await readFile(filePath, "utf8");
       const patchText = typeof params.patch === "string" ? params.patch : undefined;
       if (patchText !== undefined && patchText.length > 0) {
         const patched = applyUnifiedPatch(content, patchText);
         if (!patched.ok) {
-          return textResult(patched.error, true);
+          return errorResult("edit", patched.error);
         }
         return finishEdit(filePath, patched.next, writeBackVerify);
       }
 
       if (params.old_string === undefined || params.new_string === undefined) {
-        return textResult("edit failed: old_string and new_string are required unless patch is set", true);
+        return errorResult("edit", "edit failed: old_string and new_string are required unless patch is set");
       }
       const oldString = String(params.old_string);
       const newString = String(params.new_string);
       const replaceAll = params.replace_all === true;
       const replaced = replaceInFileContent(filePath, content, oldString, newString, replaceAll);
       if (!replaced.ok) {
-        return textResult(replaced.error, true);
+        return errorResult("edit", replaced.error);
       }
       return finishEdit(filePath, replaced.next, writeBackVerify, replaced.fuzzy);
     },
@@ -183,7 +173,7 @@ async function finishEdit(
   }
   const verified = await verifyWriteBack(filePath, next);
   if (!verified.ok) {
-    return textResult(verified.message, true);
+    return errorResult("edit", verified.message);
   }
   return textResult(`edited ${filePath}${fuzzyNote}; ${verified.message}`);
 }
@@ -295,15 +285,21 @@ function createBashTool(cwd: string): ToolDefinition {
     async execute(_id, params, ctx) {
       const command = String(params.command ?? "");
       const result = await runCommand(command, cwd, ctx?.signal);
-      return textResult(`exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`, result.exitCode !== 0);
+      const body = `exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
+      if (result.exitCode !== 0) {
+        return errorResult("bash", body);
+      }
+      return textResult(body);
     },
   });
 }
 
-function createGrepTool(cwd: string, rgBinaryOverride?: string | null): ToolDefinition {
+function createGrepTool(cwd: string, searchOverride?: string | null): ToolDefinition {
   return defineTool({
     name: "grep",
-    description: "Search file contents with a regular expression.",
+    description:
+      "Search file contents with a regular expression. "
+      + "Uses host tools in order: ugrep → rg → grep → node.",
     parameters: Type.Object({
       pattern: Type.String({ description: "Regular expression pattern." }),
       path: Type.String({ description: "File or directory to search (optional)." }),
@@ -313,27 +309,34 @@ function createGrepTool(cwd: string, rgBinaryOverride?: string | null): ToolDefi
       const pattern = String(params.pattern ?? "");
       const searchRoot = params.path ? resolvePath(cwd, String(params.path)) : cwd;
       const globFilter = typeof params.glob === "string" ? params.glob : undefined;
-      const rgBinary = await resolveToolRgBinary(rgBinaryOverride);
-      if (rgBinary) {
-        const rgResult = await grepWithRg(rgBinary, cwd, pattern, searchRoot, globFilter);
-        if (rgResult.kind === "ok") {
-          return textResult(rgResult.text);
+      const engine = await resolveGrepEngine(searchOverride);
+      if (engine.kind !== "node") {
+        const result = await runGrepWithEngine(engine, {
+          cwd,
+          pattern,
+          searchRoot,
+          globFilter,
+        });
+        if (result.kind === "ok") {
+          return textResult(result.text);
         }
-        if (rgResult.kind === "error") {
-          return textResult(rgResult.text, true);
+        if (result.kind === "error") {
+          return errorResult("grep", result.text);
         }
         // spawn failure → Node fallback
       }
       const nodeText = await grepWithNode(cwd, pattern, searchRoot, globFilter);
-      return textResult(`${NODE_BACKEND_NOTE}\n${nodeText}`);
+      return textResult(`${nodeBackendNote("grep")}\n${nodeText}`);
     },
   });
 }
 
-function createGlobTool(cwd: string, rgBinaryOverride?: string | null): ToolDefinition {
+function createGlobTool(cwd: string, searchOverride?: string | null): ToolDefinition {
   return defineTool({
     name: "glob",
-    description: "Find files matching a glob pattern.",
+    description:
+      "Find files matching a glob pattern. "
+      + "Uses host tools in order: ugrep → rg → bfs → find → node.",
     parameters: Type.Object({
       pattern: Type.String({ description: "Glob pattern, e.g. **/*.ts" }),
       path: Type.String({ description: "Root directory (optional)." }),
@@ -341,57 +344,20 @@ function createGlobTool(cwd: string, rgBinaryOverride?: string | null): ToolDefi
     async execute(_id, params) {
       const pattern = String(params.pattern ?? "");
       const root = params.path ? resolvePath(cwd, String(params.path)) : cwd;
-      const rgBinary = await resolveToolRgBinary(rgBinaryOverride);
-      if (rgBinary) {
-        const rgResult = await globWithRg(rgBinary, cwd, pattern, root);
-        if (rgResult.kind === "ok") {
-          return textResult(rgResult.text);
+      const engine = await resolveGlobEngine(searchOverride);
+      if (engine.kind !== "node") {
+        const result = await runGlobWithEngine(engine, { cwd, pattern, root });
+        if (result.kind === "ok") {
+          return textResult(result.text);
         }
-        if (rgResult.kind === "error") {
-          return textResult(rgResult.text, true);
+        if (result.kind === "error") {
+          return errorResult("glob", result.text);
         }
-        // spawn failure → Node fallback
       }
       const nodeText = await globWithNode(cwd, pattern, root);
-      return textResult(`${NODE_BACKEND_NOTE}\n${nodeText}`);
+      return textResult(`${nodeBackendNote("glob")}\n${nodeText}`);
     },
   });
-}
-
-type RgToolResult =
-  | { kind: "ok"; text: string }
-  | { kind: "error"; text: string }
-  | { kind: "fallback" };
-
-async function grepWithRg(
-  rgBinary: string,
-  cwd: string,
-  pattern: string,
-  searchRoot: string,
-  globFilter: string | undefined,
-): Promise<RgToolResult> {
-  const args = ["-n", "--no-heading", "--color=never"];
-  if (globFilter) {
-    args.push("-g", globFilter);
-  }
-  args.push("--", pattern, searchRoot);
-  const result = await runArgv(rgBinary, args, cwd);
-  if (result.spawnError) {
-    return { kind: "fallback" };
-  }
-  if (result.exitCode >= 2) {
-    return { kind: "error", text: formatRgError(result.exitCode, result.stderr) };
-  }
-  if (result.exitCode === 1 || result.stdout.trim().length === 0) {
-    return { kind: "ok", text: "no matches" };
-  }
-  const lines = result.stdout
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0)
-    .slice(0, 100)
-    .map((line) => relativizeRgMatchLine(line, cwd));
-  return { kind: "ok", text: lines.length > 0 ? lines.join("\n") : "no matches" };
 }
 
 async function grepWithNode(
@@ -424,32 +390,6 @@ async function grepWithNode(
   return matches.length > 0 ? matches.join("\n") : "no matches";
 }
 
-async function globWithRg(
-  rgBinary: string,
-  cwd: string,
-  pattern: string,
-  root: string,
-): Promise<RgToolResult> {
-  const args = ["--files", "-g", pattern, "--", root];
-  const result = await runArgv(rgBinary, args, cwd);
-  if (result.spawnError) {
-    return { kind: "fallback" };
-  }
-  if (result.exitCode >= 2) {
-    return { kind: "error", text: formatRgError(result.exitCode, result.stderr) };
-  }
-  if (result.exitCode === 1 || result.stdout.trim().length === 0) {
-    return { kind: "ok", text: "no files" };
-  }
-  const files = result.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 500)
-    .map((file) => toCwdRelative(file, cwd));
-  return { kind: "ok", text: files.length > 0 ? files.join("\n") : "no files" };
-}
-
 async function globWithNode(cwd: string, pattern: string, root: string): Promise<string> {
   const files: string[] = [];
   for await (const file of walkFiles(root, pattern)) {
@@ -461,34 +401,17 @@ async function globWithNode(cwd: string, pattern: string, root: string): Promise
   return files.length > 0 ? files.join("\n") : "no files";
 }
 
-function formatRgError(exitCode: number, stderr: string): string {
-  const snippet = stderr.trim().slice(0, 400);
-  return snippet.length > 0
-    ? `rg failed (exit ${exitCode}): ${snippet}`
-    : `rg failed (exit ${exitCode})`;
-}
-
-function toCwdRelative(file: string, cwd: string): string {
-  const absolute = path.isAbsolute(file) ? file : path.resolve(cwd, file);
-  return path.relative(cwd, absolute);
-}
-
-function relativizeRgMatchLine(line: string, cwd: string): string {
-  const match = /^(.+?):(\d+):(.*)$/.exec(line);
-  if (!match) {
-    return line;
-  }
-  const file = match[1] ?? "";
-  const lineNo = match[2] ?? "";
-  const content = match[3] ?? "";
-  return `${toCwdRelative(file, cwd)}:${lineNo}:${content}`;
-}
-
-function textResult(text: string, isError = false) {
+function textResult(text: string, isError = false, tool?: string) {
+  const body = isError && tool ? withFixHint(tool, text) : text;
   return {
-    content: [{ type: "text" as const, text }],
+    content: [{ type: "text" as const, text: body }],
     isError,
   };
+}
+
+/** Error result with Fix: guidance for the model. */
+function errorResult(tool: string, text: string) {
+  return textResult(text, true, tool);
 }
 
 function resolvePath(cwd: string, target: string): string {
@@ -626,20 +549,6 @@ async function* walkFiles(root: string, globFilter?: string): AsyncGenerator<str
       }
     }
   }
-}
-
-function matchGlob(value: string, pattern: string): boolean {
-  const normalized = pattern.replace(/\\/g, "/");
-  const target = value.replace(/\\/g, "/");
-  if (normalized === "**/*" || normalized === "*") {
-    return true;
-  }
-  const escaped = normalized
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "{{GLOBSTAR}}")
-    .replace(/\*/g, "[^/]*")
-    .replace(/{{GLOBSTAR}}/g, ".*");
-  return new RegExp(`^${escaped}$`).test(target);
 }
 
 export async function pathExists(target: string): Promise<boolean> {
