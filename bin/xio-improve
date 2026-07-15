@@ -7,4 +7,10 @@ while [ -L "$SOURCE" ]; do
   [[ "$LINK" != /* ]] && SOURCE="$DIR/$LINK" || SOURCE="$LINK"
 done
 ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+if [ -f "$ROOT/dist/xio-improve.js" ]; then
+  exec node "$ROOT/dist/xio-improve.js" "$@"
+fi
+if [ -f "$ROOT/dist/xio-improve.mjs" ]; then
+  exec node "$ROOT/dist/xio-improve.mjs" "$@"
+fi
 exec node --experimental-strip-types "$ROOT/src/cli/improve-entry.ts" "$@"

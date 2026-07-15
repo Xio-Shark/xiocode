@@ -31,7 +31,7 @@ XioCode is a terminal coding agent. The agent loop, builtin tools, and LLM clien
 | Permission modes (Shift+Tab / `/permission`) | ✅ auto (default) / full / strict; no plan/build split |
 | `xio models` | ✅ catalog (+ discovery) lines; no worktree session |
 | Self-improve outer loop (`xio improve`) | ✅ MVP — merge-ask only |
-| Trusted local capability baseline (`xio eval`) | ✅ preflight / smoke / compare |
+| Trusted local capability baseline (`xio eval`) | ✅ preflight / smoke / compare; multi-axis gate shell WIP (hard perf axes incomplete) |
 | Private regression capture (`xio regress`) | ✅ `/regress` + `capture --last`; user verdict + base-red preflight + compare |
 | Session and turn rollback (`/rollback`, `/rollback turn`) | ✅ diff preview + confirmation; files reset, chat retained |
 | Persistent chat session resume (`~/.xiocode/sessions/`) | ✅ latest/id/picker restore; v2 sessions reattach the validated original worktree |
@@ -218,11 +218,12 @@ timeout_ms = 30000
 | `/rollback` | runtime + xio-sandbox | Preview and discard all session worktree changes; main tree and chat history stay untouched |
 | `/rollback turn` | runtime + xio-sandbox | Restore the file tree captured at the start of the latest prompt; earlier-turn files and chat stay intact |
 | `xio models` | CLI | List `provider/model` lines from catalog (+ discovery when keys exist); no worktree |
+| `xio bench run --all --json` | CLI | Local performance baseline (P50/P95 spans under `~/.xiocode/perf/`); fixtures not yet fully trusted |
 | `xio improve` | xio-improve | Self-improve loop; merge-ask only |
 | `xio improve --capability-gate` | xio-improve + xio-eval | Trusted compare must PASS before merge ask |
 | `xio eval preflight` | xio-eval | Zero-model fixture/oracle/tamper validation |
 | `xio eval smoke` | xio-eval | Held-out tasks; `--candidate-mode` / `--model` / `--repeat`; credentialed series |
-| `xio eval compare` | xio-eval | Paired before/candidate evidence |
+| `xio eval compare` | xio-eval | Paired before/candidate evidence; optional `--manifest` / `--perf-*` / `--private-case` multi-axis shell (hard perf gate incomplete) |
 | `xio regress capture` | xio-regress | Low-friction create (`--last`, default failure type) |
 | `xio regress create` | xio-regress | Capture explicit user verdict + frozen verifier |
 | `xio regress preflight` | xio-regress | Zero-model pinned-base red check |
@@ -237,6 +238,8 @@ Runs land under `~/.xiocode/runs/<run_id>/` (`metadata.json`, `events.jsonl`, `t
 Interactive sessions persist atomic `~/.xiocode/sessions/<session_id>/state.json` records with model, messages, workspace identity, execution phase, and durable turn checkpoint. `xio resume` restores the latest session for the current repository, `xio resume <id>` restores an exact record, `xio resume --list` opens the history picker, and `xio resume --delete <id>` removes a bad or unwanted record. A v2 interrupted session reattaches its validated original worktree; uncertain tool calls are marked `completion unknown` and are never replayed automatically. Legacy v1 chat-only sessions remain loadable and start a new isolated worktree. Resume does not reuse `runs/` evidence or weaken MergeGate.
 
 Eval reports land under `~/.xiocode/evals/<eval_id>/` and reference the existing run id/trajectory instead of copying a second trajectory store. Provider token usage is normalized at the runtime client boundary; unavailable fields remain `null`. Cost is calculated only when `--price-table PATH` or `XIO_EVAL_PRICE_TABLE` supplies a versioned trusted price table.
+
+Performance baselines from `xio bench` land under `~/.xiocode/perf/<bench_id>/` (`report.json`, `samples.jsonl`) with versioned span schema `xio-perf-span.v1`. They do not replace run/eval evidence. Several bench fixtures are still framework-level (not product-path trustworthy); see [docs/STATUS.md](./docs/STATUS.md) and `.trellis/tasks/07-15-performance-board.md`.
 
 ---
 

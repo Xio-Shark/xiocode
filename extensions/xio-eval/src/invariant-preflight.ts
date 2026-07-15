@@ -79,6 +79,7 @@ async function assertRedVerifierSkipsAsk(mainRoot: string, worktreeRoot: string)
     goalStore: goals,
     worktreeBaseDir: path.join(worktreeRoot, "verifier-red"),
     verifierCommands: ["exit 1"],
+    replaceVerifierCommands: true,
     forceCleanup: true,
     ask: async () => {
       asked = true;

@@ -92,5 +92,9 @@ export function toWorktreeSession(workspace: SessionWorkspace | undefined): Work
   for (const [key, value] of Object.entries(required)) {
     if (!value) throw new Error(`saved session worktree is missing ${key}`);
   }
-  return required as WorktreeSession;
+  return {
+    ...required,
+    // Legacy v2 may omit baseline_tree; attach falls back to baseRef^{tree}.
+    baselineTree: workspace.baseline_tree ?? "",
+  } as WorktreeSession;
 }

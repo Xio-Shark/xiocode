@@ -98,17 +98,17 @@ export class ResultDenoiser {
   }
 
   private extractFilePath(result: ToolResult, args?: Record<string, unknown>): string | null {
-    // Try args first (from Read tool call)
-    if (args && typeof args.file_path === "string") {
-      return args.file_path;
+    // Try args first (Read tool: path in XioCode, file_path in some pi-compat shapes)
+    if (args) {
+      if (typeof args.path === "string" && args.path.length > 0) return args.path;
+      if (typeof args.file_path === "string" && args.file_path.length > 0) return args.file_path;
     }
 
     // Fallback to metadata
     if (result.metadata && typeof result.metadata === "object") {
       const meta = result.metadata as Record<string, unknown>;
-      if (typeof meta.file_path === "string") {
-        return meta.file_path;
-      }
+      if (typeof meta.path === "string" && meta.path.length > 0) return meta.path;
+      if (typeof meta.file_path === "string" && meta.file_path.length > 0) return meta.file_path;
     }
 
     return null;

@@ -46,10 +46,28 @@ describe("WorktreeSandbox", () => {
     await WorktreeSandbox.remove(session, { force: true });
   });
 
-  it("hard-fails resolveMainRoot outside a git repo", async () => {
+  it("syncs uncommitted main files into a new worktree", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, "README.md"), "dirty tracked\n", "utf8");
+    await writeFile(path.join(mainRoot, "scratch-untracked.txt"), "hello-untracked\n", "utf8");
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-base-"));
+    tempDirs.push(baseDir);
+
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "sync1" });
+    await expect(readFile(path.join(session.worktreePath, "README.md"), "utf8")).resolves.toBe("dirty tracked\n");
+    await expect(readFile(path.join(session.worktreePath, "scratch-untracked.txt"), "utf8"))
+      .resolves.toBe("hello-untracked\n");
+    // Main tree left unchanged by worktree edits path
+    await expect(readFile(path.join(mainRoot, "README.md"), "utf8")).resolves.toBe("dirty tracked\n");
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("hard-fails resolveMainRoot outside a git repo; tryResolve returns undefined", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-nongit-"));
     tempDirs.push(root);
-    await expect(WorktreeSandbox.resolveMainRoot(root)).rejects.toThrow(/requires a git repository/i);
+    await expect(WorktreeSandbox.resolveMainRoot(root)).rejects.toThrow(/requires a git repository|Worktree mode requires/i);
+    await expect(WorktreeSandbox.tryResolveMainRoot(root)).resolves.toBeUndefined();
   });
 
   it("attaches only to the registered worktree with matching repository identity", async () => {
@@ -279,6 +297,147 @@ describe("registerXioSandbox", () => {
     expect(commands.has("sandbox")).toBe(true);
     const status = await commands.get("sandbox")!.handler();
     expect(String(status)).toContain(session.worktreePath);
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+});
+
+describe("dirty baseline mirror + merge", () => {
+  it("mirrors staged rename, symlink retarget, executable mode, delete, and untracked", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, "old-name.txt"), "renamed-body\n", "utf8");
+    await writeFile(path.join(mainRoot, "to-delete.txt"), "gone\n", "utf8");
+    await writeFile(path.join(mainRoot, "script.sh"), "#!/bin/sh\necho hi\n", "utf8");
+    await gitOk(mainRoot, ["add", "old-name.txt", "to-delete.txt", "script.sh"]);
+    await gitOk(mainRoot, ["commit", "-m", "fixtures"]);
+    // staged rename
+    await gitOk(mainRoot, ["mv", "old-name.txt", "new-name.txt"]);
+    // tracked delete (worktree)
+    await rm(path.join(mainRoot, "to-delete.txt"));
+    // executable mode on tracked file — chmod + index mode (import later with symlink)
+    await (await import("node:fs/promises")).chmod(path.join(mainRoot, "script.sh"), 0o755);
+    await gitOk(mainRoot, ["update-index", "--chmod=+x", "script.sh"]);
+    // symlink retarget
+    const { symlink, readlink, chmod } = await import("node:fs/promises");
+    await symlink("README.md", path.join(mainRoot, "link-a"));
+    await gitOk(mainRoot, ["add", "link-a"]);
+    await gitOk(mainRoot, ["commit", "-m", "add symlink"]);
+    await rm(path.join(mainRoot, "link-a"));
+    await symlink("script.sh", path.join(mainRoot, "link-a"));
+    // untracked
+    await writeFile(path.join(mainRoot, "scratch-untracked.txt"), "u\n", "utf8");
+    // ignored should NOT mirror
+    await writeFile(path.join(mainRoot, ".gitignore"), "*.ignored\n", "utf8");
+    await gitOk(mainRoot, ["add", ".gitignore"]);
+    await gitOk(mainRoot, ["commit", "-m", "ignore"]);
+    await writeFile(path.join(mainRoot, "secret.ignored"), "nope\n", "utf8");
+
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-dirty-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "dirty1" });
+
+    await expect(readFile(path.join(session.worktreePath, "new-name.txt"), "utf8")).resolves.toBe("renamed-body\n");
+    await expect(readFile(path.join(session.worktreePath, "old-name.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(session.worktreePath, "to-delete.txt"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(session.worktreePath, "scratch-untracked.txt"), "utf8")).resolves.toBe("u\n");
+    await expect(readFile(path.join(session.worktreePath, "secret.ignored"), "utf8")).rejects.toThrow();
+
+    const mode = await gitOk(session.worktreePath, ["ls-files", "-s", "script.sh"]);
+    expect(mode).toMatch(/^100755\s/);
+    expect(await readlink(path.join(session.worktreePath, "link-a"))).toBe("script.sh");
+
+    // session rollback restores launch WIP, not clean HEAD only
+    await writeFile(path.join(session.worktreePath, "agent-edit.txt"), "agent\n", "utf8");
+    await WorktreeSandbox.rollbackToSessionBaseline(session);
+    await expect(readFile(path.join(session.worktreePath, "new-name.txt"), "utf8")).resolves.toBe("renamed-body\n");
+    await expect(readFile(path.join(session.worktreePath, "scratch-untracked.txt"), "utf8")).resolves.toBe("u\n");
+    await expect(readFile(path.join(session.worktreePath, "agent-edit.txt"), "utf8")).rejects.toThrow();
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("mirrors when launched from a repository subdirectory", async () => {
+    const mainRoot = await initGitRepo();
+    const sub = path.join(mainRoot, "pkg", "inner");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sub, { recursive: true });
+    await writeFile(path.join(sub, "nested.txt"), "nested-wip\n", "utf8");
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-sub-"));
+    tempDirs.push(baseDir);
+    // create uses mainRoot; capture still uses toplevel
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "sub1" });
+    await expect(readFile(path.join(session.worktreePath, "pkg/inner/nested.txt"), "utf8")).resolves.toBe("nested-wip\n");
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("dirty merge keeps original index and only applies agent delta", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, "staged.txt"), "staged-v1\n", "utf8");
+    await writeFile(path.join(mainRoot, "unstaged.txt"), "unstaged-v1\n", "utf8");
+    await gitOk(mainRoot, ["add", "staged.txt", "unstaged.txt"]);
+    await gitOk(mainRoot, ["commit", "-m", "base files"]);
+    // staged change
+    await writeFile(path.join(mainRoot, "staged.txt"), "staged-v2\n", "utf8");
+    await gitOk(mainRoot, ["add", "staged.txt"]);
+    // unstaged change
+    await writeFile(path.join(mainRoot, "unstaged.txt"), "unstaged-v2\n", "utf8");
+    // untracked WIP
+    await writeFile(path.join(mainRoot, "wip-untracked.txt"), "wip\n", "utf8");
+
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-merge-dirty-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "mdirty1" });
+    expect(await WorktreeSandbox.isDirtyBaseline(session)).toBe(true);
+
+    // agent only adds a new file
+    await writeFile(path.join(session.worktreePath, "agent-only.txt"), "from-agent\n", "utf8");
+
+    // capture main index tree before merge
+    const indexBefore = await gitOk(mainRoot, ["write-tree"]);
+    const statusBefore = await gitOk(mainRoot, ["status", "--porcelain"]);
+
+    const gate = new MergeGate(session);
+    const result = await gate.merge();
+    expect(result.ok).toBe(true);
+
+    // original staged content preserved in index
+    const indexAfter = await gitOk(mainRoot, ["write-tree"]);
+    expect(indexAfter).toBe(indexBefore);
+    // agent file present on main working tree
+    await expect(readFile(path.join(mainRoot, "agent-only.txt"), "utf8")).resolves.toBe("from-agent\n");
+    // original WIP still present
+    await expect(readFile(path.join(mainRoot, "staged.txt"), "utf8")).resolves.toBe("staged-v2\n");
+    await expect(readFile(path.join(mainRoot, "unstaged.txt"), "utf8")).resolves.toBe("unstaged-v2\n");
+    await expect(readFile(path.join(mainRoot, "wip-untracked.txt"), "utf8")).resolves.toBe("wip\n");
+    // staged still staged (index has staged-v2 for staged.txt)
+    const statusAfter = await gitOk(mainRoot, ["status", "--porcelain"]);
+    expect(statusAfter).toContain("agent-only.txt");
+    expect(statusBefore).toMatch(/staged\.txt/);
+
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
+  it("dirty merge fails closed when main drifts and keeps candidate worktree", async () => {
+    const mainRoot = await initGitRepo();
+    await writeFile(path.join(mainRoot, "wip.txt"), "launch\n", "utf8");
+    const baseDir = await mkdtemp(path.join(os.tmpdir(), "xio-wt-drift-"));
+    tempDirs.push(baseDir);
+    const session = await WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "drift1" });
+    await writeFile(path.join(session.worktreePath, "agent.txt"), "a\n", "utf8");
+
+    // drift main after session start
+    await writeFile(path.join(mainRoot, "drift.txt"), "drift\n", "utf8");
+
+    const gate = new MergeGate(session);
+    const result = await gate.merge();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/drifted|fail closed/i);
+    }
+    // candidate still present
+    await expect(readFile(path.join(session.worktreePath, "agent.txt"), "utf8")).resolves.toBe("a\n");
+    // main should not have partial agent write
+    await expect(readFile(path.join(mainRoot, "agent.txt"), "utf8")).rejects.toThrow();
 
     await WorktreeSandbox.remove(session, { force: true });
   });

@@ -26,6 +26,101 @@ describe("runAgentLoop context wiring", () => {
   });
 });
 
+describe("runAgentLoop tool_result hooks", () => {
+  it("does not let empty hook content wipe real tool output", async () => {
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "read",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      async execute() {
+        return { content: [{ type: "text", text: "1|# real worktree body\n2|ok" }] };
+      },
+    }));
+    // Broken-style hook: returns empty content blocks (old denoise mis-parse).
+    host.on("tool_result", () => ({
+      content: [{ type: "text", text: "" }],
+      isError: false,
+    }));
+
+    const toolBodies: string[] = [];
+    let calls = 0;
+    const client: LlmClient = {
+      async complete(request) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "r1", name: "read", arguments: { path: "README.md" } }],
+          };
+        }
+        for (const message of request.messages) {
+          if (message.role === "tool" && typeof message.content === "string") {
+            toolBodies.push(message.content);
+          }
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+
+    await runAgentLoop("read file", { host, client, model: "stub" });
+    expect(toolBodies.some((body) => body.includes("real worktree body"))).toBe(true);
+    expect(toolBodies.every((body) => body.length > 0)).toBe(true);
+  });
+
+  it("applies nested-compatible denoise content when non-empty", async () => {
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "bash",
+      description: "bash",
+      parameters: Type.Object({ command: Type.String() }),
+      async execute() {
+        return {
+          content: [{
+            type: "text",
+            text: "exit_code=0\n\nstdout:\nfull listing here\n\n\nstderr:\n",
+          }],
+        };
+      },
+    }));
+    host.on("tool_result", (payload) => {
+      // Simulate fixed evolve: read nested result and return non-empty denoise.
+      const record = payload as {
+        result?: { content?: Array<{ type: string; text: string }> };
+      };
+      const original = record.result?.content?.[0]?.text ?? "";
+      expect(original).toContain("full listing here");
+      return {
+        content: [{ type: "text", text: original.replace("full listing here", "denoised listing") }],
+        isError: false,
+      };
+    });
+
+    const toolBodies: string[] = [];
+    let calls = 0;
+    const client: LlmClient = {
+      async complete(request) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "b1", name: "bash", arguments: { command: "ls" } }],
+          };
+        }
+        for (const message of request.messages) {
+          if (message.role === "tool" && typeof message.content === "string") {
+            toolBodies.push(message.content);
+          }
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+
+    await runAgentLoop("list", { host, client, model: "stub" });
+    expect(toolBodies.some((body) => body.includes("denoised listing"))).toBe(true);
+  });
+});
+
 describe("runAgentLoop parallel tools", () => {
   it("runs independent sleep tools faster than serial wall-clock", async () => {
     const sleepMs = 80;

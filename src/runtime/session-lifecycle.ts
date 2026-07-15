@@ -133,6 +133,7 @@ export function createPromptRunner(options: Readonly<{
       client: getClient(),
       model: model.id,
       providerApi: getProviderApi(),
+      providerName: model.provider,
       maxTurns: options.maxTurns,
       repeatToolLimit: options.repeatToolLimit,
       doneContract: options.doneContract,

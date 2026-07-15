@@ -1,68 +1,143 @@
 import { defineTool } from "../define-tool.ts";
 import { resolveApiKey } from "../providers/client.ts";
 import { Type } from "../schema.ts";
+import type { ThinkingLevel } from "../types.ts";
 
 import type { ProviderRegistration, ToolDefinition } from "../types.ts";
+import { buildPolicyCapsule } from "./capsule.ts";
+import {
+  DEFAULT_EXPLORE_ACTIVE_MAX,
+  detectUserExploreFanoutRequest,
+  resolveExploreConcurrencyBudget,
+  ULTRA_EXPLORE_ACTIVE_MIN,
+  type ExploreConcurrencyBudget,
+} from "./policy.ts";
+import type { ExploreRoleId } from "./roles.ts";
 import { Semaphore } from "./semaphore.ts";
 import { runExploreSubagent } from "./subagent.ts";
 
 import type { ResolvedExploreConfig } from "./types.ts";
 import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 
+const EXPLORE_ROLE_IDS = new Set<ExploreRoleId>([
+  "locator",
+  "flow_analyst",
+  "impact_test",
+  "adversarial",
+]);
+
 export const EXPLORE_TOOL_NAME = "explore";
+
+const MULTI_EXPLORE_MARKER = "## Multi-explore (read-only subagents)";
 
 /**
  * Static fallback for marker matching in tests.
- * Prefer formatPrimaryExploreAddendum with live scale + cap.
+ * Prefer formatPrimaryExploreAddendum with live budget + scale.
  */
 export const PRIMARY_EXPLORE_PROMPT_ADDENDUM = formatPrimaryExploreAddendum({
-  maxConcurrency: 4,
-  suggestedConcurrency: 4,
+  maxConcurrency: MAX_EXPLORE_CONCURRENCY,
+  suggestedConcurrency: DEFAULT_EXPLORE_ACTIVE_MAX,
+  effectiveMax: DEFAULT_EXPLORE_ACTIVE_MAX,
+  mode: "default",
 });
 
-/** Primary-agent guidance: dynamic fan-out by project scale, tiny slices, flexible partition. */
+/** Strip a previous Multi-explore section so each turn can re-apply policy text. */
+export function stripMultiExploreAddendum(systemPrompt: string): string {
+  const idx = systemPrompt.indexOf(MULTI_EXPLORE_MARKER);
+  if (idx < 0) {
+    return systemPrompt.trimEnd();
+  }
+  const before = systemPrompt.slice(0, idx).trimEnd();
+  const rest = systemPrompt.slice(idx + MULTI_EXPLORE_MARKER.length);
+  const nextHeading = rest.search(/\n## /);
+  const after = nextHeading >= 0 ? rest.slice(nextHeading).trimStart() : "";
+  if (before.length === 0) return after;
+  if (after.length === 0) return before;
+  return `${before}\n\n${after}`;
+}
+
+/** Primary-agent guidance: adaptive lanes + user-request fan-out policy. */
 export function formatPrimaryExploreAddendum(
   options: Readonly<{
+    /** Config hard ceiling (1–16). */
     maxConcurrency: number;
-    /** Scale-based suggestion (≤ maxConcurrency). Default band ~4 for medium repos. */
     suggestedConcurrency?: number;
+    /** Mechanical parallel cap this turn. */
+    effectiveMax?: number;
+    mode?: ExploreConcurrencyBudget["mode"];
+    lane?: ExploreConcurrencyBudget["lane"];
     scaleNote?: string;
     partitionHint?: string;
+    thinkingLevel?: ThinkingLevel;
   }>,
 ): string {
-  const cap = Math.min(Math.max(1, options.maxConcurrency), MAX_EXPLORE_CONCURRENCY);
-  const suggested = Math.min(
-    Math.max(1, options.suggestedConcurrency ?? Math.min(4, cap)),
-    cap,
+  const hardCap = Math.min(Math.max(1, options.maxConcurrency), MAX_EXPLORE_CONCURRENCY);
+  const effectiveMax = Math.min(
+    hardCap,
+    Math.max(0, options.effectiveMax ?? DEFAULT_EXPLORE_ACTIVE_MAX),
   );
+  const suggestedRaw = options.suggestedConcurrency
+    ?? Math.min(DEFAULT_EXPLORE_ACTIVE_MAX, Math.max(1, effectiveMax));
+  const suggested = Math.min(Math.max(effectiveMax, 0), Math.max(0, suggestedRaw));
+  const mode = options.mode ?? "default";
+  const lane = options.lane ?? (mode === "ultra" ? "deep" : mode === "user" ? "explicit_high" : mode === "fast" ? "fast" : "standard");
+  const think = options.thinkingLevel ?? "off";
+
   const lines = [
-    "## Multi-explore (read-only subagents)",
+    MULTI_EXPLORE_MARKER,
     "You have an `explore` tool that runs a faster/cheaper **read-only** subagent on a separate model.",
     "",
     "When to use explore (default for pure reading):",
-    "- User wants to understand / locate / survey the repo, or you only need file contents before editing:",
-    "  **prefer `explore`** (possibly multiple parallel slices) instead of bulk `read`/`grep` on the main agent.",
-    "- Main agent should stay for planning, synthesis, and **write/edit/bash** that change the tree.",
-    "- Do not send the whole monorepo as one explore goal — partition into small slices.",
+    "- Multi-file locate/survey/understand work: **prefer `explore`** with specialized slices instead of bulk primary `read`/`grep`.",
+    "- Simple **single-file** edits with no unresolved uncertainty: **do not spawn** explore unless the user asks.",
+    "- Main agent stays for planning, synthesis, and **write/edit/bash** that change the tree.",
+    "- Do not send the whole monorepo as one explore goal — partition into small role-owned slices.",
     "",
-    `Default budget is small (typically ~4). Hard cap this session: ${cap} concurrent explores `
-      + `(absolute max ${MAX_EXPLORE_CONCURRENCY}; raise explore.max_concurrency in config if needed).`,
-    `For this workspace, prefer about **${suggested}** concurrent explore call(s) — not always the hard cap.`,
-    "Choose worker count from project scale and task breadth: tiny/local work → 1–2; medium → ~4; "
-      + "only use more when the repo and the task clearly need wider fan-out (still ≤ hard cap).",
-    "Each subagent must own only a **small** slice — never a whole large subsystem.",
+    "### Adaptive fan-out (lanes)",
+    `Current thinking effort: **${think}**. Config hard ceiling: **${hardCap}** (absolute max ${MAX_EXPLORE_CONCURRENCY}).`,
+    `Lane: **${lane}**. Mechanical concurrent cap: **${effectiveMax}**. Prefer about **${suggested}** parallel explore call(s).`,
+    "- Lanes: **fast**(0) · **standard**(2–4) · **deep**(4–8) · **explicit_high**(≤16 user-only).",
+  ];
+
+  if (mode === "fast" || suggested === 0) {
+    lines.push(
+      `- **Fast lane**: do **not** spawn subagents for this turn unless the user requests explore or uncertainty remains.`,
+    );
+  } else if (mode === "ultra" || lane === "deep") {
+    lines.push(
+      `- **Deep lane** (ultra thinking or high multi-file uncertainty): raise the ceiling toward **${ULTRA_EXPLORE_ACTIVE_MIN}** `
+        + `(target ~${Math.max(suggested, 1)}, up to ${Math.max(effectiveMax, 1)}). Prefer role slices: locator / flow / impact / adversarial.`,
+      `- Ultra elevates the deep ceiling; it does **not** force workers on trivial single-file tasks.`,
+    );
+  } else if (mode === "user") {
+    lines.push(
+      `- User **explicitly** requested high fan-out: you may use up to **${Math.max(effectiveMax, 1)}** concurrent explores `
+        + `(including 16 when allowed). Still partition into small non-overlapping ownerships.`,
+    );
+  } else {
+    lines.push(
+      `- **Standard lane**: about **2–${DEFAULT_EXPLORE_ACTIVE_MAX}** concurrent explores with non-overlapping ownership.`,
+      `- Do **not** issue 8–16 explores unless the user clearly asks for that many workers `
+        + `(e.g. "16 subagents" / "开16个explore") — then the cap rises for that turn only.`,
+      `- Deep ceiling without a user count: set thinking effort to **ultra** (\`/effort ultra\` or Tab) when multi-file uncertainty is high.`,
+    );
+  }
+
+  lines.push(
+    "",
+    "Each subagent must own only a **small** slice — dispatcher ownership (paths/questions), not vague prompts alone.",
     "You choose how to partition (API surface, feature, package/layer, call path, file tree, bug surface, …)",
     "based on the project and the user request; the user may also dictate the partition.",
     "Prefer many narrow explores over few broad ones; if a slice is still large, split further (within the cap).",
-    "Issue multiple `explore` tool calls in one turn for parallel slices, then synthesize reports yourself",
-    "and implement changes with write/edit/bash. Workers cannot modify files or spawn further explores.",
+    "Issue multiple `explore` tool calls in one turn for parallel slices, then synthesize a compact WorkspaceBrief",
+    "(claims + citations; raw evidence stays out of primary context). Workers cannot modify files or spawn further explores.",
     "Pass a narrow research `goal` plus optional `focus_paths` for that slice only.",
     "",
     "Trust rules for explore returns:",
     "- Workers must return **absolute paths** and **verbatim file content** for what they read.",
     "- Treat code blocks as source evidence; do not assume they rewrote or \"cleaned\" code.",
     "- If a report is truncated or incomplete, re-explore a narrower path or `read` that absolute path yourself — never invent missing text.",
-  ];
+  );
   if (options.scaleNote?.trim()) {
     lines.push(`Workspace scale: ${options.scaleNote.trim()}`);
   }
@@ -79,20 +154,52 @@ export type CreateExploreToolOptions = Readonly<{
   getProvider: (name: string) => ProviderRegistration | undefined;
   env?: NodeJS.ProcessEnv;
   onNotify?: (message: string) => void;
+  /** Header status: active subagent count (e.g. setStatus("explore", "subs:2")). */
+  onStatus?: (key: string, text: string | undefined) => void;
+  /** Session thinking level (drives ultra fan-out). */
+  getThinkingLevel?: () => ThinkingLevel;
+  /** Latest user prompt for high-fan-out detection. */
+  getUserPrompt?: () => string;
 }>;
 
 export function createExploreTool(options: CreateExploreToolOptions): ToolDefinition {
-  const gate = new Semaphore(Math.min(options.config.maxConcurrency, MAX_EXPLORE_CONCURRENCY));
   const env = options.env ?? process.env;
+  const hardCap = Math.min(options.config.maxConcurrency, MAX_EXPLORE_CONCURRENCY);
+  let activeWorkers = 0;
+  let nextWorkerId = 0;
 
-  const maxParallel = Math.min(options.config.maxConcurrency, MAX_EXPLORE_CONCURRENCY);
+  const publishActiveStatus = (): void => {
+    if (activeWorkers <= 0) {
+      options.onStatus?.("explore", undefined);
+      return;
+    }
+    options.onStatus?.("explore", `subs:${activeWorkers}`);
+  };
+
+  const resolveBudget = (): ExploreConcurrencyBudget => {
+    const userText = options.getUserPrompt?.() ?? "";
+    return resolveExploreConcurrencyBudget({
+      thinkingLevel: options.getThinkingLevel?.() ?? "off",
+      configMax: hardCap,
+      userRequest: detectUserExploreFanoutRequest(userText),
+      signal: {
+        userText,
+        exploreRequested: detectUserExploreFanoutRequest(userText).highFanout
+          || /\bexplore\b/i.test(userText),
+      },
+    });
+  };
+
+  const gate = new Semaphore(() => Math.max(1, resolveBudget().effectiveMax));
+
   return defineTool({
     name: EXPLORE_TOOL_NAME,
     label: "Explore",
     description:
       "Spawn one read-only subagent for a **small** research slice (not a whole feature/module). "
-      + "Prefer this for pure repo reading/location so the main context stays light. "
-      + `Call multiple times in parallel (max ${maxParallel}) with different narrow goals. `
+      + "Prefer this for multi-file locate/survey; skip for simple single-file work unless asked. "
+      + `Adaptive lanes: fast(0) / standard(≤${DEFAULT_EXPLORE_ACTIVE_MAX}) / deep(≤${ULTRA_EXPLORE_ACTIVE_MIN}) / `
+      + `user high fan-out up to ${hardCap} (absolute max ${MAX_EXPLORE_CONCURRENCY}). `
       + "Returns absolute paths + verbatim file content for that slice (not a rewritten summary).",
     promptSnippet: "Read-only explore subagents: narrow slices, faithful file content back",
     parameters: Type.Object({
@@ -106,6 +213,10 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       max_turns: Type.Number({
         description: `Optional turn cap for this worker (1–${options.config.maxTurns}, default config).`,
       }),
+      role: Type.String({
+        description:
+          "Optional specialized role: locator | flow_analyst | impact_test | adversarial (deep lane).",
+      }),
     }, { required: ["goal"] }),
     async execute(_id, params, ctx) {
       const goal = typeof params.goal === "string" ? params.goal.trim() : "";
@@ -117,6 +228,7 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       }
       const focusPaths = parseFocusPaths(params.focus_paths);
       const maxTurns = clampTurns(params.max_turns, options.config.maxTurns);
+      const role = parseExploreRole(params.role);
       const registration = options.getProvider(options.config.provider);
       if (!registration) {
         return {
@@ -128,12 +240,21 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
         };
       }
 
+      const budget = resolveBudget();
       let release: (() => void) | undefined;
       const timeout = createTimeoutSignal(ctx?.signal, options.config.timeoutMs);
+      let workerId = 0;
+      let counted = false;
       try {
         release = await gate.acquire();
+        activeWorkers += 1;
+        counted = true;
+        workerId = ++nextWorkerId;
+        publishActiveStatus();
         options.onNotify?.(
-          `explore → ${options.config.provider}/${options.config.model}: ${truncate(goal, 80)}`,
+          `subagent #${workerId} started → ${options.config.provider}/${options.config.model}`
+            + ` [${budget.lane ?? budget.mode} cap ${budget.effectiveMax}`
+            + `${role ? ` role=${role}` : ""}]: ${truncate(goal, 80)}`,
         );
         let apiKey: string;
         try {
@@ -146,6 +267,19 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           };
         }
 
+        const capsule = buildPolicyCapsule({
+          workspaceId: options.workspaceRoot,
+          mainRootHint: options.workspaceRoot,
+          ownership: {
+            role,
+            paths: focusPaths ?? [],
+            questions: [goal],
+          },
+          wallMs: options.config.timeoutMs,
+          maxTurns,
+          maxOutputChars: options.config.maxOutputChars,
+        });
+
         const result = await runExploreSubagent({
           goal,
           focusPaths,
@@ -157,9 +291,14 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           maxTurns,
           allowBash: options.config.allowBash,
           signal: timeout.signal,
+          role,
+          capsule,
         });
 
         if (timeout.timedOut) {
+          options.onNotify?.(
+            `subagent #${workerId} timeout after ${options.config.timeoutMs}ms: ${truncate(goal, 60)}`,
+          );
           return {
             content: [{
               type: "text",
@@ -176,6 +315,10 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           };
         }
 
+        options.onNotify?.(
+          `subagent #${workerId} ${result.success === false ? "failed" : "done"}`
+            + ` (${result.turns} turns, ${result.toolCalls} tools): ${truncate(goal, 60)}`,
+        );
         return {
           content: [{
             type: "text",
@@ -185,6 +328,10 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           details: { explore: result },
         };
       } finally {
+        if (counted) {
+          activeWorkers = Math.max(0, activeWorkers - 1);
+          publishActiveStatus();
+        }
         timeout.dispose();
         release?.();
       }
@@ -235,6 +382,12 @@ function parseFocusPaths(value: unknown): readonly string[] | undefined {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return paths.length > 0 ? paths : undefined;
+}
+
+function parseExploreRole(value: unknown): ExploreRoleId | undefined {
+  if (typeof value !== "string") return undefined;
+  const role = value.trim() as ExploreRoleId;
+  return EXPLORE_ROLE_IDS.has(role) ? role : undefined;
 }
 
 function clampTurns(value: unknown, max: number): number {

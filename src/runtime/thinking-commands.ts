@@ -24,6 +24,8 @@ export type ThinkingCommandOptions = Readonly<{
   getModel: () => ModelInfo;
   env: NodeJS.ProcessEnv;
   persist?: boolean;
+  /** Fired after the session thinking level changes (e.g. ultra → auto-enable explore). */
+  onThinkingLevelChanged?: (level: ThinkingLevel) => Promise<void> | void;
 }>;
 
 export function registerThinkingCommands(options: ThinkingCommandOptions): void {
@@ -52,6 +54,7 @@ export async function applyThinkingLevel(
   if (options.persist !== false) {
     await persistThinkingLevel(options.env, next);
   }
+  await options.onThinkingLevelChanged?.(next);
   return next;
 }
 
@@ -82,13 +85,6 @@ async function runThinking(options: ThinkingCommandOptions, rawArgs: string): Pr
     }
     const next = await applyThinkingLevel(options, parsed);
     return `thinking level set to ${next}`;
-  }
-
-  if (available.length === 1 && available[0] === "off" && !providerModel?.reasoning) {
-    options.sink.notify?.(
-      `${model.provider}/${model.id} does not advertise reasoning; only off is available. Set providers.${model.provider}.reasoning = true in ~/.xiocode/config.toml (and restart the session).`,
-      "info",
-    );
   }
 
   const picked = await options.interactive.select(

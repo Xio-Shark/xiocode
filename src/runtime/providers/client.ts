@@ -11,7 +11,12 @@ import type {
   TokenUsage,
 } from "../types.ts";
 import { emptyTokenUsage, normalizeProviderUsage } from "../usage.ts";
-import { anthropicThinkingConfig, openAiReasoningEffort } from "../thinking.ts";
+import {
+  anthropicThinkingConfig,
+  deepseekThinkingToggle,
+  openAiReasoningEffort,
+} from "../thinking.ts";
+import { resolveRequestControls } from "./request-controls.ts";
 
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
@@ -43,7 +48,12 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(openAiBody(request, false, modelConfig(options.registration, request.model))),
+      body: JSON.stringify(openAiBody(
+        request,
+        false,
+        modelConfig(options.registration, request.model),
+        options.registration,
+      )),
       signal: completeOptions?.signal,
     });
     if (!response.ok) {
@@ -81,7 +91,12 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     const response = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(openAiBody(request, true, modelConfig(options.registration, request.model))),
+      body: JSON.stringify(openAiBody(
+        request,
+        true,
+        modelConfig(options.registration, request.model),
+        options.registration,
+      )),
       signal: completeOptions?.signal,
     });
     if (!response.ok) {
@@ -165,12 +180,19 @@ function openAiBody(
   request: ChatCompletionRequest,
   stream: boolean,
   model: ProviderModelConfig | undefined,
+  registration?: ProviderRegistration,
 ): Record<string, unknown> {
+  const controls = resolveRequestControls({
+    registration,
+    modelId: request.model,
+    request,
+  });
+  const maxTokens = request.maxTokens ?? controls.maxTokens;
   const body: Record<string, unknown> = {
     model: request.model,
     messages: request.messages.map(toOpenAiMessage),
     tools: request.tools,
-    max_tokens: request.maxTokens,
+    max_tokens: maxTokens,
     temperature: request.temperature,
     stream,
   };
@@ -180,9 +202,22 @@ function openAiBody(
   if (stream) {
     body.stream_options = { include_usage: true };
   }
+  if (controls.toolChoiceWire.kind === "openai") {
+    body.tool_choice = controls.toolChoiceWire.value;
+  }
+  // Official OpenAI prompt-cache passthrough only when explicitly configured.
+  const cacheKey = model?.compat?.prompt_cache_key;
+  if (typeof cacheKey === "string" && cacheKey.length > 0 && controls.promptCache) {
+    body.prompt_cache_key = cacheKey;
+  }
   const effort = openAiReasoningEffort(request.thinkingLevel, model);
   if (effort !== undefined) {
     body.reasoning_effort = effort;
+  }
+  // DeepSeek V4: thinking toggle + effort (see api-docs.deepseek.com/guides/thinking_mode)
+  const thinking = deepseekThinkingToggle(request.thinkingLevel, model);
+  if (thinking) {
+    body.thinking = thinking;
   }
   return body;
 }
@@ -209,6 +244,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
       stream: false,
       model: modelConfig(options.registration, request.model),
       thinkingDisplay: options.registration.thinkingDisplay,
+      registration: options.registration,
     });
   }
 
@@ -224,6 +260,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
         true,
         modelConfig(options.registration, request.model),
         options.registration.thinkingDisplay,
+        options.registration,
       )),
       signal: completeOptions?.signal,
     });
@@ -325,12 +362,19 @@ async function completeAnthropic(
     stream: boolean;
     model?: ProviderModelConfig;
     thinkingDisplay?: ProviderRegistration["thinkingDisplay"];
+    registration?: ProviderRegistration;
   }>,
 ): Promise<ChatCompletionResponse> {
   const response = await options.fetchImpl(`${options.baseUrl}/v1/messages`, {
     method: "POST",
     headers: options.headers,
-    body: JSON.stringify(anthropicBody(request, false, options.model, options.thinkingDisplay)),
+    body: JSON.stringify(anthropicBody(
+      request,
+      false,
+      options.model,
+      options.thinkingDisplay,
+      options.registration,
+    )),
     signal: options.signal,
   });
   if (!response.ok) {
@@ -344,26 +388,68 @@ function anthropicBody(
   stream: boolean,
   model: ProviderModelConfig | undefined,
   thinkingDisplay?: ProviderRegistration["thinkingDisplay"],
+  registration?: ProviderRegistration,
 ): Record<string, unknown> {
-  const system = request.messages.filter((message) => message.role === "system")
-    .map((message) => message.content).join("\n\n");
-  const body: Record<string, unknown> = {
-    model: request.model,
-    max_tokens: request.maxTokens ?? 8192,
-    system: system.length > 0 ? system : undefined,
-    messages: request.messages.filter((message) => message.role !== "system").map(toAnthropicMessage),
-    tools: request.tools?.map((tool) => ({
+  const controls = resolveRequestControls({
+    registration: registration ?? (model
+      ? { name: "", api: "anthropic-messages", models: [model] }
+      : undefined),
+    modelId: request.model,
+    request,
+  });
+  const systemMessages = request.messages.filter((message) => message.role === "system");
+  const system = buildAnthropicSystem(systemMessages, controls.promptCache);
+  const tools = request.tools?.map((tool, index, list) => {
+    const entry: Record<string, unknown> = {
       name: tool.function.name,
       description: tool.function.description,
       input_schema: tool.function.parameters,
-    })),
+    };
+    // Official Anthropic cache breakpoint on the last tool schema when caching enabled.
+    if (controls.promptCache && index === list.length - 1) {
+      entry.cache_control = { type: "ephemeral" };
+    }
+    return entry;
+  });
+  const body: Record<string, unknown> = {
+    model: request.model,
+    max_tokens: request.maxTokens ?? controls.maxTokens ?? 8192,
+    system,
+    messages: request.messages.filter((message) => message.role !== "system").map(toAnthropicMessage),
+    tools,
     stream,
   };
+  if (controls.toolChoiceWire.kind === "anthropic") {
+    body.tool_choice = controls.toolChoiceWire.value;
+  }
   const thinking = anthropicThinkingConfig(request.thinkingLevel, model, thinkingDisplay);
   if (thinking) {
     body.thinking = thinking;
   }
   return body;
+}
+
+function buildAnthropicSystem(
+  systemMessages: readonly ChatMessage[],
+  promptCache: boolean,
+): string | Array<Record<string, unknown>> | undefined {
+  if (systemMessages.length === 0) return undefined;
+  // Keep a single stable text when not caching; structured blocks only when cache markers apply.
+  if (!promptCache) {
+    const joined = systemMessages.map((message) => message.content).join("\n\n");
+    return joined.length > 0 ? joined : undefined;
+  }
+  const blocks = systemMessages
+    .map((message) => message.content.trim())
+    .filter((text) => text.length > 0)
+    .map((text, index, list) => {
+      const block: Record<string, unknown> = { type: "text", text };
+      if (index === list.length - 1) {
+        block.cache_control = { type: "ephemeral" };
+      }
+      return block;
+    });
+  return blocks.length > 0 ? blocks : undefined;
 }
 
 function modelConfig(

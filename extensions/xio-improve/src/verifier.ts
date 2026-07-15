@@ -7,15 +7,23 @@ const execFileAsync = promisify(execFile);
 
 export type VerifierOptions = Readonly<{
   cwd: string;
-  /** Shell command strings; default `npm run check`. Append-only via options. */
+  /**
+   * Extra shell commands after the default `npm run check`.
+   * When `replaceDefault` is true, this is the full command list (tests / explicit).
+   */
   commands?: readonly string[];
+  /**
+   * When true, `commands` fully replaces the default instead of appending.
+   * Production CLI always leaves this false so `npm run check` cannot be dropped.
+   */
+  replaceDefault?: boolean;
 }>;
 
 const DEFAULT_COMMANDS = ["npm run check"] as const;
 
 /**
  * Runs verifier commands inside the worktree cwd.
- * Default is `npm run check`; callers may append extra commands.
+ * Default is always `npm run check`; callers may append extras via `commands`.
  */
 export class Verifier {
   readonly #cwd: string;
@@ -23,9 +31,13 @@ export class Verifier {
 
   constructor(options: VerifierOptions) {
     this.#cwd = options.cwd;
-    this.#commands = options.commands && options.commands.length > 0
-      ? [...options.commands]
-      : [...DEFAULT_COMMANDS];
+    if (options.replaceDefault === true) {
+      this.#commands = options.commands && options.commands.length > 0
+        ? [...options.commands]
+        : [...DEFAULT_COMMANDS];
+    } else {
+      this.#commands = [...DEFAULT_COMMANDS, ...(options.commands ?? [])];
+    }
   }
 
   get commands(): readonly string[] {

@@ -4,6 +4,8 @@ import { createLlmClient } from "../providers/client.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 
 import type { LlmClient, ProviderRegistration } from "../types.ts";
+import { formatCapsuleForPrompt, type PolicyCapsule } from "./capsule.ts";
+import type { ExploreRoleId } from "./roles.ts";
 import type { ExploreSubagentResult } from "./types.ts";
 
 /**
@@ -44,6 +46,13 @@ const EXPLORE_SYSTEM_PROMPT = [
   "- Stop as soon as the assigned goal is answered with evidence.",
 ].join("\n");
 
+const ROLE_FOCUS: Readonly<Record<ExploreRoleId, string>> = {
+  locator: "Focus: paths, symbols, entrypoints, package boundaries.",
+  flow_analyst: "Focus: call flow, data path, control flow across modules.",
+  impact_test: "Focus: dependents, tests, blast radius, failure ownership.",
+  adversarial: "Focus: gaps, contradictions, missed edges, over-claimed evidence.",
+};
+
 const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
 const EXPLORE_TOOLS_WITH_BASH = new Set(["read", "grep", "glob", "bash"]);
 
@@ -58,6 +67,10 @@ export type RunExploreSubagentOptions = Readonly<{
   maxTurns: number;
   allowBash: boolean;
   signal?: AbortSignal;
+  /** Dispatcher-assigned specialized role (optional). */
+  role?: ExploreRoleId;
+  /** Binding policy capsule from dispatcher (optional). */
+  capsule?: PolicyCapsule;
   /** Test seam; defaults to provider client factory. */
   createClient?: (input: Readonly<{
     registration: ProviderRegistration;
@@ -94,16 +107,55 @@ export async function runExploreSubagent(
     apiKey: options.apiKey,
   });
 
-  try {
-    const result = await runAgentLoop(formatExploreUserPrompt(options.goal, options.focusPaths), {
-      host,
-      client,
+  const { getGlobalTracer, classifyUnknownError } = await import("../perf/index.ts");
+  const tracer = getGlobalTracer();
+  const dispatch = tracer?.start("subagent.dispatch", {
+    attrs: {
       model: options.modelId,
-      providerApi: registration.api,
-      systemPrompt: EXPLORE_SYSTEM_PROMPT,
-      maxTurns: options.maxTurns,
-      parallelToolCalls: true,
-      signal: options.signal,
+      allow_bash: options.allowBash,
+      ...(options.role ? { role: options.role } : {}),
+    },
+  });
+  try {
+    const modelCfg = registration.models.find((entry) => entry.id === options.modelId)
+      ?? registration.models[0];
+    host.registerProvider(registration.name, registration);
+    const systemPrompt = buildExploreSystemPrompt(options.role, options.capsule);
+    const result = await runAgentLoop(
+      formatExploreUserPrompt(options.goal, options.focusPaths, options.role),
+      {
+        host,
+        client,
+        model: options.modelId,
+        providerApi: registration.api,
+        providerName: registration.name,
+        systemPrompt,
+        maxTurns: options.maxTurns,
+        maxTokens: modelCfg?.maxTokens,
+        toolChoice: registration.toolChoice,
+        toolChoiceScope: registration.toolChoiceScope,
+        parallelToolCalls: true,
+        signal: options.signal,
+      },
+    );
+    const outcome = result.cancelled ? "cancelled" : result.success ? "success" : "failure";
+    tracer?.end(dispatch, outcome, {
+      usage: result.usage,
+      attrs: {
+        turns: result.turns,
+        tool_calls: result.toolCalls,
+        tool_errors: result.toolErrors,
+        ...(options.role ? { role: options.role } : {}),
+      },
+      ...(result.cancelled ? { error_class: "abort" } : {}),
+    });
+    tracer?.mark("subagent.evidence_complete", outcome, {
+      usage: result.usage,
+      attrs: {
+        text_chars: result.finalText.length,
+        tool_calls: result.toolCalls,
+        ...(options.role ? { role: options.role } : {}),
+      },
     });
     return {
       provider: registration.name,
@@ -119,6 +171,10 @@ export async function runExploreSubagent(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const cancelled = options.signal?.aborted === true;
+    const classified = classifyUnknownError(error);
+    const outcome = cancelled ? "cancelled" : classified.outcome;
+    tracer?.end(dispatch, outcome, { error_class: classified.error_class });
+    tracer?.mark("subagent.evidence_complete", outcome, { error_class: classified.error_class });
     return {
       provider: registration.name,
       model: options.modelId,
@@ -139,11 +195,18 @@ export async function runExploreSubagent(
   }
 }
 
-export function formatExploreUserPrompt(goal: string, focusPaths?: readonly string[]): string {
+export function formatExploreUserPrompt(
+  goal: string,
+  focusPaths?: readonly string[],
+  role?: ExploreRoleId,
+): string {
   const lines = [
     "The main agent dispatched this investigation. Stay inside this scope only.",
     `Assigned goal:\n${goal.trim()}`,
   ];
+  if (role) {
+    lines.push(`Assigned role: **${role}**. ${ROLE_FOCUS[role]}`);
+  }
   if (focusPaths && focusPaths.length > 0) {
     lines.push(
       `Scope hints (prioritize these paths; do not wander outside the goal):\n${
@@ -164,6 +227,20 @@ export function formatExploreUserPrompt(goal: string, focusPaths?: readonly stri
   return lines.join("\n\n");
 }
 
+function buildExploreSystemPrompt(
+  role: ExploreRoleId | undefined,
+  capsule: PolicyCapsule | undefined,
+): string {
+  const parts = [EXPLORE_SYSTEM_PROMPT];
+  if (role) {
+    parts.push(`### Role\n${role}\n${ROLE_FOCUS[role]}`);
+  }
+  if (capsule) {
+    parts.push(formatCapsuleForPrompt(capsule));
+  }
+  return parts.join("\n\n");
+}
+
 /** Ensure the explore model id is present so thinking/cost maps can resolve when available. */
 export function withModelId(
   registration: ProviderRegistration,
@@ -180,7 +257,7 @@ export function withModelId(
       {
         id: modelId,
         name: modelId,
-        reasoning: template?.reasoning ?? false,
+        reasoning: template?.reasoning ?? true,
         thinkingLevelMap: template?.thinkingLevelMap,
         input: template?.input ?? ["text"],
         cost: template?.cost,

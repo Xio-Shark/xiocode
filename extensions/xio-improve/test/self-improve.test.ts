@@ -83,13 +83,18 @@ describe("Verifier", () => {
   it("defaults to npm run check and reports red on failing command", async () => {
     const cwd = await mkdtemp(path.join(os.tmpdir(), "xio-verify-"));
     tempDirs.push(cwd);
-    const red = new Verifier({ cwd, commands: ["exit 1"] });
+    const red = new Verifier({ cwd, commands: ["exit 1"], replaceDefault: true });
     const result = await red.run();
     expect(result.ok).toBe(false);
     expect(result.exitCode).not.toBe(0);
 
-    const green = new Verifier({ cwd, commands: ["true"] });
+    const green = new Verifier({ cwd, commands: ["true"], replaceDefault: true });
     expect((await green.run()).ok).toBe(true);
+  });
+
+  it("always prepends npm run check before extras", () => {
+    const v = new Verifier({ cwd: process.cwd(), commands: ["npm test"] });
+    expect(v.commands).toEqual(["npm run check", "npm test"]);
   });
 });
 
@@ -113,6 +118,7 @@ describe("SelfImproveRunner", () => {
       goalStore: store,
       worktreeBaseDir: baseDir,
       verifierCommands: ["exit 1"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       ask: async (q) => {
         asks.push(q);
@@ -147,6 +153,7 @@ describe("SelfImproveRunner", () => {
       goalStore: store,
       worktreeBaseDir: baseDir,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       ask: async () => {
         asked = true;
@@ -180,6 +187,7 @@ describe("SelfImproveRunner", () => {
       goalStore: store,
       worktreeBaseDir: baseDir,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       ask: async () => true,
     });
@@ -216,6 +224,7 @@ describe("SelfImproveRunner", () => {
       goalStore: store,
       worktreeBaseDir: baseDir,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       ask: async () => false,
     });

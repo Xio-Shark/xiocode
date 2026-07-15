@@ -15,10 +15,14 @@ import {
   withSeriesId,
   writeReport,
 } from "./eval-support.ts";
+import { decideMultiAxis } from "./gate-decision.ts";
+import { loadGateManifest } from "./gate-manifest.ts";
+import { loadPerfReport } from "./performance-compare.ts";
 import { runPreflight } from "./preflight.ts";
 import { loadPriceTable } from "./price-table.ts";
 import { hashValue, loadTrustedSuite } from "./suite-loader.ts";
 import { runTrial } from "./trial-runner.ts";
+import { RegressionCompare } from "../../xio-regress/src/index.ts";
 
 import type { CredentialedEvalSetup } from "./credentialed-env.ts";
 import type { PinnedEvalIdentity } from "./eval-identity.ts";
@@ -28,6 +32,7 @@ import type {
   EvalReport,
   EvalRunOptions,
   LoadedFixture,
+  PrivateJoinSection,
   TrialReport,
 } from "./types.ts";
 
@@ -119,7 +124,92 @@ export class EvalRunner {
         errors: [...decision.errors, ...compatibilityErrors],
       }, setup?.identity);
     }
-    return this.#saveDecision(context, "compare", seriesId, [before, candidate], decision, setup?.identity);
+    const multiAxis = await this.#applyMultiAxisGate(decision, before, candidate, candidateRoot);
+    return this.#saveDecision(context, "compare", seriesId, [before, candidate], multiAxis, setup?.identity);
+  }
+
+  async #applyMultiAxisGate(
+    capability: ReturnType<typeof compareSummaries>,
+    before: ReturnType<typeof summarizeCandidate>,
+    candidate: ReturnType<typeof summarizeCandidate>,
+    candidateRoot: string,
+  ): Promise<ReturnType<typeof decideMultiAxis>> {
+    const wantsGate = Boolean(
+      this.#options.gate_manifest_path
+        || this.#options.perf_before_path
+        || this.#options.perf_candidate_path
+        || (this.#options.private_case_ids && this.#options.private_case_ids.length > 0),
+    );
+    if (!wantsGate) {
+      return capability;
+    }
+    const manifest = await loadGateManifest(this.#options.gate_manifest_path);
+    let beforePerf = null;
+    let candidatePerf = null;
+    const perfErrors: string[] = [];
+    if (this.#options.perf_before_path || this.#options.perf_candidate_path) {
+      try {
+        beforePerf = this.#options.perf_before_path
+          ? await loadPerfReport(this.#options.perf_before_path)
+          : null;
+        candidatePerf = this.#options.perf_candidate_path
+          ? await loadPerfReport(this.#options.perf_candidate_path)
+          : null;
+      } catch (error) {
+        perfErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const privateJoin = await this.#joinPrivateCases(candidateRoot, manifest.private_families);
+    const multi = decideMultiAxis({
+      capability: perfErrors.length > 0
+        ? {
+          ...capability,
+          status: "INFRA_ERROR",
+          errors: [...capability.errors, ...perfErrors],
+        }
+        : capability,
+      before,
+      candidate,
+      manifest,
+      beforePerf,
+      candidatePerf,
+      privateJoin,
+    });
+    return multi;
+  }
+
+  async #joinPrivateCases(
+    candidateRoot: string,
+    families: readonly string[],
+  ): Promise<PrivateJoinSection | undefined> {
+    const caseIds = this.#options.private_case_ids;
+    if (!caseIds || caseIds.length === 0) {
+      return undefined;
+    }
+    const compare = new RegressionCompare({ env: this.#options.env });
+    const cases: PrivateJoinSection["cases"][number][] = [];
+    for (const caseId of caseIds) {
+      try {
+        const result = await compare.evaluate({ caseId, candidateRoot });
+        cases.push({
+          case_id: caseId,
+          family: inferPrivateFamily(caseId, families),
+          status: result.status,
+        });
+      } catch (error) {
+        cases.push({
+          case_id: caseId,
+          family: inferPrivateFamily(caseId, families),
+          status: `INFRA_ERROR:${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+    return {
+      schema_version: "xio-eval-private-join.v1",
+      cases,
+      all_fixed: cases.every((row) => row.status === "FIXED"),
+      auto_merge_authorized: false,
+    };
   }
 
   async #runComparisonTrials(
@@ -283,7 +373,16 @@ export class EvalRunner {
     mode: EvalReport["mode"],
     seriesId: string,
     candidates: EvalReport["candidates"],
-    decision: { status: EvalReport["status"]; pairedDeltas: Readonly<Record<string, number>>; concerns: readonly string[]; errors: readonly string[] },
+    decision: {
+      status: EvalReport["status"];
+      pairedDeltas: Readonly<Record<string, number>>;
+      concerns: readonly string[];
+      errors: readonly string[];
+      performance?: EvalReport["performance"];
+      awareness?: EvalReport["awareness"];
+      private_join?: EvalReport["private_join"];
+      gate?: EvalReport["gate"];
+    },
     identity?: PinnedEvalIdentity,
   ): Promise<EvalReport> {
     const report: EvalReport = {
@@ -298,6 +397,10 @@ export class EvalRunner {
       paired_deltas: decision.pairedDeltas,
       concerns: decision.concerns,
       errors: decision.errors,
+      ...(decision.performance ? { performance: decision.performance } : {}),
+      ...(decision.awareness ? { awareness: decision.awareness } : {}),
+      ...(decision.private_join ? { private_join: decision.private_join } : {}),
+      ...(decision.gate ? { gate: decision.gate } : {}),
     };
     await writeReport(context.reportRoot, report);
     if (this.#mode() === "real" && identity) {
@@ -321,4 +424,14 @@ function expandRepeats(fixtures: readonly LoadedFixture[], repeat: number): Load
     }
   }
   return expanded;
+}
+
+function inferPrivateFamily(caseId: string, families: readonly string[]): string {
+  const lower = caseId.toLowerCase();
+  for (const family of families) {
+    if (lower.includes(family) || lower.includes(family.replace(/-/g, "_"))) {
+      return family;
+    }
+  }
+  return "unspecified";
 }

@@ -17,13 +17,74 @@ export type SessionUiSink = CommandUi & Readonly<{
 }>;
 
 export function toolResultOutput(result: ToolExecuteResult): string {
-  return result.content.map((part) => part.text).join("");
+  if (!result.content || result.content.length === 0) {
+    return "";
+  }
+  return result.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string") {
+        return (part as { text: string }).text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+/**
+ * Human-facing tool body for the TUI: peel bash's exit_code/stdout/stderr wrapper
+ * so the transcript shows real command output instead of looking empty.
+ */
+export function formatToolOutputForDisplay(raw: string): string {
+  if (raw.length === 0) return "";
+  const bash = raw.match(/^exit_code=(-?\d+)\n\nstdout:\n([\s\S]*?)\n\nstderr:\n([\s\S]*)$/);
+  if (bash) {
+    const exitCode = bash[1] ?? "0";
+    const stdout = (bash[2] ?? "").replace(/\n+$/, "");
+    const stderr = (bash[3] ?? "").replace(/\n+$/, "");
+    if (stdout.length > 0 && stderr.length > 0) {
+      return `${stdout}\n--- stderr ---\n${stderr}`;
+    }
+    if (stdout.length > 0) return stdout;
+    if (stderr.length > 0) return stderr;
+    return exitCode === "0" ? "(ok, no output)" : `(exit ${exitCode}, no output)`;
+  }
+  return raw;
 }
 
 export function toolCallDetail(call: ChatToolCall): string {
+  // Explore / subagent: surface the research goal first (not a raw JSON blob).
+  if (call.name === "explore") {
+    const goal = call.arguments.goal;
+    if (typeof goal === "string" && goal.trim().length > 0) {
+      const focus = call.arguments.focus_paths;
+      const focusNote = Array.isArray(focus) && focus.length > 0
+        ? ` · paths:${focus.filter((p): p is string => typeof p === "string").slice(0, 3).join(",")}`
+        : "";
+      return `${goal.trim()}${focusNote}`;
+    }
+  }
   const command = call.arguments.command;
   if (typeof command === "string" && command.length > 0) return command;
+  const path = call.arguments.path ?? call.arguments.file_path;
+  if (typeof path === "string" && path.length > 0) return path;
   return JSON.stringify(call.arguments);
+}
+
+/** True when the tool is the primary→worker explore fan-out. */
+export function isExploreToolName(name: string | undefined): boolean {
+  return (name ?? "").toLowerCase() === "explore";
+}
+
+/** Transcript title for explore tools so subagents are obvious in the UI. */
+export function formatExploreToolLabel(options: Readonly<{
+  running?: boolean;
+  status?: "done" | "failed" | "…";
+}> = {}): string {
+  const status = options.status
+    ?? (options.running === true ? "…" : undefined);
+  const base = "subagent";
+  return status ? `${base} ${status}` : base;
 }
 
 export function previewText(text: string, maxLines = TOOL_OUTPUT_PREVIEW_LINES): Readonly<{
@@ -83,12 +144,20 @@ export function createStdoutSessionUiSink(write: (chunk: string) => void = (chun
       streamed = false;
     },
     onToolStart(call) {
+      if (isExploreToolName(call.name)) {
+        write(`\n⊹ subagent … ${toolCallDetail(call)}\n`);
+        return;
+      }
       write(`\n> ${call.name}(${toolCallDetail(call)})\n`);
     },
     onToolEnd(call, result) {
       const outputText = toolResultOutput(result);
       const status = result.isError === true ? "failed" : "done";
-      write(`${call.name} ${status}\n`);
+      if (isExploreToolName(call.name)) {
+        write(`⊹ subagent ${status} ${toolCallDetail(call)}\n`);
+      } else {
+        write(`${call.name} ${status}\n`);
+      }
       if (outputText.length > 0) {
         const preview = previewText(outputText);
         write(`${preview.text}${preview.truncated ? " [truncated]" : ""}\n`);

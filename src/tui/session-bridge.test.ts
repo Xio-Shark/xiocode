@@ -3,23 +3,52 @@ import { describe, expect, it } from "vitest";
 import { TuiSessionBridge, type TuiEvent } from "./session-bridge.ts";
 
 describe("TuiSessionBridge", () => {
-  it("resolves an interactive confirmation with the latest diff context", async () => {
+  it("resolves an interactive confirmation with explicit action detail (not last notice)", async () => {
     const bridge = new TuiSessionBridge();
     const events: unknown[] = [];
     bridge.subscribe((event) => events.push(event));
-    bridge.sink.notify?.("diff --git a/a.ts b/a.ts");
+    // Unrelated notice must not leak into the confirmation detail.
+    bridge.sink.notify?.("workspace: /tmp (main tree)");
 
-    const answer = bridge.ask("Merge changes?");
+    const answer = bridge.ask("Merge changes?", "diff --git a/a.ts b/a.ts");
     expect(bridge.confirmPending).toBe(true);
     expect(events).toContainEqual(expect.objectContaining({
       kind: "confirm-open",
       question: "Merge changes?",
       detail: "diff --git a/a.ts b/a.ts",
     }));
+    expect(events).not.toContainEqual(expect.objectContaining({
+      kind: "confirm-open",
+      detail: "workspace: /tmp (main tree)",
+    }));
     bridge.answerConfirmation(false);
 
     await expect(answer).resolves.toBe(false);
     expect(bridge.confirmPending).toBe(false);
+  });
+
+  it("buffers events emitted before the first subscriber and flushes once", () => {
+    const bridge = new TuiSessionBridge();
+    bridge.sink.notify?.("workspace: /repo (main tree)");
+    bridge.sink.setStatus?.("workspace", "DIRECT / NO MERGEGATE");
+    expect(bridge.preSubscriptionBufferLength).toBe(2);
+
+    const events: TuiEvent[] = [];
+    bridge.subscribe((event) => events.push(event));
+    expect(events.some((e) => e.kind === "notice" && e.text.includes("workspace:"))).toBe(true);
+    expect(events).toContainEqual({
+      kind: "status",
+      key: "workspace",
+      text: "DIRECT / NO MERGEGATE",
+    });
+    expect(bridge.preSubscriptionBufferLength).toBe(0);
+
+    // Second subscriber does not re-receive the startup buffer.
+    const late: TuiEvent[] = [];
+    bridge.subscribe((event) => late.push(event));
+    bridge.sink.notify?.("later");
+    expect(late.some((e) => e.kind === "notice" && e.text === "later")).toBe(true);
+    expect(late.some((e) => e.kind === "status" && e.key === "workspace")).toBe(false);
   });
 
   it("supports select and secret prompt without echoing the secret into notices", async () => {

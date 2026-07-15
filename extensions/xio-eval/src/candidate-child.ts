@@ -68,7 +68,13 @@ async function runReal(
 ): Promise<CandidateResult> {
   const started = Date.now();
   const api = await loadCandidateApi(candidateRoot);
-  const prepared = await prepareCandidateSession(api, fixtureRoot, trialHome, input.max_turns);
+  const prepared = await prepareCandidateSession(
+    api,
+    candidateRoot,
+    fixtureRoot,
+    trialHome,
+    input.max_turns,
+  );
   if (input.provider && input.model) {
     const desired = {
       provider: input.provider,
@@ -123,17 +129,61 @@ async function loadCandidateApi(candidateRoot: string): Promise<CandidateApi> {
 
 async function prepareCandidateSession(
   api: CandidateApi,
+  candidateRoot: string,
   fixtureRoot: string,
   trialHome: string,
   maxTurns: number,
 ): Promise<{ launch: RuntimeLaunch; session: RuntimeSession; runRoot: string }> {
   const env = isolatedEnv(trialHome);
-  const launch = await api.prepareLaunch(fixtureRoot, env);
+  // Seed eval config so prepareLaunch prefers worktree mode when possible.
+  await seedEvalWorktreeConfig(env);
+  let launch = await api.prepareLaunch(fixtureRoot, env);
   const runRoot = path.join(trialHome, ".xiocode", "runs");
+
+  // Trusted eval isolation is independent of the interactive direct-cwd default:
+  // always leave a gradeable worktree under the trial root.
+  if (!launch.worktree) {
+    const sandboxModule = await importCandidate(
+      candidateRoot,
+      "extensions/xio-sandbox/src/worktree-sandbox.ts",
+    );
+    const Sandbox = requiredExport(sandboxModule, "WorktreeSandbox") as {
+      create: (options: Record<string, unknown>) => Promise<RuntimeWorktreeSession>;
+    };
+    const worktree = await Sandbox.create({
+      mainRoot: launch.mainRoot ?? fixtureRoot,
+      baseDir: path.join(trialHome, ".xiocode", "worktrees"),
+      sessionId: `eval-candidate`.slice(0, 40),
+    });
+    launch = {
+      ...launch,
+      cwd: worktree.worktreePath,
+      worktree,
+      runtimeConfig: {
+        ...launch.runtimeConfig,
+        worktree: {
+          ...launch.runtimeConfig.worktree,
+          enabled: true,
+          retainOnReject: true,
+          session: worktree,
+        },
+      },
+      env: {
+        ...launch.env,
+        XIO_WORKTREE: worktree.worktreePath,
+      },
+    };
+  }
+
   const runtimeConfig = {
     ...launch.runtimeConfig,
     general: { ...launch.runtimeConfig.general, runRoot },
-    worktree: { ...launch.runtimeConfig.worktree, retainOnReject: true },
+    worktree: {
+      ...launch.runtimeConfig.worktree,
+      enabled: true,
+      retainOnReject: true,
+      session: launch.worktree,
+    },
   };
   await writeFile(launch.runtimeConfigPath, `${JSON.stringify(runtimeConfig, null, 2)}\n`, "utf8");
   Object.assign(process.env, launch.env);
@@ -150,6 +200,44 @@ async function prepareCandidateSession(
     },
   });
   return { launch, session, runRoot };
+}
+
+/** Force `[worktree] enabled = true` in the trial config before prepareLaunch. */
+async function seedEvalWorktreeConfig(env: NodeJS.ProcessEnv): Promise<void> {
+  const configPath = env.XIO_CONFIG;
+  if (!configPath) return;
+  await mkdir(path.dirname(configPath), { recursive: true });
+  let content = "";
+  try {
+    content = await readFile(configPath, "utf8");
+  } catch {
+    content = "";
+  }
+  if (content.length === 0) {
+    // Minimal seed; prepareLaunch/ensureConfigFile keeps this file if present.
+    // Include worktree-on so eval never inherits the interactive direct-cwd default.
+    content = [
+      "[general]",
+      'default_provider = "deepseek"',
+      'default_model = "deepseek-chat"',
+      "",
+      "[worktree]",
+      "enabled = true",
+      "retain_on_reject = true",
+      "",
+    ].join("\n");
+    await writeFile(configPath, content, "utf8");
+    return;
+  }
+  if (/\[worktree\]/.test(content)) {
+    content = content.replace(/(enabled\s*=\s*)false/g, "$1true");
+    if (!/enabled\s*=/.test(content.match(/\[worktree\][\s\S]*?(?=\n\[|$)/)?.[0] ?? "")) {
+      content = content.replace("[worktree]", "[worktree]\nenabled = true");
+    }
+  } else {
+    content = `${content.trimEnd()}\n\n[worktree]\nenabled = true\nretain_on_reject = true\n`;
+  }
+  await writeFile(configPath, content, "utf8");
 }
 
 function isolatedEnv(trialHome: string): NodeJS.ProcessEnv {
@@ -273,11 +361,20 @@ function writeResult(result: CandidateResult): void {
   process.stdout.write(`${RESULT_MARKER}${JSON.stringify(result)}\n`);
 }
 
+type RuntimeWorktreeSession = {
+  worktreePath: string;
+  mainRoot?: string;
+  branch?: string;
+  sessionId?: string;
+  [key: string]: unknown;
+};
+
 type RuntimeLaunch = {
   cwd: string;
+  mainRoot?: string;
   runtimeConfigPath: string;
   env: NodeJS.ProcessEnv;
-  worktree?: { worktreePath: string };
+  worktree?: RuntimeWorktreeSession;
   runtimeConfig: { general: { runRoot: string }; worktree: Record<string, unknown> };
 };
 

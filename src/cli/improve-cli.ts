@@ -48,7 +48,13 @@ export async function runImproveCli(
   } = {},
 ): Promise<number> {
   const write = options.write ?? writeStdout;
-  const parsed = parseImproveArgs(argv);
+  let parsed: ImproveCliArgs;
+  try {
+    parsed = parseImproveArgs(argv);
+  } catch (error) {
+    write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
+  }
   if (parsed.help) {
     write(improveHelp());
     return 0;
@@ -121,9 +127,14 @@ async function createRunner(options: Readonly<{
     mainRoot: cwd,
     goalStore,
     worktreeBaseDir: path.join(xioHome, "worktrees"),
-    verifierCommands: parsed.verifierCommands.length > 0 ? parsed.verifierCommands : undefined,
+    // Extras only; Verifier always prepends default `npm run check`.
+    verifierCommands: parsed.verifierCommands,
     ask: options.ask,
     notify: (message) => options.write(`${message}\n`),
+    spawnXio: async (prompt, worktreePath) => {
+      const { spawnImproveAgent } = await import("./improve-agent.ts");
+      await spawnImproveAgent(prompt, worktreePath, { mainRoot: cwd, env });
+    },
     capabilityGate: parsed.capabilityGate
       ? createTrustedCapabilityGate({
         trustedRoot: cwd,
@@ -160,20 +171,33 @@ export function parseImproveArgs(argv: readonly string[]): ImproveCliArgs {
     }
     if (arg === "--max") {
       const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error("missing value for --max");
+      }
       i += 1;
-      max = Math.max(1, Number.parseInt(value ?? "1", 10) || 1);
+      const parsedMax = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsedMax) || parsedMax < 1) {
+        throw new Error(`invalid --max value: ${value}`);
+      }
+      max = parsedMax;
       continue;
     }
     if (arg.startsWith("--max=")) {
-      max = Math.max(1, Number.parseInt(arg.slice("--max=".length), 10) || 1);
+      const raw = arg.slice("--max=".length);
+      const parsedMax = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsedMax) || parsedMax < 1) {
+        throw new Error(`invalid --max value: ${raw}`);
+      }
+      max = parsedMax;
       continue;
     }
     if (arg === "--check") {
       const value = argv[i + 1];
-      i += 1;
-      if (value) {
-        verifierCommands.push(value);
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error("missing value for --check");
       }
+      i += 1;
+      verifierCommands.push(value);
       continue;
     }
     if (arg === "--no-builtin-seeds") {
@@ -186,16 +210,25 @@ export function parseImproveArgs(argv: readonly string[]): ImproveCliArgs {
       continue;
     }
     if (arg === "--private-case") {
-      privateCaseId = argv[i + 1];
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error("missing value for --private-case");
+      }
+      privateCaseId = value;
       privateCaseFromFlag = true;
       i += 1;
       continue;
     }
     if (arg.startsWith("--private-case=")) {
-      privateCaseId = arg.slice("--private-case=".length);
+      const value = arg.slice("--private-case=".length);
+      if (!value) {
+        throw new Error("missing value for --private-case");
+      }
+      privateCaseId = value;
       privateCaseFromFlag = true;
       continue;
     }
+    throw new Error(`unknown improve option: ${arg}`);
   }
 
   return {

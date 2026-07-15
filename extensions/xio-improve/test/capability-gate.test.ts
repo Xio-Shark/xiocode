@@ -24,6 +24,7 @@ describe("SelfImproveRunner trusted capability gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       capabilityGate: {
         evaluate: async () => ({
@@ -64,6 +65,7 @@ describe("SelfImproveRunner trusted capability gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       capabilityGate: { evaluate },
       ask: async () => {
@@ -84,6 +86,7 @@ describe("SelfImproveRunner trusted capability gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       capabilityGate: {
         evaluate: async () => ({
@@ -113,6 +116,7 @@ describe("SelfImproveRunner trusted capability gate", () => {
       worktreeBaseDir: baseDir,
       goalStore: store,
       verifierCommands: ["true"],
+      replaceVerifierCommands: true,
       forceCleanup: true,
       capabilityGate: {
         evaluate: async () => ({

@@ -1,6 +1,9 @@
 import type { TokenUsage } from "../types.ts";
 
-/** Hard ceiling: primary may fan out at most this many parallel explore workers. */
+/**
+ * Absolute hard ceiling: primary may never fan out more than this many parallel explores.
+ * Live sessions usually use a lower policy cap (default 4; ultra 8+; user-high up to 16).
+ */
 export const MAX_EXPLORE_CONCURRENCY = 16;
 
 /** Resolved explore worker identity + budgets (after config + session defaults). */

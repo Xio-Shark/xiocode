@@ -15,7 +15,78 @@ export function decodeEvalReportContract(value: unknown): EvalReport {
   assertNumberRecord(report.paired_deltas, "eval report paired_deltas");
   assertStringArray(report.concerns, "eval report concerns");
   assertStringArray(report.errors, "eval report errors");
+  if (report.performance !== undefined) assertPerformance(report.performance);
+  if (report.awareness !== undefined) assertAwareness(report.awareness);
+  if (report.private_join !== undefined) assertPrivateJoin(report.private_join);
+  if (report.gate !== undefined) assertGate(report.gate);
   return value as EvalReport;
+}
+
+function assertPerformance(value: unknown): void {
+  const section = asRecord(value, "eval report performance");
+  if (section.schema_version !== "xio-eval-performance.v1") {
+    throw new Error(`unsupported performance schema: ${String(section.schema_version)}`);
+  }
+  assertNullableString(section.before_bench_id, "performance.before_bench_id");
+  assertNullableString(section.candidate_bench_id, "performance.candidate_bench_id");
+  assertStringArray(section.hard_regressions, "performance.hard_regressions");
+  assertStringArray(section.soft_regressions, "performance.soft_regressions");
+  const deltas = asRecord(section.deltas, "performance.deltas");
+  for (const [key, item] of Object.entries(deltas)) {
+    const delta = asRecord(item, `performance.deltas.${key}`);
+    for (const field of [
+      "before_p50_ms", "candidate_p50_ms", "before_p95_ms", "candidate_p95_ms", "delta_p50_ms", "delta_p95_ms",
+    ]) {
+      assertNullableNonNegativeOrSignedNumber(delta[field], `performance.deltas.${key}.${field}`);
+    }
+  }
+}
+
+function assertAwareness(value: unknown): void {
+  const section = asRecord(value, "eval report awareness");
+  if (section.schema_version !== "xio-eval-awareness.v1") {
+    throw new Error(`unsupported awareness schema: ${String(section.schema_version)}`);
+  }
+  for (const field of ["evidence_coverage", "overlap", "task_resolution"]) {
+    assertNullableNonNegativeNumber(section[field], `awareness.${field}`);
+  }
+  assertStringArray(section.gaps, "awareness.gaps");
+}
+
+function assertPrivateJoin(value: unknown): void {
+  const section = asRecord(value, "eval report private_join");
+  if (section.schema_version !== "xio-eval-private-join.v1") {
+    throw new Error(`unsupported private_join schema: ${String(section.schema_version)}`);
+  }
+  assertBoolean(section.all_fixed, "private_join.all_fixed");
+  if (section.auto_merge_authorized !== false) {
+    throw new Error("private_join.auto_merge_authorized must be false");
+  }
+  for (const item of assertArray(section.cases, "private_join.cases")) {
+    const row = asRecord(item, "private_join case");
+    assertString(row.case_id, "private_join case.case_id");
+    assertString(row.family, "private_join case.family");
+    assertString(row.status, "private_join case.status");
+  }
+}
+
+function assertGate(value: unknown): void {
+  const section = asRecord(value, "eval report gate");
+  if (section.schema_version !== "xio-eval-gate.v1") {
+    throw new Error(`unsupported gate schema: ${String(section.schema_version)}`);
+  }
+  assertString(section.manifest_id, "gate.manifest_id");
+  assertString(section.manifest_version, "gate.manifest_version");
+  const axes = asRecord(section.axes, "gate.axes");
+  for (const [key, status] of Object.entries(axes)) {
+    assertOneOf(status, ["pass", "fail", "concern", "infra", "skipped"], `gate.axes.${key}`);
+  }
+}
+
+function assertNullableNonNegativeOrSignedNumber(value: unknown, label: string): void {
+  if (value !== null) {
+    assertNumber(value, label);
+  }
 }
 
 function assertSuite(value: unknown): void {

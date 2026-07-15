@@ -20,6 +20,12 @@ export type XioGeneralConfig = Readonly<{
   runRoot: string;
   /** Message budget that triggers automatic context compaction. Default 80. */
   maxSessionMessages?: number;
+  /**
+   * Approximate token budget that also triggers automatic compaction.
+   * When unset, runtime may derive from the active model's context_window * 0.75.
+   * Integer >= 1024 when set.
+   */
+  maxSessionTokens?: number;
   /** Default session thinking effort (off|minimal|low|medium|high|xhigh|max|ultra). */
   defaultThinkingLevel?: XioThinkingLevel;
   /**
@@ -156,7 +162,10 @@ export type XioExploreConfig = Readonly<{
   provider?: string;
   maxTurns: number;
   timeoutMs: number;
-  /** Parallel explore hard cap (1–16). Default 4; runtime may suggest fewer by project scale. */
+  /**
+   * Absolute parallel ceiling (1–16). Default 16.
+   * Runtime policy still caps default sessions at 4, ultra at 8+, user-requested high fan-out up to this value.
+   */
   maxConcurrency: number;
   maxOutputChars: number;
   /** When true, explore subagents may use bash (host-reaching). Default false. */
@@ -261,7 +270,8 @@ const DEFAULT_EXPLORE: XioExploreConfig = {
   enabled: false,
   maxTurns: 12,
   timeoutMs: 180_000,
-  maxConcurrency: 4,
+  /** Hard ceiling only; live policy: default ≤4, ultra ≥8, user-high ≤16. */
+  maxConcurrency: 16,
   /** Large enough for multi-file verbatim excerpts; truncation is always marked, never silent. */
   maxOutputChars: 64_000,
   allowBash: false,
@@ -335,6 +345,12 @@ export function expandHome(value: string): string {
 function parseGeneral(table: Record<string, unknown> | undefined): XioGeneralConfig {
   const maxSessionMessages = getOptionalNumber(table, "max_session_messages");
   if (maxSessionMessages !== undefined) assertMaxSessionMessages(maxSessionMessages);
+  const maxSessionTokens = getOptionalNumber(table, "max_session_tokens");
+  if (maxSessionTokens !== undefined) {
+    if (!Number.isInteger(maxSessionTokens) || maxSessionTokens < 1024) {
+      throw new Error("general.max_session_tokens must be an integer >= 1024");
+    }
+  }
   const maxTurns = getOptionalNumber(table, "max_turns");
   if (maxTurns !== undefined) {
     if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 40) {
@@ -352,6 +368,7 @@ function parseGeneral(table: Record<string, unknown> | undefined): XioGeneralCon
     defaultModel: getOptionalString(table, "default_model"),
     runRoot: getOptionalString(table, "run_root") ?? DEFAULT_RUN_ROOT,
     maxSessionMessages,
+    maxSessionTokens,
     defaultThinkingLevel: getOptionalThinkingLevel(table, "default_thinking_level"),
     maxTurns,
     repeatToolLimit,
