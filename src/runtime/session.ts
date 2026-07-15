@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 
 import { applyCredentialsToEnv } from "../cli/credentials.ts";
@@ -12,7 +13,9 @@ import { registerPermissionCommands } from "./agent-commands.ts";
 import { registerRegressCommands } from "./regress-commands.ts";
 import { registerContextCommands } from "./context-commands.ts";
 import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
+import { resolveSessionTokenBudget } from "./providers/token-estimate.ts";
 import { thinkingStatusLabel } from "./thinking.ts";
+import { WorkspacePerceptionService } from "./workspace/index.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
@@ -66,6 +69,11 @@ export type SessionSnapshot = Readonly<{
   messages: readonly ChatMessage[];
   execution?: SessionExecution;
   workspaceLifecycle?: "active" | "retained" | "merged" | "discarded" | "clean_removed";
+  /**
+   * `journal` for mid-turn O(delta) WAL appends; `snapshot` (default) for full
+   * state.json rewrite at turn boundaries and session lifecycle events.
+   */
+  durability?: "snapshot" | "journal";
 }>;
 
 export type PreparedSession = Readonly<{
@@ -92,6 +100,8 @@ export type PreparedSession = Readonly<{
   /** Abort the in-flight agent turn (REPL Ctrl+C). No-op when idle. */
   abortTurn: () => void;
   getMessages: () => readonly ChatMessage[];
+  /** Local workspace perception map + evidence store (non-blocking warm). */
+  workspacePerception: WorkspacePerceptionService;
   close: () => Promise<void>;
 }>;
 
@@ -105,7 +115,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const ask = options.ask ?? defaultAsk;
   const sink = options.uiSink ?? createStdoutSessionUiSink();
   const interactive = options.interactive ?? createReadlineInteractiveIO(ask);
-  const { host, mergeGate } = await createConfiguredHost({
+  const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
     options, model, sink, ask, cwd, workspaceRoot,
   });
 
@@ -116,15 +126,49 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   let currentExecution: SessionExecution = options.initialExecution ?? { phase: "idle" };
   let workspaceLifecycle: SessionSnapshot["workspaceLifecycle"] = "active";
   const maxSessionMessages = options.runtimeConfig.general.maxSessionMessages ?? 80;
+  const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
+  // Non-blocking: never await full index on the interactive startup path.
+  void workspacePerception.ensureWarm();
+  host.on("tool_result", async (payload) => {
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const call = record.call && typeof record.call === "object"
+      ? record.call as Record<string, unknown>
+      : undefined;
+    const toolName = typeof call?.name === "string" ? call.name : undefined;
+    if (toolName !== "write" && toolName !== "edit") return;
+    const args = call?.args && typeof call.args === "object"
+      ? call.args as Record<string, unknown>
+      : undefined;
+    const filePath = typeof args?.path === "string" ? args.path : undefined;
+    if (!filePath) return;
+    const rel = path.isAbsolute(filePath)
+      ? path.relative(workspaceRoot, filePath)
+      : filePath;
+    if (rel.startsWith("..")) return;
+    try {
+      await workspacePerception.noteMutation(rel.replace(/\\/g, "/"), toolName === "write" ? "write" : "edit");
+    } catch {
+      // Perception is best-effort; tool results must not fail because of map refresh.
+    }
+  });
   const history = new SessionHistory({
     initialMessages: options.initialMessages,
     persist: async (messages) => {
-      await options.onSessionSnapshot?.({
-        model: currentModel,
-        messages,
-        execution: currentExecution,
-        workspaceLifecycle,
-      });
+      const { getGlobalTracer } = await import("./perf/index.ts");
+      const tracer = getGlobalTracer(options.env ?? process.env);
+      const active = tracer?.start("checkpoint.persist", { attrs: { kind: "session_snapshot" } });
+      try {
+        await options.onSessionSnapshot?.({
+          model: currentModel,
+          messages,
+          execution: currentExecution,
+          workspaceLifecycle,
+        });
+        tracer?.end(active, "success");
+      } catch (error) {
+        tracer?.end(active, "failure", { error_class: "io" });
+        throw error;
+      }
     },
   });
   mergeGate?.setCheckpointClearedHandler(async () => {
@@ -137,12 +181,18 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   };
 
   const getModel = () => currentModel;
+  const onThinkingLevelChanged = async (level: ThinkingLevel) => {
+    if (level === "ultra") {
+      await ensureExploreForUltra();
+    }
+  };
   const thinkingOpts = {
     host,
     interactive,
     sink,
     getModel,
     env,
+    onThinkingLevelChanged,
   };
   const setModel = async (next: ModelInfo) => {
     currentModel = next;
@@ -172,6 +222,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     sink,
     getModel,
     env,
+    onThinkingLevelChanged,
   });
   // Permission mode + high-risk gate before session_start so MCP hot-register respects filters.
   const allowHighRisk =
@@ -210,6 +261,14 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getClient: () => client,
     getModel,
     maxMessages: maxSessionMessages,
+    getMaxTokens: () => {
+      const modelCfg = registration.models.find((entry) => entry.id === currentModel.id)
+        ?? registration.models[0];
+      return resolveSessionTokenBudget({
+        configured: options.runtimeConfig.general.maxSessionTokens,
+        contextWindow: modelCfg?.contextWindow,
+      });
+    },
     onUiEvent: (event) => sink.onContextCompaction?.(event),
     onRuntimeEvent: async (event) => {
       try {
@@ -225,6 +284,29 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const compact = (mode: ContextCompactionMode, focus?: string) =>
     contextCompaction.compact(mode, focus, createTurnSignal());
   registerContextCommands({ host, compact });
+
+  // Surface workspace identity so TUI + agent know main vs worktree.
+  {
+    const provenance = options.sessionStart?.provenance as
+      | Readonly<{ main_root?: string; workspace_root?: string }>
+      | undefined;
+    const main = provenance?.main_root ?? workspaceRoot;
+    const wt = provenance?.workspace_root ?? cwd;
+    const directCwd = path.resolve(main) === path.resolve(wt);
+    const hasMergeGate = Boolean(options.runtimeConfig.worktree?.session);
+    sink.setStatus?.(
+      "workspace",
+      directCwd
+        ? (hasMergeGate ? "DIRECT" : "DIRECT / NO MERGEGATE")
+        : "WORKTREE",
+    );
+    sink.notify?.(
+      directCwd
+        ? `workspace: ${main} (main tree${hasMergeGate ? "" : ", no MergeGate"})`
+        : `workspace: agent cwd = worktree (from launch directory)\n  main: ${main}\n  worktree: ${wt}`,
+      "info",
+    );
+  }
 
   await host.emit("session_start", {
     ...(options.sessionStart ?? {}),
@@ -248,6 +330,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getPermissionMode: () => permission.getMode(),
     cyclePermissionMode: () => permission.cycleMode(),
     compact: (focus) => compact("manual", focus),
+    workspacePerception,
     runPrompt: createPromptRunner({
       host,
       getClient: () => client,
@@ -270,19 +353,36 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         };
       } : undefined,
       onCheckpoint: async (checkpoint) => {
+        const turnComplete = checkpoint.phase === "turn_complete";
         currentExecution = {
-          phase: checkpoint.phase === "turn_complete" ? "idle" : checkpoint.phase,
+          phase: turnComplete ? "idle" : checkpoint.phase,
           ...(currentExecution.turn_id ? { turn_id: currentExecution.turn_id } : {}),
           ...(currentExecution.checkpoint ? { checkpoint: currentExecution.checkpoint } : {}),
           ...(checkpoint.pendingTools && checkpoint.pendingTools.length > 0
             ? { pending_tools: checkpoint.pendingTools.map((tool) => ({ ...tool })) }
             : {}),
         };
-        await options.onSessionSnapshot?.({
-          model: currentModel,
-          messages: checkpoint.messages,
-          execution: currentExecution,
+        const { getGlobalTracer } = await import("./perf/index.ts");
+        const tracer = getGlobalTracer(options.env ?? process.env);
+        const active = tracer?.start("checkpoint.persist", {
+          attrs: {
+            kind: turnComplete ? "snapshot" : "journal",
+            phase: checkpoint.phase,
+            message_count: checkpoint.messages.length,
+          },
         });
+        try {
+          await options.onSessionSnapshot?.({
+            model: currentModel,
+            messages: checkpoint.messages,
+            execution: currentExecution,
+            durability: turnComplete ? "snapshot" : "journal",
+          });
+          tracer?.end(active, "success");
+        } catch (error) {
+          tracer?.end(active, "failure", { error_class: "io" });
+          throw error;
+        }
       },
       sink,
       history,
@@ -317,7 +417,11 @@ async function createConfiguredHost(input: Readonly<{
   ask: AskFn;
   cwd: string;
   workspaceRoot: string;
-}>): Promise<{ host: ExtensionHost; mergeGate?: MergeGate }> {
+}>): Promise<{
+  host: ExtensionHost;
+  mergeGate?: MergeGate;
+  ensureExploreForUltra: () => Promise<unknown>;
+}> {
   const host = createSessionHost(
     input.model,
     input.sink,
@@ -332,12 +436,14 @@ async function createConfiguredHost(input: Readonly<{
   const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
   await input.options.registerExtensions?.(host);
   // After extensions so explore prompt addendum and tool sit on the full host surface.
-  await registerExploreCapability(host, {
+  // Ultra auto-enables explore even when [explore] enabled = false.
+  const explore = await registerExploreCapability(host, {
     runtimeConfig: input.options.runtimeConfig,
     cwd: input.cwd,
     workspaceRoot: input.workspaceRoot,
     env: input.options.env,
     onNotify: (message) => input.sink.notify?.(message, "info"),
+    onStatus: (key, text) => input.sink.setStatus?.(key, text),
   });
   await registerPlanCapability(host, {
     workspaceRoot: input.workspaceRoot,
@@ -348,7 +454,7 @@ async function createConfiguredHost(input: Readonly<{
   }
   registerRollbackCommand(host, mergeGate, input.ask, input.sink);
   // session_start is emitted from prepareSession after /agent filter is installed.
-  return { host, mergeGate };
+  return { host, mergeGate, ensureExploreForUltra: () => explore.ensure("ultra") };
 }
 
 function createSessionClient(input: Readonly<{
@@ -385,10 +491,29 @@ export function toDoneContract(verify: XioVerifyConfig): DoneContract | undefine
 
 export async function runSession(options: SessionOptions): Promise<number> {
   const session = await prepareSession(options);
+  const { getGlobalTracer, isPerfEnabled } = await import("./perf/index.ts");
+  const tracer = getGlobalTracer(options.env ?? process.env);
+  tracer?.mark("prompt_ready", "success", { attrs: { ui: "stdout" } });
+  if ((options.env ?? process.env).XIO_PERF_BOOT_EXIT === "1") {
+    if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
+      tracer?.mark("first_frame", "success", { attrs: { ui: "stdout", boot_exit: true } });
+    }
+    if (isPerfEnabled(options.env ?? process.env) && tracer) {
+      const { writeSync } = await import("node:fs");
+      for (const span of tracer.getSpans()) {
+        writeSync(process.stdout.fd, `${JSON.stringify(span)}\n`);
+      }
+    }
+    await session.close();
+    return 0;
+  }
   try {
     if (options.promptOnce !== undefined) {
       const result = await session.runPrompt(options.promptOnce);
       return result.success ? 0 : 1;
+    }
+    if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
+      tracer?.mark("first_frame", "success", { attrs: { ui: "stdout" } });
     }
     return await runRepl(session);
   } finally {

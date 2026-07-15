@@ -268,6 +268,44 @@ describe("provider usage normalization", () => {
     expect(body?.reasoning_effort).toBeUndefined();
   });
 
+  it("wires deepseek ultra/max as max + thinking enabled (official V4 shape)", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        name: "opencode-go",
+        api: "openai-completions",
+        baseUrl: "https://opencode.ai/zen/go/v1",
+        models: [{ id: "deepseek-v4-pro", name: "deepseek-v4-pro", reasoning: true }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ choices: [{ message: { content: "ok", tool_calls: [] } }] });
+      },
+    });
+    await client.complete({
+      model: "deepseek-v4-pro",
+      messages: [],
+      thinkingLevel: "ultra",
+    });
+    expect(body?.reasoning_effort).toBe("max");
+    expect(body?.thinking).toEqual({ type: "enabled" });
+    await client.complete({
+      model: "deepseek-v4-pro",
+      messages: [],
+      thinkingLevel: "max",
+    });
+    expect(body?.reasoning_effort).toBe("max");
+    expect(body?.thinking).toEqual({ type: "enabled" });
+    await client.complete({
+      model: "deepseek-v4-pro",
+      messages: [],
+      thinkingLevel: "off",
+    });
+    expect(body?.reasoning_effort).toBeUndefined();
+    expect(body?.thinking).toEqual({ type: "disabled" });
+  });
+
   it("injects Anthropic thinking budget for non-off levels", async () => {
     let body: Record<string, unknown> | undefined;
     const client = createLlmClient({
@@ -280,6 +318,93 @@ describe("provider usage normalization", () => {
     });
     await client.complete({ model: "test", messages: [{ role: "user", content: "hi" }], thinkingLevel: "ultra" });
     expect(body?.thinking).toEqual({ type: "enabled", budget_tokens: 128_000 });
+  });
+
+  it("wires configured max_tokens and tool_choice on OpenAI-compatible payloads", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        name: "test",
+        api: "openai-completions",
+        baseUrl: "https://example.test",
+        toolChoice: "required",
+        toolChoiceScope: "always",
+        models: [{ id: "test", name: "test", maxTokens: 2048 }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ choices: [{ message: { content: "ok", tool_calls: [] } }] });
+      },
+    });
+    await client.complete({
+      model: "test",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{
+        type: "function",
+        function: { name: "read", description: "r", parameters: { type: "object", properties: {} } },
+      }],
+      maxTokens: 1024,
+      toolChoice: "required",
+      toolChoiceScope: "always",
+    });
+    expect(body?.max_tokens).toBe(1024);
+    expect(body?.tool_choice).toBe("required");
+  });
+
+  it("wires Anthropic tool_choice and cache_control on system/tools", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        ...registration("anthropic-messages"),
+        toolChoice: "any",
+        toolChoiceScope: "always",
+        models: [{ id: "test", name: "test", maxTokens: 4096 }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+    await client.complete({
+      model: "test",
+      messages: [
+        { role: "system", content: "stable system" },
+        { role: "user", content: "hi" },
+      ],
+      tools: [{
+        type: "function",
+        function: { name: "read", description: "r", parameters: { type: "object", properties: {} } },
+      }],
+      toolChoice: "any",
+      toolChoiceScope: "always",
+      promptCache: true,
+    });
+    expect(body?.max_tokens).toBe(4096);
+    expect(body?.tool_choice).toEqual({ type: "any" });
+    expect(Array.isArray(body?.system)).toBe(true);
+    const systemBlocks = body?.system as Array<Record<string, unknown>>;
+    expect(systemBlocks.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+    const tools = body?.tools as Array<Record<string, unknown>>;
+    expect(tools.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("does not invent tool_choice for unsupported provider APIs", async () => {
+    // openai client is used for non-anthropic; google is still openai-compatible path only when
+    // createLlmClient routes there. Unsupported map is covered in request-controls; here ensure
+    // omitting toolChoice leaves wire without tool_choice.
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ choices: [{ message: { content: "ok", tool_calls: [] } }] });
+      },
+    });
+    await client.complete({ model: "test", messages: [] });
+    expect(body?.tool_choice).toBeUndefined();
   });
 });
 

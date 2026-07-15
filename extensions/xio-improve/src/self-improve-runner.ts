@@ -29,8 +29,16 @@ export type SelfImproveRunnerOptions = Readonly<{
   goalStore?: GoalStore;
   /** Worktree base dir (tests use temp). Default: ~/.xiocode/worktrees via sandbox. */
   worktreeBaseDir?: string;
-  /** Verifier commands; default `npm run check`. */
+  /**
+   * Verifier extras after default `npm run check`, unless `replaceVerifierCommands`.
+   * Production CLI passes `--check` extras here; tests may replace the full list.
+   */
   verifierCommands?: readonly string[];
+  /**
+   * When true, `verifierCommands` is the full command list (no forced `npm run check`).
+   * Tests only — production must keep the default gate.
+   */
+  replaceVerifierCommands?: boolean;
   /** Apply goal edits inside the worktree. Default: scriptedChange or spawn xio -p. */
   applyGoal?: ApplyGoalFn;
   ask?: AskFn;
@@ -58,6 +66,7 @@ export class SelfImproveRunner {
   readonly #goalStore: GoalStore;
   readonly #worktreeBaseDir?: string;
   readonly #verifierCommands?: readonly string[];
+  readonly #replaceVerifierCommands: boolean;
   readonly #applyGoal: ApplyGoalFn;
   readonly #ask: AskFn;
   readonly #notify?: (message: string) => void;
@@ -72,6 +81,7 @@ export class SelfImproveRunner {
     this.#goalStore = options.goalStore ?? new GoalStore();
     this.#worktreeBaseDir = options.worktreeBaseDir;
     this.#verifierCommands = options.verifierCommands;
+    this.#replaceVerifierCommands = options.replaceVerifierCommands === true;
     this.#ask = options.ask ?? defaultAsk;
     this.#notify = options.notify;
     this.#skipMergeAsk = options.skipMergeAsk === true;
@@ -137,6 +147,7 @@ export class SelfImproveRunner {
     const verifier = await new Verifier({
       cwd: session.worktreePath,
       commands: this.#verifierCommands,
+      replaceDefault: this.#replaceVerifierCommands,
     }).run();
     this.#notify?.(
       verifier.ok

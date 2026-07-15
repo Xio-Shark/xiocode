@@ -2,7 +2,7 @@
 
 > 产品终点的单一真相源。交付快照见 [STATUS.md](./STATUS.md)；近期待办见 [ROADMAP.md](../ROADMAP.md)。
 
-**更新日期**：2026-07-11
+**更新日期**：2026-07-15
 
 ---
 
@@ -29,13 +29,15 @@
 
 冷启动时先靠公共 baseline 与最短「导入/标注第一条失败」路径；专属感来自之后累积的私有回归与能力曲线，不来自不可审计的神秘 prompt。
 
-### 身份–行为缺口（2026-07-11 审计）
+### 身份–行为缺口（纠偏进度）
 
-定位写的是失败复利机；默认日常路径仍像 Claude 兼容 coding CLI。dogfood 曾出现：有 runs、无 `~/.xiocode/regress`；run metadata 常为 `unknown`；usage 事件被密钥脱敏误伤；dirty main silently 用 HEAD worktree；worktree/MergeGate 被口头当成「沙盒」，而 `bash`/MCP 仍达宿主。
+定位写的是失败复利机；默认日常路径仍像 Claude 兼容 coding CLI。2026-07 审计后已补齐一批**默认门禁与入口**（证据 metadata、dirty-main 硬失败 + allow 后 dirty 镜像、工具风险审批、失败→regress 最短路径、private FIXED × trusted PASS、`[improve]` dogfood 默认、**TUI 路线 B append-to-scrollback**（终端原生滚轮）+ **callId 并行 tool 配对 / 完整 output + Ctrl+O 查看器 / composer 队列 / 启动事件回放 / 结构化确认 / 隔离状态徽章**、tool_result 嵌套 payload 与 Denoiser 对齐、MCP 退出硬化、**trusted eval 与交互 direct-cwd 解耦**）。仍未自动闭环：须用户显式 failure/verifier 与 MergeGate 同意。
 
-**纠偏优先级（高于再堆兼容面）**：证据完整性 → dirty-main 显式策略 → bash/MCP 风险门禁 → 失败→regress 最短路径 → private FIXED × trusted PASS 联合门禁。任务树：`.trellis/tasks/07-11-harness-flywheel-gap/`。
+**纠偏优先级（已交付的不回退）**：证据完整性 → dirty-main 显式策略（阻断 + 镜像）→ bash/MCP 风险门禁 → 失败→regress 最短路径 → private FIXED × trusted PASS 联合门禁 → 工具结果可观测（hook 不得抹空）→ 长会话可滚可读且 transcript 可信（scrollback + 典型 projection）→ eval 隔离不随交互默认漂移。任务树：`.trellis/tasks/07-11-harness-flywheel-gap/`（收尾）、`.trellis/tasks/07-15-fix-tui-interaction-regressions/`（收尾）。
 
-Claude/Cursor 兼容（MCP / skills / hooks）仍是市场准入，**不是**北星；G10 日常化入口已交付（失败 nudge + last-case + `[improve]` 默认），但仍需用户显式 failure/verifier 与 MergeGate 同意，不得写成全自动专属 harness。
+Claude/Cursor 兼容（MCP / skills / hooks）仍是市场准入，**不是**北星；G10 日常化入口已交付，不得写成全自动专属 harness。
+
+公开产品树不携带本机 AI 规范文件（`AGENTS.md` / `CLAUDE.md` 等）；运行时仍可读**目标仓库**里的 `CLAUDE.md` / skills / hooks / MCP。`~/.xiocode` 只存 runtime 状态与配置。
 
 ---
 
@@ -57,23 +59,47 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 ### 2. 安全改码
 
-会话在外层 git worktree 中隔离（`~/.xiocode/worktrees/...`）。合入主树必须经用户 **MergeGate** 同意（`/merge` 或会话结束询问）。禁止「测绿即合」。非 git 目录硬失败，不进入 agent loop。
+默认在**启动时的工作区路径（cwd）**直接运行；**不强制 git**，**默认不进 worktree**。合入主树的隔离与 MergeGate 仅在显式开启 outer worktree 时生效（`[worktree] enabled = true`）。禁止「测绿即合」。
 
-**诚实边界**：worktree 保护的是主树合入，**不是** OS sandbox。`bash` 与 MCP 默认可达宿主（网络、家目录、外发）；`host_isolation` 在评测报告中标为 `unsupported`。产品不得把 MergeGate 说成「已沙盒」。dirty main 必须有显式会话策略（警告/阻断/opt-in），禁止默默用干净 HEAD 冒充当前工作区。
+**默认主 cwd 模式**：
+
+| 点 | 约定 |
+|----|------|
+| 工作区 | `path.resolve(启动 cwd)` — agent 读写就在用户当前目录 |
+| Git | 可选；非 git 目录可启动（provenance `base_commit=nogit`） |
+| 合入 | 无 worktree session → 无 MergeGate 外层合入路径 |
+
+**Opt-in Worktree 语义（`[worktree] enabled = true`）**：
+
+| 点 | 约定 |
+|----|------|
+| 启动根 | **启动时 cwd 所在 git 仓库**的 toplevel（`mainRoot`）；须为 git 仓 |
+| 物理路径 | 固定在 `~/.xiocode/worktrees/<repoId>/<sessionId>`（`repoId` = mainRoot 路径哈希） |
+| 内容 | `git worktree add` + **visible baseline tree** 物化；rename/symlink/mode/delete/untracked 由 Git 原生处理 |
+| 身份 | `baselineTree` 持久化；session rollback 恢复 baseline |
+| 合入 | clean：commit + merge。dirty baseline：仅应用 agent delta，保留主树 index；主树漂移 fail closed |
+
+**诚实边界**：worktree 保护的是主树合入，**不是** OS sandbox。`bash` 与 MCP 默认可达宿主；`host_isolation: unsupported`。
+
+**Dirty main**：仅 worktree 启用时生效 — 主树 dirty 则默认拒绝（须 `--allow-dirty` / `allow_dirty`）。
 
 ### 3. 可观测
 
 每次 run 留下可回溯轨迹（`~/.xiocode/runs/`：events、trajectory、元数据）。Provider usage 在客户端边界规范化一次（input/output/cache/reasoning；不可得则为 `null`，不以字符数伪造）。**metadata 的 provider/model 与 usage 数值不得被密钥脱敏误伤**；否则私有回归与自改进没有可信原料。证据是专属 harness 的原料，不是装饰性日志。
 
+**工具结果完整性**：`tool_result` hook（含 ResultDenoiser）必须吃到真实 content。agent-loop 发出的是 `{ call, result: { content } }` 嵌套形状；evolve 须同时兼容该形状与旧扁平 payload。**禁止** denoise/hook 把非空工具正文覆盖成空串（模型侧与 TUI 同步空白）。`emitToolResult` 对「原文非空、hook 返回空」拒绝覆盖。
+
 ### 4. 可自改进
 
-在同一沙盒与合入模型下，用目标队列（T4）+ 候选内部 verifier + **trusted capability gate** + merge-ask 改**本仓自身**（`xio improve`）。候选仓内的 `npm run check` / 测试只作 advisory；trusted PASS/FAIL 由 `xio eval` 控制面在候选 worktree 外判定。外部评测失败可变成 Goal；外仓 patch **永不合入** xiocode。详见 [self-improve.md](./self-improve.md)。
+在同一沙盒与合入模型下，用目标队列（T4）+ 候选 worktree 内真实 agent（无嵌套 worktree / 无内部 MergeGate）+ 候选内部 verifier（默认始终 `npm run check`，`--check` 只追加）+ **trusted capability gate** + 唯一外层 merge-ask 改**本仓自身**（`xio improve`）。生产 builtin seed 为 prompt-only；`scriptedChange` 仅测试/显式确定性输入。候选仓内 check/测试只作 advisory；trusted PASS/FAIL 由 `xio eval` 控制面在候选 worktree 外判定。外部评测失败可变成 Goal；外仓 patch **永不合入** xiocode。详见 [self-improve.md](./self-improve.md)。
 
 专属改进必须落在可审计的 case、gate 与轨迹上，不落在不可复查的隐式个性化。
 
 ### 5. 诚实交付
 
-文档与默认路径只承诺已交付能力。5-case 本地 smoke 证明 harness 可重复评测，**不是**竞品胜负或「已超越 Claude Code」。策略自迭代（StrategyLearner / PromptEvolver 等）须有真实 run 语料与评测设计后，再考虑显式开关上线——不预埋卖点。
+文档与默认路径只承诺已交付能力。5-case 本地 smoke 证明 harness 可重复评测，**不是**竞品胜负或「已超越 Claude Code」。策略自迭代（StrategyLearner / PromptEvolver 等）须有真实 run 语料与评测设计后，再考虑显式开关上线——不预埋卖点。公开 npm / GitHub 树保持可安装、可瘦身，不把本机规范与测试垃圾打进默认包；`npm pack` / 发布前门禁须先 `npm run check`（typecheck），不能只检查打包文件是否存在。
+
+**资源生命周期（已交付）**：MCP stdio 从 connect 起即有清理所有权（timeout / `listTools` 失败 / `session_end` 均有界 close+force-kill）。`xio resume --delete <id>` 在删除 metadata 前清理 checkpoint refs、注册 worktree 与专属 branch；身份不匹配 fail closed。
 
 ---
 
@@ -103,15 +129,15 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 | 能力块 | 岗位为何问 | XioCode 现状（相对 JD） |
 |--------|------------|-------------------------|
-| Agent loop + tool schema/dispatch | harness 本体 | ✅ 自有 `src/runtime` + 内置工具；流式 + 并行工具调度（H1–H5）已落地 |
-| Sandbox / 隔离 | coding agent 安全底线 | 🟡 worktree + MergeGate 已有；**host 级隔离 unsupported** |
+| Agent loop + tool schema/dispatch | harness 本体 | ✅ 自有 `src/runtime` + 内置工具；流式 + 并行工具调度（H1–H5）；thinking 全档 + explore 并发策略 |
+| Sandbox / 隔离 | coding agent 安全底线 | 🟡 worktree + MergeGate + dirty-main 硬失败 + **启动仓 dirty 镜像**；**host 级隔离 unsupported** |
 | Permissions / lifecycle hooks | 危险动作门禁 | 🟡 合入门禁强；**user hooks MVP**；**G7 风险类 + 会话审批已交付**（非全量 Claude hooks） |
 | Context / session / checkpoint | 长任务不崩 | ✅ 持久 chat/model + **G4 compaction** + **G5 execution/file resume** + 会话/turn rollback 已交付 |
 | Observability + cost | 生产可排障、可控费 | 🟡 轨迹 + usage 规范化有；**价格表/成本曲线、span 级 tracing 未齐** |
 | Eval harness | 评的是 model+harness | ✅ `xio eval` + capability gate + credentialed-series.v1；公开材料只写系列能证明的结论 |
 | Private regression / failure flywheel | 少见但高信号 | ✅ `xio regress` + compare + G10 dogfood 默认（nudge / last-case / `[improve]`）；仍需显式 verdict + MergeGate ask |
-| MCP / skills / AGENTS.md | 2026 生态标配 | ✅ tools-first MCP + 本地 skills discovery + AGENTS.md/CLAUDE.md 注入（`xio-hygiene`）；非 marketplace / 非全量 resources·prompts / 非嵌套 memory 克隆 |
-| Interactive TUI | 长会话可操作面 | ✅ Ink core + diff/merge/rollback confirm + session bypass + session resume picker 已交付 |
+| MCP / skills / AGENTS.md | 2026 生态标配 | ✅ tools-first MCP + 本地 skills + 目标仓 AGENTS/CLAUDE 注入；`disable` 跳过、stdio 可执行检查、close 超时；非 marketplace / 非全量 resources·prompts |
+| Interactive TUI | 长会话可操作面 | ✅ Ink + **append-to-scrollback**（`<Static>` 定稿进主 buffer → 终端原生触控板/滚轮/搜索；live + 输入 sticky）+ **callId 并行 tool 配对与完整 output 保留** + Ctrl+O 查看器 + composer（光标/粘贴/历史/busy 队列）+ 启动事件回放 + 结构化确认 detail + 隔离徽章 + 分层 ▸/⚙/● + diff/merge/rollback + bypass + resume |
 | 多租户 / K8s / 队列规模 | 资深平台岗 | ❌ **产品非目标**（本地个人闭环优先）；面试需能讲升级路径，不在本仓默认交付 |
 
 ### 已具备、应作为对外叙事主轴的差异点
@@ -122,7 +148,8 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 2. **MergeGate**：合入权在人，禁止测绿即合  
 3. **Trusted capability gate**（`xio eval`）：候选外独立证据，hidden grader  
 4. **私有回归入口**（`xio regress`）：失败 run → 可审计 case  
-5. **诚实边界**：stub smoke ≠ 能力宣称；`host_isolation: unsupported` 显式上报  
+5. **诚实边界**：stub smoke ≠ 能力宣称；`host_isolation: unsupported` 显式上报；dirty main 默认阻断，允许后镜像 WIP，不静默空 HEAD  
+
 
 定位一句话（JD / 作品集用）：**本地、可审计、带 trusted eval 与合入门禁的 coding agent harness**——不是「Claude Code 替代品」。
 
@@ -132,18 +159,18 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 | ID | 缺口 | 为何卡 JD | 目标状态（完成定义） | 现状 |
 |----|------|-----------|----------------------|------|
-| G1 | MCP client | 工具生态面试标配 | Agent 可配置并调用 MCP tools；失败可观测、可拒绝 | ✅ MVP：stdio/SSE/HTTP；`mcp__*`；fail-open；非 resources/prompts/OAuth 全量 |
+| G1 | MCP client | 工具生态面试标配 | Agent 可配置并调用 MCP tools；失败可观测、可拒绝 | ✅ MVP：stdio/SSE/HTTP；`mcp__*`；fail-open；`disabled` 跳过；stdio ENOENT 快失败；close 超时 + force-kill；进程退出 `exitCli` 兜底；非 resources/prompts/OAuth 全量 |
 | G2 | User / lifecycle hooks | PreToolUse 类门禁是 harness 八股 | 至少支持工具调用前后 hook；可阻断危险动作 | ✅ MVP：Claude settings 子集四事件；command handler；PreToolUse exit 2 可阻断 |
-| G3 | Skills / AGENTS.md 注入 | 与 AGENTS.md / skills 生态对齐 | 可发现并注入项目/用户 skills 与规格，行为可测 | ✅ MVP：本地 `SKILL.md` + `skill` tool；AGENTS.md/CLAUDE.md 注入；非 plugins market |
+| G3 | Skills / AGENTS.md 注入 | 与 AGENTS.md / skills 生态对齐 | 可发现并注入项目/用户 skills 与规格，行为可测 | ✅ MVP：本地 `SKILL.md` + `skill` tool；目标仓 AGENTS.md/CLAUDE.md 注入；公开产品树不自带规范文件；非 plugins market |
 | G4 | Context compaction | 「窗口满了怎么办」必问 | 可演示的 compaction（或等价卸载）策略；长会话不静默截断无说明 | ✅ `/compact [focus]` + 自动 message-budget trigger；事务式同 provider summary；持久 resume marker；非 token 精确 `/context` |
 | G5 | Session checkpoint-resume | 长任务 / 崩溃恢复 | 中断后可从持久状态恢复关键步骤，不丢合入边界 | ✅ 原子 v2 state；原 worktree attach；durable turn checkpoint；中断 tool completion unknown 且不重放；MergeGate 边界保留 |
 | G5b | Session code rollback | 「改坏了怎么撤」必问 | 可回滚本会话 worktree 改动（会话起点或最新 turn）；不擅自改主树 | ✅ `/rollback` 恢复 immutable session baseline；`/rollback turn` 恢复 prompt 起点 Git tree checkpoint；均保留 chat |
 | G6 | 隔离升级叙事与可选原型 | host isolation 被追问 | 文档写清 worktree → container → microVM 阶梯与威胁模型；**默认路径仍是 worktree**；评测报告继续诚实标 `unsupported`，除非某条可选路径真正落地 | 📋 |
 | G7 | 工具风险分级 / 审批钩子 | 细粒度权限故事偏薄；与「安全改码」叙事冲突 | 危险 bash / 外发 / 宿主 MCP 等有明确风险类与审批点（不必复活 PathGuard）；默认不把 IDE MCP 面无门禁热插进 agent | ✅ 风险类 + plan 拒绝 write/exec/MCP；interactive 会话审批；`-p` 需 `--allow-high-risk`；`unknown_source_fail_closed`；仍非 OS sandbox |
-| G8 | Cost + tracing 完整度 | 生产 harness 基本功 | 版本化 price table → 非 null 成本估计；关键 model/tool 跨度可追溯 | 📋 **先修证据误脱敏与 metadata**，再做价格表 |
+| G8 | Cost + tracing 完整度 | 生产 harness 基本功 | 版本化 price table → 非 null 成本估计；关键 model/tool 跨度可追溯 | 📋 **证据 metadata/usage 已修**；价格表与 span tracing 仍待 |
 | G9 | Credentialed 能力证据 | 无真实数字难过简历关 | 固定 provider/model 下可重复的 smoke/compare 序列；公开材料只写有证据的结论 | ✅ |
 | G10 | 私有失败 → 改进默认路径 | 差异化尚未「日常化」 | 失败 run → 低摩擦 regress → private FIXED × trusted PASS → improve merge-ask 可 dogfood | ✅ 失败 nudge + `.last-case` + `[improve]` 默认；FIXED × PASS 仍 ask-only；case ≠ ImproveGoal |
-| G11 | Interactive TUI | 可讲述的操作面 | Ink/React：流式输出、工具行、slash、diff/权限、session resume | ✅ Core、diff/permission/bypass、resume picker 全部交付 |
+| G11 | Interactive TUI | 可讲述的操作面 | Ink/React：流式输出、工具行、slash、diff/权限、session resume | ✅ Core + **路线 B scrollback**（终端原生滚轮；非 fullscreen 自管 viewport）+ **典型 transcript reducer**（callId 并行配对、完整 output、Ctrl+O 查看器）+ composer 队列 + 启动事件回放 + 结构化确认 + 隔离徽章 + 分层 + diff/permission/bypass + resume。**不**宣称与 Pi/Claude/Codex 行为全量对齐 |
 
 ### 面向 JD 的目标档位
 
@@ -177,6 +204,7 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 | 不可审计的神秘 prompt 个性化 | 专属必须落在 case / gate / 轨迹，不落在说不清的隐式改写 |
 | 一上来做多人云协同专属 | 先个人（或单机小团队）本地闭环；共享仅限脱敏后的 family 级回归 |
 | 把资深多租户平台栈当作本仓交付终点 | K8s / 队列 / 多租户属于 JD 档位 C，不写入产品五条最终目标 |
+| 把本机 AI 规范文件打进公开包 | 产品树与 npm payload 不携带 `AGENTS.md` / `CLAUDE.md` 等本机约定 |
 
 ---
 
@@ -184,17 +212,23 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 
 | 目标条 | 当前状态（摘要） |
 |--------|------------------|
-| 1 自有闭环 | ✅ `src/runtime` 已交付；流式 / 并行工具 / 多轮 session（H1–H5）已落地 |
-| 2 安全改码 | 🟡 Worktree + MergeGate + dirty-main；**G7 工具风险门禁已交付**；host isolation 仍 unsupported |
-| 3 可观测 | 🟡 轨迹落盘有；**证据完整性（metadata / usage 误脱敏）优先于 G8 价格表** |
+| 1 自有闭环 | ✅ `src/runtime` 已交付；流式 / 并行工具 / multi-explore / thinking 全档（H1–H5+）；tool_result 嵌套 payload 与 denoise 对齐 |
+| 2 安全改码 | 🟡 Worktree + MergeGate + dirty-main 硬失败 + dirty 镜像；**G7 工具风险门禁已交付**；host isolation 仍 unsupported |
+| 3 可观测 | 🟡 轨迹落盘 + metadata/usage + **工具正文不被 hook 抹空**；**G8 价格表 / span tracing 仍待** |
 | 4 可自改进 | 🟡 MVP + trusted gate + **private FIXED × PASS 联合门禁** + G10 dogfood 默认（仍需显式 verdict / MergeGate ask） |
-| 5 诚实交付 | ✅ 以 STATUS 为准；stub = harness-only；身份–行为缺口已写明 |
+| 5 诚实交付 | ✅ 以 STATUS 为准；stub = harness-only；公开树可安装且瘦身；身份–行为缺口写明；TUI 采用 scrollback 路线且不宣称未测的竞品全量对齐；交互 direct-cwd 与 trusted eval worktree 分合同 |
 | 专属 harness | 🟡 日常入口已交付；case ≠ goal、无自动 capture/merge；见 STATUS known gaps |
 | JD 对齐 A | ✅ G1–G5、G5b、G9–G11 已交付；公开能力声明仍受 series 证据约束 |
 | JD 对齐 B（G6–G8） | 🟡 G7 ✅；G6/G8 仍待；叙事不得掩盖 bash 宿主可达 |
 | JD 对齐 C | ❌ 产品非目标；仅面试升级路径 |
 
-近期待办 **P0**：证据完整性 ✅、dirty-main 策略 ✅、工具风险门禁 ✅、regress 激活 ✅、improve 联合门禁 ✅（`.trellis/tasks/07-11-harness-flywheel-gap/` 收尾）。其余见 [ROADMAP.md](../ROADMAP.md)。
+近期待办 **P0 纠偏**（证据 / dirty-main / 风险门禁 / regress 激活 / improve 联合门禁 / 工具结果可观测 / **TUI 路线 B + transcript 可信 + eval 隔离解耦**）已收尾。后续主线：
+
+1. **性能套件收口**（`.trellis/tasks/07-15-performance-board.md`）：可信 fixture → 产品路径接线 → 再谈硬门禁；**禁止**再写「8/8 completed」。
+2. **Agent Runtime Event**（`.trellis/tasks/07-15-agent-runtime-event-board.md`）：turn_end 轨迹契约 → RuntimeEvent.v1 → tape / stream-json / steer。
+3. 真实 run 语料、G6 隔离阶梯叙事、G8 成本与 tracing、composer steer（provider-safe）、Route A/B pairing 完全单源化、credentialed 系列的诚实展示。
+
+其余见 [ROADMAP.md](../ROADMAP.md) 与 [STATUS.md](./STATUS.md)。
 
 ---
 

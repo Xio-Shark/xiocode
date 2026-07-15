@@ -29,10 +29,12 @@ export function registerConfiguredProviders(host: ExtensionHost, config: XioRunt
       apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
       authHeader: true,
       thinkingDisplay: provider.thinkingDisplay,
+      toolChoice: provider.toolChoice,
+      toolChoiceScope: provider.toolChoiceScope,
       models: [{
         id: provider.model,
         name: provider.model,
-        reasoning: provider.reasoning ?? false,
+        reasoning: provider.reasoning ?? true,
         thinkingLevelMap: provider.thinkingLevelMap,
         input: provider.input ? [...provider.input] : ["text"],
         contextWindow: provider.contextWindow ?? 128_000,

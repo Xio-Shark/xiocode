@@ -4,12 +4,15 @@ import type {
   ChatMessage,
   ChatToolCall,
   LlmClient,
+  ProviderToolChoice,
+  ProviderToolChoiceScope,
   ToolCallEvent,
   ToolDefinition,
   ToolExecuteResult,
 } from "./types.ts";
 import { assertMessageBudget } from "./context-compaction.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
+import { getCachedProviderTools } from "./providers/tool-schema-cache.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
 
@@ -32,6 +35,8 @@ export type AgentLoopOptions = Readonly<{
   client: LlmClient;
   model: string;
   providerApi?: string;
+  /** Provider name for registration lookup (maxTokens / toolChoice). */
+  providerName?: string;
   systemPrompt?: string;
   maxTurns?: number;
   doneContract?: DoneContract;
@@ -54,6 +59,10 @@ export type AgentLoopOptions = Readonly<{
   priorMessages?: readonly ChatMessage[];
   /** Hard cap on retained session messages; trim inserts an explicit notice. */
   maxSessionMessages?: number;
+  /** Optional override for max_tokens (else model registration). */
+  maxTokens?: number;
+  toolChoice?: ProviderToolChoice;
+  toolChoiceScope?: ProviderToolChoiceScope;
   onCheckpoint?: (checkpoint: AgentLoopCheckpoint) => Promise<void> | void;
 }>;
 
@@ -313,80 +322,173 @@ async function requestCompletion(
   options: AgentLoopOptions,
   tools: readonly ToolDefinition[],
 ): Promise<ChatCompletionResponse> {
-  const providerTools = toProviderTools(tools);
+  const { getGlobalTracer, classifyUnknownError } = await import("./perf/index.ts");
+  const tracer = getGlobalTracer();
+  const api = options.providerApi ?? "openai-completions";
+  const registration = resolveRegistration(options);
+  const cached = getCachedProviderTools(api, tools);
+  const maxTokens = options.maxTokens
+    ?? registration?.models.find((model) => model.id === options.model)?.maxTokens
+    ?? registration?.models[0]?.maxTokens;
+  const toolChoice = options.toolChoice ?? registration?.toolChoice;
+  const toolChoiceScope = options.toolChoiceScope ?? registration?.toolChoiceScope;
+  const requestSpan = tracer?.start("provider.request", {
+    attrs: {
+      model: options.model,
+      stream: Boolean(options.client.completeStream),
+      max_tokens: maxTokens ?? null,
+      tool_choice: toolChoice ?? "unset",
+      tool_schema_cache: cached.cache,
+    },
+  });
+  const providerTools = cached.tools;
   const providerPayload = {
     model: options.model,
     messages,
     tools: providerTools,
     parallelToolCalls: options.parallelToolCalls,
+    maxTokens,
+    toolChoice,
+    toolChoiceScope,
   };
-  const enhanced = await options.host.emit("before_provider_request", { payload: providerPayload });
-  const request = asRecord(enhanced.at(-1)) ?? providerPayload;
-  const requestedModel = typeof request.model === "string" ? request.model : options.model;
-  const requestMessages = (Array.isArray(request.messages) ? request.messages : messages) as ChatMessage[];
-  const requestTools = Array.isArray(request.tools) ? request.tools as typeof providerTools : providerTools;
-  const parallelToolCalls = typeof request.parallelToolCalls === "boolean"
-    ? request.parallelToolCalls
-    : options.parallelToolCalls;
+  try {
+    const enhanced = await options.host.emit("before_provider_request", { payload: providerPayload });
+    const request = asRecord(enhanced.at(-1)) ?? providerPayload;
+    const requestedModel = typeof request.model === "string" ? request.model : options.model;
+    const requestMessages = (Array.isArray(request.messages) ? request.messages : messages) as ChatMessage[];
+    const requestTools = Array.isArray(request.tools) ? request.tools as typeof providerTools : providerTools;
+    const parallelToolCalls = typeof request.parallelToolCalls === "boolean"
+      ? request.parallelToolCalls
+      : options.parallelToolCalls;
+    const requestMaxTokens = typeof request.maxTokens === "number" ? request.maxTokens : maxTokens;
+    const requestToolChoice = (typeof request.toolChoice === "string"
+      ? request.toolChoice
+      : toolChoice) as ProviderToolChoice | undefined;
+    const requestToolChoiceScope = (typeof request.toolChoiceScope === "string"
+      ? request.toolChoiceScope
+      : toolChoiceScope) as ProviderToolChoiceScope | undefined;
 
-  const completionRequest = {
-    model: requestedModel,
-    messages: requestMessages,
-    tools: requestTools,
-    parallelToolCalls,
-    thinkingLevel: options.host.getThinkingLevel(),
-  };
+    const completionRequest = {
+      model: requestedModel,
+      messages: requestMessages,
+      tools: requestTools,
+      parallelToolCalls,
+      thinkingLevel: options.host.getThinkingLevel(),
+      maxTokens: requestMaxTokens,
+      toolChoice: requestToolChoice,
+      toolChoiceScope: requestToolChoiceScope,
+    };
 
-  let completion: ChatCompletionResponse;
-  if (options.client.completeStream) {
-    completion = await consumeStream(options.client, completionRequest, options);
-  } else {
-    completion = await options.client.complete(completionRequest, { signal: options.signal });
+    let completion: ChatCompletionResponse;
+    if (options.client.completeStream) {
+      completion = await consumeStream(options.client, completionRequest, options, requestSpan?.span_id);
+    } else {
+      const completionSpan = tracer?.start("provider.completion", { parentId: requestSpan?.span_id });
+      try {
+        completion = await options.client.complete(completionRequest, { signal: options.signal });
+        tracer?.end(completionSpan, "success", { usage: completion.usage ?? emptyTokenUsage() });
+      } catch (error) {
+        const classified = classifyUnknownError(error);
+        tracer?.end(completionSpan, classified.outcome, { error_class: classified.error_class });
+        throw error;
+      }
+    }
+
+    await options.host.emit("provider_response", {
+      providerApi: options.providerApi ?? "unknown",
+      model: requestedModel,
+      usage: completion.usage ?? emptyTokenUsage(),
+    });
+    tracer?.end(requestSpan, "success", {
+      usage: completion.usage ?? emptyTokenUsage(),
+      attrs: {
+        tool_calls: completion.toolCalls.length,
+        tool_schema_cache: cached.cache,
+        max_tokens: requestMaxTokens ?? null,
+      },
+    });
+    return completion;
+  } catch (error) {
+    const classified = classifyUnknownError(error);
+    tracer?.end(requestSpan, classified.outcome, { error_class: classified.error_class });
+    throw error;
   }
+}
 
-  await options.host.emit("provider_response", {
-    providerApi: options.providerApi ?? "unknown",
-    model: requestedModel,
-    usage: completion.usage ?? emptyTokenUsage(),
-  });
-  return completion;
+function resolveRegistration(options: AgentLoopOptions) {
+  const name = options.providerName ?? options.host.model?.provider;
+  if (!name) return undefined;
+  return options.host.getProvider(name);
 }
 
 async function consumeStream(
   client: LlmClient,
   request: Parameters<LlmClient["complete"]>[0],
   options: AgentLoopOptions,
+  parentSpanId?: string,
 ): Promise<ChatCompletionResponse> {
   if (!client.completeStream) {
     return client.complete(request, { signal: options.signal });
   }
+  const { getGlobalTracer, classifyUnknownError } = await import("./perf/index.ts");
+  const tracer = getGlobalTracer();
+  const completionSpan = tracer?.start("provider.completion", { parentId: parentSpanId });
+  let firstToken: ReturnType<NonNullable<typeof tracer>["start"]> | undefined = tracer?.start(
+    "provider.first_token",
+    { parentId: parentSpanId },
+  );
   let content = "";
   let toolCalls: ChatToolCall[] = [];
   let usage: TokenUsage = emptyTokenUsage();
   let raw: unknown;
   let sawDelta = false;
-  for await (const event of client.completeStream(request, { signal: options.signal })) {
-    if (event.type === "thinking_delta") {
-      options.onThinkingDelta?.(event.text);
-    } else if (event.type === "text_delta") {
-      sawDelta = true;
-      options.onAssistantDelta?.(event.text);
-      content += event.text;
-    } else if (event.type === "tool_calls_done") {
-      toolCalls = [...event.toolCalls];
-    } else if (event.type === "usage") {
-      usage = event.usage;
-    } else if (event.type === "done") {
-      content = event.content;
-      toolCalls = [...event.toolCalls];
-      usage = event.usage;
-      raw = event.raw;
+  try {
+    for await (const event of client.completeStream(request, { signal: options.signal })) {
+      if (event.type === "thinking_delta") {
+        options.onThinkingDelta?.(event.text);
+      } else if (event.type === "text_delta") {
+        if (firstToken) {
+          tracer?.end(firstToken, "success");
+          firstToken = undefined;
+        }
+        sawDelta = true;
+        options.onAssistantDelta?.(event.text);
+        content += event.text;
+      } else if (event.type === "tool_calls_done") {
+        if (firstToken) {
+          tracer?.end(firstToken, "success", { attrs: { via: "tool_calls" } });
+          firstToken = undefined;
+        }
+        toolCalls = [...event.toolCalls];
+      } else if (event.type === "usage") {
+        usage = event.usage;
+      } else if (event.type === "done") {
+        if (firstToken) {
+          tracer?.end(firstToken, "success", { attrs: { via: "done" } });
+          firstToken = undefined;
+        }
+        content = event.content;
+        toolCalls = [...event.toolCalls];
+        usage = event.usage;
+        raw = event.raw;
+      }
     }
+    if (!sawDelta && content.length > 0) {
+      options.onAssistantDelta?.(content);
+    }
+    if (firstToken) {
+      tracer?.end(firstToken, "success", { attrs: { via: "empty" } });
+    }
+    tracer?.end(completionSpan, "success", { usage });
+    return { content, toolCalls, usage, raw };
+  } catch (error) {
+    const classified = classifyUnknownError(error);
+    if (firstToken) {
+      tracer?.end(firstToken, classified.outcome, { error_class: classified.error_class });
+    }
+    tracer?.end(completionSpan, classified.outcome, { error_class: classified.error_class });
+    throw error;
   }
-  if (!sawDelta && content.length > 0) {
-    options.onAssistantDelta?.(content);
-  }
-  return { content, toolCalls, usage, raw };
 }
 
 async function appendToolResults(
@@ -398,6 +500,12 @@ async function appendToolResults(
   if (options.signal?.aborted) {
     return { calls: 0, errors: 0, cancelled: true };
   }
+
+  const { getGlobalTracer } = await import("./perf/index.ts");
+  const tracer = getGlobalTracer();
+  const batchSpan = tracer?.start("tool.batch", {
+    attrs: { tools: calls.length, parallel: options.parallelToolCalls !== false },
+  });
 
   // Consume fingerprints in declaration order so parallel batches still count consecutive dups.
   const blocked = new Map<number, string>();
@@ -414,6 +522,7 @@ async function appendToolResults(
     for (let index = 0; index < calls.length; index += 1) {
       if (options.signal?.aborted) {
         await appendInterruptedResults(messages, options, calls.slice(index));
+        tracer?.end(batchSpan, "cancelled", { error_class: "abort", attrs: { tools: calls.length } });
         return { calls: index, errors: errors + calls.length - index, cancelled: true };
       }
       const call = calls[index]!;
@@ -503,10 +612,15 @@ async function appendToolResults(
     }
   }
 
+  const cancelled = options.signal?.aborted === true;
+  tracer?.end(batchSpan, cancelled ? "cancelled" : "success", {
+    attrs: { tools: calls.length, errors },
+    ...(cancelled ? { error_class: "abort" } : {}),
+  });
   return {
     calls: calls.length,
     errors,
-    cancelled: options.signal?.aborted === true,
+    cancelled,
   };
 }
 
@@ -685,12 +799,20 @@ async function emitToolResult(
       metadata: result.details && typeof result.details === "object" ? result.details as Record<string, unknown> : undefined,
     },
   });
+  const originalText = toolContentText(result.content);
   for (const item of processed) {
     const record = asRecord(item);
     if (record && Array.isArray(record.content)) {
+      const nextContent = record.content as ToolExecuteResult["content"];
+      const nextText = toolContentText(nextContent);
+      // Refuse empty hook overwrite when the tool actually returned body
+      // (guards mis-parsed evolve denoise payloads).
+      if (nextText.length === 0 && originalText.length > 0) {
+        continue;
+      }
       return {
-        content: record.content as ToolExecuteResult["content"],
-        isError: record.isError === true,
+        content: nextContent,
+        isError: record.isError === true ? true : result.isError,
         details: result.details,
       };
     }
@@ -698,15 +820,11 @@ async function emitToolResult(
   return result;
 }
 
-function toProviderTools(tools: readonly ToolDefinition[]) {
-  return tools.map((tool) => ({
-    type: "function" as const,
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    },
-  }));
+function toolContentText(content: ToolExecuteResult["content"] | undefined): string {
+  if (!content || content.length === 0) return "";
+  return content
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

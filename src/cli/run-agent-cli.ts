@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { runSession } from "../runtime/session.ts";
 import registerXioRuntime from "./xio-extension.ts";
@@ -16,21 +18,17 @@ export async function runAgentCli(xioArgs: XioArgs, write: (chunk: string) => vo
   if (xioArgs.resume?.action === "delete") {
     const releaseLease = await store.acquireLease(xioArgs.resume.id);
     try {
-      const stored = await store.load(xioArgs.resume.id);
-      if (stored.workspace?.mode === "worktree" && stored.workspace.session_id) {
-        await WorktreeSandbox.releaseSessionCheckpoints({
-          mainRoot: stored.workspace.main_root,
-          sessionId: stored.workspace.session_id,
-        });
-      }
-      await store.remove(xioArgs.resume.id);
+      await deleteStoredSession(store, xioArgs.resume.id);
     } finally {
       await releaseLease();
     }
     write(`Deleted session ${xioArgs.resume.id}\n`);
     return 0;
   }
-  const mainRoot = await WorktreeSandbox.resolveMainRoot(process.cwd());
+  // Resolve git root once for resume lookup + prepareLaunch (no duplicate provenance git).
+  const cwd = process.cwd();
+  const gitRoot = await WorktreeSandbox.tryResolveMainRoot(cwd);
+  const mainRoot = gitRoot ?? path.resolve(cwd);
   const stored = await loadRequestedSession({ xioArgs, mainRoot, store });
   if (xioArgs.resume?.action === "list" && !stored) {
     return 0;
@@ -39,11 +37,12 @@ export async function runAgentCli(xioArgs: XioArgs, write: (chunk: string) => vo
   const sessionId = stored?.metadata.id ?? store.createId();
   const releaseLease = await store.acquireLease(sessionId);
   try {
-    const launch = await prepareLaunch(process.cwd(), process.env, {
+    const launch = await prepareLaunch(cwd, process.env, {
       runtimeExtensionEnabled: xioArgs.runtimeExtensionEnabled,
       allowDirty: xioArgs.allowDirty,
       sessionId: recovered && !recovered.filesRecoverable ? undefined : sessionId,
       resumeWorkspace: recovered?.filesRecoverable ? recovered.workspace : undefined,
+      gitRoot,
     });
     if (launch.worktree && recovered?.filesRecoverable && recovered.execution?.checkpoint) {
       await WorktreeSandbox.validateCheckpoint(launch.worktree, recovered.execution.checkpoint);
@@ -100,6 +99,7 @@ async function runPreparedLaunch(input: Readonly<{
         worktree_path: input.launch.worktree.worktreePath,
         branch: input.launch.worktree.branch,
         base_ref: input.launch.worktree.baseRef,
+        baseline_tree: input.launch.worktree.baselineTree,
         repo_id: input.launch.worktree.repoId,
         session_id: input.launch.worktree.sessionId,
         epoch: input.recovered?.workspace?.epoch ?? 0,
@@ -111,6 +111,7 @@ async function runPreparedLaunch(input: Readonly<{
       },
       execution: snapshot.execution,
       createdAt: input.stored?.metadata.created_at,
+      durability: snapshot.durability ?? "snapshot",
     }).then(() => undefined),
     registerExtensions: createExtensionRegistrar(input.launch),
   };
@@ -126,6 +127,50 @@ function restoredModel(stored: StoredSession | undefined): SessionOptions["model
     id: stored.metadata.model.id,
     name: stored.metadata.model.id,
   };
+}
+
+/**
+ * Delete session metadata only after associated Git resources are cleaned.
+ * active/retained worktree sessions must remove the registered worktree, branch,
+ * and checkpoint refs; identity mismatch fails closed without deleting metadata.
+ */
+export async function deleteStoredSession(store: SessionStore, id: string): Promise<void> {
+  const stored = await store.load(id);
+  const workspace = stored.workspace;
+
+  if (workspace?.mode === "worktree" && workspace.session_id && workspace.main_root) {
+    const mainRoot = workspace.main_root;
+    const sessionId = workspace.session_id;
+    const lifecycle = workspace.lifecycle;
+
+    if (lifecycle === "active" || lifecycle === "retained") {
+      const session = {
+        mainRoot,
+        worktreePath: workspace.worktree_path,
+        branch: workspace.branch,
+        sessionId,
+        repoId: workspace.repo_id,
+        baseRef: workspace.base_ref,
+        baselineTree: workspace.baseline_tree ?? "",
+      };
+      for (const [key, value] of Object.entries(session)) {
+        if (key === "baselineTree") continue;
+        if (!value) {
+          throw new Error(`session delete refused: worktree identity incomplete (${key})`);
+        }
+      }
+      // Attach validates repo id, path, branch, and registration — fail closed on mismatch.
+      const attached = await WorktreeSandbox.attach(
+        session as import("../../extensions/xio-sandbox/src/worktree-sandbox.ts").WorktreeSession,
+      );
+      await WorktreeSandbox.remove(attached, { force: true });
+    }
+
+    // All worktree sessions clear checkpoint refs before metadata deletion.
+    await WorktreeSandbox.releaseSessionCheckpoints({ mainRoot, sessionId });
+  }
+
+  await store.remove(id);
 }
 
 function createExtensionRegistrar(launch: LaunchPlan): SessionOptions["registerExtensions"] {

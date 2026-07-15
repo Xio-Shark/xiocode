@@ -12,6 +12,8 @@ export type WorktreeSession = Readonly<{
   sessionId: string;
   repoId: string;
   baseRef: string;
+  /** Git tree of visible files at session start (no ignored). Dirty identity. */
+  baselineTree: string;
 }>;
 
 export type WorktreeCreateOptions = Readonly<{
@@ -40,7 +42,8 @@ export type WorktreeAttachOptions = Readonly<{
   baseDir?: string;
 }>;
 export const DEFAULT_WORKTREE_CONFIG: WorktreeConfig = {
-  enabled: true,
+  /** Opt-in outer worktree sandbox; default is main cwd (no worktree, git optional). */
+  enabled: false,
   retainOnReject: false,
   allowDirty: false,
 };
@@ -50,14 +53,29 @@ export class WorktreeSandbox {
     return createHash("sha256").update(path.resolve(mainRoot)).digest("hex").slice(0, 16);
   }
 
-  static async resolveMainRoot(cwd: string): Promise<string> {
+  /** Git toplevel when cwd is inside a repo; undefined otherwise (no throw). */
+  static async tryResolveMainRoot(cwd: string): Promise<string | undefined> {
     const result = await git(cwd, ["rev-parse", "--show-toplevel"]);
     if (result.code !== 0) {
+      return undefined;
+    }
+    const top = result.stdout.trim();
+    return top.length > 0 ? path.resolve(top) : undefined;
+  }
+
+  /**
+   * Git toplevel for worktree mode. Throws when not inside a git repo.
+   * Prefer `tryResolveMainRoot` when git is optional (default main-cwd mode).
+   */
+  static async resolveMainRoot(cwd: string): Promise<string> {
+    const top = await WorktreeSandbox.tryResolveMainRoot(cwd);
+    if (!top) {
       throw new Error(
-        "XioCode requires a git repository. Initialize with `git init` (and an initial commit) before starting.",
+        "Worktree mode requires a git repository. Initialize with `git init` (and an initial commit), "
+          + "or set `[worktree] enabled = false` to run in the current directory without a worktree.",
       );
     }
-    return path.resolve(result.stdout.trim());
+    return top;
   }
 
   static async create(options: WorktreeCreateOptions): Promise<WorktreeSession> {
@@ -72,13 +90,56 @@ export class WorktreeSandbox {
     const requestedBaseRef = options.baseRef ?? "HEAD";
     const baseRef = await gitOk(mainRoot, ["rev-parse", "--verify", `${requestedBaseRef}^{commit}`]);
 
+    // Capture launch-time visible tree before worktree mutation; ignored files stay out.
+    const baselineTree = await WorktreeSandbox.captureVisibleTree(mainRoot, baseRef);
+
     await mkdir(path.dirname(worktreePath), { recursive: true });
     const add = await git(mainRoot, ["worktree", "add", "-b", branch, worktreePath, baseRef]);
     if (add.code !== 0) {
       throw new Error(`failed to create worktree: ${add.stderr || add.stdout}`);
     }
 
-    return { mainRoot, worktreePath, branch, sessionId, repoId, baseRef };
+    await WorktreeSandbox.materializeBaselineTree(worktreePath, baselineTree, baseRef);
+
+    return { mainRoot, worktreePath, branch, sessionId, repoId, baseRef, baselineTree };
+  }
+
+  /**
+   * Capture the Git tree of user-visible files (tracked + untracked, no ignored).
+   * Uses a temporary index so the live index / staging area is untouched.
+   */
+  static async captureVisibleTree(repoRoot: string, baseRef: string): Promise<string> {
+    const root = path.resolve(repoRoot);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "xio-visible-tree-"));
+    const env = { GIT_INDEX_FILE: path.join(tempDir, "index") };
+    try {
+      await gitWithEnvOk(root, ["read-tree", baseRef], env);
+      // No -f: ignored files must not enter the session baseline / merge delta.
+      await gitWithEnvOk(root, ["add", "-A", "--", "."], env);
+      return await gitWithEnvOk(root, ["write-tree"], env);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Write baseline contents into a worktree without forging a branch commit:
+   * materialize tree, then mixed-reset so HEAD stays at baseRef.
+   */
+  static async materializeBaselineTree(
+    worktreePath: string,
+    baselineTree: string,
+    baseRef: string,
+  ): Promise<void> {
+    await gitOk(worktreePath, ["cat-file", "-e", `${baselineTree}^{tree}`]);
+    await gitOk(worktreePath, ["read-tree", "--reset", "-u", baselineTree]);
+    await gitOk(worktreePath, ["reset", "--mixed", baseRef]);
+  }
+
+  /** True when baseline is not the clean baseRef tree (launch had visible WIP). */
+  static async isDirtyBaseline(session: WorktreeSession): Promise<boolean> {
+    const cleanTree = await gitOk(session.mainRoot, ["rev-parse", `${session.baseRef}^{tree}`]);
+    return session.baselineTree !== cleanTree;
   }
 
   static async attach(input: WorktreeSession, options: WorktreeAttachOptions = {}): Promise<WorktreeSession> {
@@ -96,7 +157,14 @@ export class WorktreeSandbox {
       throw new Error(`worktree attach refused: expected branch ${input.branch}, got ${branch}`);
     }
     await gitOk(worktreePath, ["rev-parse", "--verify", `${input.baseRef}^{commit}`]);
-    return { ...input, mainRoot, worktreePath, repoId };
+
+    // Old v2 sessions may omit baselineTree (empty string from resume); treat as clean baseRef tree.
+    const baselineTree = input.baselineTree && input.baselineTree.length > 0
+      ? input.baselineTree
+      : await gitOk(mainRoot, ["rev-parse", `${input.baseRef}^{tree}`]);
+    await gitOk(mainRoot, ["cat-file", "-e", `${baselineTree}^{tree}`]);
+
+    return { ...input, mainRoot, worktreePath, repoId, baselineTree };
   }
 
   static async hasUncommittedChanges(session: WorktreeSession): Promise<boolean> {
@@ -109,8 +177,13 @@ export class WorktreeSandbox {
     return result.code === 0;
   }
 
+  /**
+   * True when agent produced changes beyond the launch baseline, or branch is ahead of main.
+   * Launch WIP alone is not "unmerged agent work".
+   */
   static async hasUnmergedChanges(session: WorktreeSession): Promise<boolean> {
-    if (await WorktreeSandbox.hasUncommittedChanges(session)) {
+    const currentTree = await WorktreeSandbox.captureVisibleTree(session.worktreePath, session.baseRef);
+    if (currentTree !== session.baselineTree) {
       return true;
     }
     const ahead = await git(session.mainRoot, ["rev-list", "--count", `HEAD..${session.branch}`]);
@@ -123,8 +196,14 @@ export class WorktreeSandbox {
   static async rollbackToSessionBaseline(session: WorktreeSession): Promise<void> {
     await WorktreeSandbox.assertWorktreeRoot(session);
     await gitOk(session.worktreePath, ["rev-parse", "--verify", `${session.baseRef}^{commit}`]);
+    await gitOk(session.worktreePath, ["cat-file", "-e", `${session.baselineTree}^{tree}`]);
     await gitOk(session.worktreePath, ["reset", "--hard", session.baseRef]);
     await gitOk(session.worktreePath, ["clean", "-ffdx"]);
+    await WorktreeSandbox.materializeBaselineTree(
+      session.worktreePath,
+      session.baselineTree,
+      session.baseRef,
+    );
   }
 
   static async captureTurnCheckpoint(session: WorktreeSession): Promise<TurnCheckpoint> {
@@ -214,6 +293,26 @@ export class WorktreeSandbox {
     return { text: stat, filesChanged: files.length, hasChanges: true };
   }
 
+  /** Summarize agent delta vs launch baseline (visible trees only). */
+  static async summarizeSinceBaseline(
+    session: WorktreeSession,
+  ): Promise<{ text: string; filesChanged: number; hasChanges: boolean }> {
+    await WorktreeSandbox.assertWorktreeRoot(session);
+    const currentTree = await WorktreeSandbox.captureVisibleTree(session.worktreePath, session.baseRef);
+    const names = await gitOk(session.worktreePath, ["diff", "--name-only", session.baselineTree, currentTree]);
+    const files = names.split("\n").filter((line) => line.length > 0);
+    if (files.length === 0) {
+      return { text: "(no changes relative to session baseline)", filesChanged: 0, hasChanges: false };
+    }
+    const unified = await gitOk(session.worktreePath, [
+      "diff",
+      "--no-ext-diff",
+      session.baselineTree,
+      currentTree,
+    ]);
+    return { text: unified, filesChanged: files.length, hasChanges: true };
+  }
+
   static async rollbackToTurnCheckpoint(session: WorktreeSession, checkpoint: TurnCheckpoint): Promise<void> {
     await WorktreeSandbox.assertWorktreeRoot(session);
     await gitOk(session.worktreePath, ["cat-file", "-e", `${checkpoint.tree}^{tree}`]);
@@ -278,6 +377,10 @@ export class WorktreeSandbox {
     }
   }
 
+  /**
+   * Turn-checkpoint tree: includes ignored files (`-f`) so ignored artifacts can be restored.
+   * Separate from visible baseline capture used for merge/summary.
+   */
   private static async writeWorktreeTree(worktreePath: string): Promise<string> {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "xio-turn-checkpoint-"));
     const env = { GIT_INDEX_FILE: path.join(tempDir, "index") };

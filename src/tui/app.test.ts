@@ -6,11 +6,38 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionHost } from "../runtime/extension-host.ts";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
-import { App, collectSlashCommands, filterSlashCommands, reduceEvent, slashQuery, toggleLatestExpandable, type ViewState } from "./app.ts";
+import {
+  App,
+  collectSlashCommands,
+  filterSlashCommands,
+  formatToolOutputBody,
+  estimateTranscriptEntryLines,
+  isExploreTool,
+  reduceEvent,
+  slashQuery,
+  sliceTranscriptWindow,
+  thoughtLabel,
+  toggleLatestExpandable,
+  type ViewState,
+} from "./app.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
+import { theme, truncateToolDetail } from "./theme.ts";
+
+import { WorkspacePerceptionService } from "../runtime/workspace/index.ts";
 
 import type { PreparedSession } from "../runtime/session.ts";
 import type { ChatMessage } from "../runtime/types.ts";
+
+function stubWorkspacePerception(): WorkspacePerceptionService {
+  return new WorkspacePerceptionService({
+    root: "/tmp",
+    gitnexus: {
+      name: "gitnexus",
+      isAvailable: async () => false,
+      queryStructure: async () => ({ kind: "unavailable", reason: "test" }),
+    },
+  });
+}
 
 describe("App", () => {
   afterEach(() => cleanup());
@@ -36,6 +63,7 @@ describe("App", () => {
       }),
       abortTurn() {},
       getMessages: () => [],
+      workspacePerception: stubWorkspacePerception(),
       async close() {},
     };
 
@@ -51,7 +79,8 @@ describe("App", () => {
     expect(output).toContain("think:off");
     expect(output).toContain("perm:auto");
     expect(output).toContain("/tmp/project");
-    expect(output).toContain("Shift+Tab 权限");
+    expect(output).toContain("Shift+Tab");
+    expect(output).toMatch(/PgUp|滚动/);
     expect(output).toContain(">");
     expect(output).not.toContain("idle");
     expect(output).not.toMatch(/\|\s*think:off\s*\|/);
@@ -87,9 +116,8 @@ describe("App", () => {
       cwd: "/tmp/project",
       async onExit() {},
     }));
-    bridge.sink.notify?.("diff --git a/a.ts b/a.ts\n-old\n+new");
 
-    const answer = bridge.ask("Merge changes?");
+    const answer = bridge.ask("Merge changes?", "diff --git a/a.ts b/a.ts\n-old\n+new");
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(instance.lastFrame()).toContain("Merge changes?");
     expect(instance.lastFrame()).toContain("+new");
@@ -107,9 +135,8 @@ describe("App", () => {
       async onExit() {},
     }));
     const longDiff = Array.from({ length: 80 }, (_, index) => `+line-${index}`).join("\n");
-    bridge.sink.notify?.(longDiff);
 
-    const answer = bridge.ask("Merge long diff?");
+    const answer = bridge.ask("Merge long diff?", longDiff);
     await new Promise((resolve) => setTimeout(resolve, 10));
     const frame = instance.lastFrame() ?? "";
     expect(frame).toContain("Merge long diff?");
@@ -244,7 +271,7 @@ describe("App", () => {
     bridge.sink.onContextCompaction?.({ stage: "start", mode: "automatic", before: 80 });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(instance.lastFrame()).toContain("think:off · perm:auto · compacting... · /tmp/project");
-    expect(instance.lastFrame()).toContain("Shift+Tab 权限");
+    expect(instance.lastFrame()).toContain("Shift+Tab");
 
     bridge.sink.onContextCompaction?.({
       stage: "success",
@@ -282,7 +309,86 @@ describe("App", () => {
     expect(state.entries.at(-1)).toMatchObject({ kind: "assistant", text: "final" });
   });
 
-  it("renders Thought for Ns and bullet assistant in the tree", () => {
+  it("collapses open thinking when a tool starts (avoids Thought/⚙ line merge)", () => {
+    let state: ViewState = emptyView();
+    state = reduceEvent(state, { kind: "thinking-delta", text: "plan next step" });
+    expect(state.entries.at(-1)).toMatchObject({ kind: "thinking", collapsed: false });
+    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "pwd", callId: "t1" });
+    const thinking = state.entries.find((entry) => entry.kind === "thinking");
+    expect(thinking).toMatchObject({ collapsed: true, thoughtSeconds: expect.any(Number) });
+    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", title: "bash", detail: "pwd" });
+  });
+
+  it("labels think rows and empty tool output for layered display", () => {
+    expect(thoughtLabel({ collapsed: false })).toBe("thinking…");
+    expect(thoughtLabel({ collapsed: true, thoughtSeconds: 8 })).toBe("think 8s");
+    expect(isExploreTool("explore")).toBe(true);
+    expect(isExploreTool("bash")).toBe(false);
+    expect(formatToolOutputBody("", true, true)).toEqual([`  ${theme.sym.nest} (empty)`]);
+    expect(formatToolOutputBody("hi", true, true)[0]).toContain("hi");
+    expect(truncateToolDetail("a".repeat(100)).endsWith("…")).toBe(true);
+  });
+
+  it("slices transcript window for scroll (offset 0 = latest, unit heights)", () => {
+    const entries = Array.from({ length: 20 }, (_, i) => i);
+    const bottom = sliceTranscriptWindow(entries, 5, 0);
+    expect(bottom.visible).toEqual([15, 16, 17, 18, 19]);
+    expect(bottom.hiddenAbove).toBe(15);
+    expect(bottom.hiddenBelow).toBe(0);
+    expect(bottom.maxOffset).toBe(15);
+
+    const up = sliceTranscriptWindow(entries, 5, 3);
+    expect(up.visible).toEqual([12, 13, 14, 15, 16]);
+    expect(up.hiddenAbove).toBe(12);
+    expect(up.hiddenBelow).toBe(3);
+
+    const top = sliceTranscriptWindow(entries, 5, 10_000);
+    expect(top.offset).toBe(15);
+    expect(top.visible).toEqual([0, 1, 2, 3, 4]);
+    expect(top.hiddenAbove).toBe(0);
+  });
+
+  it("line-based window: few tall tools still allow scroll (maxOffset > 0)", () => {
+    // Three tools each ~10 rows; viewport 12 → cannot show all; must scroll.
+    const entries = [
+      { id: 1, kind: "tool" as const, text: "done", title: "read", output: "a\n".repeat(12) },
+      { id: 2, kind: "tool" as const, text: "done", title: "glob", output: "b\n".repeat(12) },
+      { id: 3, kind: "tool" as const, text: "done", title: "bash", output: "c\n".repeat(12) },
+    ];
+    const height = (entry: (typeof entries)[number]) => estimateTranscriptEntryLines(entry, 80);
+    const total = entries.reduce((sum, e) => sum + height(e), 0);
+    expect(total).toBeGreaterThan(12);
+
+    const bottom = sliceTranscriptWindow(entries, 12, 0, height);
+    expect(bottom.maxOffset).toBeGreaterThan(0);
+    expect(bottom.hiddenBelow).toBe(0);
+    // Bottom window should include the last tool.
+    expect(bottom.visible.some((e) => e.id === 3)).toBe(true);
+
+    const up = sliceTranscriptWindow(entries, 12, Math.min(15, bottom.maxOffset), height);
+    expect(up.offset).toBeGreaterThan(0);
+    expect(up.hiddenBelow).toBe(up.offset);
+    // Scrolling up should reveal older tools.
+    expect(up.visible.some((e) => e.id === 1 || e.id === 2)).toBe(true);
+  });
+
+  it("estimates multi-line tool rows taller than a single entry", () => {
+    const short = estimateTranscriptEntryLines({
+      id: 1, kind: "notice", text: "hi",
+    }, 80);
+    const tall = estimateTranscriptEntryLines({
+      id: 2,
+      kind: "tool",
+      text: "done",
+      title: "read",
+      output: Array.from({ length: 20 }, (_, i) => `${i}|line`).join("\n"),
+      previewCollapsed: true,
+    }, 80);
+    expect(short).toBe(1);
+    expect(tall).toBeGreaterThan(short + 5);
+  });
+
+  it("renders think Ns and bullet assistant in the tree", () => {
     let state: ViewState = emptyView();
     state = reduceEvent(state, { kind: "thinking-delta", text: "plan" });
     state = {
@@ -296,6 +402,7 @@ describe("App", () => {
     state = reduceEvent(state, { kind: "assistant-delta", text: "你好" });
     const thinking = state.entries.find((entry) => entry.kind === "thinking");
     expect(thinking).toMatchObject({ collapsed: true, thoughtSeconds: 8 });
+    expect(thoughtLabel(thinking!)).toBe("think 8s");
     expect(state.entries.at(-1)).toMatchObject({ kind: "assistant", text: "你好" });
   });
 
@@ -442,6 +549,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     }),
     abortTurn() {},
     getMessages: () => messages,
+    workspacePerception: stubWorkspacePerception(),
     async close() {},
   };
 }

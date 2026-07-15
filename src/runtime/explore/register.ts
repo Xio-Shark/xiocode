@@ -5,9 +5,14 @@ import {
   createExploreTool,
   EXPLORE_TOOL_NAME,
   formatPrimaryExploreAddendum,
+  stripMultiExploreAddendum,
 } from "./explore-tool.ts";
-import { resolveExploreConfig } from "./resolve.ts";
-import { estimateExploreScale, suggestExploreConcurrency, type ExploreScaleEstimate } from "./scale.ts";
+import {
+  detectUserExploreFanoutRequest,
+  resolveExploreConcurrencyBudget,
+} from "./policy.ts";
+import { exploreFallbackModelRef, resolveExploreConfig } from "./resolve.ts";
+import { estimateExploreScale, type ExploreScaleEstimate } from "./scale.ts";
 import { withModelId } from "./subagent.ts";
 
 import type { ResolvedExploreConfig } from "./types.ts";
@@ -36,75 +41,177 @@ export type RegisterExploreOptions = Readonly<{
   workspaceRoot: string;
   env?: NodeJS.ProcessEnv;
   onNotify?: (message: string) => void;
+  onStatus?: (key: string, text: string | undefined) => void;
+}>;
+
+export type ExploreCapabilityHandle = Readonly<{
+  /** True after the explore tool is registered. */
+  isRegistered: () => boolean;
+  /**
+   * Ensure explore is installed. `ultra` force-enables even when config is off.
+   * Idempotent. Returns resolved config or undefined when no model identity exists.
+   */
+  ensure: (reason: "config" | "ultra") => Promise<ResolvedExploreConfig | undefined>;
+  getResolved: () => ResolvedExploreConfig | undefined;
 }>;
 
 /**
- * Register the `explore` tool + primary-agent prompt addendum when [explore] is enabled.
- * Returns the resolved config, or undefined when disabled.
+ * Register multi-explore capability.
+ * - `[explore] enabled = true` → install at session start
+ * - thinking=`ultra` → auto force-enable (even if config disabled), using explore.model
+ *   or the session primary model as worker model
  */
 export async function registerExploreCapability(
   host: ExtensionHost,
   options: RegisterExploreOptions,
-): Promise<ResolvedExploreConfig | undefined> {
-  const resolved = resolveExploreConfig(
-    options.runtimeConfig.explore,
-    options.runtimeConfig.general,
-  );
-  if (!resolved) {
-    return undefined;
-  }
-
-  ensureExploreModelRegistered(host, resolved);
-
-  host.registerTool(createExploreTool({
-    config: resolved,
-    cwd: options.cwd,
-    workspaceRoot: options.workspaceRoot,
-    getProvider: (name) => host.getProvider(name),
-    env: options.env,
-    onNotify: options.onNotify,
-  }));
-
-  // Keep startup snappy: budget ~50ms for scale probe; fall back to default-4 band.
-  let suggestedConcurrency = Math.min(4, resolved.maxConcurrency);
+): Promise<ExploreCapabilityHandle> {
+  let registered = false;
+  let resolved: ResolvedExploreConfig | undefined;
+  let lastUserPrompt = "";
+  let scale: ExploreScaleEstimate | undefined;
   let scaleNote: string | undefined;
-  try {
-    const scale = await estimateExploreScaleBounded(options.workspaceRoot, 50);
-    if (scale) {
-      suggestedConcurrency = suggestExploreConcurrency(scale, resolved.maxConcurrency);
-      scaleNote = `${scale.tier} (~${scale.fileCount}${scale.capped ? "+" : ""} source-like files)`;
-    } else {
-      scaleNote = "default band (scale probe skipped for fast start)";
+  let scaleProbed = false;
+
+  const probeScale = async (): Promise<void> => {
+    if (scaleProbed) return;
+    scaleProbed = true;
+    try {
+      scale = await estimateExploreScaleBounded(options.workspaceRoot, 50);
+      if (scale) {
+        scaleNote = `${scale.tier} (~${scale.fileCount}${scale.capped ? "+" : ""} source-like files)`;
+      } else {
+        scaleNote = "default band (scale probe skipped for fast start)";
+      }
+    } catch {
+      scaleNote = "unknown (scale probe failed; use small fan-out)";
     }
-  } catch {
-    scaleNote = "unknown (scale probe failed; use small fan-out)";
-  }
+  };
 
-  const exploreAddendum = formatPrimaryExploreAddendum({
-    maxConcurrency: resolved.maxConcurrency,
-    suggestedConcurrency,
-    scaleNote,
-    partitionHint: resolved.partitionHint,
-  });
+  const fallbackModel = (): string | undefined => {
+    const session = host.model;
+    return exploreFallbackModelRef({
+      exploreModel: options.runtimeConfig.explore.model,
+      sessionProvider: session?.provider,
+      sessionModel: session?.id,
+      defaultProvider: options.runtimeConfig.general.defaultProvider,
+      defaultModel: options.runtimeConfig.general.defaultModel,
+    });
+  };
 
-  host.on("before_agent_start", (_payload, ctx) => {
-    const base = ctx?.getSystemPrompt?.() ?? "";
-    if (base.includes("## Multi-explore")) {
+  const tryResolve = (forceEnable: boolean): ResolvedExploreConfig | undefined =>
+    resolveExploreConfig(
+      options.runtimeConfig.explore,
+      options.runtimeConfig.general,
+      {
+        forceEnable,
+        fallbackModel: fallbackModel(),
+      },
+    );
+
+  const install = async (reason: "config" | "ultra"): Promise<ResolvedExploreConfig | undefined> => {
+    if (registered && resolved) {
+      return resolved;
+    }
+
+    const next = tryResolve(reason === "ultra" || options.runtimeConfig.explore.enabled);
+    if (!next) {
+      if (reason === "ultra") {
+        options.onNotify?.(
+          "ultra multi-explore unavailable: set [explore].model or general.default_model / connect a provider model",
+        );
+      }
       return undefined;
     }
-    const next = base.length > 0
-      ? `${base}\n\n${exploreAddendum}`
-      : exploreAddendum;
-    return { systemPrompt: next };
-  });
 
-  options.onNotify?.(
-    `explore enabled: ${resolved.provider}/${resolved.model} `
-      + `(suggest ${suggestedConcurrency}/${resolved.maxConcurrency} parallel`
-      + `${scaleNote ? `, ${scaleNote}` : ""}, ${resolved.maxTurns} turns`
-      + `${resolved.partitionHint ? `, partition: ${resolved.partitionHint}` : ""})`,
-  );
-  return resolved;
+    await probeScale();
+    ensureExploreModelRegistered(host, next);
+
+    if (!registered) {
+      host.registerTool(createExploreTool({
+        config: next,
+        cwd: options.cwd,
+        workspaceRoot: options.workspaceRoot,
+        getProvider: (name) => host.getProvider(name),
+        env: options.env,
+        onNotify: options.onNotify,
+        onStatus: options.onStatus,
+        getThinkingLevel: () => host.getThinkingLevel(),
+        getUserPrompt: () => lastUserPrompt,
+      }));
+
+      host.on("before_agent_start", (payload, ctx) => {
+        if (!resolved) return undefined;
+        const record = payload && typeof payload === "object" && !Array.isArray(payload)
+          ? payload as Record<string, unknown>
+          : undefined;
+        if (typeof record?.prompt === "string") {
+          lastUserPrompt = record.prompt;
+        }
+
+        const userRequest = detectUserExploreFanoutRequest(lastUserPrompt);
+        const budget = resolveExploreConcurrencyBudget({
+          thinkingLevel: host.getThinkingLevel(),
+          configMax: resolved.maxConcurrency,
+          userRequest,
+          scale,
+          signal: {
+            userText: lastUserPrompt,
+            exploreRequested: userRequest.highFanout || /\bexplore\b/i.test(lastUserPrompt),
+          },
+        });
+
+        const base = stripMultiExploreAddendum(ctx?.getSystemPrompt?.() ?? "");
+        const exploreAddendum = formatPrimaryExploreAddendum({
+          maxConcurrency: resolved.maxConcurrency,
+          suggestedConcurrency: budget.suggested,
+          effectiveMax: budget.effectiveMax,
+          mode: budget.mode,
+          lane: budget.lane,
+          scaleNote,
+          partitionHint: resolved.partitionHint,
+          thinkingLevel: host.getThinkingLevel(),
+        });
+        const prompt = base.length > 0
+          ? `${base}\n\n${exploreAddendum}`
+          : exploreAddendum;
+        return { systemPrompt: prompt };
+      });
+      registered = true;
+    }
+
+    resolved = next;
+    const initialBudget = resolveExploreConcurrencyBudget({
+      thinkingLevel: host.getThinkingLevel(),
+      configMax: resolved.maxConcurrency,
+      userRequest: { highFanout: false },
+      scale,
+    });
+    const auto = reason === "ultra" && !options.runtimeConfig.explore.enabled;
+    options.onNotify?.(
+      (auto ? "ultra auto-enabled multi-explore: " : "subagent explore ready: ")
+        + `${resolved.provider}/${resolved.model} `
+        + `(lane=${initialBudget.lane ?? "standard"} cap≤${initialBudget.effectiveMax}; `
+        + `deep ceiling ≤${Math.max(8, initialBudget.suggested)}; `
+        + `user-high ≤${resolved.maxConcurrency}; `
+        + `${scaleNote ? `${scaleNote}, ` : ""}${resolved.maxTurns} turns`
+        + `${resolved.partitionHint ? `, partition: ${resolved.partitionHint}` : ""})`
+        + (auto
+          ? " — primary MUST call `explore` for repo work (see UI: ⊹ subagent / subs:N)"
+          : " — primary must call `explore` for workers to appear in the UI"),
+    );
+    return resolved;
+  };
+
+  // Config opt-in, or session already on ultra (default_thinking_level / resume).
+  if (options.runtimeConfig.explore.enabled || host.getThinkingLevel() === "ultra") {
+    await install(options.runtimeConfig.explore.enabled ? "config" : "ultra");
+  }
+
+  return {
+    isRegistered: () => registered,
+    ensure: install,
+    getResolved: () => resolved,
+  };
 }
 
 function ensureExploreModelRegistered(

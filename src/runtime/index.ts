@@ -12,7 +12,15 @@ export {
   isContextCompactionError,
 } from "./context-compaction.ts";
 export { prepareSession, runSession, toDoneContract } from "./session.ts";
-export { createStdoutSessionUiSink, TOOL_OUTPUT_PREVIEW_LINES, previewText, toolCallDetail, toolResultOutput } from "./session-ui.ts";
+export {
+  createStdoutSessionUiSink,
+  TOOL_OUTPUT_PREVIEW_LINES,
+  formatExploreToolLabel,
+  isExploreToolName,
+  previewText,
+  toolCallDetail,
+  toolResultOutput,
+} from "./session-ui.ts";
 export { SessionStore } from "./session-store.ts";
 export { createBuiltinTools } from "./tools/builtin.ts";
 export { createLlmClient, resolveApiKey } from "./providers/client.ts";
@@ -39,6 +47,14 @@ export {
 } from "./plan/index.ts";
 export { runDoneContract, formatDoneContractFeedback } from "./verify/done-contract.ts";
 export { verifyWriteBack, hashContent } from "./verify/write-back.ts";
+export {
+  EvidenceStore,
+  EvidenceStaleError,
+  WorkspaceMap,
+  WorkspacePerceptionService,
+  createGitNexusAdapter,
+  probeGitNexus,
+} from "./workspace/index.ts";
 
 export type {
   ChatCompletionRequest,
@@ -56,6 +72,8 @@ export type {
   ModelInfo,
   ProviderModelConfig,
   ProviderRegistration,
+  ProviderToolChoice,
+  ProviderToolChoiceScope,
   StreamEvent,
   ThinkingDisplay,
   ThinkingLevel,

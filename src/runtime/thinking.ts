@@ -46,13 +46,78 @@ export function findProviderModel(
   return registration?.models.find((model) => model.id === modelId);
 }
 
-/** Levels the UI may offer for the active model. */
+/**
+ * Levels the UI may offer for the active model.
+ *
+ * - Explicit `thinkingLevelMap` keys still restrict the menu (opt-in API mapping).
+ * - Otherwise every model gets the full ladder so `/effort` and Tab cycling always work.
+ * - Product levels (`max` / `ultra`) stay in the UI; wire encoding is separate
+ *   (`openAiReasoningEffort`) so gateways never see unknown product-only tokens
+ *   unless the user mapped them explicitly.
+ */
 export function availableThinkingLevels(model: ProviderModelConfig | undefined): readonly ThinkingLevel[] {
-  if (!model) return THINKING_LEVELS;
+  if (!model?.thinkingLevelMap) return THINKING_LEVELS;
   const mapped = THINKING_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== undefined);
-  if (mapped.length > 0) return mapped;
-  if (model.reasoning) return THINKING_LEVELS;
-  return ["off"];
+  return mapped.length > 0 ? mapped : THINKING_LEVELS;
+}
+
+/**
+ * Default OpenAI-compat `reasoning_effort` when no thinking_level_map entry.
+ *
+ * Product UI keeps the full ladder (incl. max/ultra) for status + explore policy.
+ * Wire encoding follows each provider's documented enum:
+ *
+ * DeepSeek V4 (official docs):
+ *   - Possible values: high | max
+ *   - Compatibility: low/medium → high; xhigh → max
+ *   - Claude Code / Codex "max"/"ultra" are client effort menus; on DeepSeek both map to max
+ *     (ultra is not a DeepSeek API token — same pattern as Claude Code ultracode ≠ extra API enum)
+ *
+ * OpenAI-style: top wire tier is xhigh; product max/ultra → xhigh.
+ */
+const DEEPSEEK_REASONING_EFFORT: Readonly<Record<Exclude<ThinkingLevel, "off">, string>> = {
+  // Official: low/medium map to high; minimal treated the same for the short ladder.
+  minimal: "high",
+  low: "high",
+  medium: "high",
+  high: "high",
+  // Official: xhigh → max; max is a first-class value; ultra is client-only → max.
+  xhigh: "max",
+  max: "max",
+  ultra: "max",
+};
+
+const OPENAI_REASONING_EFFORT: Readonly<Record<Exclude<ThinkingLevel, "off">, string>> = {
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "xhigh",
+  ultra: "xhigh",
+};
+
+export function isDeepSeekReasoningModel(model: ProviderModelConfig | undefined): boolean {
+  const id = (model?.id ?? "").toLowerCase();
+  const name = (model?.name ?? "").toLowerCase();
+  return id.includes("deepseek") || name.includes("deepseek");
+}
+
+/**
+ * DeepSeek thinking toggle (OpenAI-compat body field `thinking`).
+ * Docs require `thinking: { type: "enabled" }` alongside reasoning_effort for thinking mode.
+ * Returns undefined for non-DeepSeek models (leave body alone).
+ */
+export function deepseekThinkingToggle(
+  level: ThinkingLevel | undefined,
+  model: ProviderModelConfig | undefined,
+): Readonly<{ type: "enabled" | "disabled" }> | undefined {
+  if (!isDeepSeekReasoningModel(model)) return undefined;
+  if (!level || level === "off") return { type: "disabled" };
+  // Explicit map to empty/null means "omit effort" — still leave thinking control alone unless off.
+  const mapped = model?.thinkingLevelMap?.[level];
+  if (mapped === null || mapped === "") return { type: "disabled" };
+  return { type: "enabled" };
 }
 
 export function cycleThinkingLevel(
@@ -82,7 +147,10 @@ export function openAiReasoningEffort(
   const mapped = model?.thinkingLevelMap?.[level];
   if (mapped === null || mapped === "") return undefined;
   if (typeof mapped === "string") return mapped;
-  return level;
+  // No explicit map entry: encode product levels to gateway-safe defaults.
+  // (Map presence with missing key also lands here so partial maps stay usable.)
+  const table = isDeepSeekReasoningModel(model) ? DEEPSEEK_REASONING_EFFORT : OPENAI_REASONING_EFFORT;
+  return table[level];
 }
 
 export type AnthropicThinkingWire = Readonly<{

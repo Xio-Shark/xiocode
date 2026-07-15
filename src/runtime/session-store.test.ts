@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionStore } from "./session-store.ts";
 import { CONTEXT_SUMMARY_NAME } from "./context-compaction.ts";
+import { JOURNAL_FILE } from "./session-wal.ts";
+import { recoverStoredSession } from "./session-recovery.ts";
 
 const roots: string[] = [];
 
@@ -179,5 +181,233 @@ describe("SessionStore", () => {
     await release();
     const releaseAgain = await second.acquireLease("leased");
     await releaseAgain();
+  });
+
+  it("journals mid-turn checkpoints without rewriting full state.json", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root, now: () => new Date("2026-07-15T00:00:00.000Z") });
+    const base = {
+      id: "wal1",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp/worktree",
+      mainRoot: "/tmp/main",
+      messages: [{ role: "user" as const, content: "hello" }],
+    };
+    await store.save(base);
+    const statePath = path.join(root, "wal1", "state.json");
+    const before = await stat(statePath);
+    const beforeText = await readFile(statePath, "utf8");
+
+    const afterTool = [
+      ...base.messages,
+      {
+        role: "assistant" as const,
+        content: "",
+        toolCalls: [{ id: "c1", name: "read", arguments: { path: "a.ts" } }],
+      },
+    ];
+    await store.save({
+      ...base,
+      messages: afterTool,
+      execution: {
+        phase: "tool_batch_running",
+        turn_id: "t1",
+        pending_tools: [{ id: "c1", name: "read" }],
+      },
+      durability: "journal",
+    });
+
+    const afterJournal = await stat(statePath);
+    expect(afterJournal.mtimeMs).toBe(before.mtimeMs);
+    expect(await readFile(statePath, "utf8")).toBe(beforeText);
+    const journalText = await readFile(path.join(root, "wal1", JOURNAL_FILE), "utf8");
+    expect(journalText.length).toBeLessThan(beforeText.length);
+    expect(journalText).toContain("append_messages");
+    expect(journalText).toContain("tool_batch_running");
+
+    const loaded = await store.load("wal1");
+    expect(loaded.messages).toHaveLength(2);
+    expect(loaded.execution?.phase).toBe("tool_batch_running");
+    expect(loaded.execution?.pending_tools).toEqual([{ id: "c1", name: "read" }]);
+  });
+
+  it("snapshots on turn complete and truncates the journal", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const base = {
+      id: "wal2",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp/worktree",
+      mainRoot: "/tmp/main",
+      messages: [{ role: "user" as const, content: "hello" }],
+    };
+    await store.save(base);
+    await store.save({
+      ...base,
+      messages: [...base.messages, { role: "assistant", content: "hi" }],
+      execution: { phase: "awaiting_provider", turn_id: "t1" },
+      durability: "journal",
+    });
+    expect((await readFile(path.join(root, "wal2", JOURNAL_FILE), "utf8")).trim().length).toBeGreaterThan(0);
+
+    await store.save({
+      ...base,
+      messages: [
+        ...base.messages,
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "next" },
+      ],
+      execution: { phase: "idle" },
+      durability: "snapshot",
+    });
+
+    const journalAfter = await readFile(path.join(root, "wal2", JOURNAL_FILE), "utf8");
+    expect(journalAfter.trim()).toBe("");
+    const state = JSON.parse(await readFile(path.join(root, "wal2", "state.json"), "utf8")) as {
+      messages: unknown[];
+      revision: number;
+    };
+    expect(state.messages).toHaveLength(3);
+    expect(state.revision).toBe(2);
+    const loaded = await store.load("wal2");
+    expect(loaded.messages).toHaveLength(3);
+    expect(loaded.execution?.phase).toBe("idle");
+  });
+
+  it("replays crash phases for recovery without re-executing tools", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const base = {
+      id: "crash",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp/worktree",
+      mainRoot: "/tmp/main",
+      worktreePath: "/tmp/worktree",
+      messages: [{ role: "user" as const, content: "do work" }],
+      workspace: {
+        mode: "worktree" as const,
+        lifecycle: "active" as const,
+        main_root: "/tmp/main",
+        worktree_path: "/tmp/worktree",
+        branch: "xio/crash",
+        base_ref: "a".repeat(40),
+        repo_id: "repo",
+        session_id: "crash",
+        epoch: 0,
+      },
+    };
+
+    // awaiting_provider
+    await store.save({
+      ...base,
+      execution: { phase: "awaiting_provider", turn_id: "t1" },
+    });
+    let recovered = recoverStoredSession(await store.load("crash"));
+    expect(recovered?.execution?.phase).toBe("idle");
+    expect(recovered?.interruptedTools).toBe(0);
+
+    // partial parallel tool batch
+    const withTools = [
+      ...base.messages,
+      {
+        role: "assistant" as const,
+        content: "",
+        toolCalls: [
+          { id: "r1", name: "read", arguments: { path: "a" } },
+          { id: "r2", name: "read", arguments: { path: "b" } },
+        ],
+      },
+      { role: "tool" as const, toolCallId: "r1", name: "read", content: "a-body" },
+    ];
+    await store.save({
+      ...base,
+      messages: withTools,
+      execution: {
+        phase: "tool_batch_running",
+        turn_id: "t1",
+        pending_tools: [{ id: "r2", name: "read" }],
+      },
+      durability: "journal",
+    });
+    // Fresh store instance simulates process crash + restart.
+    const reloaded = new SessionStore({ root });
+    recovered = recoverStoredSession(await reloaded.load("crash"));
+    expect(recovered?.interruptedTools).toBe(1);
+    expect(recovered?.messages.some((m) =>
+      m.role === "tool" && m.toolCallId === "r2" && String(m.content).includes("completion unknown")
+    )).toBe(true);
+
+    // completed batch (no pending)
+    await reloaded.save({
+      ...base,
+      messages: [
+        ...withTools,
+        { role: "tool", toolCallId: "r2", name: "read", content: "b-body" },
+      ],
+      execution: { phase: "tool_batch_running", turn_id: "t1" },
+      durability: "journal",
+    });
+    recovered = recoverStoredSession(await reloaded.load("crash"));
+    expect(recovered?.interruptedTools).toBe(0);
+
+    // turn completion snapshot
+    await reloaded.save({
+      ...base,
+      messages: [
+        ...withTools,
+        { role: "tool", toolCallId: "r2", name: "read", content: "b-body" },
+        { role: "assistant", content: "done" },
+      ],
+      execution: { phase: "idle" },
+      durability: "snapshot",
+    });
+    recovered = recoverStoredSession(await reloaded.load("crash"));
+    expect(recovered?.execution?.phase).toBe("idle");
+    expect(recovered?.messages.filter((m) => m.role === "assistant").at(-1)?.content).toBe("done");
+
+    // workspace finalization
+    await reloaded.save({
+      ...base,
+      messages: recovered!.messages.filter((m) => m.name !== "xiocode_session_recovery"),
+      workspace: { ...base.workspace, lifecycle: "merged" },
+      execution: { phase: "idle" },
+      durability: "snapshot",
+    });
+    const finalized = await reloaded.load("crash");
+    expect(finalized.workspace?.lifecycle).toBe("merged");
+  });
+
+  it("fails closed on corrupt journal without dropping to empty state", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    await store.save({
+      id: "badj",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [{ role: "user", content: "x" }],
+    });
+    await writeFile(path.join(root, "badj", JOURNAL_FILE), "{not-json\n", "utf8");
+    await expect(store.load("badj")).rejects.toThrow(/corrupt session journal|failed to load session badj/i);
+  });
+
+  it("keeps legacy v2 without journal readable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    await store.save({
+      id: "legacyv2",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [{ role: "user", content: "only-snapshot" }],
+    });
+    await rm(path.join(root, "legacyv2", JOURNAL_FILE), { force: true });
+    const loaded = await store.load("legacyv2");
+    expect(loaded.messages[0]?.content).toBe("only-snapshot");
   });
 });

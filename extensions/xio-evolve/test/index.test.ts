@@ -260,6 +260,61 @@ describe("registerXioEvolve", () => {
     expect(content).not.toContain("line4");
   });
 
+  it("denoises nested agent-loop tool_result payloads (call/result shape)", async () => {
+    const registration = createRegistration();
+    const denoiser = new ResultDenoiser({ maxReadLines: 500, enableOutlineGeneration: false });
+    registerXioEvolve(registration.api, {
+      runStore: new RunStore({ root: "/tmp/xio-index-nested" }),
+      resultDenoiser: denoiser,
+    });
+    await registration.handlers.get("session_start")?.[0]?.({});
+    const body = "1|# bm_bff_web\n2|\n3|hello from worktree";
+    const result = await registration.handlers.get("tool_result")?.[0]?.({
+      call: { id: "call_1", name: "read", args: { path: "README.md" } },
+      result: {
+        content: [{ type: "text", text: body }],
+        isError: false,
+      },
+    });
+    const raw = result && typeof result === "object" && "content" in result
+      ? (result as { content: unknown }).content
+      : "";
+    const content = Array.isArray(raw)
+      ? raw.map((block) => (typeof block === "object" && block && "text" in block ? String((block as { text: unknown }).text) : "")).join("\n")
+      : String(raw);
+    expect(content).toContain("bm_bff_web");
+    expect(content).toContain("hello from worktree");
+    expect(content.length).toBeGreaterThan(10);
+  });
+
+  it("keeps nested bash tool_result stdout non-empty after evolve denoise", async () => {
+    const registration = createRegistration();
+    registerXioEvolve(registration.api, {
+      runStore: new RunStore({ root: "/tmp/xio-index-bash-nested" }),
+      resultDenoiser: new ResultDenoiser({ maxBashChars: 4_000 }),
+    });
+    await registration.handlers.get("session_start")?.[0]?.({});
+    const bashBody =
+      "exit_code=0\n\nstdout:\nAGENTS.md\nREADME.md\nsrc\n\n\nstderr:\n";
+    const result = await registration.handlers.get("tool_result")?.[0]?.({
+      call: { id: "call_bash", name: "bash", args: { command: "ls" } },
+      result: {
+        content: [{ type: "text", text: bashBody }],
+        isError: false,
+      },
+    });
+    const raw = result && typeof result === "object" && "content" in result
+      ? (result as { content: unknown }).content
+      : "";
+    const content = Array.isArray(raw)
+      ? raw.map((block) => (typeof block === "object" && block && "text" in block ? String((block as { text: unknown }).text) : "")).join("\n")
+      : String(raw);
+    // Regression: pre-fix nested parse wiped content to "" and TUI showed (empty).
+    expect(content.length).toBeGreaterThan(0);
+    expect(content).toContain("AGENTS.md");
+    expect(content).toContain("README.md");
+  });
+
   it("status command returns run metadata", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-status-"));
     tempDirs.push(root);

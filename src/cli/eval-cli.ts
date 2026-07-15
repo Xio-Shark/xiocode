@@ -19,6 +19,10 @@ export type EvalCliArgs = Readonly<{
   candidateRoot?: string;
   caseIds: readonly string[];
   priceTablePath?: string;
+  gateManifestPath?: string;
+  perfBeforePath?: string;
+  perfCandidatePath?: string;
+  privateCaseIds: readonly string[];
   deprecations: readonly string[];
 }>;
 
@@ -64,6 +68,14 @@ export async function runEvalCli(
     price_table_path: args.priceTablePath
       ? path.resolve(cwd, args.priceTablePath)
       : env.XIO_EVAL_PRICE_TABLE,
+    gate_manifest_path: args.gateManifestPath
+      ? path.resolve(cwd, args.gateManifestPath)
+      : undefined,
+    perf_before_path: args.perfBeforePath ? path.resolve(cwd, args.perfBeforePath) : undefined,
+    perf_candidate_path: args.perfCandidatePath
+      ? path.resolve(cwd, args.perfCandidatePath)
+      : undefined,
+    private_case_ids: args.privateCaseIds.length > 0 ? args.privateCaseIds : undefined,
   });
   try {
     const report = await runCommand(runner, args.command);
@@ -89,7 +101,11 @@ export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
   let beforeRoot: string | undefined;
   let candidateRoot: string | undefined;
   let priceTablePath: string | undefined;
+  let gateManifestPath: string | undefined;
+  let perfBeforePath: string | undefined;
+  let perfCandidatePath: string | undefined;
   const caseIds: string[] = [];
+  const privateCaseIds: string[] = [];
   const deprecations: string[] = [];
   let modeFlag: "--candidate-mode" | "--provider" | undefined;
   let sawModel = false;
@@ -140,12 +156,26 @@ export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
       caseIds.push(requiredValue(argv[++index], "--case"));
     } else if (arg === "--price-table") {
       priceTablePath = requiredValue(argv[++index], "--price-table");
+    } else if (arg === "--manifest") {
+      gateManifestPath = requiredValue(argv[++index], "--manifest");
+    } else if (arg === "--perf-before") {
+      perfBeforePath = requiredValue(argv[++index], "--perf-before");
+    } else if (arg === "--perf-candidate") {
+      perfCandidatePath = requiredValue(argv[++index], "--perf-candidate");
+    } else if (arg === "--private-case") {
+      privateCaseIds.push(requiredValue(argv[++index], "--private-case"));
     } else {
       throw new Error(`unknown argument: ${String(arg)}`);
     }
   }
   if (command === "compare" && (!beforeRoot || !candidateRoot)) {
     throw new Error("compare requires --before PATH and --candidate PATH");
+  }
+  if (command !== "compare" && (gateManifestPath || perfBeforePath || perfCandidatePath || privateCaseIds.length > 0)) {
+    throw new Error("--manifest / --perf-* / --private-case are only valid for compare");
+  }
+  if ((perfBeforePath && !perfCandidatePath) || (!perfBeforePath && perfCandidatePath)) {
+    throw new Error("performance compare requires both --perf-before and --perf-candidate");
   }
   if (model !== undefined) {
     parseModelRef(model);
@@ -166,6 +196,10 @@ export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
     candidateRoot,
     caseIds,
     priceTablePath,
+    gateManifestPath,
+    perfBeforePath,
+    perfCandidatePath,
+    privateCaseIds,
     deprecations,
   };
 }
@@ -194,9 +228,37 @@ function formatEvalReport(report: EvalReport): string {
         + `rate=${candidate.resolved_rate.toFixed(3)} infra=${candidate.infra_errors} safety=${candidate.safety_ok}`,
     );
   }
+  if (report.gate) {
+    const axes = Object.entries(report.gate.axes).map(([name, status]) => `${name}=${status}`).join(" ");
+    lines.push(`gate: ${report.gate.manifest_id}@${report.gate.manifest_version} ${axes}`);
+  }
+  if (report.performance) {
+    const deltaCount = Object.keys(report.performance.deltas).length;
+    lines.push(
+      `performance: metrics=${deltaCount} hard=${report.performance.hard_regressions.length} `
+        + `soft=${report.performance.soft_regressions.length}`,
+    );
+  }
+  if (report.awareness) {
+    lines.push(
+      `awareness: coverage=${fmtNullable(report.awareness.evidence_coverage)} `
+        + `overlap=${fmtNullable(report.awareness.overlap)} `
+        + `resolved=${fmtNullable(report.awareness.task_resolution)}`,
+    );
+  }
+  if (report.private_join) {
+    lines.push(
+      `private_join: cases=${report.private_join.cases.length} all_fixed=${report.private_join.all_fixed} `
+        + `auto_merge=${report.private_join.auto_merge_authorized}`,
+    );
+  }
   lines.push(...report.concerns.map((concern) => `concern: ${concern}`));
   lines.push(...report.errors.map((error) => `error: ${error}`));
   return `${lines.join("\n")}\n`;
+}
+
+function fmtNullable(value: number | null): string {
+  return value === null ? "n/a" : value.toFixed(3);
 }
 
 function evalHelp(): string {
@@ -207,8 +269,13 @@ function evalHelp(): string {
     "  xio eval preflight [--json]",
     "  xio eval smoke [--candidate PATH] [--candidate-mode real|stub] [--model PROVIDER/MODEL] [--repeat N] [--case ID] [--json]",
     "  xio eval compare --before PATH --candidate PATH [--candidate-mode real|stub] [--model PROVIDER/MODEL] [--repeat N] [--case ID] [--json]",
+    "    [--manifest PATH] [--perf-before PATH] [--perf-candidate PATH] [--private-case ID ...]",
     "  Compatibility: --provider real|stub is an alias for --candidate-mode (deprecated).",
     "  Add --price-table PATH (or XIO_EVAL_PRICE_TABLE) for versioned cost estimates.",
+    "  Multi-axis gate: --manifest (default package gate when perf/private set), independent",
+    "  xio bench report.json via --perf-before/--perf-candidate, private join via --private-case.",
+    "  Safety/capability regressions always FAIL; perf hard budgets FAIL even on capability wins.",
+    "  Private join is evidence only (auto_merge_authorized=false); MergeGate remains user-only.",
     "",
     "Real mode loads /connect credentials (or env) for the selected provider only;",
     "keys are never written to argv, reports, or candidate input.",

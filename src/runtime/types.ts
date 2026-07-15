@@ -90,6 +90,12 @@ export type ProviderModelConfig = Readonly<{
   compat?: Readonly<Record<string, unknown>>;
 }>;
 
+/** Configured tool_choice vocabulary (config.toml / provider registration). */
+export type ProviderToolChoice = "auto" | "required" | "any";
+
+/** When to attach tool_choice to a request. */
+export type ProviderToolChoiceScope = "always" | "non_simple" | "never";
+
 export type ProviderRegistration = Readonly<{
   name: string;
   api: string;
@@ -98,6 +104,10 @@ export type ProviderRegistration = Readonly<{
   authHeader?: boolean;
   /** When `omitted`, UI does not receive thinking text deltas (wire may still enable thinking). */
   thinkingDisplay?: ThinkingDisplay;
+  /** Optional wire tool_choice; omitted when unsupported by the client API. */
+  toolChoice?: ProviderToolChoice;
+  /** Gate for toolChoice attachment. Default treat as always when toolChoice is set. */
+  toolChoiceScope?: ProviderToolChoiceScope;
   models: readonly ProviderModelConfig[];
 }>;
 
@@ -228,6 +238,18 @@ export type ChatCompletionRequest = Readonly<{
   parallelToolCalls?: boolean;
   /** Session thinking effort; providers map/clamp before the wire. */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Provider tool_choice preference. Clients map/omit per API compatibility;
+   * unsupported values are not guessed on the wire.
+   */
+  toolChoice?: ProviderToolChoice;
+  /** Optional scope hint consumed by request builders when deciding attachment. */
+  toolChoiceScope?: ProviderToolChoiceScope;
+  /**
+   * When true (default for anthropic), attach official cache_control markers
+   * on stable system/tool prefix blocks.
+   */
+  promptCache?: boolean;
 }>;
 
 export type ChatCompletionResponse = Readonly<{
