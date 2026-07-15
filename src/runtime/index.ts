@@ -2,6 +2,7 @@ export { ExtensionHost } from "./extension-host.ts";
 export { defineTool } from "./define-tool.ts";
 export { Type } from "./schema.ts";
 export { runAgentLoop } from "./agent-loop.ts";
+export { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 export {
   CONTEXT_SUMMARY_NAME,
   ContextCompactionError,
@@ -15,6 +16,27 @@ export { createStdoutSessionUiSink, TOOL_OUTPUT_PREVIEW_LINES, previewText, tool
 export { SessionStore } from "./session-store.ts";
 export { createBuiltinTools } from "./tools/builtin.ts";
 export { createLlmClient, resolveApiKey } from "./providers/client.ts";
+export {
+  EXPLORE_TOOL_NAME,
+  PRIMARY_EXPLORE_PROMPT_ADDENDUM,
+  createExploreTool,
+  formatExploreResult,
+  parseProviderModelRef,
+  registerExploreCapability,
+  resolveExploreConfig,
+  runExploreSubagent,
+} from "./explore/index.ts";
+export {
+  PLAN_DIR,
+  PLAN_PROMPT_ADDENDUM,
+  PLAN_TOOL_NAME,
+  TASKLIST_WIDGET,
+  createPlanTool,
+  formatPlanSummary,
+  formatTasklistWidget,
+  loadPlanBoard,
+  registerPlanCapability,
+} from "./plan/index.ts";
 export { runDoneContract, formatDoneContractFeedback } from "./verify/done-contract.ts";
 export { verifyWriteBack, hashContent } from "./verify/write-back.ts";
 
@@ -59,3 +81,16 @@ export type {
 } from "./session-store.ts";
 export type { SessionOptions, SessionSnapshot } from "./session.ts";
 export type { WriteBackResult } from "./verify/write-back.ts";
+export type {
+  CreateExploreToolOptions,
+  ExploreSubagentResult,
+  RegisterExploreOptions,
+  ResolvedExploreConfig,
+  RunExploreSubagentOptions,
+} from "./explore/index.ts";
+export type {
+  PlanBoard,
+  PlanTask,
+  PlanTaskStatus,
+  RegisterPlanOptions,
+} from "./plan/index.ts";

@@ -42,11 +42,13 @@
 - **Parallel tool scheduling**: read/bash may run in parallel; write/edit stay serial.
 - **Session multi-turn**: runtime retains messages; `general.max_session_messages` + explicit trim notice (not full compaction).
 - **Prompt classification**: tiny binary simple vs code classifier (optional model hint from config). Not a full multi-model router product.
+- **Multi-explore**: opt-in `[explore]` — primary session model keeps the loop; `explore` tool spawns parallel read-only subagents on a separate model (e.g. Pro primary + Flash workers). Default hard cap **4** concurrent (`max_concurrency` 1–16); runtime **suggests** fan-out from workspace scale (tiny→1 … huge→up to cap). Each worker owns a **small** slice (partition by API/feature/package/… or `partition_hint` / user). Workers: read/grep/glob only (optional bash); no nested explore.
 
 ## Safety & sandbox
 
 - **WorktreeSandbox**: session-outer isolation; non-git dirs fail at launch (G0).
 - **MergeGate**: diff summary + confirm before merging worktree branch into main tree; conflicts abort and keep worktree. Self-improve reuses the same gate — never “测绿即合”.
+- **Permission modes**: `auto` (default) / `full` / `strict` — Shift+Tab or `/permission`; no plan/build split. Strict = read/search tools only; auto asks on high-risk; full auto-allows high-risk.
 - **User hooks**: PreToolUse can block tools (exit 2 / JSON deny); not a resurrected PathGuard / PermissionEngine.
 - **Workspace containment**: builtin `write`/`edit` use `assertInsideWorkspace` against worktree cwd. PathGuard / PermissionEngine / Docker were removed; do not reintroduce.
 - **Config**: `[worktree] enabled` (default true), `retain_on_reject`.
@@ -61,7 +63,10 @@
 
 ## Tools
 
-- Builtin: `read`, `write`, `edit`, `bash`, `grep`, `glob`.
+- Builtin: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `plan`.
+- Optional: `explore` when `[explore] enabled` (read-only multi-subagent research).
+- **Plan board**: `plan` tool writes `.claude/plan/{prd.md,implement.md,tasks.json}` (+ optional `tasks.csv`; legacy `.xiocode/plan` readable); TUI sticky **tasklist** widget; `/plan` refreshes.
+- **Agent config**: Claude Code layout (`.claude/`, `~/.claude/`, root `CLAUDE.md`/`AGENTS.md`). `~/.xiocode` holds runtime state only (not skills/rules).
 - Hygiene: `skill` (list/load local `SKILL.md`); MCP tools as `mcp__<server>__<tool>`.
 - **Not shipped**: `search_context`, pi-ace-tool, `/ace-*`, full context compaction, process-interruption execution/file checkpoint-resume. Ink core, TUI diff confirmation/session bypass, persistent chat resume/picker, session-baseline `/rollback`, and latest-turn `/rollback turn` are shipped.
 

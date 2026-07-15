@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ExtensionHost } from "./extension-host.ts";
 import { defineTool } from "./define-tool.ts";
 import { Type } from "./schema.ts";
-import { runAgentLoop } from "./agent-loop.ts";
+import { DEFAULT_MAX_TURNS, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
 
 import type { ChatMessage, LlmClient, StreamEvent } from "./types.ts";
 
@@ -354,5 +354,129 @@ describe("runAgentLoop streaming", () => {
     expect(deltas).toEqual(["answer"]);
     expect(result.finalText).toBe("answer");
     expect(result.messages.some((message) => message.content.includes("reason"))).toBe(false);
+  });
+});
+
+describe("runAgentLoop maxTurns default", () => {
+  it("defaults to DEFAULT_MAX_TURNS (24)", () => {
+    expect(DEFAULT_MAX_TURNS).toBe(24);
+  });
+
+  it("stops after maxTurns provider requests when tools never idle", async () => {
+    const host = new ExtensionHost();
+    let executes = 0;
+    host.registerTool(defineTool({
+      name: "ping",
+      description: "ping",
+      parameters: Type.Object({ n: Type.Number() }),
+      async execute() {
+        executes += 1;
+        return { content: [{ type: "text", text: "pong" }] };
+      },
+    }));
+    let providerCalls = 0;
+    const client: LlmClient = {
+      async complete() {
+        providerCalls += 1;
+        return {
+          content: "",
+          toolCalls: [{ id: `c${providerCalls}`, name: "ping", arguments: { n: providerCalls } }],
+        };
+      },
+    };
+    const result = await runAgentLoop("loop", {
+      host,
+      client,
+      model: "stub",
+      maxTurns: 5,
+      repeatToolLimit: 0,
+    });
+    expect(providerCalls).toBe(5);
+    expect(executes).toBe(5);
+    expect(result.turns).toBe(5);
+  });
+});
+
+describe("runAgentLoop repeat tool fuse", () => {
+  it("blocks identical tool+args after the limit without executing again", async () => {
+    const host = new ExtensionHost();
+    let executes = 0;
+    host.registerTool(defineTool({
+      name: "read_stub",
+      description: "read stub",
+      parameters: Type.Object({ path: Type.String() }),
+      async execute() {
+        executes += 1;
+        return { content: [{ type: "text", text: "body" }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls <= 4) {
+          return {
+            content: "",
+            toolCalls: [{ id: `r${calls}`, name: "read_stub", arguments: { path: "a.ts" } }],
+          };
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+    const result = await runAgentLoop("repeat", {
+      host,
+      client,
+      model: "stub",
+      repeatToolLimit: 3,
+    });
+    expect(executes).toBe(3);
+    const toolMessages = result.messages.filter((message) => message.role === "tool");
+    expect(toolMessages).toHaveLength(4);
+    expect(toolMessages.at(-1)?.content).toMatch(/repeated tool blocked/i);
+    expect(result.toolErrors).toBeGreaterThanOrEqual(1);
+    expect(result.finalText).toBe("done");
+  });
+
+  it("resets the streak when arguments change", async () => {
+    const host = new ExtensionHost();
+    let executes = 0;
+    host.registerTool(defineTool({
+      name: "read_stub",
+      description: "read stub",
+      parameters: Type.Object({ path: Type.String() }),
+      async execute() {
+        executes += 1;
+        return { content: [{ type: "text", text: "body" }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls <= 4) {
+          return {
+            content: "",
+            toolCalls: [{
+              id: `r${calls}`,
+              name: "read_stub",
+              arguments: { path: calls % 2 === 0 ? "b.ts" : "a.ts" },
+            }],
+          };
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+    await runAgentLoop("alternate", {
+      host,
+      client,
+      model: "stub",
+      repeatToolLimit: 2,
+    });
+    expect(executes).toBe(4);
+  });
+
+  it("fingerprints ignore argument key order", () => {
+    expect(toolCallFingerprint({ name: "x", arguments: { a: 1, b: 2 } }))
+      .toBe(toolCallFingerprint({ name: "x", arguments: { b: 2, a: 1 } }));
   });
 });

@@ -23,6 +23,8 @@ describe("App", () => {
       setModel: async () => {},
       getThinkingLevel: () => "off",
       cycleThinkingLevel: async () => "off",
+      getPermissionMode: () => "auto",
+      cyclePermissionMode: () => "full",
       compact: async () => emptyCompaction(),
       runPrompt: async () => ({
         text: "",
@@ -47,15 +49,16 @@ describe("App", () => {
     expect(output).toContain("XioCode v");
     expect(output).toContain("test/model-a");
     expect(output).toContain("think:off");
+    expect(output).toContain("perm:auto");
     expect(output).toContain("/tmp/project");
-    expect(output).toContain("Tab · Ctrl+O · Ctrl+C");
+    expect(output).toContain("Shift+Tab 权限");
     expect(output).toContain(">");
     expect(output).not.toContain("idle");
     expect(output).not.toMatch(/\|\s*think:off\s*\|/);
     // Footer must not re-pipe the full status chrome (model · think · path).
-    const footerHintIndex = output.lastIndexOf("Tab · Ctrl+O · Ctrl+C");
+    const footerHintIndex = output.lastIndexOf("Shift+Tab 权限");
     const headerContext = output.slice(0, footerHintIndex);
-    expect(headerContext).toContain("test/model-a · think:off · /tmp/project");
+    expect(headerContext).toContain("test/model-a · think:off · perm:auto · /tmp/project");
   });
 
   it("executes pasted slash input and renders the command result", async () => {
@@ -240,8 +243,8 @@ describe("App", () => {
     }));
     bridge.sink.onContextCompaction?.({ stage: "start", mode: "automatic", before: 80 });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(instance.lastFrame()).toContain("think:off · compacting... · /tmp/project");
-    expect(instance.lastFrame()).toContain("Tab · Ctrl+O · Ctrl+C");
+    expect(instance.lastFrame()).toContain("think:off · perm:auto · compacting... · /tmp/project");
+    expect(instance.lastFrame()).toContain("Shift+Tab 权限");
 
     bridge.sink.onContextCompaction?.({
       stage: "success",
@@ -307,9 +310,15 @@ describe("App", () => {
 
   it("keeps tool output as preview when longer than eight lines", () => {
     let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "seq 1 12" });
+    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "seq 1 12", callId: "c1" });
     const output = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
-    state = reduceEvent(state, { kind: "tool-end", name: "bash", error: false, output });
+    state = reduceEvent(state, {
+      kind: "tool-end",
+      name: "bash",
+      error: false,
+      output,
+      callId: "c1",
+    });
     const tool = state.entries.find((entry) => entry.kind === "tool");
     expect(tool).toMatchObject({
       title: "bash",
@@ -317,7 +326,33 @@ describe("App", () => {
       text: "done",
       output,
       previewCollapsed: true,
+      callId: "c1",
     });
+  });
+
+  it("pairs parallel same-name tools by callId", () => {
+    let state: ViewState = emptyView();
+    state = reduceEvent(state, { kind: "tool-start", name: "read", detail: "a.ts", callId: "r1" });
+    state = reduceEvent(state, { kind: "tool-start", name: "read", detail: "b.ts", callId: "r2" });
+    // Finish second first (out of order) — must not attach to first start.
+    state = reduceEvent(state, {
+      kind: "tool-end",
+      name: "read",
+      error: false,
+      output: "body-b",
+      callId: "r2",
+    });
+    state = reduceEvent(state, {
+      kind: "tool-end",
+      name: "read",
+      error: false,
+      output: "body-a",
+      callId: "r1",
+    });
+    const tools = state.entries.filter((entry) => entry.kind === "tool");
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({ callId: "r1", detail: "a.ts", output: "body-a" });
+    expect(tools[1]).toMatchObject({ callId: "r2", detail: "b.ts", output: "body-b" });
   });
 
   it("expands long tool output and skips short tools when toggling", () => {
@@ -374,11 +409,12 @@ describe("App", () => {
 });
 
 function emptyView(): ViewState {
-  return { entries: [] as ViewState["entries"], statuses: {}, bypass: false };
+  return { entries: [] as ViewState["entries"], statuses: {}, widgets: {}, bypass: false };
 }
 
 function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = []): PreparedSession {
   const model = { provider: "test", id: "model-a" };
+  let permission: "strict" | "auto" | "full" = "auto";
   return {
     host,
     model,
@@ -389,6 +425,11 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
       const next = host.getThinkingLevel() === "off" ? "high" : "off";
       host.setThinkingLevel(next);
       return next;
+    },
+    getPermissionMode: () => permission,
+    cyclePermissionMode: () => {
+      permission = permission === "auto" ? "full" : permission === "full" ? "strict" : "auto";
+      return permission;
     },
     compact: async () => emptyCompaction(),
     runPrompt: async () => ({

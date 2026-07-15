@@ -76,8 +76,14 @@ describe("TuiSessionBridge", () => {
     });
 
     expect(events).toContainEqual({ kind: "thinking-delta", text: "reason" });
-    expect(events).toContainEqual({ kind: "tool-start", name: "bash", detail: "pwd" });
-    expect(events).toContainEqual({ kind: "tool-end", name: "bash", error: false, output: "/tmp" });
+    expect(events).toContainEqual({ kind: "tool-start", name: "bash", detail: "pwd", callId: "1" });
+    expect(events).toContainEqual({
+      kind: "tool-end",
+      name: "bash",
+      error: false,
+      output: "/tmp",
+      callId: "1",
+    });
   });
 
   it("forwards typed context compaction lifecycle events without parsing notices", () => {

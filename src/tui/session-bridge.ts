@@ -7,8 +7,8 @@ export type TuiEvent =
   | Readonly<{ kind: "assistant-delta"; text: string }>
   | Readonly<{ kind: "assistant-text"; text: string }>
   | Readonly<{ kind: "thinking-delta"; text: string }>
-  | Readonly<{ kind: "tool-start"; name: string; detail: string }>
-  | Readonly<{ kind: "tool-end"; name: string; error: boolean; output: string }>
+  | Readonly<{ kind: "tool-start"; name: string; detail: string; callId?: string }>
+  | Readonly<{ kind: "tool-end"; name: string; error: boolean; output: string; callId?: string }>
   | Readonly<{ kind: "context-compaction"; event: ContextCompactionUiEvent }>
   | Readonly<{ kind: "notice"; text: string; level?: string }>
   | Readonly<{ kind: "status"; key: string; text?: string }>
@@ -43,12 +43,14 @@ export class TuiSessionBridge implements InteractiveIO {
       kind: "tool-start",
       name: call.name,
       detail: toolCallDetail(call),
+      callId: call.id,
     }),
     onToolEnd: (call, result) => this.emit({
       kind: "tool-end",
       name: call.name,
       error: result.isError === true,
       output: toolResultOutput(result),
+      callId: call.id,
     }),
     onContextCompaction: (event) => this.emit({ kind: "context-compaction", event }),
     onCancelled: () => this.emit({ kind: "notice", text: "Turn cancelled.", level: "warning" }),

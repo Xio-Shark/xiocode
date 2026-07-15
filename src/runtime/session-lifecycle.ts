@@ -83,6 +83,8 @@ export function createPromptRunner(options: Readonly<{
   getModel?: () => ModelInfo;
   getProviderApi?: () => string;
   maxTurns?: number;
+  /** Identical tool+args consecutive cap; 0 disables. Default from agent-loop. */
+  repeatToolLimit?: number;
   doneContract?: DoneContract;
   verify: XioVerifyConfig;
   parallelToolCalls?: boolean;
@@ -132,6 +134,7 @@ export function createPromptRunner(options: Readonly<{
       model: model.id,
       providerApi: getProviderApi(),
       maxTurns: options.maxTurns,
+      repeatToolLimit: options.repeatToolLimit,
       doneContract: options.doneContract,
       verifyRepairTurns: options.verify.repairTurns,
       parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
