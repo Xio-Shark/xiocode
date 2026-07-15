@@ -1,17 +1,39 @@
-# Keep the published / git-install package lean; runtime uses TS + Node strip-types.
+# Installed package is runtime-only (Node strip-types runs .ts sources).
+# Keep user global installs free of tests, docs, tooling, and installer scripts.
+
+# Tests / fixtures
 **/*.test.ts
 **/test/**
-.trellis/
-.cursor/
-.claude/
-.gitnexus/
+
+# Dev / pack-only (prepack runs from source before this filter)
+scripts/
+install.sh
+test.sh
+tsconfig.json
+vitest.config.*
+.npmrc
+
+# Docs live on GitHub; not needed under node_modules
 docs/
 *.md
 !README.md
+!LICENSE
+
+# Extension package.json stubs are not imported at runtime
+extensions/**/package.json
+
+# Local agent / IDE adapters (never ship)
+.trellis/
+.cursor/
+.claude/
+.codex/
+.gitnexus/
+.grok/
+.agents/
+.vscode/
+.idea/
 coverage/
 dist/
 node_modules/
-.vscode/
-.idea/
 *.tgz
-scripts/
+archive/

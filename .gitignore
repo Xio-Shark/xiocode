@@ -39,8 +39,9 @@ CLAUDE.local.md
 .DS_Store
 Thumbs.db
 
-# Archive (v1 source, not tracked)
+# Local archives / historical dumps (not product; never publish)
 archive/
+docs/archive/
 
 # Environment / secrets
 .env
