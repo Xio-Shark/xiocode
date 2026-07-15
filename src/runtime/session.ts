@@ -8,12 +8,12 @@ import { createLlmClient, resolveApiKey } from "./providers/client.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
 import { registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
-import { registerAgentCommands } from "./agent-commands.ts";
+import { registerPermissionCommands } from "./agent-commands.ts";
 import { registerRegressCommands } from "./regress-commands.ts";
 import { registerContextCommands } from "./context-commands.ts";
 import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
-import { resolveHighRiskPolicy } from "./tool-permission.ts";
 import { thinkingStatusLabel } from "./thinking.ts";
+import type { PermissionMode } from "./permission-mode.ts";
 import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
   createPromptRunner,
@@ -24,6 +24,8 @@ import {
 } from "./session-lifecycle.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { createStdoutSessionUiSink } from "./session-ui.ts";
+import { registerExploreCapability } from "./explore/index.ts";
+import { registerPlanCapability } from "./plan/index.ts";
 import { MergeGate, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 import { expandHome } from "../cli/config-parser.ts";
 
@@ -74,6 +76,9 @@ export type PreparedSession = Readonly<{
   setModel: (model: ModelInfo) => Promise<void>;
   getThinkingLevel: () => ThinkingLevel;
   cycleThinkingLevel: () => Promise<ThinkingLevel>;
+  getPermissionMode: () => PermissionMode;
+  /** Cycle auto → full → strict → auto (Shift+Tab). */
+  cyclePermissionMode: () => PermissionMode;
   compact: (focus?: string) => Promise<ContextCompactionResult>;
   runPrompt: (prompt: string) => Promise<{
     text: string;
@@ -168,17 +173,16 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getModel,
     env,
   });
-  // Agent mode filter + high-risk gate must be live before session_start so MCP hot-register respects plan/build.
+  // Permission mode + high-risk gate before session_start so MCP hot-register respects filters.
   const allowHighRisk =
     options.allowHighRisk === true || options.runtimeConfig.permissions?.allowHighRisk === true;
-  registerAgentCommands({
+  const interactiveSession = options.promptOnce === undefined;
+  const permission = registerPermissionCommands({
     host,
     sink,
     interactive,
-    highRiskPolicy: resolveHighRiskPolicy({
-      allowHighRisk,
-      promptOnce: options.promptOnce,
-    }),
+    allowHighRisk,
+    interactiveSession,
   });
   const getRunId = async (): Promise<string | undefined> => {
     try {
@@ -241,13 +245,16 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     setModel,
     getThinkingLevel: () => host.getThinkingLevel(),
     cycleThinkingLevel: () => cycleSessionThinkingLevel(thinkingOpts),
+    getPermissionMode: () => permission.getMode(),
+    cyclePermissionMode: () => permission.cycleMode(),
     compact: (focus) => compact("manual", focus),
     runPrompt: createPromptRunner({
       host,
       getClient: () => client,
       getModel,
       getProviderApi: () => registration.api,
-      maxTurns: options.maxTurns,
+      maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
+      repeatToolLimit: options.runtimeConfig.general.repeatToolLimit,
       doneContract: toDoneContract(verify),
       verify,
       getParallelToolCalls: () => parallelToolCalls,
@@ -324,6 +331,18 @@ async function createConfiguredHost(input: Readonly<{
   const restoredCheckpoint = input.options.initialExecution?.checkpoint;
   const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
   await input.options.registerExtensions?.(host);
+  // After extensions so explore prompt addendum and tool sit on the full host surface.
+  await registerExploreCapability(host, {
+    runtimeConfig: input.options.runtimeConfig,
+    cwd: input.cwd,
+    workspaceRoot: input.workspaceRoot,
+    env: input.options.env,
+    onNotify: (message) => input.sink.notify?.(message, "info"),
+  });
+  await registerPlanCapability(host, {
+    workspaceRoot: input.workspaceRoot,
+    sink: input.sink,
+  });
   if (mergeGate) {
     registerMergeCommand(host, mergeGate, input.ask, input.sink);
   }
@@ -403,7 +422,7 @@ async function runRepl(session: PreparedSession): Promise<number> {
         return 0;
       }
       if (line === "/help") {
-        output.write("Commands: /help /compact /connect /model /thinking /agent /regress /status /merge /rollback /sandbox /exit\nSlash commands map to registered extension commands when available.\n");
+        output.write("Commands: /help /compact /connect /model /thinking /permission /plan /regress /status /merge /rollback /sandbox /exit\nSlash commands map to registered extension commands when available.\nShift+Tab cycles permission (auto|full|strict) in the Ink TUI.\n");
         continue;
       }
       if (line.startsWith("/")) {

@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { ExtensionHost } from "./extension-host.ts";
 import {
+  highRiskPolicyForMode,
   registerToolPermissionGate,
   resolveHighRiskPolicy,
 } from "./tool-permission.ts";
-import { registerAgentCommands } from "./agent-commands.ts";
+import { registerPermissionCommands } from "./agent-commands.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 
@@ -38,6 +39,15 @@ describe("resolveHighRiskPolicy", () => {
   });
 });
 
+describe("highRiskPolicyForMode", () => {
+  it("derives policy from permission mode", () => {
+    expect(highRiskPolicyForMode("full", true)).toBe("allow");
+    expect(highRiskPolicyForMode("strict", true)).toBe("deny");
+    expect(highRiskPolicyForMode("auto", true)).toBe("ask");
+    expect(highRiskPolicyForMode("auto", false)).toBe("deny");
+  });
+});
+
 describe("registerToolPermissionGate", () => {
   it("denies high-risk tools under deny policy", async () => {
     const host = new ExtensionHost();
@@ -46,7 +56,7 @@ describe("registerToolPermissionGate", () => {
       host,
       interactive: fakeIo(),
       sink: { notify: (message) => notices.push(message) },
-      getMode: () => "build",
+      getMode: () => "auto",
       highRiskPolicy: "deny",
     });
 
@@ -66,7 +76,7 @@ describe("registerToolPermissionGate", () => {
       host,
       interactive: io,
       sink: {},
-      getMode: () => "build",
+      getMode: () => "auto",
       highRiskPolicy: "ask",
     });
 
@@ -85,13 +95,13 @@ describe("registerToolPermissionGate", () => {
     expect(io.asks).toHaveLength(1);
   });
 
-  it("blocks denied ask and plan-mode tools", async () => {
+  it("blocks denied ask and strict-mode tools", async () => {
     const host = new ExtensionHost();
     registerToolPermissionGate({
       host,
       interactive: fakeIo([false]),
       sink: {},
-      getMode: () => "build",
+      getMode: () => "auto",
       highRiskPolicy: "ask",
     });
     const denied = await host.emit("tool_call", {
@@ -105,24 +115,24 @@ describe("registerToolPermissionGate", () => {
       host: host2,
       interactive: fakeIo(),
       sink: {},
-      getMode: () => "plan",
+      getMode: () => "strict",
       highRiskPolicy: "allow",
     });
-    const planBlock = await host2.emit("tool_call", {
+    const strictBlock = await host2.emit("tool_call", {
       toolName: "bash",
       call: { id: "1", name: "bash", args: {} },
     });
-    expect(blocked(planBlock)).toBe(true);
+    expect(blocked(strictBlock)).toBe(true);
   });
 
   it("auto-allows with audit notify and enriches status", async () => {
     const host = new ExtensionHost();
     const notices: string[] = [];
-    registerAgentCommands({
+    registerPermissionCommands({
       host,
       interactive: fakeIo(),
       sink: { notify: (message) => notices.push(message) },
-      highRiskPolicy: "allow",
+      allowHighRisk: true,
     });
     await host.emit("tool_call", {
       toolName: "bash",
@@ -131,6 +141,7 @@ describe("registerToolPermissionGate", () => {
     expect(notices.some((n) => n.includes("auto-allowed"))).toBe(true);
     const status = await host.runCommand("status");
     expect(status).toMatchObject({
+      permission: "full",
       high_risk_policy: "allow",
       host_isolation: "unsupported",
     });

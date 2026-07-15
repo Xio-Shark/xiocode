@@ -9,6 +9,9 @@
 - Builtin tools: read / write / edit / bash / grep / glob
 - Outer worktree sandbox + MergeGate (`xio-sandbox`) — **protects main-tree merge only; not OS isolation**
 - Self-improve outer loop (`xio-improve` / `xio improve`) — T4 + verifier + merge-ask
+- **Post-task retrospective**: each full agent task → blocker log + washed report under run dir; inject next turn for primary agent; high/medium actions enqueue entropy-keyed ImproveGoal drafts (`~/.xiocode/improve/queue/entropy-*.json`, MergeGate only; `/retrospect`)
+- **Tool/contract Fix hints**: builtin write/edit/bash/grep/glob errors and done-contract failures append `Fix:` next-step guidance (self-correct without longer system prompts)
+- **Architecture guards**: vitest locks extensions/runtime ↛ `src/tui` and default evolve/extension assembly not wiring StrategyLearner / PromptEvolver / SpeculativeExecutor
 - Trusted local capability baseline (`xio eval`) — versioned reports, 5 dev/holdout families, external hidden graders, preflight/smoke/compare
 - User-confirmed private regression capture (`xio regress`) — versioned local cases, evidence hashes, pinned-base red preflight
 - Private before/candidate compare (`xio regress compare`) — `FIXED` / `STILL_RED` / …; **does not authorize MergeGate**
@@ -23,15 +26,18 @@
 - **Regress activation MVP**: `/regress` (session) + `xio regress capture --last` (defaults `failure_type`); auto-preflight; `create --help` is valid help (not INVALID_CASE)
 - **Improve joint gate**: `xio improve --private-case <id> --capability-gate` requires private `FIXED` × trusted `PASS` before MergeGate ask; either alone never asks
 - **AGENTS.md / CLAUDE.md injection**, **Skills**, **User hooks**, **MCP client** (`xio-hygiene`) — MVP boundaries unchanged (not full Claude clones)
-- **Agent modes** (`/agent` build|plan), **`xio models`**, Ink TUI core + merge/rollback/bypass + session resume
+- **Permission modes** (`strict` / `auto` / `full`; Shift+Tab or `/permission`), **`xio models`**, Ink TUI core + merge/rollback/bypass + session resume
+- **Plan board**: `plan` tool → PRD + implement + `tasks.json` under **`.claude/plan/`** (Claude Code tree; legacy `.xiocode/plan` still readable); TUI todo panel; `plan update`
+- **Agent config layout**: Claude Code paths only — `CLAUDE.md` / `.claude/CLAUDE.md` / skills / hooks / MCP; `~/.xiocode` is runtime state (config, runs, sessions, worktrees, evals, regress, improve), not a second skills tree
 - **Ink TUI polish**: select/resume accent selection (slash contract); confirm scroll `lines a–b/n`; busy header `working…`; `/help` from `collectSlashCommands`
 - **Context compaction G4**: one session-history owner; `/compact [focus]`; automatic `max_session_messages` trigger; same-provider continuation summary; complete-turn/tool-pair retention; atomic snapshot publish; persisted resume marker; stdout/Ink start/success/failure visibility
 - **Execution/file checkpoint-resume G5**: atomic `xio-session.v2` state; v1 load compatibility; original worktree attach/validation; durable hidden-ref turn checkpoint; provider/tool progress snapshots; interrupted tool calls closed as `completion unknown` without replay; resumed MergeGate rollback checkpoint; Ink recovery notice
 - Provider usage normalization (input/output/cache/reasoning; unknown → `null`)
 - Secret redaction in trajectories (env-style `*TOKEN` / secrets still redacted; usage counters preserved)
 - Harness throughput H1–H5; session/turn rollback G5b
-- **Ripgrep grep/glob (H6)**: builtin `grep` / `glob` prefer system `rg` (caps 100/500); Node walker fallback notes `backend=node (rg unavailable)`; schemas unchanged
+- **Host search backends**: builtin `grep` order `ugrep → rg → grep → node`; `glob` order `ugrep → rg → bfs → find → node` (caps 100/500); first `xio init` / config create recommends optional `ugrep`/`ripgrep`/`bfs` without requiring install
 - **Robust edit (H8)**: builtin `edit` keeps exact unique replace; optional `replace_all`; one whitespace fuzzy retry (CRLF→LF, trim trailing WS) annotated `fuzzy: whitespace normalized`; optional unified `patch` via `diff` applyPatch; workspace + verifyWriteBack unchanged
+- **Multi-explore (Pro→Flash style)**: opt-in `[explore]` registers `explore` tool; primary agent can fan out parallel read-only subagents on `explore.model` (timeout, concurrency, no recursion); plan mode allows explore
 
 ## Known gaps (honest — do not paper over)
 

@@ -41,8 +41,10 @@ export const DEFAULT_AGENTS_MD_CONFIG: AgentsMdConfig = {
 const IMPORT_LINE = /^\s*@([^\s#]+)\s*$/;
 
 /**
- * Load global + project CLAUDE.md / AGENTS.md with bounded @-import expansion.
- * Merge order: global Claude → global Xio → project CLAUDE → project AGENTS.
+ * Load Claude Code–aligned instructions with bounded @-import expansion.
+ * Merge order (Claude layout): ~/.claude/CLAUDE.md → project .claude/CLAUDE.md
+ * → project CLAUDE.md → project AGENTS.md (multi-agent convention at repo root).
+ * No parallel ~/.xiocode/AGENTS.md — runtime state stays under ~/.xiocode only.
  */
 export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBundle> {
   const config = options.config;
@@ -101,8 +103,8 @@ function listCandidates(cwd: string, home: string, readClaudeDirs: boolean): str
   const paths: string[] = [];
   if (readClaudeDirs) {
     paths.push(path.join(home, ".claude", "CLAUDE.md"));
+    paths.push(path.join(cwd, ".claude", "CLAUDE.md"));
   }
-  paths.push(path.join(home, ".xiocode", "AGENTS.md"));
   paths.push(path.join(cwd, "CLAUDE.md"));
   paths.push(path.join(cwd, "AGENTS.md"));
   return paths;
@@ -112,7 +114,6 @@ function allowedRoots(cwd: string, home: string): readonly string[] {
   return [
     path.resolve(cwd),
     path.resolve(home, ".claude"),
-    path.resolve(home, ".xiocode"),
   ];
 }
 

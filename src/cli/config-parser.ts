@@ -22,6 +22,16 @@ export type XioGeneralConfig = Readonly<{
   maxSessionMessages?: number;
   /** Default session thinking effort (off|minimal|low|medium|high|xhigh|max|ultra). */
   defaultThinkingLevel?: XioThinkingLevel;
+  /**
+   * Per user-prompt agent loop cap (provider requests). Default 24 when unset (agent-loop).
+   * Range 1–40.
+   */
+  maxTurns?: number;
+  /**
+   * Block identical tool name+args after N consecutive calls. Default 3 when unset.
+   * 0 disables. Range 0–20.
+   */
+  repeatToolLimit?: number;
 }>;
 
 export type XioProviderConfig = Readonly<{
@@ -120,6 +130,44 @@ export type XioImproveConfig = Readonly<{
   privateCase?: string;
 }>;
 
+/**
+ * Post-task retrospective: after each full agent task, extract blockers → log → washed report
+ * for the primary agent (and optional improve queue).
+ */
+export type XioRetrospectiveConfig = Readonly<{
+  enabled: boolean;
+  skipTrivial: boolean;
+  minToolCalls: number;
+  autoInject: boolean;
+  enqueueImprove: boolean;
+  /** Reserved for LLM polish; deterministic wash always runs. */
+  useLlm: boolean;
+}>;
+
+/**
+ * Primary→Flash multi-explore: main agent (e.g. Pro) spawns read-only Flash subagents.
+ * Disabled by default; requires `enabled = true` and `model`.
+ */
+export type XioExploreConfig = Readonly<{
+  enabled: boolean;
+  /** Explore model id, or `provider/model` when provider is omitted. */
+  model?: string;
+  /** Provider id; defaults to general.default_provider when model has no provider prefix. */
+  provider?: string;
+  maxTurns: number;
+  timeoutMs: number;
+  /** Parallel explore hard cap (1–16). Default 4; runtime may suggest fewer by project scale. */
+  maxConcurrency: number;
+  maxOutputChars: number;
+  /** When true, explore subagents may use bash (host-reaching). Default false. */
+  allowBash: boolean;
+  /**
+   * Optional user/project preference for how the primary splits work
+   * (e.g. by API surface, feature area, package, layer). Free text.
+   */
+  partitionHint?: string;
+}>;
+
 export type XioConfig = Readonly<{
   general: XioGeneralConfig;
   providers: Readonly<Record<string, XioProviderConfig>>;
@@ -128,10 +176,12 @@ export type XioConfig = Readonly<{
   verify: XioVerifyConfig;
   agentsMd: XioAgentsMdConfig;
   skills: XioSkillsConfig;
+  retrospective: XioRetrospectiveConfig;
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
   improve: XioImproveConfig;
+  explore: XioExploreConfig;
 }>;
 
 export type XioRuntimeConfig = Readonly<{
@@ -145,6 +195,8 @@ export type XioRuntimeConfig = Readonly<{
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
+  explore: XioExploreConfig;
+  retrospective: XioRetrospectiveConfig;
 }>;
 
 export type ParsedXioConfig = Readonly<{
@@ -196,6 +248,25 @@ const DEFAULT_IMPROVE: XioImproveConfig = {
   capabilityGate: false,
 };
 
+const DEFAULT_RETROSPECTIVE: XioRetrospectiveConfig = {
+  enabled: true,
+  skipTrivial: true,
+  minToolCalls: 1,
+  autoInject: true,
+  enqueueImprove: true,
+  useLlm: false,
+};
+
+const DEFAULT_EXPLORE: XioExploreConfig = {
+  enabled: false,
+  maxTurns: 12,
+  timeoutMs: 180_000,
+  maxConcurrency: 4,
+  /** Large enough for multi-file verbatim excerpts; truncation is always marked, never silent. */
+  maxOutputChars: 64_000,
+  allowBash: false,
+};
+
 export function parseXioConfig(content: string, options: ParseConfigOptions = {}): ParsedXioConfig {
   const data = asTable(parse(content), "config");
   const cwd = options.cwd ?? DEFAULT_WORKSPACE_ROOT;
@@ -211,6 +282,8 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
   const improve = parseImprove(getTable(data, "improve"));
+  const explore = parseExplore(getTable(data, "explore"));
+  const retrospective = parseRetrospective(getTable(data, "retrospective"));
   const xio: XioConfig = {
     general,
     providers,
@@ -219,10 +292,12 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     verify,
     agentsMd,
     skills,
+    retrospective,
     hooks,
     mcp,
     permissions,
     improve,
+    explore,
   };
   return {
     xio,
@@ -242,6 +317,8 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     hooks: config.hooks,
     mcp: config.mcp,
     permissions: config.permissions,
+    explore: config.explore,
+    retrospective: config.retrospective,
   };
 }
 
@@ -258,12 +335,26 @@ export function expandHome(value: string): string {
 function parseGeneral(table: Record<string, unknown> | undefined): XioGeneralConfig {
   const maxSessionMessages = getOptionalNumber(table, "max_session_messages");
   if (maxSessionMessages !== undefined) assertMaxSessionMessages(maxSessionMessages);
+  const maxTurns = getOptionalNumber(table, "max_turns");
+  if (maxTurns !== undefined) {
+    if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 40) {
+      throw new Error("general.max_turns must be an integer between 1 and 40");
+    }
+  }
+  const repeatToolLimit = getOptionalNumber(table, "repeat_tool_limit");
+  if (repeatToolLimit !== undefined) {
+    if (!Number.isInteger(repeatToolLimit) || repeatToolLimit < 0 || repeatToolLimit > 20) {
+      throw new Error("general.repeat_tool_limit must be an integer between 0 and 20");
+    }
+  }
   return {
     defaultProvider: getOptionalString(table, "default_provider"),
     defaultModel: getOptionalString(table, "default_model"),
     runRoot: getOptionalString(table, "run_root") ?? DEFAULT_RUN_ROOT,
     maxSessionMessages,
     defaultThinkingLevel: getOptionalThinkingLevel(table, "default_thinking_level"),
+    maxTurns,
+    repeatToolLimit,
   };
 }
 
@@ -387,6 +478,61 @@ function parseImprove(table: Record<string, unknown> | undefined): XioImproveCon
   return {
     capabilityGate: getOptionalBoolean(table, "capability_gate") ?? DEFAULT_IMPROVE.capabilityGate,
     ...(privateCase ? { privateCase } : {}),
+  };
+}
+
+function parseRetrospective(table: Record<string, unknown> | undefined): XioRetrospectiveConfig {
+  const minToolCalls = getOptionalNumber(table, "min_tool_calls") ?? DEFAULT_RETROSPECTIVE.minToolCalls;
+  if (!Number.isInteger(minToolCalls) || minToolCalls < 0 || minToolCalls > 100) {
+    throw new Error("retrospective.min_tool_calls must be an integer between 0 and 100");
+  }
+  return {
+    enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_RETROSPECTIVE.enabled,
+    skipTrivial: getOptionalBoolean(table, "skip_trivial") ?? DEFAULT_RETROSPECTIVE.skipTrivial,
+    minToolCalls,
+    autoInject: getOptionalBoolean(table, "auto_inject") ?? DEFAULT_RETROSPECTIVE.autoInject,
+    enqueueImprove: getOptionalBoolean(table, "enqueue_improve") ?? DEFAULT_RETROSPECTIVE.enqueueImprove,
+    useLlm: getOptionalBoolean(table, "use_llm") ?? DEFAULT_RETROSPECTIVE.useLlm,
+  };
+}
+
+function parseExplore(table: Record<string, unknown> | undefined): XioExploreConfig {
+  const maxTurns = getOptionalNumber(table, "max_turns") ?? DEFAULT_EXPLORE.maxTurns;
+  const timeoutMs = getOptionalNumber(table, "timeout_ms") ?? DEFAULT_EXPLORE.timeoutMs;
+  const maxConcurrency = getOptionalNumber(table, "max_concurrency") ?? DEFAULT_EXPLORE.maxConcurrency;
+  const maxOutputChars = getOptionalNumber(table, "max_output_chars") ?? DEFAULT_EXPLORE.maxOutputChars;
+  if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 40) {
+    throw new Error("explore.max_turns must be an integer between 1 and 40");
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000) {
+    throw new Error("explore.timeout_ms must be an integer >= 1000");
+  }
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 16) {
+    throw new Error("explore.max_concurrency must be an integer between 1 and 16");
+  }
+  if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1_000) {
+    throw new Error("explore.max_output_chars must be an integer >= 1000");
+  }
+  const enabled = getOptionalBoolean(table, "enabled") ?? DEFAULT_EXPLORE.enabled;
+  const model = getOptionalString(table, "model")?.trim();
+  const provider = getOptionalString(table, "provider")?.trim();
+  const partitionHint = getOptionalString(table, "partition_hint")?.trim();
+  if (enabled && (!model || model.length === 0)) {
+    throw new Error("explore.model is required when explore.enabled = true");
+  }
+  if (partitionHint !== undefined && partitionHint.length === 0) {
+    throw new Error("explore.partition_hint must be non-empty when set");
+  }
+  return {
+    enabled,
+    ...(model ? { model } : {}),
+    ...(provider ? { provider } : {}),
+    maxTurns,
+    timeoutMs,
+    maxConcurrency,
+    maxOutputChars,
+    allowBash: getOptionalBoolean(table, "allow_bash") ?? DEFAULT_EXPLORE.allowBash,
+    ...(partitionHint ? { partitionHint } : {}),
   };
 }
 

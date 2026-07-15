@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createBuiltinTools,
-  resetRgBinaryCacheForTests,
+  resetSearchBackendCacheForTests,
+  resolveGrepEngine,
   resolveRgBinary,
 } from "./builtin.ts";
 
@@ -41,9 +42,9 @@ async function textOf(
   return { text, isError: result.isError };
 }
 
-describe("builtin grep/glob ripgrep backends", () => {
+describe("builtin grep/glob search backends", () => {
   afterEach(() => {
-    resetRgBinaryCacheForTests();
+    resetSearchBackendCacheForTests();
   });
 
   it("keeps grep and glob parameter schemas unchanged", () => {
@@ -56,19 +57,19 @@ describe("builtin grep/glob ripgrep backends", () => {
     expect(glob.parameters.required).toEqual(["pattern"]);
   });
 
-  it("uses Node fallback with explicit backend marker when rg is forced unavailable", async () => {
+  it("uses Node fallback with explicit backend marker when forced unavailable", async () => {
     const root = await makeFixture();
     try {
-      const tools = createBuiltinTools({ cwd: root, rgBinary: null });
+      const tools = createBuiltinTools({ cwd: root, searchEngine: "node" });
       const grep = await textOf(toolByName(tools, "grep"), { pattern: "needle" });
       expect(grep.isError).toBeFalsy();
-      expect(grep.text.startsWith("backend=node (rg unavailable)\n")).toBe(true);
+      expect(grep.text.startsWith("backend=node (no ugrep/rg/grep)\n")).toBe(true);
       expect(grep.text).toContain("src/alpha.ts:1:");
       expect(grep.text).toContain("readme.md:1:");
 
       const glob = await textOf(toolByName(tools, "glob"), { pattern: "**/*.ts" });
       expect(glob.isError).toBeFalsy();
-      expect(glob.text.startsWith("backend=node (rg unavailable)\n")).toBe(true);
+      expect(glob.text.startsWith("backend=node (no ugrep/rg/bfs/find)\n")).toBe(true);
       expect(glob.text).toContain("src/alpha.ts");
       expect(glob.text).toContain("src/beta.ts");
       expect(glob.text).not.toContain("readme.md");
@@ -77,29 +78,29 @@ describe("builtin grep/glob ripgrep backends", () => {
     }
   });
 
-  it("falls back to Node when the configured rg binary cannot be spawned", async () => {
+  it("falls back to Node when the configured binary cannot be spawned", async () => {
     const root = await makeFixture();
     try {
       const tools = createBuiltinTools({
         cwd: root,
-        rgBinary: path.join(root, "missing-rg-binary"),
+        searchEngine: path.join(root, "missing-rg-binary"),
       });
       const grep = await textOf(toolByName(tools, "grep"), { pattern: "needle", path: "src" });
-      expect(grep.text.startsWith("backend=node (rg unavailable)\n")).toBe(true);
+      expect(grep.text.startsWith("backend=node (no ugrep/rg/grep)\n")).toBe(true);
       expect(grep.text).toContain("src/alpha.ts");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("treats rg exit 1 as successful empty grep/glob", async (ctx) => {
-    const rg = await resolveRgBinary();
-    if (!rg) {
+  it("treats empty host search as successful empty grep/glob", async (ctx) => {
+    const engine = await resolveGrepEngine("rg");
+    if (engine.kind === "node") {
       ctx.skip();
     }
     const root = await makeFixture();
     try {
-      const tools = createBuiltinTools({ cwd: root, rgBinary: rg });
+      const tools = createBuiltinTools({ cwd: root, searchEngine: "rg" });
       const grep = await textOf(toolByName(tools, "grep"), { pattern: "zzz_no_such_token_zzz" });
       expect(grep.isError).toBeFalsy();
       expect(grep.text).toBe("no matches");
@@ -114,14 +115,14 @@ describe("builtin grep/glob ripgrep backends", () => {
     }
   });
 
-  it("uses ripgrep backend when rg is available", async (ctx) => {
+  it("uses forced rg backend for glob filter semantics", async (ctx) => {
     const rg = await resolveRgBinary();
     if (!rg) {
       ctx.skip();
     }
     const root = await makeFixture();
     try {
-      const tools = createBuiltinTools({ cwd: root, rgBinary: rg });
+      const tools = createBuiltinTools({ cwd: root, searchEngine: "rg" });
       const grep = await textOf(toolByName(tools, "grep"), {
         pattern: "needle",
         glob: "*.ts",
@@ -140,14 +141,36 @@ describe("builtin grep/glob ripgrep backends", () => {
     }
   });
 
-  it("surfaces rg exit 2+ as a tool error with stderr snippet", async (ctx) => {
+  it("prefers ugrep over rg when available and not overridden", async (ctx) => {
+    resetSearchBackendCacheForTests();
+    const engine = await resolveGrepEngine();
+    if (engine.kind !== "ugrep") {
+      ctx.skip();
+    }
+    const root = await makeFixture();
+    try {
+      const tools = createBuiltinTools({ cwd: root });
+      const grep = await textOf(toolByName(tools, "grep"), {
+        pattern: "needle",
+        glob: "*.ts",
+      });
+      expect(grep.isError).toBeFalsy();
+      expect(grep.text).toContain("src/alpha.ts:");
+      expect(grep.text).not.toContain("readme.md");
+      expect(grep.text).not.toContain("backend=node");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces host engine exit 2+ as a tool error with stderr snippet", async (ctx) => {
     const rg = await resolveRgBinary();
     if (!rg) {
       ctx.skip();
     }
     const root = await makeFixture();
     try {
-      const tools = createBuiltinTools({ cwd: root, rgBinary: rg });
+      const tools = createBuiltinTools({ cwd: root, searchEngine: "rg" });
       const grep = await textOf(toolByName(tools, "grep"), { pattern: "[" });
       expect(grep.isError).toBe(true);
       expect(grep.text.startsWith("rg failed (exit ")).toBe(true);
@@ -156,11 +179,11 @@ describe("builtin grep/glob ripgrep backends", () => {
     }
   });
 
-  it("caches rg resolution for the process", async () => {
-    resetRgBinaryCacheForTests();
-    const first = await resolveRgBinary();
-    const second = await resolveRgBinary();
-    expect(second).toBe(first);
+  it("caches engine resolution for the process", async () => {
+    resetSearchBackendCacheForTests();
+    const first = await resolveGrepEngine();
+    const second = await resolveGrepEngine();
+    expect(second).toEqual(first);
   });
 });
 
@@ -214,6 +237,7 @@ describe("builtin edit robustness", () => {
       expect(ambiguous.isError).toBe(true);
       expect(ambiguous.text).toContain("matched 2 times");
       expect(ambiguous.text).toContain("must be unique");
+      expect(ambiguous.text).toMatch(/Fix:/);
 
       const replaced = await textOf(edit, {
         path: "multi.ts",
