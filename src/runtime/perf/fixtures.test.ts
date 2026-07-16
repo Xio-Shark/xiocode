@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runFixture } from "./fixtures.ts";
+import { runTuiReplayFixture } from "../../tui/perf-replay.ts";
 import { PerfStore, createBenchId, probeOverhead } from "./store.ts";
 import { resetProcessOriginForTests, setGlobalTracerForTests } from "./tracer.ts";
 
@@ -23,7 +24,7 @@ afterEach(async () => {
 
 describe("trusted perf fixtures", () => {
   it("tui.replay_10k drives reducer+coalescer paints (not empty loop)", async () => {
-    const sample = await runFixture("tui.replay_10k", { iteration: 0 });
+    const sample = await runFixture("tui.replay_10k", { iteration: 0, tuiReplay: runTuiReplayFixture });
     expect(sample.outcome).toBe("success");
     const paints = sample.spans.filter((span) => span.name === "tui.paint");
     expect(paints.length).toBeGreaterThan(10);
@@ -83,7 +84,7 @@ describe("PerfStore evidence mirror", () => {
       evidenceRoot: runsRoot,
       packageVersion: "0.0.0-test",
     });
-    const sample = await runFixture("tui.replay_10k", { iteration: 0 });
+    const sample = await runFixture("tui.replay_10k", { iteration: 0, tuiReplay: runTuiReplayFixture });
     const benchId = createBenchId(new Date("2026-07-16T00:00:00.000Z"));
     const { dir, evidenceDir, report } = await store.writeReport({
       benchId,
