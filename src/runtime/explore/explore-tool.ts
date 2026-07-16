@@ -4,7 +4,21 @@ import { Type } from "../schema.ts";
 import type { ThinkingLevel } from "../types.ts";
 
 import type { ProviderRegistration, ToolDefinition } from "../types.ts";
+import { EvidenceStore } from "../workspace/evidence-store.ts";
+import type { WorkspacePerceptionService } from "../workspace/service.ts";
+import {
+  appendBriefGaps,
+  DEFAULT_WORKSPACE_BRIEF_MAX_CHARS,
+  formatWorkspaceBrief,
+  type WorkspaceBrief,
+} from "./brief.ts";
 import { buildPolicyCapsule } from "./capsule.ts";
+import {
+  ExploreOrchestrator,
+  formatOrchestratedExploreResult,
+  type BeginExploreWorkerResult,
+  type SkipCode,
+} from "./orchestrator.ts";
 import {
   DEFAULT_EXPLORE_ACTIVE_MAX,
   detectUserExploreFanoutRequest,
@@ -14,9 +28,8 @@ import {
 } from "./policy.ts";
 import type { ExploreRoleId } from "./roles.ts";
 import { Semaphore } from "./semaphore.ts";
-import { runExploreSubagent } from "./subagent.ts";
-
-import type { ResolvedExploreConfig } from "./types.ts";
+import { runExploreSubagent, type RunExploreSubagentOptions } from "./subagent.ts";
+import type { ExploreSubagentResult, ResolvedExploreConfig } from "./types.ts";
 import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 
 const EXPLORE_ROLE_IDS = new Set<ExploreRoleId>([
@@ -160,13 +173,37 @@ export type CreateExploreToolOptions = Readonly<{
   getThinkingLevel?: () => ThinkingLevel;
   /** Latest user prompt for high-fan-out detection. */
   getUserPrompt?: () => string;
+  /** Shared workspace perception for worker query/evidence tools. */
+  workspacePerception?: WorkspacePerceptionService;
+  /**
+   * Session-scoped orchestrator (ownership / budgets / brief / early-stop).
+   * Shared across concurrent explore tool calls when provided by register.
+   */
+  orchestrator?: ExploreOrchestrator;
+  /** Test seam: replace nested subagent runner. */
+  runWorker?: (options: RunExploreSubagentOptions) => Promise<ExploreSubagentResult>;
+  /** Global wall budget for the fan-out wave (defaults to config.timeoutMs). */
+  globalWallMs?: number;
+  /** Soft token budget across workers (defaults to config.maxTokens; 0 = unlimited). */
+  globalMaxTokens?: number;
+  /** Soft cost budget USD across workers (defaults to config.maxCostUsd; 0 = unlimited). */
+  globalMaxCostUsd?: number;
+  /** Max worker starts / minute (defaults to config.maxStartsPerMinute; 0 = unlimited). */
+  globalMaxStartsPerMinute?: number;
 }>;
 
 export function createExploreTool(options: CreateExploreToolOptions): ToolDefinition {
   const env = options.env ?? process.env;
   const hardCap = Math.min(options.config.maxConcurrency, MAX_EXPLORE_CONCURRENCY);
   let activeWorkers = 0;
-  let nextWorkerId = 0;
+
+  const orchestrator = options.orchestrator ?? new ExploreOrchestrator({
+    wallMs: options.globalWallMs ?? options.config.timeoutMs,
+    maxTokens: options.globalMaxTokens ?? options.config.maxTokens,
+    maxCostUsd: options.globalMaxCostUsd ?? options.config.maxCostUsd,
+    maxStartsPerMinute: options.globalMaxStartsPerMinute ?? options.config.maxStartsPerMinute,
+  });
+  const runWorker = options.runWorker ?? runExploreSubagent;
 
   const publishActiveStatus = (): void => {
     if (activeWorkers <= 0) {
@@ -178,16 +215,22 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
 
   const resolveBudget = (): ExploreConcurrencyBudget => {
     const userText = options.getUserPrompt?.() ?? "";
+    const userRequest = detectUserExploreFanoutRequest(userText);
     return resolveExploreConcurrencyBudget({
       thinkingLevel: options.getThinkingLevel?.() ?? "off",
       configMax: hardCap,
-      userRequest: detectUserExploreFanoutRequest(userText),
+      userRequest,
       signal: {
         userText,
-        exploreRequested: detectUserExploreFanoutRequest(userText).highFanout
-          || /\bexplore\b/i.test(userText),
+        exploreRequested: userRequest.highFanout || /\bexplore\b/i.test(userText),
       },
     });
+  };
+
+  const exploreRequestedNow = (): boolean => {
+    const userText = options.getUserPrompt?.() ?? "";
+    const userRequest = detectUserExploreFanoutRequest(userText);
+    return userRequest.highFanout || /\bexplore\b/i.test(userText);
   };
 
   const gate = new Semaphore(() => Math.max(1, resolveBudget().effectiveMax));
@@ -200,8 +243,8 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       + "Prefer this for multi-file locate/survey; skip for simple single-file work unless asked. "
       + `Adaptive lanes: fast(0) / standard(≤${DEFAULT_EXPLORE_ACTIVE_MAX}) / deep(≤${ULTRA_EXPLORE_ACTIVE_MIN}) / `
       + `user high fan-out up to ${hardCap} (absolute max ${MAX_EXPLORE_CONCURRENCY}). `
-      + "Returns absolute paths + verbatim file content for that slice (not a rewritten summary).",
-    promptSnippet: "Read-only explore subagents: narrow slices, faithful file content back",
+      + "Returns a compact WorkspaceBrief (≤12KB aggregate) with citations; raw evidence stays in store.",
+    promptSnippet: "Read-only explore subagents: narrow slices, WorkspaceBrief aggregate back",
     parameters: Type.Object({
       goal: Type.String({
         description:
@@ -229,6 +272,43 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       const focusPaths = parseFocusPaths(params.focus_paths);
       const maxTurns = clampTurns(params.max_turns, options.config.maxTurns);
       const role = parseExploreRole(params.role);
+      const budget = resolveBudget();
+
+      // Mechanical fast-lane refuse on the real tool path (not prompt-only).
+      const laneSkip = orchestrator.shouldSkipForLane(budget, {
+        exploreRequested: exploreRequestedNow(),
+      });
+      if (laneSkip) {
+        const emptyBrief = briefForSkip(orchestrator.getBrief(), laneSkip);
+        return {
+          content: [{
+            type: "text",
+            text: formatOrchestratedExploreResult({
+              status: "skipped",
+              role,
+              ownershipPaths: focusPaths,
+              briefText: formatWorkspaceBrief(emptyBrief),
+              brief: emptyBrief,
+              skipReason: laneSkip === "fast_lane"
+                ? "fast lane: simple/single-file task — do not spawn explore unless uncertainty remains or user asks"
+                : laneSkip,
+              earlyStopped: orchestrator.earlyStopped,
+              tokensUsed: orchestrator.tokensUsed,
+            }),
+          }],
+          isError: false,
+          details: {
+            explore: {
+              skipped: true,
+              skipCode: laneSkip,
+              lane: budget.lane,
+              suggested: budget.suggested,
+            },
+            brief: emptyBrief,
+          },
+        };
+      }
+
       const registration = options.getProvider(options.config.provider);
       if (!registration) {
         return {
@@ -240,30 +320,123 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
         };
       }
 
-      const budget = resolveBudget();
       let release: (() => void) | undefined;
       const timeout = createTimeoutSignal(ctx?.signal, options.config.timeoutMs);
-      let workerId = 0;
+      let begin: BeginExploreWorkerResult | undefined;
       let counted = false;
       try {
         release = await gate.acquire();
+        // Re-check budgets after waiting on the semaphore (stragglers / wall may have fired).
+        const postWaitSkip = orchestrator.shouldSkipForLane(budget, {
+          exploreRequested: exploreRequestedNow(),
+        });
+        if (postWaitSkip && postWaitSkip !== "fast_lane") {
+          const brief = briefForSkip(orchestrator.getBrief(), postWaitSkip);
+          return {
+            content: [{
+              type: "text",
+              text: formatOrchestratedExploreResult({
+                status: "skipped",
+                role,
+                ownershipPaths: focusPaths,
+                briefText: formatWorkspaceBrief(brief),
+                brief,
+                skipReason: postWaitSkip,
+                earlyStopped: true,
+                tokensUsed: orchestrator.tokensUsed,
+              }),
+            }],
+            isError: false,
+            details: {
+              explore: { skipped: true, skipCode: postWaitSkip, lane: budget.lane },
+              brief,
+            },
+          };
+        }
+
+        begin = orchestrator.beginWorker({
+          goal,
+          focusPaths,
+          role,
+          lane: budget.lane ?? "standard",
+          parentSignal: timeout.signal,
+        });
+        if (begin.skip) {
+          const brief = briefForSkip(orchestrator.getBrief(), begin.skip.code, begin.skip.reason);
+          return {
+            content: [{
+              type: "text",
+              text: formatOrchestratedExploreResult({
+                status: "skipped",
+                role: begin.role ?? role,
+                ownershipPaths: begin.ownership.paths,
+                briefText: formatWorkspaceBrief(brief),
+                brief,
+                skipReason: begin.skip.reason,
+                earlyStopped: orchestrator.earlyStopped,
+                tokensUsed: orchestrator.tokensUsed,
+              }),
+            }],
+            isError: false,
+            details: {
+              explore: {
+                skipped: true,
+                skipCode: begin.skip.code,
+                lane: budget.lane,
+                ownership: begin.ownership,
+              },
+              brief,
+            },
+          };
+        }
+
         activeWorkers += 1;
         counted = true;
-        workerId = ++nextWorkerId;
+        const workerId = begin.workerId;
+        const assignedRole = begin.role ?? role;
+        const ownershipPaths = begin.ownership.paths.filter((p) => !p.startsWith("role:") && !p.startsWith("slice:"));
+        const workerFocus = ownershipPaths.length > 0
+          ? ownershipPaths
+          : focusPaths;
+
         publishActiveStatus();
         options.onNotify?.(
           `subagent #${workerId} started → ${options.config.provider}/${options.config.model}`
             + ` [${budget.lane ?? budget.mode} cap ${budget.effectiveMax}`
-            + `${role ? ` role=${role}` : ""}]: ${truncate(goal, 80)}`,
+            + `${assignedRole ? ` role=${assignedRole}` : ""}`
+            + `${workerFocus?.length ? ` paths=${workerFocus.length}` : ""}]: ${truncate(goal, 80)}`,
         );
         let apiKey: string;
         try {
           apiKey = resolveApiKey(registration, env);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          // Still complete orchestrator so ownership leases / counters stay consistent.
+          const failed: ExploreSubagentResult = {
+            provider: options.config.provider,
+            model: options.config.model,
+            success: false,
+            text: "",
+            turns: 0,
+            toolCalls: 0,
+            toolErrors: 0,
+            usage: {
+              inputTokens: null,
+              outputTokens: null,
+              cacheTokens: null,
+              reasoningTokens: null,
+            },
+            error: message,
+          };
+          const completion = orchestrator.completeWorker({
+            workerId,
+            result: failed,
+            role: assignedRole,
+          });
           return {
             content: [{ type: "text", text: `explore error: ${message}` }],
             isError: true,
+            details: { explore: failed, brief: completion.brief },
           };
         }
 
@@ -271,18 +444,18 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           workspaceId: options.workspaceRoot,
           mainRootHint: options.workspaceRoot,
           ownership: {
-            role,
-            paths: focusPaths ?? [],
-            questions: [goal],
+            role: assignedRole,
+            paths: begin.ownership.paths,
+            questions: begin.ownership.questions,
           },
           wallMs: options.config.timeoutMs,
           maxTurns,
           maxOutputChars: options.config.maxOutputChars,
         });
 
-        const result = await runExploreSubagent({
+        const result = await runWorker({
           goal,
-          focusPaths,
+          focusPaths: workerFocus,
           cwd: options.cwd,
           workspaceRoot: options.workspaceRoot,
           registration,
@@ -290,42 +463,88 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           modelId: options.config.model,
           maxTurns,
           allowBash: options.config.allowBash,
-          signal: timeout.signal,
-          role,
+          signal: begin.signal,
+          role: assignedRole,
           capsule,
+          workspacePerception: options.workspacePerception,
         });
 
-        if (timeout.timedOut) {
-          options.onNotify?.(
-            `subagent #${workerId} timeout after ${options.config.timeoutMs}ms: ${truncate(goal, 60)}`,
-          );
-          return {
-            content: [{
-              type: "text",
-              text: formatExploreResult({
-                ...result,
-                success: false,
-                timedOut: true,
-                error: result.error ?? `timed out after ${options.config.timeoutMs}ms`,
-                text: result.text,
-              }, options.config.maxOutputChars),
-            }],
-            isError: true,
-            details: { explore: { ...result, timedOut: true } },
-          };
-        }
+        // Persist raw worker body into EvidenceStore; primary gets brief only.
+        storeRawWorkerEvidence({
+          perception: options.workspacePerception,
+          workerId,
+          role: assignedRole,
+          text: result.text,
+        });
+
+        const timedOut = timeout.timedOut || Boolean(result.timedOut);
+        const completion = orchestrator.completeWorker({
+          workerId,
+          result: {
+            ...result,
+            success: timedOut ? false : result.success,
+            timedOut,
+            cancelled: result.cancelled || begin.signal.aborted,
+            error: timedOut
+              ? (result.error ?? `timed out after ${options.config.timeoutMs}ms`)
+              : result.error,
+          },
+          role: assignedRole,
+        });
+
+        const status = timedOut
+          ? "timeout"
+          : result.cancelled || completion.cancelledAsStraggler
+            ? "cancelled"
+            : result.success
+              ? "ok"
+              : "error";
 
         options.onNotify?.(
-          `subagent #${workerId} ${result.success === false ? "failed" : "done"}`
-            + ` (${result.turns} turns, ${result.toolCalls} tools): ${truncate(goal, 60)}`,
+          `subagent #${workerId} ${status}`
+            + ` (${result.turns} turns, ${result.toolCalls} tools`
+            + `${completion.earlyStopped ? ", early-stop" : ""}): ${truncate(goal, 60)}`,
         );
+
+        // Prefer aggregate WorkspaceBrief (≤12KB) over raw dump.
+        const briefText = completion.briefText.length <= DEFAULT_WORKSPACE_BRIEF_MAX_CHARS
+          ? completion.briefText
+          : formatWorkspaceBrief(orchestrator.getBrief(DEFAULT_WORKSPACE_BRIEF_MAX_CHARS));
+
         return {
           content: [{
             type: "text",
-            text: formatExploreResult(result, options.config.maxOutputChars),
+            text: formatOrchestratedExploreResult({
+              status,
+              provider: result.provider,
+              model: result.model,
+              turns: result.turns,
+              toolCalls: result.toolCalls,
+              toolErrors: result.toolErrors,
+              role: assignedRole,
+              ownershipPaths: begin.ownership.paths,
+              briefText,
+              brief: completion.brief,
+              earlyStopped: completion.earlyStopped,
+              tokensUsed: completion.tokensUsed,
+              // Tiny factual lead-in only — not the full raw dump.
+              workerNote: firstLines(result.text, 6),
+              maxWorkerNoteChars: 1_200,
+            }),
           }],
-          isError: result.success === false,
-          details: { explore: result },
+          isError: status === "error" || status === "timeout",
+          details: {
+            explore: {
+              ...result,
+              timedOut,
+              role: assignedRole,
+              ownership: begin.ownership,
+              earlyStopped: completion.earlyStopped,
+              cancelledAsStraggler: completion.cancelledAsStraggler,
+            },
+            brief: completion.brief,
+            report: completion.report,
+          },
         };
       } finally {
         if (counted) {
@@ -337,6 +556,44 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       }
     },
   });
+}
+
+function storeRawWorkerEvidence(input: Readonly<{
+  perception?: WorkspacePerceptionService;
+  workerId: number;
+  role?: ExploreRoleId;
+  text: string;
+}>): void {
+  const text = input.text.trim();
+  if (!text || !input.perception) return;
+  try {
+    input.perception.evidence.putSnippet({
+      path: `explore://worker/${input.workerId}${input.role ? `/${input.role}` : ""}`,
+      text,
+      startLine: 1,
+      endLine: Math.max(1, text.split("\n").length),
+      hash: EvidenceStore.contentHash(text),
+    });
+  } catch {
+    // Evidence store must not fail the explore tool path.
+  }
+}
+
+/** Budget / early-stop skips must keep incompleteness visible in brief.gaps (not skip text alone). */
+function briefForSkip(
+  brief: WorkspaceBrief,
+  code: SkipCode,
+  reason?: string,
+): WorkspaceBrief {
+  if (code === "fast_lane") return brief;
+  const detail = reason?.trim() || code;
+  return appendBriefGaps(brief, [`incomplete coverage: ${code} — ${detail}`]);
+}
+
+function firstLines(text: string, maxLines: number): string {
+  const lines = text.trim().split("\n");
+  if (lines.length <= maxLines) return text.trim();
+  return `${lines.slice(0, maxLines).join("\n")}\n…`;
 }
 
 export function formatExploreResult(

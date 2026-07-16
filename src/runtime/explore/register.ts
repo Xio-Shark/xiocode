@@ -1,5 +1,6 @@
 import type { ExtensionHost } from "../extension-host.ts";
 import type { XioRuntimeConfig } from "../../cli/config-parser.ts";
+import type { WorkspacePerceptionService } from "../workspace/service.ts";
 
 import {
   createExploreTool,
@@ -7,6 +8,7 @@ import {
   formatPrimaryExploreAddendum,
   stripMultiExploreAddendum,
 } from "./explore-tool.ts";
+import { ExploreOrchestrator } from "./orchestrator.ts";
 import {
   detectUserExploreFanoutRequest,
   resolveExploreConcurrencyBudget,
@@ -42,6 +44,8 @@ export type RegisterExploreOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
   onNotify?: (message: string) => void;
   onStatus?: (key: string, text: string | undefined) => void;
+  /** Shared session perception map for explore workers (read-only tools). */
+  workspacePerception?: WorkspacePerceptionService;
 }>;
 
 export type ExploreCapabilityHandle = Readonly<{
@@ -127,6 +131,13 @@ export async function registerExploreCapability(
     ensureExploreModelRegistered(host, next);
 
     if (!registered) {
+      // One orchestrator per session tool install: ownership + budgets + brief across parallel explores.
+      const orchestrator = new ExploreOrchestrator({
+        wallMs: next.timeoutMs,
+        maxTokens: next.maxTokens,
+        maxCostUsd: next.maxCostUsd,
+        maxStartsPerMinute: next.maxStartsPerMinute,
+      });
       host.registerTool(createExploreTool({
         config: next,
         cwd: options.cwd,
@@ -137,6 +148,8 @@ export async function registerExploreCapability(
         onStatus: options.onStatus,
         getThinkingLevel: () => host.getThinkingLevel(),
         getUserPrompt: () => lastUserPrompt,
+        workspacePerception: options.workspacePerception,
+        orchestrator,
       }));
 
       host.on("before_agent_start", (payload, ctx) => {

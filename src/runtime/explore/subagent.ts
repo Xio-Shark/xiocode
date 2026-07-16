@@ -2,6 +2,11 @@ import { ExtensionHost } from "../extension-host.ts";
 import { runAgentLoop } from "../agent-loop.ts";
 import { createLlmClient } from "../providers/client.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
+import {
+  PERCEPTION_TOOL_NAMES,
+  registerPerceptionCapability,
+  WorkspacePerceptionService,
+} from "../workspace/index.ts";
 
 import type { LlmClient, ProviderRegistration } from "../types.ts";
 import { formatCapsuleForPrompt, type PolicyCapsule } from "./capsule.ts";
@@ -18,7 +23,7 @@ const EXPLORE_SYSTEM_PROMPT = [
   "then return **faithful evidence** (paths + file content) to the main agent.",
   "",
   "Permissions:",
-  "- Read-only. Tools: read / grep / glob only (bash only if explicitly enabled).",
+  "- Read-only. Tools: read / grep / glob / query_workspace / read_evidence (bash only if explicitly enabled).",
   "- Never modify files, create/delete paths, apply patches, run installs, or change git state.",
   "- Do not implement fixes, refactors, or write code for the user.",
   "",
@@ -26,7 +31,7 @@ const EXPLORE_SYSTEM_PROMPT = [
   "- You own only this one small part — not a whole feature, service, or large subsystem.",
   "- Stay strictly within the dispatched research goal and any focus_paths hints.",
   "- Do not expand into sibling areas; if something is out of scope, note it briefly and stop.",
-  "- Prefer grep/glob to locate targets, then **read** each needed file (do not invent contents).",
+  "- Prefer query_workspace for structure, then grep/glob, then **read** each needed file (do not invent contents).",
   "",
   "Fidelity (non-negotiable):",
   "- Paths in the report must be **absolute paths** when known from tool results.",
@@ -53,8 +58,8 @@ const ROLE_FOCUS: Readonly<Record<ExploreRoleId, string>> = {
   adversarial: "Focus: gaps, contradictions, missed edges, over-claimed evidence.",
 };
 
-const READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
-const EXPLORE_TOOLS_WITH_BASH = new Set(["read", "grep", "glob", "bash"]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", ...PERCEPTION_TOOL_NAMES]);
+const EXPLORE_TOOLS_WITH_BASH = new Set(["read", "grep", "glob", "bash", ...PERCEPTION_TOOL_NAMES]);
 
 export type RunExploreSubagentOptions = Readonly<{
   goal: string;
@@ -71,6 +76,8 @@ export type RunExploreSubagentOptions = Readonly<{
   role?: ExploreRoleId;
   /** Binding policy capsule from dispatcher (optional). */
   capsule?: PolicyCapsule;
+  /** Shared session perception service; workers create a local warm map if omitted. */
+  workspacePerception?: WorkspacePerceptionService;
   /** Test seam; defaults to provider client factory. */
   createClient?: (input: Readonly<{
     registration: ProviderRegistration;
@@ -100,6 +107,13 @@ export async function runExploreSubagent(
       host.registerTool(tool);
     }
   }
+  const perception = options.workspacePerception
+    ?? new WorkspacePerceptionService({ root: options.workspaceRoot });
+  if (!options.workspacePerception) {
+    void perception.ensureWarm();
+  }
+  // Read-only query/evidence path; no prompt addendum (explore system prompt already covers tools).
+  registerPerceptionCapability(host, { service: perception, injectPrompt: false });
 
   const createClient = options.createClient ?? createLlmClient;
   const client = createClient({

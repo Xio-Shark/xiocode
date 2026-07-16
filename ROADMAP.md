@@ -13,9 +13,9 @@
 |------|--------|-------|
 | Self-owned runtime | ✅ | `src/runtime` — no `@earendil-works/pi-*` |
 | Builtin tools | ✅ | read/write/edit/bash/grep/glob |
-| Multi-explore subagents | 🟡 | Opt-in `[explore]` + read-only workers; adaptive policy modules exist; live dispatch / brief inject incomplete |
-| Performance suite (07-15) | 🟡 | 0/8 archive-ready after re-audit; frameworks in-tree — [board](./.trellis/tasks/07-15-performance-board.md) · [audit](./.trellis/tasks/07-15-performance-audit-2026-07-15.md) |
-| Agent Runtime Event suite | 📋 | Planning 0/5: turn_end → RuntimeEvent.v1 → scripted tape → stream-json → mid-turn steer — [board](./.trellis/tasks/07-15-agent-runtime-event-board.md) |
+| Multi-explore subagents | 🟡 | Live `ExploreOrchestrator` + nonzero product budgets; **trellis-check passed** — archive pending — [board](./.trellis/tasks/07-15-performance-board.md) |
+| Performance suite (07-15) | 🟡 | **6/8 archived**; task 7 budgets closed (awaiting archive); task 8 hard eval gate still open — [board](./.trellis/tasks/07-15-performance-board.md) · [audit](./.trellis/tasks/07-15-performance-audit-2026-07-15.md) |
+| Agent Runtime Event suite | ✅ | **5/5 done** (turn_end, RuntimeEvent multi-sink, scripted tape, stream-json E2E, hard/soft steer) — [board](./.trellis/tasks/07-15-agent-runtime-event-board.md) |
 | WorktreeSandbox + MergeGate | ✅ | Outer isolation; merge-ask |
 | TrajectoryRecorder + RunStore | ✅ | Default evolve path |
 | ResultDenoiser + ContextInjector | ✅ | Default evolve path; `turn_start` → provider messages |
@@ -62,14 +62,14 @@
 | Context compaction | ✅ | G4 shipped at message-budget level; token-source `/context` diagnostics remain separate follow-on work |
 | Persistent chat session resume | ✅ | `sessions/` store, latest/id/picker, model/messages restore, explicit delete |
 | Execution checkpoint-resume | ✅ | Atomic v2 state, original worktree attach, durable turn checkpoint, no uncertain tool replay |
-| Session WAL incremental journal | 🟡 | Journal + snapshot resume; save path still history-sized reload/compare |
-| AOT / fast startup path | 🟡 | esbuild dist + thin entry; version P50 OK; interactive boot shell open |
-| Provider request efficiency | 🟡 | Wire complete (~85%); real cache/TTFT/cost evidence residual |
-| Workspace perception layer | 🟡 | Library only; product tools + evidence correctness open |
-| Adaptive explore orchestration | 🟡 | Policy pure fns; real explore path not adaptive yet |
+| Session WAL incremental journal | ✅ | Live cursor O(delta); journal P95 ~4.3ms; crash/legacy green |
+| AOT / fast startup path | ✅ | early operable boot first_frame~42ms; version~25ms; parallel hygiene |
+| Provider request efficiency | ✅ | Controls + schema cache + stable-prefix contract; live TTFT INFRA 503 documented |
+| Workspace perception layer | ✅ | Product tools + EvidenceStore on main/explore; GitNexus merge optional |
+| Adaptive explore orchestration | 🟡 | trellis-check passed; awaiting Phase-3 archive |
 | Multi-axis performance/capability gate | 🟡 | Shell + safety/private rules; hard perf/awareness axes incomplete |
 | Fix turn_end trajectory contract | 📋 | P0 hotfix under runtime-event suite |
-| RuntimeEvent.v1 + stream-json + steer | 📋 | After turn_end; WAL and Run evidence stay separate stores |
+| RuntimeEvent.v1 + stream-json + steer | ✅ | Delivered; WAL and Run evidence stay separate stores; follow-up: bus→TUI UI / `reportProgress()` |
 | Ink TUI diff/permission + bypass | ✅ | Merge/rollback/finalize modal, scrollable unified diff, session-only audited bypass |
 | Ink TUI session resume picker | ✅ | Repository-filtered history picker plus latest/id CLI entry points |
 | Tool-layer throughput (host grep/glob) | ✅ | H6: ugrep→rg→grep / ugrep→rg→bfs→find; Node fallback; init recommends tools |

@@ -242,6 +242,9 @@ thinking_display = "hidden"
       maxConcurrency: 16,
       maxOutputChars: 64_000,
       allowBash: false,
+      maxTokens: 250_000,
+      maxCostUsd: 1,
+      maxStartsPerMinute: 24,
     });
   });
 
@@ -257,6 +260,9 @@ max_concurrency = 3
 timeout_ms = 60000
 max_output_chars = 8000
 allow_bash = true
+max_tokens = 100000
+max_cost_usd = 0.25
+max_starts_per_minute = 12
 partition_hint = "按 API 边界划分"
 `,
       { cwd: "/repo" },
@@ -270,10 +276,44 @@ partition_hint = "按 API 边界划分"
       maxConcurrency: 3,
       maxOutputChars: 8_000,
       allowBash: true,
+      maxTokens: 100_000,
+      maxCostUsd: 0.25,
+      maxStartsPerMinute: 12,
       partitionHint: "按 API 边界划分",
     });
   });
 
+  it("parses explore budget 0 as unlimited", () => {
+    const parsed = parseXioConfig(
+      `
+[explore]
+enabled = true
+model = "flash"
+max_tokens = 0
+max_cost_usd = 0
+max_starts_per_minute = 0
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.explore.maxTokens).toBe(0);
+    expect(parsed.runtimeConfig.explore.maxCostUsd).toBe(0);
+    expect(parsed.runtimeConfig.explore.maxStartsPerMinute).toBe(0);
+  });
+
+  it("rejects invalid explore budget knobs", () => {
+    expect(() => parseXioConfig(
+      `[explore]\nenabled = true\nmodel = "flash"\nmax_tokens = -1\n`,
+      { cwd: "/repo" },
+    )).toThrow(/max_tokens/);
+    expect(() => parseXioConfig(
+      `[explore]\nenabled = true\nmodel = "flash"\nmax_cost_usd = -0.1\n`,
+      { cwd: "/repo" },
+    )).toThrow(/max_cost_usd/);
+    expect(() => parseXioConfig(
+      `[explore]\nenabled = true\nmodel = "flash"\nmax_starts_per_minute = -1\n`,
+      { cwd: "/repo" },
+    )).toThrow(/max_starts_per_minute/);
+  });
   it("parses general.max_turns and repeat_tool_limit", () => {
     const parsed = parseXioConfig(
       `

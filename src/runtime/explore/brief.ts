@@ -123,6 +123,33 @@ export function formatWorkspaceBrief(brief: WorkspaceBrief): string {
   return serializeBrief(brief);
 }
 
+/**
+ * Append visible incompleteness notes (budget / early-stop / deferred slices).
+ * PRD: incomplete coverage must remain visible in brief.gaps.
+ */
+export function appendBriefGaps(
+  brief: WorkspaceBrief,
+  extraGaps: readonly string[],
+): WorkspaceBrief {
+  const gaps = unique([...brief.gaps, ...extraGaps]);
+  if (gaps.length === brief.gaps.length) return brief;
+  const text = serializeBrief({
+    claims: brief.claims,
+    symbols: brief.symbols,
+    tests: brief.tests,
+    contradictions: brief.contradictions,
+    gaps,
+    confidence: brief.confidence,
+    overlap: brief.overlap,
+    citation_coverage: brief.citation_coverage,
+  });
+  return {
+    ...brief,
+    gaps,
+    text_chars: text.length,
+  };
+}
+
 function serializeBrief(input: Readonly<{
   claims: readonly BriefClaim[];
   symbols: readonly string[];
