@@ -16,6 +16,7 @@ import {
   probeOverhead,
 } from "../runtime/perf/index.ts";
 import type { PerfReport, PerfSample } from "../runtime/perf/index.ts";
+import { runTuiReplayFixture } from "../tui/perf-replay.ts";
 
 export type BenchCliArgs = Readonly<{
   command: "run" | "list" | "help";
@@ -85,6 +86,7 @@ export async function runBenchCli(
       try {
         const sample = await runFixture(fixture, {
           iteration,
+          tuiReplay: runTuiReplayFixture,
           env: {
             ...env,
             ...(tempHome
