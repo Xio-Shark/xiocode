@@ -171,6 +171,21 @@ export type XioExploreConfig = Readonly<{
   /** When true, explore subagents may use bash (host-reaching). Default false. */
   allowBash: boolean;
   /**
+   * Soft wave token budget across explore workers (0 = unlimited).
+   * Product default: 250_000.
+   */
+  maxTokens: number;
+  /**
+   * Soft wave cost budget in USD across explore workers (0 = unlimited).
+   * Product default: 1.
+   */
+  maxCostUsd: number;
+  /**
+   * Max explore worker starts per rolling 60s (0 = unlimited). Provider-pressure limiter.
+   * Product default: 24.
+   */
+  maxStartsPerMinute: number;
+  /**
    * Optional user/project preference for how the primary splits work
    * (e.g. by API surface, feature area, package, layer). Free text.
    */
@@ -275,6 +290,10 @@ const DEFAULT_EXPLORE: XioExploreConfig = {
   /** Large enough for multi-file verbatim excerpts; truncation is always marked, never silent. */
   maxOutputChars: 64_000,
   allowBash: false,
+  /** Soft wave budgets — nonzero product defaults; set 0 to disable a limit. */
+  maxTokens: 250_000,
+  maxCostUsd: 1,
+  maxStartsPerMinute: 24,
 };
 
 export function parseXioConfig(content: string, options: ParseConfigOptions = {}): ParsedXioConfig {
@@ -518,6 +537,10 @@ function parseExplore(table: Record<string, unknown> | undefined): XioExploreCon
   const timeoutMs = getOptionalNumber(table, "timeout_ms") ?? DEFAULT_EXPLORE.timeoutMs;
   const maxConcurrency = getOptionalNumber(table, "max_concurrency") ?? DEFAULT_EXPLORE.maxConcurrency;
   const maxOutputChars = getOptionalNumber(table, "max_output_chars") ?? DEFAULT_EXPLORE.maxOutputChars;
+  const maxTokens = getOptionalNumber(table, "max_tokens") ?? DEFAULT_EXPLORE.maxTokens;
+  const maxCostUsd = getOptionalNumber(table, "max_cost_usd") ?? DEFAULT_EXPLORE.maxCostUsd;
+  const maxStartsPerMinute =
+    getOptionalNumber(table, "max_starts_per_minute") ?? DEFAULT_EXPLORE.maxStartsPerMinute;
   if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 40) {
     throw new Error("explore.max_turns must be an integer between 1 and 40");
   }
@@ -529,6 +552,15 @@ function parseExplore(table: Record<string, unknown> | undefined): XioExploreCon
   }
   if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1_000) {
     throw new Error("explore.max_output_chars must be an integer >= 1000");
+  }
+  if (!Number.isInteger(maxTokens) || maxTokens < 0) {
+    throw new Error("explore.max_tokens must be an integer >= 0 (0 = unlimited)");
+  }
+  if (!Number.isFinite(maxCostUsd) || maxCostUsd < 0) {
+    throw new Error("explore.max_cost_usd must be a number >= 0 (0 = unlimited)");
+  }
+  if (!Number.isInteger(maxStartsPerMinute) || maxStartsPerMinute < 0) {
+    throw new Error("explore.max_starts_per_minute must be an integer >= 0 (0 = unlimited)");
   }
   const enabled = getOptionalBoolean(table, "enabled") ?? DEFAULT_EXPLORE.enabled;
   const model = getOptionalString(table, "model")?.trim();
@@ -549,6 +581,9 @@ function parseExplore(table: Record<string, unknown> | undefined): XioExploreCon
     maxConcurrency,
     maxOutputChars,
     allowBash: getOptionalBoolean(table, "allow_bash") ?? DEFAULT_EXPLORE.allowBash,
+    maxTokens,
+    maxCostUsd,
+    maxStartsPerMinute,
     ...(partitionHint ? { partitionHint } : {}),
   };
 }

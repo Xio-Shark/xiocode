@@ -52,10 +52,12 @@ retain_on_reject = false
 # Multi-explore: primary model keeps the session; cheaper workers survey tiny slices.
 # thinking=ultra AUTO-ENABLES explore even when enabled=false (uses explore.model or the session model).
 # For non-ultra sessions, set enabled=true + model to opt in.
-# max_concurrency is the absolute ceiling 1–16 (default 16). Live policy:
-#   - default (thinking ≠ ultra): at most 4 concurrent explores (only if enabled)
-#   - thinking=ultra: auto-on, MUST call explore for repo work, actively 8+ (up to max_concurrency)
-#   - user explicitly asks for N / 16 workers: allow that high fan-out for the turn
+# max_concurrency is the absolute ceiling 1–16 (default 16). Adaptive lanes (live):
+#   - fast (0): simple/single-file — do not spawn unless user asks or uncertainty remains
+#   - standard (2–4): default multi-file exploration when enabled
+#   - deep (4–8): ultra / high uncertainty raises the ceiling (does not force spawn on trivial tasks)
+#   - explicit_high (≤16): only when the user clearly requests high fan-out
+# Wave budgets (soft; 0 = unlimited): max_tokens / max_cost_usd / max_starts_per_minute.
 # Optional partition_hint tells the primary how you want slices chosen (API / feature / package / …).
 # [explore]
 # enabled = false                  # ultra still auto-enables; set true for explore at any effort
@@ -64,6 +66,9 @@ retain_on_reject = false
 # max_turns = 12
 # max_concurrency = 16
 # max_output_chars = 64000          # verbatim file excerpts back to primary; raise if reports truncate
+# max_tokens = 250000               # soft wave token budget; 0 = unlimited
+# max_cost_usd = 1                  # soft USD estimate across workers; 0 = unlimited
+# max_starts_per_minute = 24        # provider-rate: worker starts / rolling minute; 0 = unlimited
 # # partition_hint = "按 API 边界拆成小片；用户另有说明时以用户为准"
 # timeout_ms = 180000
 # allow_bash = false                # keep false: workers stay read/grep/glob only

@@ -1,6 +1,11 @@
 import type { XioExploreConfig, XioGeneralConfig } from "../../cli/config-parser.ts";
 
 import type { ResolvedExploreConfig } from "./types.ts";
+import {
+  DEFAULT_EXPLORE_MAX_STARTS_PER_MINUTE,
+  DEFAULT_EXPLORE_WAVE_MAX_COST_USD,
+  DEFAULT_EXPLORE_WAVE_MAX_TOKENS,
+} from "./types.ts";
 
 /**
  * Parse `provider/model` or bare model id (needs defaultProvider).
@@ -85,6 +90,9 @@ export function resolveExploreConfig(
     maxConcurrency: explore.maxConcurrency,
     maxOutputChars: explore.maxOutputChars,
     allowBash: explore.allowBash,
+    maxTokens: explore.maxTokens ?? DEFAULT_EXPLORE_WAVE_MAX_TOKENS,
+    maxCostUsd: explore.maxCostUsd ?? DEFAULT_EXPLORE_WAVE_MAX_COST_USD,
+    maxStartsPerMinute: explore.maxStartsPerMinute ?? DEFAULT_EXPLORE_MAX_STARTS_PER_MINUTE,
     ...(explore.partitionHint ? { partitionHint: explore.partitionHint } : {}),
   };
 }

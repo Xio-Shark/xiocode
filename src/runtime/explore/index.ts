@@ -17,6 +17,7 @@ export { planExploreRoles, ownershipOverlap, EXPLORE_ROLES } from "./roles.ts";
 export { buildPolicyCapsule, formatCapsuleForPrompt } from "./capsule.ts";
 export {
   aggregateWorkspaceBrief,
+  appendBriefGaps,
   formatWorkspaceBrief,
   DEFAULT_WORKSPACE_BRIEF_MAX_CHARS,
 } from "./brief.ts";
@@ -28,6 +29,12 @@ export {
   shouldEarlyStop,
   simulateOwnedWorkerReports,
 } from "./dispatcher.ts";
+export {
+  ExploreOrchestrator,
+  extractPathsFromText,
+  formatOrchestratedExploreResult,
+  parseWorkerEvidenceReport,
+} from "./orchestrator.ts";
 export { registerExploreCapability } from "./register.ts";
 export type { ExploreCapabilityHandle } from "./register.ts";
 export {
@@ -45,6 +52,12 @@ export { Semaphore } from "./semaphore.ts";
 export { formatExploreUserPrompt, runExploreSubagent, withModelId } from "./subagent.ts";
 
 export type { ExploreSubagentResult, ResolvedExploreConfig } from "./types.ts";
+export {
+  DEFAULT_EXPLORE_MAX_STARTS_PER_MINUTE,
+  DEFAULT_EXPLORE_WAVE_MAX_COST_USD,
+  DEFAULT_EXPLORE_WAVE_MAX_TOKENS,
+  MAX_EXPLORE_CONCURRENCY,
+} from "./types.ts";
 export type { ExploreConcurrencyBudget, ExploreFanoutRequest } from "./policy.ts";
 export type { ExploreLane, TaskExploreSignal, LaneDecision } from "./lanes.ts";
 export type { ExploreRole, ExploreRoleId, RolePlan, RoleOwnership } from "./roles.ts";
@@ -55,8 +68,14 @@ export type {
   DispatchPlan,
   FrozenAwarenessCase,
 } from "./dispatcher.ts";
+export type {
+  BeginExploreWorkerInput,
+  BeginExploreWorkerResult,
+  CompleteExploreWorkerResult,
+  ExploreGlobalBudgets,
+  SkipCode,
+} from "./orchestrator.ts";
 export type { ExploreScaleEstimate, ExploreScaleTier } from "./scale.ts";
-export { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 export type { CreateExploreToolOptions } from "./explore-tool.ts";
 export type { RegisterExploreOptions } from "./register.ts";
 export type { RunExploreSubagentOptions } from "./subagent.ts";
