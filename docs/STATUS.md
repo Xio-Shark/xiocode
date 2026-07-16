@@ -1,6 +1,6 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-15** (v1.1.0; dirty baseline + improve agent + MCP/session cleanup + prepack typecheck + TUI Route B + **performance suite frameworks in-tree, 0/8 archive-ready** after honest re-audit).
+> Single delivery snapshot. Updated **2026-07-16** (v1.1.0; performance 1–6 archived; **Agent Runtime Event suite 5/5 done**; adaptive explore + eval gate still open — do not claim performance 8/8).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
 
@@ -8,15 +8,15 @@
 
 - Self-owned TypeScript runtime (`src/runtime`); package version **1.1.0**
 - CLI + TOML config (`providers`, `worktree`, extension on/off); `curl | bash` installer + slim npm payload (`files` excludes tests/docs/scripts); **`prepack` runs `npm run check` then payload existence checks**
-- **Performance suite (Trellis 07-15) — frameworks landed, not archive-ready** (see board; do not claim 8/8 complete):
-  - **Observability (~70%)**: versioned spans (`xio-perf-span.v1`) + `xio bench run --all --json` → `~/.xiocode/perf/`; low overhead. **Not trusted evidence yet** — several fixtures are empty-loop / mock paths.
-  - **Fast startup (~72%)**: thin `src/cli/entry.ts` + esbuild AOT (`dist/`); warm `--version` P50 ≤30ms on reference machine. Interactive Ink boot shell + parallel AGENTS/skills init still open.
-  - **TUI throughput (~60%)**: 16ms delta coalescer + chunked live buffers; 10K-delta correctness. Real paint/throughput evidence and join hotspots remain.
-  - **Session WAL (~55%)**: append-only journal mid-turn (`xio-session-wal.v1`); snapshot at turn boundary. Write bytes are O(delta); save hot path still reloads/rebuilds history-sized work.
-  - **Provider efficiency (~85%)**: `max_tokens` / `tool_choice` wire, tool-schema cache, Anthropic `cache_control`, token-aware compaction. Closest to done; real cache-hit/TTFT/cost evidence residual.
-  - **Workspace perception (~45%)**: `WorkspaceMap` + EvidenceStore library + non-blocking warm + GitNexus degrade. **Not product-wired** (no agent tools); evidence correctness gaps.
-  - **Adaptive explore (~40%)**: lane/role/capsule/brief pure policy + unit simulation. Real explore path does not yet run adaptive dispatch / brief inject.
-  - **Eval gate (~58%)**: multi-axis `xio eval compare` shell + `default-gate.v1` (safety hard-fail; private join never auto-merge). Hard perf/awareness axes incomplete; depends on trusted fixtures + perception/adaptive product paths.
+- **Performance suite (Trellis 07-15) — 6/8 archived** (see board; **do not** claim 8/8 complete):
+  - **Observability (archived)**: trusted fixtures (reducer/coalescer + SessionStore WAL + runs mirror); `xio bench run --all --json` → `~/.xiocode/perf/`. Explore mock labeled; real-provider explore opt-in only.
+  - **Fast startup (archived)**: AOT + early operable boot (`first_frame` P50~42ms) + Ink upgrade/input buffer; AGENTS/skills parallel+cache; `--version` P50~25ms. Pure Ink-first intentionally deferred (cold import).
+  - **TUI throughput (archived)**: tail preview + compact chunks; projection-path paint P95≪25ms. **Not** full Ink host/terminal-write instrumentation.
+  - **Session WAL (archived)**: live cursor O(delta) journal hot path via SessionStore; journal P95 ~4.3ms. Gate on `kind=journal` (aggregate `checkpoint.persist` mixes snapshot).
+  - **Provider efficiency (archived)**: controls + schema cache + token compaction + stable-prefix contract; Anthropic `cache_control` on last **stable** system block. Live cache/TTFT probe **INFRA 503** on configured gateway (documented — non-blocking).
+  - **Workspace perception (archived)**: product tools `query_workspace` / `read_evidence` on main+explore; EvidenceStore `putSnippet`; ref-repo warm P95 ~0.176ms. GitNexus live merge optional when index present.
+  - **Adaptive explore (check passed, archive pending)**: live `ExploreOrchestrator` + brief inject + fast-lane skip + wall/straggler + **nonzero product budgets** (`max_tokens=250000`, `max_cost_usd=1`, `max_starts_per_minute=24`; `0`=unlimited; `provider_rate_budget` skip; incomplete coverage in `brief.gaps`). Task: `07-15-adaptive-subagent-orchestration`.
+  - **Eval gate (active, not archive-ready)**: multi-axis `xio eval compare` + `default-gate.v1` (safety hard-fail; private join never auto-merge). **Gaps:** `provider.overhead` listed in manifest but missing from `ALL_FIXTURES`; most perf thresholds `required: false` so capability wins can bypass hard latency/token axes. Task: `07-15-performance-capability-eval-gate`.
 - Builtin tools: read / write / edit / bash / grep / glob
 - Outer worktree sandbox + MergeGate (`xio-sandbox`) — **opt-in** (`[worktree] enabled = true`); **protects main-tree merge only; not OS isolation**
   - **Default**: run in the launch directory (cwd); git is **optional** — no worktree, no forced repo
@@ -65,7 +65,7 @@
     - 定稿块保留**完整** `output`；Static 只渲染 8 行 preview
     - **Ctrl+O** 打开 transcript viewer overlay（读保留全文，不改 `<Static>` 历史）
   - **Startup / resume**：`TuiSessionBridge` 预订阅缓冲，prepareSession 通知不丢不重；resume 渲染 compaction / `completion unknown`
-  - **Composer**（`src/tui/composer.ts`）：光标、grapheme 删除、多行/bracketed paste、历史；busy Enter → **queue**（steer 暂不可用时显式提示，禁止 silent no-op）
+  - **Composer**（`src/tui/composer.ts`）：光标、grapheme 删除、多行/bracketed paste、历史；busy Enter → **steer**（`session.steer` soft；`!text` hard；open-tool cancel + TUI routing tested）
   - **Structured confirm**：`ask(question, detail?)` 显式 detail；MergeGate / high-risk 不再靠 last-notice 侧信道
   - **隔离徽章**：header 持久 `DIRECT / NO MERGEGATE` 或 `WORKTREE`
   - 测试 / 可选路线 A：`appendScrollback: false` 时仍可用行级 `sliceTranscriptWindow`（自管视口，供单测；pairing 仍在 `reduceEvent`）
@@ -74,7 +74,7 @@
 - **Trusted eval isolation**：`prepareCandidateSession` **强制** gradeable candidate worktree，**不继承**交互默认 `[worktree] enabled = false`；缺 worktree → `INFRA_ERROR`
 - **Context compaction G4**: one session-history owner; `/compact [focus]`; automatic `max_session_messages` trigger; same-provider continuation summary; complete-turn/tool-pair retention; atomic snapshot publish; persisted resume marker
 - **Execution/file checkpoint-resume G5**: atomic `xio-session.v2` state; v1 load compatibility; original worktree attach/validation; durable hidden-ref turn checkpoint; interrupted tool calls closed as `completion unknown` without replay; resumed MergeGate rollback checkpoint
-- **Session WAL (incremental, partial)**: mid-turn `journal.jsonl` overlay + turn-boundary snapshot rewrite; resume = snapshot + journal. Durability path exists; history-sized reload/compare on save still open (not a full O(delta) hot-path claim)
+- **Session WAL (incremental)**: mid-turn `journal.jsonl` overlay + turn-boundary snapshot rewrite; resume = snapshot + journal; warm save uses live cursor O(delta) via SessionStore (perf task 4 archived)
 - Provider usage normalization (input/output/cache/reasoning; unknown → `null`)
 - Secret redaction in trajectories (env-style secrets redacted; usage counters preserved)
 - Harness throughput H1–H5; session/turn rollback G5b
@@ -85,19 +85,24 @@
   - 其他 OpenAI-compat：顶档 `max`/`ultra` → `xhigh`（可被 `[providers.*.thinking_level_map]` 覆盖）
 - **Multi-explore**: opt-in `[explore]` registers `explore` tool; read-only parallel workers on `explore.model`
   - `max_concurrency` = absolute ceiling **1–16** (default **16**)
-  - Adaptive policy modules exist (lanes / roles / capsule / WorkspaceBrief); **live explore path still incomplete** — do not treat deep-vs-fast awareness as product-proven
+  - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler). **Do not** claim product-enforced token/cost/rate budgets until task 7 closes for archive.
   - No recursive explore; plan mode allows explore
-- **Agent Runtime Event suite** (planning, 0/5): turn_end trajectory fix → RuntimeEvent.v1 → scripted tape → stream-json → mid-turn steering. Board: [agent-runtime-event-board](../.trellis/tasks/07-15-agent-runtime-event-board.md). Does **not** merge Session WAL with Run evidence storage.
+- **Agent Runtime Event suite** (**5/5 done** — board ready to archive):
+  - RuntimeEvent.v1 bus (`src/runtime/events/`); product sinks: **stream-json stdout** + **evolve trajectory** (Text/TUI UI still callback-based).
+  - `xio -p --output-format stream-json` — stdout NDJSON only; diagnostics on stderr (prepareSession E2E).
+  - Scripted LLM tape (`xio-agent-tape.v1` + goldens); turn_end trajectory contract.
+  - Mid-turn hard/soft steer; hard-steer+open-tool + TUI routing proven.
+  - Board: [agent-runtime-event-board](../.trellis/tasks/07-15-agent-runtime-event-board.md). Does **not** merge Session WAL with Run evidence storage.
 
 ## Known gaps (honest — do not paper over)
 
-- **Performance suite trust**: none of the 8 Trellis perf tasks are archive-ready; fixtures/product wiring must land before hard perf gates or “speed win” claims. Source of truth: performance board + audit under `.trellis/tasks/`.
+- **Performance residual (tasks 7–8)**: adaptive explore **trellis-check passed** (archive pending); hard eval gate (`provider.overhead` fixture + required thresholds) still open — blocks “8/8 archived” and hard perf-win claims. Source of truth: performance board under `.trellis/tasks/`.
+- **RuntimeEvent follow-ups** (out of suite): bus→SessionUi for Text/TUI; explicit `reportProgress()` if progress is promised.
 - **Identity–behavior gap**: north-star wiring is present (evidence → dirty-main → risk → capture → joint gate → config defaults); daily dogfood still requires the operator to confirm failure + verifier and approve MergeGate.
 - **Host isolation**: worktree is merge isolation only; `bash` / MCP remain host-reachable (`host_isolation: unsupported`).
 - **Cost / tracing (G8)**: no versioned price table yet; `estimated_cost_usd` stays `null` without it; product-facing span tracing incomplete (bench path is local/framework).
 - **Isolation ladder (G6)**: container / microVM path not productized; docs ladder still the target narrative.
-- **TUI residual**: busy-turn **steer** not provider-safe yet (queue only); Route A `reduceEvent` still has a separate tool-pairing path for the test renderer; external prompt editor not shipped.
-- **Trajectory `turn_end` contract**: recorder expects turn index / message / toolResults; agent loop still misaligned (first child of runtime-event suite).
+- **TUI residual**: Route A `reduceEvent` still has a separate tool-pairing path for the test renderer; external prompt editor not shipped.
 - **Corpus**: stronger self-iteration claims need a growing private run corpus under `~/.xiocode/runs/`.
 
 ## Not on default path / not shipped

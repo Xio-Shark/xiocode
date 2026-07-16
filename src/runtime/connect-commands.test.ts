@@ -68,6 +68,9 @@ function baseRuntime(configPath: string): XioRuntimeConfig {
       maxConcurrency: 4,
       maxOutputChars: 16_000,
       allowBash: false,
+      maxTokens: 250_000,
+      maxCostUsd: 1,
+      maxStartsPerMinute: 24,
     },
     retrospective: {
       enabled: true,
