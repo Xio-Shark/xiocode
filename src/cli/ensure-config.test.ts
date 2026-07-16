@@ -28,6 +28,8 @@ describe("ensureConfigFile", () => {
     expect(await readFile(configPath, "utf8")).toBe(DEFAULT_CONFIG_TOML);
     const noticeText = notices.join("");
     expect(noticeText).toContain("DEEPSEEK_API_KEY");
+    expect(noticeText).toContain("project directory");
+    expect(noticeText).not.toMatch(/git repo/i);
     expect(noticeText).toContain("Recommended CLI tools");
     expect(noticeText).toMatch(/ugrep → rg → grep/);
 

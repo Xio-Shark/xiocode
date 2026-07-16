@@ -3,15 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
   applyInputChunk,
   deleteBackward,
+  deleteForward,
   emptyComposer,
   historyDown,
   historyUp,
   insertAtCursor,
   loadQueueIntoDraft,
   moveCursor,
+  moveCursorLine,
   queueWhileBusy,
   rememberSubmission,
   setComposerText,
+  sliceViewerWindow,
 } from "./composer.ts";
 
 describe("composer", () => {
@@ -80,5 +83,42 @@ describe("composer", () => {
     state = loadQueueIntoDraft(state);
     expect(state.queue).toBeUndefined();
     expect(state.text).toBe("follow up");
+  });
+
+  it("inserts newline on Shift+Enter without submitting", () => {
+    const state = setComposerText(emptyComposer(), "line1");
+    const applied = applyInputChunk(state, "", { return: true, shift: true });
+    expect(applied.submit).toBe(false);
+    expect(applied.state.text).toBe("line1\n");
+    expect(applied.state.cursor).toBe(6);
+  });
+
+  it("deletes forward with delete key semantics", () => {
+    let state = setComposerText(emptyComposer(), "abcd", 1);
+    state = deleteForward(state);
+    expect(state.text).toBe("acd");
+    expect(state.cursor).toBe(1);
+  });
+
+  it("moves cursor across lines in a multiline draft", () => {
+    let state = setComposerText(emptyComposer(), "aa\nbb", 1);
+    state = moveCursorLine(state, 1);
+    expect(state.cursor).toBe(4);
+    state = moveCursorLine(state, -1);
+    expect(state.cursor).toBe(1);
+  });
+
+  it("slices viewer windows for scrollable overlays", () => {
+    const lines = ["a", "b", "c", "d", "e"];
+    expect(sliceViewerWindow(lines, 2, 0)).toMatchObject({
+      visible: ["a", "b"],
+      offset: 0,
+      indicator: "lines 1–2/5",
+    });
+    expect(sliceViewerWindow(lines, 2, 3)).toMatchObject({
+      visible: ["d", "e"],
+      offset: 3,
+      maxOffset: 3,
+    });
   });
 });

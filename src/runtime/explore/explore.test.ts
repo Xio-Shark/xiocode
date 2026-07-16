@@ -1305,6 +1305,67 @@ describe("runExploreSubagent integration (stub client)", () => {
     expect(result.text).toContain("agent-loop");
     expect(result.model).toBe("flash");
   });
+
+  it("forwards nested loop UI callbacks with worker identity", async () => {
+    const { runExploreSubagent } = await import("./subagent.ts");
+    const { noopSubagentUiBridge } = await import("./subagent-ui.ts");
+    const lifecycle: string[] = [];
+    const deltas: string[] = [];
+    const bridge: import("./subagent-ui.ts").SubagentUiBridge = {
+      forWorker: () => ({
+        onLifecycle: (phase: "start" | "end") => lifecycle.push(phase),
+        onAssistantDelta: (text: string) => deltas.push(text),
+      }),
+    };
+    const stubClient: LlmClient = {
+      async complete() {
+        return {
+          content: "evidence block",
+          toolCalls: [],
+          usage: { inputTokens: 1, outputTokens: 2, cacheTokens: null, reasoningTokens: null },
+        };
+      },
+      async *completeStream() {
+        yield { type: "text_delta" as const, text: "evidence" };
+        yield {
+          type: "done" as const,
+          content: "evidence block",
+          toolCalls: [],
+          usage: { inputTokens: 1, outputTokens: 2, cacheTokens: null, reasoningTokens: null },
+          raw: undefined,
+        };
+      },
+    };
+    await runExploreSubagent({
+      goal: "find entry",
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      registration: {
+        name: "stub",
+        api: "openai-completions",
+        models: [{ id: "flash", name: "flash", input: ["text"] }],
+      },
+      apiKey: "sk-test",
+      modelId: "flash",
+      maxTurns: 2,
+      allowBash: false,
+      createClient: () => stubClient,
+      ui: {
+        workerId: 7,
+        modelLabel: "stub/flash",
+        role: "locator",
+        sink: bridge.forWorker({
+          workerId: 7,
+          modelLabel: "stub/flash",
+          role: "locator",
+          goal: "find entry",
+        }),
+      },
+    });
+    expect(lifecycle).toEqual(["start", "end"]);
+    expect(deltas.join("")).toContain("evidence");
+    expect(noopSubagentUiBridge.forWorker({ workerId: 1, modelLabel: "x", goal: "g" }).onLifecycle).toBeUndefined();
+  });
 });
 
 function runtimeWithExplore(enabled: boolean): XioRuntimeConfig {

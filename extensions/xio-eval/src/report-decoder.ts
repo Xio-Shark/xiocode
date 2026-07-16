@@ -40,6 +40,17 @@ function assertPerformance(value: unknown): void {
       assertNullableNonNegativeOrSignedNumber(delta[field], `performance.deltas.${key}.${field}`);
     }
   }
+  if (section.resource !== undefined) {
+    const resource = asRecord(section.resource, "performance.resource");
+    for (const field of [
+      "before_rss_bytes", "candidate_rss_bytes", "delta_rss_bytes",
+      "before_cpu_user_ms", "candidate_cpu_user_ms", "delta_cpu_user_ms",
+      "before_cache_tokens", "candidate_cache_tokens", "delta_cache_tokens",
+      "before_cost_usd", "candidate_cost_usd", "delta_cost_usd",
+    ]) {
+      assertNullableNonNegativeOrSignedNumber(resource[field], `performance.resource.${field}`);
+    }
+  }
 }
 
 function assertAwareness(value: unknown): void {
@@ -119,6 +130,11 @@ function assertTrial(value: unknown): void {
   assertEfficiency(trial.efficiency);
   assertUsage(trial.usage);
   assertEvidence(trial.evidence);
+  if (trial.awareness !== undefined) {
+    const awareness = asRecord(trial.awareness, "trial awareness");
+    assertNullableNonNegativeNumber(awareness.evidence_coverage, "trial awareness.evidence_coverage");
+    assertNullableNonNegativeNumber(awareness.overlap, "trial awareness.overlap");
+  }
 }
 
 function assertTrialIdentity(value: unknown): void {

@@ -390,6 +390,44 @@ describe("provider usage normalization", () => {
     expect(tools.at(-1)?.cache_control).toEqual({ type: "ephemeral" });
   });
 
+  it("places Anthropic cache_control on last stable system block, not dynamic inject", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        ...registration("anthropic-messages"),
+        models: [{ id: "test", name: "test", maxTokens: 4096 }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+    await client.complete({
+      model: "test",
+      messages: [
+        { role: "system", content: "canonical stable system" },
+        { role: "system", content: "project rules addenda" },
+        { role: "user", content: "first" },
+        { role: "assistant", content: "ack" },
+        { role: "system", content: "git: main\nstatus: dirty" },
+        { role: "user", content: "second" },
+      ],
+      promptCache: true,
+    });
+    const systemBlocks = body?.system as Array<Record<string, unknown>>;
+    expect(systemBlocks.map((block) => block.text)).toEqual([
+      "canonical stable system",
+      "project rules addenda",
+      "git: main\nstatus: dirty",
+    ]);
+    expect(systemBlocks[0]?.cache_control).toBeUndefined();
+    expect(systemBlocks[1]?.cache_control).toEqual({ type: "ephemeral" });
+    expect(systemBlocks[2]?.cache_control).toBeUndefined();
+    const wireMessages = body?.messages as Array<Record<string, unknown>>;
+    expect(wireMessages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+  });
+
   it("does not invent tool_choice for unsupported provider APIs", async () => {
     // openai client is used for non-anthropic; google is still openai-compatible path only when
     // createLlmClient routes there. Unsupported map is covered in request-controls; here ensure

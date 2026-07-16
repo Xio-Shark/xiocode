@@ -2,6 +2,34 @@ export { ExtensionHost } from "./extension-host.ts";
 export { defineTool } from "./define-tool.ts";
 export { Type } from "./schema.ts";
 export { runAgentLoop } from "./agent-loop.ts";
+export {
+  RUNTIME_EVENT_NAMES,
+  RUNTIME_EVENT_SCHEMA_VERSION,
+  createRuntimeEventEmitter,
+  pipeRuntimeEventsToSessionUi,
+  pipeRuntimeEventsToTrajectory,
+  redactRuntimePayload,
+  type RuntimeEventEmitter,
+  type RuntimeEventName,
+  type RuntimeEventV1,
+} from "./events/index.ts";
+export {
+  AGENT_TAPE_SCHEMA_VERSION,
+  AgentTapeError,
+  createScriptedLlmClient,
+  loadAgentTape,
+  parseAgentTape,
+  normalizeRuntimeEventsForGolden,
+  type AgentTapeV1,
+  type ScriptedLlmClient,
+} from "./providers/scripted/index.ts";
+export {
+  SteerMailbox,
+  formatSteerUserMessage,
+  resolveSteerMode,
+  type SteerMode,
+  type SteerRequest,
+} from "./steer.ts";
 export { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 export {
   CONTEXT_SUMMARY_NAME,
@@ -53,7 +81,13 @@ export {
   WorkspaceMap,
   WorkspacePerceptionService,
   createGitNexusAdapter,
+  createPerceptionTools,
   probeGitNexus,
+  registerPerceptionCapability,
+  QUERY_WORKSPACE_TOOL_NAME,
+  READ_EVIDENCE_TOOL_NAME,
+  PERCEPTION_TOOL_NAMES,
+  PERCEPTION_PROMPT_ADDENDUM,
 } from "./workspace/index.ts";
 
 export type {

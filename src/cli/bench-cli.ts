@@ -54,14 +54,24 @@ export async function runBenchCli(
 
   const env = options.env ?? process.env;
   const packageVersion = options.packageVersion ?? readPackageVersion();
+  const xioHome = expandHome(env.XIO_HOME ?? path.join(os.homedir(), ".xiocode"));
   const outRoot = args.outRoot
     ?? env.XIO_PERF_ROOT
-    ?? path.join(expandHome(env.XIO_HOME ?? path.join(os.homedir(), ".xiocode")), "perf");
-  const store = new PerfStore({ root: outRoot, packageVersion });
+    ?? path.join(xioHome, "perf");
+  // Always mirror into the existing runs evidence tree unless explicitly disabled.
+  const evidenceRoot = env.XIO_BENCH_NO_EVIDENCE_MIRROR === "1"
+    ? undefined
+    : (env.XIO_RUN_ROOT ?? path.join(xioHome, "runs"));
+  const store = new PerfStore({ root: outRoot, evidenceRoot, packageVersion });
   const benchId = createBenchId();
   const overhead = probeOverhead();
   const samples: PerfSample[] = [];
-  const notes: string[] = [];
+  const notes: string[] = [
+    "tui.replay_10k path=reducer+coalescer",
+    "session.tool_heavy path=session_store journal+snapshot",
+    "provider.overhead path=agent_loop_stream provider.request+first_token+completion",
+    "explore.workers_* default explore_mode=mock (set XIO_BENCH_EXPLORE_REAL=1 for real provider)",
+  ];
 
   // Isolated home for interactive boot so we never touch the operator's real sessions.
   let tempHome: string | undefined;
@@ -105,7 +115,7 @@ export async function runBenchCli(
     notes.push(overhead.note);
   }
 
-  const { report, dir } = await store.writeReport({
+  const { report, dir, evidenceDir } = await store.writeReport({
     benchId,
     iterations: args.iterations,
     fixtures: args.fixtures,
@@ -117,7 +127,7 @@ export async function runBenchCli(
   if (args.json) {
     write(`${JSON.stringify(report)}\n`);
   } else {
-    write(formatReport(report, dir));
+    write(formatReport(report, dir, evidenceDir));
   }
   return reportHasHardFailure(report) ? 1 : 0;
 }
@@ -188,7 +198,9 @@ export function parseBenchArgs(argv: readonly string[]): BenchCliArgs {
 
 export function benchHelp(): string {
   return [
-    "xio bench — performance baseline fixtures (local evidence under ~/.xiocode/perf/)",
+    "xio bench — performance baseline fixtures",
+    "  reports:  $XIO_HOME/perf/<bench_id>/ (or --out / XIO_PERF_ROOT)",
+    "  evidence: $XIO_HOME/runs/<bench_id>/  (mirrored; same report.json + samples.jsonl)",
     "",
     "Usage:",
     "  xio bench run [--all] [--fixture <id>]... [--iterations N] [--json] [--out DIR]",
@@ -202,13 +214,16 @@ export function benchHelp(): string {
     "  xio bench run --all --iterations 5 --json",
     "",
     "Env:",
-    "  XIO_PERF_ROOT   Override report root (default: $XIO_HOME/perf or ~/.xiocode/perf)",
-    "  XIO_PERF=1      Enable in-process span recording during interactive sessions",
+    "  XIO_PERF_ROOT                 Override bench report root (default: $XIO_HOME/perf)",
+    "  XIO_RUN_ROOT                  Evidence model root for mirror (default: $XIO_HOME/runs)",
+    "  XIO_BENCH_NO_EVIDENCE_MIRROR  Set 1 to skip runs/ mirror",
+    "  XIO_BENCH_EXPLORE_REAL        Set 1 for real-provider explore fixtures",
+    "  XIO_PERF=1                    Enable in-process span recording during interactive sessions",
     "",
   ].join("\n");
 }
 
-function formatReport(report: PerfReport, dir: string): string {
+function formatReport(report: PerfReport, dir: string, evidenceDir?: string): string {
   const lines = [
     `bench_id: ${report.bench_id}`,
     `schema: ${report.schema_version}`,
@@ -217,6 +232,7 @@ function formatReport(report: PerfReport, dir: string): string {
     `fixtures: ${report.fixtures.join(", ")}`,
     `overhead: ${report.overhead.median_span_cost_us}µs/span${report.overhead.concern ? " (CONCERN)" : ""}`,
     `output: ${dir}`,
+    ...(evidenceDir ? [`evidence: ${evidenceDir}`] : []),
     "",
     "metrics (P50 / P95 ms):",
   ];

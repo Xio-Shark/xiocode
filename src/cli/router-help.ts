@@ -27,6 +27,8 @@ export function xioHelp(): string {
     "  xio                 Start the interactive Ink TUI",
     "  xio init            Create ~/.xiocode/config.toml if missing; print recommended CLI tools",
     "  xio -p \"prompt\"     Run a single prompt",
+    "  xio -p \"prompt\" --output-format stream-json",
+    "                      NDJSON RuntimeEvent.v1 on stdout (diagnostics on stderr)",
     "  xio resume          Resume the most recent session for this repository",
     "  xio resume <id>     Resume a specific session",
     "  xio resume --list   Choose from saved sessions",

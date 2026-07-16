@@ -1,5 +1,6 @@
 # Build artifacts
 /dist/
+/dist-boot-probe/
 /build/
 *.js.map
 

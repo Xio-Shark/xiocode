@@ -139,6 +139,7 @@ function adaptEvolveApi(api: XioExtensionAPI): ExtensionContext {
         handler: async (args, ctx) => options.handler(args, adaptEventContext(ctx, api)),
       });
     },
+    getRuntimeEvents: () => api.getRuntimeEvents?.(),
   };
 }
 

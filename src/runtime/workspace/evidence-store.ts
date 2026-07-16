@@ -25,6 +25,11 @@ export class EvidenceStore {
     return `${citation.path}|${citation.startLine}|${citation.endLine}|${citation.hash}`;
   }
 
+  /**
+   * Store a full-file body (or multi-line blob) and extract [startLine, endLine] (1-based inclusive).
+   * Do **not** use this for outline/synthetic snippets paired with real file line numbers —
+   * that yields empty slices; use {@link putSnippet} instead.
+   */
   putFromText(input: Readonly<{
     path: string;
     text: string;
@@ -38,13 +43,50 @@ export class EvidenceStore {
       ? Math.floor(input.endLine)
       : lines.length;
     const slice = lines.slice(startLine - 1, endLine).join("\n");
-    const redacted = redactSecrets(slice);
-    const hash = input.fileHash ?? EvidenceStore.contentHash(input.text);
-    const record: EvidenceRecord = {
-      path: input.path.replace(/\\/g, "/"),
+    return this.#storeRecord({
+      path: input.path,
       startLine,
       endLine,
-      hash,
+      hash: input.fileHash ?? EvidenceStore.contentHash(input.text),
+      text: slice,
+    });
+  }
+
+  /**
+   * Store an already-extracted snippet under a citation range.
+   * Text is stored as-is (after secret redaction); line numbers are citation metadata only.
+   */
+  putSnippet(input: Readonly<{
+    path: string;
+    text: string;
+    startLine: number;
+    endLine: number;
+    hash: string;
+  }>): EvidenceRecord {
+    const startLine = input.startLine > 0 ? Math.floor(input.startLine) : 1;
+    const endLine = input.endLine >= startLine ? Math.floor(input.endLine) : startLine;
+    return this.#storeRecord({
+      path: input.path,
+      startLine,
+      endLine,
+      hash: input.hash,
+      text: input.text,
+    });
+  }
+
+  #storeRecord(input: Readonly<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    hash: string;
+    text: string;
+  }>): EvidenceRecord {
+    const redacted = redactSecrets(input.text);
+    const record: EvidenceRecord = {
+      path: input.path.replace(/\\/g, "/"),
+      startLine: input.startLine,
+      endLine: input.endLine,
+      hash: input.hash,
       text: redacted,
       capturedAt: Date.now(),
     };
