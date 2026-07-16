@@ -102,6 +102,21 @@ export function previewText(text: string, maxLines = TOOL_OUTPUT_PREVIEW_LINES):
   };
 }
 
+/**
+ * Cumulative session usage for the status row. Tokens are provider-reported;
+ * cost is the same blended ~$1/M estimate the explore budgets use (no real
+ * per-model price table in the runtime yet) — the `~` marks it an estimate.
+ */
+export function formatUsageStatus(totalTokens: number): string {
+  const tokens = totalTokens >= 1_000_000
+    ? `${(totalTokens / 1_000_000).toFixed(1)}M`
+    : totalTokens >= 1_000
+      ? `${(totalTokens / 1_000).toFixed(1)}k`
+      : String(totalTokens);
+  const estimatedUsd = totalTokens * 1e-6;
+  return `tok:${tokens} ~$${estimatedUsd.toFixed(2)}`;
+}
+
 export function createStdoutSessionUiSink(write: (chunk: string) => void = (chunk) => output.write(chunk)): SessionUiSink {
   let streamed = false;
   let thinkingOpen = false;

@@ -26,7 +26,8 @@ import {
   registerRollbackCommand,
 } from "./session-lifecycle.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
-import { createStdoutSessionUiSink, createStdoutSubagentUiBridge } from "./session-ui.ts";
+import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatUsageStatus } from "./session-ui.ts";
+import { decodeProviderUsageEvent } from "./usage.ts";
 import { registerExploreCapability } from "./explore/index.ts";
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
 import { noopSubagentUiBridge } from "./explore/subagent-ui.ts";
@@ -221,6 +222,22 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       sink.setStatus?.("workspace_perception", `stale: ${message.slice(0, 80)}`);
       sink.notify?.(
         `workspace perception refresh failed for ${rel}: ${message}`,
+        "warn",
+      );
+    }
+  });
+  // Cumulative session usage → status row. Tokens are provider-reported per
+  // provider_response; the cost figure is a labeled blended estimate (see
+  // formatUsageStatus). Decode failures surface as a warn notice, never silently.
+  let sessionTokens = 0;
+  host.on("provider_response", async (payload) => {
+    try {
+      const usage = decodeProviderUsageEvent(payload);
+      sessionTokens += Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
+      sink.setStatus?.("usage", formatUsageStatus(sessionTokens));
+    } catch (error) {
+      sink.notify?.(
+        `usage status update failed: ${error instanceof Error ? error.message : String(error)}`,
         "warn",
       );
     }

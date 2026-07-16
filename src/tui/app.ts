@@ -11,6 +11,13 @@ import {
   previewText,
 } from "../runtime/session-ui.ts";
 import { isMouseLeakChunk, stripMouseLeak } from "./mouse-scroll.ts";
+import {
+  atQuery,
+  expandFileMentions,
+  filterFiles,
+  insertFileMention,
+  listWorkspaceFiles,
+} from "./file-mention.ts";
 import { CONTEXT_SUMMARY_NAME, isContextCompactionError } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import type { PreparedSession } from "../runtime/session.ts";
@@ -186,6 +193,8 @@ export function App(props: AppProps): React.JSX.Element {
     busy,
     slashIndex,
     setSlashIndex,
+    atItems,
+    atIndex,
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
@@ -206,6 +215,8 @@ export function App(props: AppProps): React.JSX.Element {
   const safeSlashIndex = slashOpen && slashItems.length > 0
     ? Math.min(slashIndex, slashItems.length - 1)
     : 0;
+  const atOpen = !slashOpen && atItems !== undefined;
+  const safeAtIndex = atOpen && atItems.length > 0 ? Math.min(atIndex, atItems.length - 1) : 0;
 
   const tasklist = view.widgets.tasklist;
   const collapsedEntries = useMemo(
@@ -227,8 +238,12 @@ export function App(props: AppProps): React.JSX.Element {
       };
     }
     const tasklistRows = tasklist && tasklist.length > 0 ? Math.min(tasklist.length, 10) + 3 : 0;
-    const baseChrome = (slashOpen ? 7 + Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1 : 7)
-      + tasklistRows;
+    const menuRows = slashOpen
+      ? Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1
+      : atOpen
+        ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 1
+        : 0;
+    const baseChrome = 7 + menuRows + tasklistRows;
     const viewportLines = Math.max(4, rows - baseChrome);
     return sliceTranscriptWindow(
       collapsedEntries,
@@ -236,7 +251,7 @@ export function App(props: AppProps): React.JSX.Element {
       scrollOffset,
       (entry) => estimateTranscriptEntryLines(entry, 80),
     );
-  }, [appendScrollback, collapsedEntries, rows, scrollOffset, slashOpen, slashItems, tasklist]);
+  }, [appendScrollback, collapsedEntries, rows, scrollOffset, slashOpen, slashItems, atOpen, atItems, tasklist]);
 
   useEffect(() => {
     if (appendScrollback) return;
@@ -276,6 +291,7 @@ export function App(props: AppProps): React.JSX.Element {
       plan: planLabel,
       cwd: props.cwd,
       context: view.statuses.context,
+      usage: view.statuses.usage,
       explore: view.statuses.explore,
       workspace: workspaceLabel,
       busy,
@@ -317,6 +333,9 @@ export function App(props: AppProps): React.JSX.Element {
     }),
     slashOpen
       ? h(SlashMenu, { items: slashItems ?? [], selected: safeSlashIndex })
+      : null,
+    atOpen
+      ? h(FileMenu, { items: atItems ?? [], selected: safeAtIndex })
       : null,
     h(FooterHints, {
       bypass: view.bypass || Boolean(view.statuses.bypass),
@@ -556,6 +575,8 @@ function useSessionInteraction(
   busy: boolean;
   slashIndex: number;
   setSlashIndex: React.Dispatch<React.SetStateAction<number>>;
+  atItems: readonly string[] | undefined;
+  atIndex: number;
   transcriptViewer: HistoryBlock | undefined;
   viewerScrollOffset: number;
   setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
@@ -586,6 +607,32 @@ function useSessionInteraction(
   const busyRef = useRef(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const slashIndexRef = useRef(0);
+  // `@` file picker: list loaded lazily on first trigger, Esc dismisses per query.
+  const [fileList, setFileList] = useState<readonly string[] | undefined>(undefined);
+  const fileListRef = useRef(fileList);
+  fileListRef.current = fileList;
+  const [atIndex, setAtIndex] = useState(0);
+  const atIndexRef = useRef(0);
+  const [atDismissed, setAtDismissed] = useState<string | undefined>(undefined);
+  const atDismissedRef = useRef(atDismissed);
+  atDismissedRef.current = atDismissed;
+  const activeAtQuery = busy ? undefined : atQuery(composer.text, composer.cursor);
+  const atItems = activeAtQuery !== undefined
+    && atDismissed !== activeAtQuery
+    && fileList !== undefined
+    ? filterFiles(fileList, activeAtQuery, 50)
+    : undefined;
+  useEffect(() => {
+    if (activeAtQuery === undefined || fileList !== undefined) return;
+    let cancelled = false;
+    // Same root the submit-time expansion resolves against (worktree-safe).
+    void listWorkspaceFiles(props.session.workspacePerception.root).then((files) => {
+      if (!cancelled) setFileList(files);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAtQuery === undefined, fileList, props.session.workspacePerception.root]);
   const setComposerState = (next: ComposerState) => {
     const cleanedText = stripMouseLeak(next.text);
     const cleaned: ComposerState = cleanedText === next.text
@@ -595,6 +642,8 @@ function useSessionInteraction(
     setComposer(cleaned);
     setSlashIndex(0);
     slashIndexRef.current = 0;
+    setAtIndex(0);
+    atIndexRef.current = 0;
   };
   const setInputValue = (value: string) => {
     setComposerState(setComposerText(composerRef.current, stripMouseLeak(value)));
@@ -610,6 +659,32 @@ function useSessionInteraction(
       slashIndexRef.current = next;
       return next;
     });
+  };
+  const currentAtItems = (): readonly string[] | undefined => {
+    if (busyRef.current || fileListRef.current === undefined) return undefined;
+    const query = atQuery(composerRef.current.text, composerRef.current.cursor);
+    if (query === undefined || atDismissedRef.current === query) return undefined;
+    return filterFiles(fileListRef.current, query, 50);
+  };
+  const moveAt = (delta: number) => {
+    setAtIndex((current) => {
+      const items = currentAtItems();
+      if (!items || items.length === 0) return 0;
+      const next = (current + delta + items.length) % items.length;
+      atIndexRef.current = next;
+      return next;
+    });
+  };
+  const insertAt = () => {
+    const items = currentAtItems();
+    if (!items || items.length === 0) return;
+    const picked = items[Math.min(atIndexRef.current, items.length - 1)];
+    if (picked) setComposerState(insertFileMention(composerRef.current, picked));
+  };
+  const dismissAt = () => {
+    setAtDismissed(atQuery(composerRef.current.text, composerRef.current.cursor));
+    setAtIndex(0);
+    atIndexRef.current = 0;
   };
   const scrollViewer = (delta: number) => {
     setViewerScrollOffset((current) => Math.max(0, current + delta));
@@ -727,6 +802,11 @@ function useSessionInteraction(
       collectSlashCommands(props.session.host),
       slashQuery(composerRef.current.text),
     ),
+    atItems: currentAtItems(),
+    atIndex: atIndexRef.current,
+    moveAt,
+    insertAt,
+    dismissAt,
     setInputValue,
     setComposerState,
     moveSlash,
@@ -776,6 +856,8 @@ function useSessionInteraction(
     busy,
     slashIndex,
     setSlashIndex,
+    atItems,
+    atIndex,
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
@@ -819,6 +901,11 @@ function handleInput(options: Readonly<{
   interaction: "confirm" | "select" | "prompt" | "none";
   slashIndex: number;
   slashItems: readonly SlashCommand[] | undefined;
+  atItems: readonly string[] | undefined;
+  atIndex: number;
+  moveAt: (delta: number) => void;
+  insertAt: () => void;
+  dismissAt: () => void;
   scrollConfirm: (delta: number) => void;
   scrollTranscript: (delta: number) => void;
   scrollViewer?: (delta: number) => void;
@@ -908,6 +995,28 @@ function handleInput(options: Readonly<{
       const picked = options.slashItems[Math.min(options.slashIndex, options.slashItems.length - 1)];
       void options.submit(picked ? `/${picked.name}` : options.composer.text);
       return;
+    }
+  }
+
+  // `@` file picker: navigation/insert/dismiss take priority over history and submit.
+  if (!slashOpen && !options.busy && options.atItems !== undefined) {
+    if (options.key.escape) {
+      options.dismissAt();
+      return;
+    }
+    if (options.atItems.length > 0) {
+      if (options.key.upArrow) {
+        options.moveAt(-1);
+        return;
+      }
+      if (options.key.downArrow) {
+        options.moveAt(1);
+        return;
+      }
+      if (options.key.tab || options.key.return) {
+        options.insertAt();
+        return;
+      }
     }
   }
 
@@ -1035,7 +1144,9 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
       if (result !== undefined) bridge.sink.notify?.(formatResult(result), "info");
       return;
     }
-    await session.runPrompt(value);
+    // `@path` mentions expand into bounded file blocks in the outgoing prompt only
+    // (transcript keeps the raw typed text; steer path stays raw as well).
+    await session.runPrompt(await expandFileMentions(value, session.workspacePerception.root));
   } catch (error) {
     if (!isContextCompactionError(error)) {
       bridge.sink.notify?.(error instanceof Error ? error.message : String(error), "error");
@@ -1505,6 +1616,8 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   plan?: string;
   cwd: string;
   context?: string;
+  /** Cumulative session tokens + estimated cost, e.g. "tok:12.3k ~$0.01". */
+  usage?: string;
   /** Active explore subagents, e.g. "subs:3". */
   explore?: string;
   /** Persistent isolation badge: DIRECT / NO MERGEGATE or WORKTREE. */
@@ -1520,6 +1633,7 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
     props.explore,
     props.busy ? "working…" : undefined,
     props.context,
+    props.usage,
     formatShortCwd(props.cwd),
   ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
@@ -1637,6 +1751,35 @@ function SlashMenu(props: Readonly<{
     }),
     h(Text, { dimColor: true },
       `(${props.selected + 1}/${props.items.length}) ↑↓ · Tab · Enter`));
+}
+
+/** `@` file picker rendered below the composer (same window size as SlashMenu). */
+function FileMenu(props: Readonly<{
+  items: readonly string[];
+  selected: number;
+}>): React.JSX.Element {
+  if (props.items.length === 0) {
+    return h(Text, { dimColor: true }, "No matching files");
+  }
+  const start = Math.min(
+    Math.max(0, props.selected - SLASH_MENU_VISIBLE + 1),
+    Math.max(0, props.items.length - SLASH_MENU_VISIBLE),
+  );
+  const visible = props.items.slice(start, start + SLASH_MENU_VISIBLE);
+  return h(Box, { flexDirection: "column", marginTop: 1 },
+    ...visible.map((item, index) => {
+      const absolute = start + index;
+      const active = absolute === props.selected;
+      const marker = active ? `${theme.sym.select} ` : "  ";
+      return h(Text, {
+        key: item,
+        color: active ? theme.accent : undefined,
+        dimColor: !active,
+        wrap: "truncate-end",
+      }, `${marker}${item}`);
+    }),
+    h(Text, { dimColor: true },
+      `(${props.selected + 1}/${props.items.length}) ↑↓ · Tab/Enter insert · Esc`));
 }
 
 /** Exported for unit tests. */
