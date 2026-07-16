@@ -15,6 +15,7 @@ import {
 } from "../runtime/session-ui.ts";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
+import { renderMarkdownLines } from "./markdown.ts";
 import { theme, truncateToolDetail } from "./theme.ts";
 
 import type { TuiEvent } from "./session-bridge.ts";
@@ -171,6 +172,17 @@ export function commitLive(state: ScrollbackState): ScrollbackState {
   };
 }
 
+/**
+ * Finalized assistant text: markdown-rendered once at commit time (never in
+ * the delta hot path). First line carries the answer mark; continuation lines
+ * are separate entries so Ink wraps each source line independently.
+ */
+function assistantBlockLines(text: string): readonly string[] {
+  const rendered = renderMarkdownLines(text);
+  if (rendered.length === 0) return [`${theme.sym.answer} ${text}`];
+  return [`${theme.sym.answer} ${rendered[0]!}`, ...rendered.slice(1)];
+}
+
 export function reduceScrollback(state: ScrollbackState, event: TuiEvent): ScrollbackState {
   if (event.kind === "thinking-delta") {
     let next = state;
@@ -221,7 +233,7 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
         blocks: [...next.blocks, {
           id: next.nextId,
           kind: "assistant",
-          lines: [`${theme.sym.answer} ${event.text}`],
+          lines: assistantBlockLines(event.text),
         }],
         live: undefined,
         nextId: next.nextId + 1,
@@ -588,7 +600,7 @@ export function blocksFromRestoredMessages(
         blocks: [...state.blocks, {
           id: state.nextId,
           kind: "assistant",
-          lines: [`${theme.sym.answer} ${message.content}`],
+          lines: assistantBlockLines(message.content),
         }],
         live: undefined,
         nextId: state.nextId + 1,
@@ -655,7 +667,7 @@ function liveStreamToBlock(live: LiveBlock, id: number): HistoryBlock {
       thoughtSeconds: secondsMatch ? Number(secondsMatch[1]) : undefined,
     };
   }
-  return { id, kind: "assistant", lines: [`${theme.sym.answer} ${liveTextString(live.buffer)}`] };
+  return { id, kind: "assistant", lines: assistantBlockLines(liveTextString(live.buffer)) };
 }
 
 /** Format live stream + in-flight tools + subagent workers for the sticky region. */
