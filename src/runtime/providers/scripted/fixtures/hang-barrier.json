@@ -1,0 +1,15 @@
+{
+  "schema_version": "xio-agent-tape.v1",
+  "name": "hang-barrier",
+  "turns": [
+    {
+      "steps": [
+        { "type": "barrier", "id": "before-hang" },
+        { "type": "hang", "ms": 50 },
+        { "type": "barrier", "id": "after-hang" },
+        { "type": "delta", "channel": "text", "chunks": ["ok"] },
+        { "type": "done" }
+      ]
+    }
+  ]
+}

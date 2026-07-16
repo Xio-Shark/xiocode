@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createStdoutSessionUiSink,
+  createStdoutSubagentUiBridge,
   formatToolOutputForDisplay,
   previewText,
   toolCallDetail,
@@ -65,6 +66,44 @@ describe("createStdoutSessionUiSink", () => {
     const out = chunks.join("");
     expect(out).toContain("[context] compacting...");
     expect(out).toContain("[context] compacted 40 -> 12 messages");
+  });
+});
+
+describe("createStdoutSubagentUiBridge", () => {
+  it("prefixes nested subagent output distinctly from primary agent", () => {
+    const chunks: string[] = [];
+    const bridge = createStdoutSubagentUiBridge((chunk) => chunks.push(chunk));
+    const sink = bridge.forWorker({
+      workerId: 2,
+      modelLabel: "stub/flash",
+      role: "locator",
+      goal: "find auth entrypoints",
+    });
+    sink.onLifecycle?.("start", {
+      workerId: 2,
+      modelLabel: "stub/flash",
+      role: "locator",
+      goal: "find auth entrypoints",
+    });
+    sink.onThinkingDelta?.("trace ");
+    sink.onAssistantDelta?.("done");
+    sink.onToolStart?.({ id: "w2:1", name: "read", arguments: { path: "src/auth.ts" } });
+    sink.onToolEnd?.({ id: "w2:1", name: "read", arguments: { path: "src/auth.ts" } }, {
+      content: [{ type: "text", text: "export {}" }],
+    });
+    sink.onLifecycle?.("end", {
+      workerId: 2,
+      modelLabel: "stub/flash",
+      goal: "find auth entrypoints",
+      success: true,
+      status: "success",
+    });
+    const out = chunks.join("");
+    expect(out).toContain("⊹ subagent #2");
+    expect(out).toContain("[think] trace");
+    expect(out).toContain("> read");
+    expect(out).toContain("read done");
+    expect(out).not.toContain("●");
   });
 });
 

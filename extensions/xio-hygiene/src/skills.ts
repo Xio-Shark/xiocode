@@ -71,16 +71,24 @@ export async function discoverSkills(options: DiscoverSkillsOptions): Promise<Sk
   const byName = new Map<string, SkillEntry>();
 
   const roots = listSkillRoots(cwd, home, config);
-  for (const root of roots) {
+  // Parallelize independent skill roots (user/project trees do not depend on each other).
+  const rootBatches = await Promise.all(roots.map(async (root) => {
+    const localWarnings: string[] = [];
     const files = await listSkillFiles(root.dir, (message) => {
-      warnings.push(message);
+      localWarnings.push(message);
       warn(message);
     });
-    for (const filePath of files) {
-      const parsed = await parseSkillFile(filePath, root.kind, config.maxBodyBytes, (message) => {
-        warnings.push(message);
+    const parsedEntries = await Promise.all(files.map((filePath) =>
+      parseSkillFile(filePath, root.kind, config.maxBodyBytes, (message) => {
+        localWarnings.push(message);
         warn(message);
-      });
+      })));
+    return { parsedEntries, localWarnings };
+  }));
+
+  for (const batch of rootBatches) {
+    warnings.push(...batch.localWarnings);
+    for (const parsed of batch.parsedEntries) {
       if (!parsed) {
         continue;
       }

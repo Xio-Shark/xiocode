@@ -122,7 +122,7 @@ export function moveCursorLine(state: ComposerState, direction: -1 | 1): Compose
 export function applyInputChunk(
   state: ComposerState,
   character: string,
-  key: Readonly<{ return: boolean }>,
+  key: Readonly<{ return: boolean; shift?: boolean }>,
 ): Readonly<{ state: ComposerState; submit: boolean }> {
   if (character.length > 1) {
     const normalized = character.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -139,7 +139,9 @@ export function applyInputChunk(
     return { state: insertAtCursor(state, "\n"), submit: false };
   }
   if (key.return) {
-    // Plain Enter submits. Shift+Enter multiline can be added later via key.shift.
+    if (key.shift) {
+      return { state: insertAtCursor(state, "\n"), submit: false };
+    }
     return { state, submit: true };
   }
   if (character.length > 0 && !/[\r\n]/.test(character)) {
@@ -241,6 +243,29 @@ export function formatComposerDisplay(state: ComposerState): string {
   const before = state.text.slice(0, state.cursor);
   const after = state.text.slice(state.cursor);
   return `${before}█${after}`;
+}
+
+/** Slice lines for a scrollable viewer overlay (pi-style in-app scroll). */
+export function sliceViewerWindow(
+  lines: readonly string[],
+  viewport: number,
+  offset: number,
+): Readonly<{
+  visible: readonly string[];
+  offset: number;
+  maxOffset: number;
+  total: number;
+  indicator: string | undefined;
+}> {
+  const size = Math.max(1, Math.floor(viewport));
+  const total = lines.length;
+  const maxOffset = Math.max(0, total - size);
+  const clamped = Math.max(0, Math.min(Math.floor(offset), maxOffset));
+  const visible = lines.slice(clamped, clamped + size);
+  const indicator = total > size
+    ? `lines ${clamped + 1}–${clamped + visible.length}/${total}`
+    : undefined;
+  return { visible, offset: clamped, maxOffset, total, indicator };
 }
 
 function clamp(value: number, min: number, max: number): number {

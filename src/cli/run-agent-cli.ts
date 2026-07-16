@@ -13,9 +13,22 @@ import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
 import type { XioArgs } from "./cli-args.ts";
 import type { LaunchPlan } from "./launch.ts";
 
-export async function runAgentCli(xioArgs: XioArgs, write: (chunk: string) => void): Promise<number> {
+export type RunAgentCliOptions = Readonly<{
+  /**
+   * Early interactive boot (no Ink) started from entry so first_frame can land
+   * before session/sandbox imports. Handed off to the Ink shell in runInkSession.
+   */
+  earlyBoot?: import("../tui/early-boot.ts").EarlyBootHandle;
+}>;
+
+export async function runAgentCli(
+  xioArgs: XioArgs,
+  write: (chunk: string) => void,
+  options: RunAgentCliOptions = {},
+): Promise<number> {
   const store = createSessionStore(process.env);
   if (xioArgs.resume?.action === "delete") {
+    options.earlyBoot?.unmount();
     const releaseLease = await store.acquireLease(xioArgs.resume.id);
     try {
       await deleteStoredSession(store, xioArgs.resume.id);
@@ -25,31 +38,64 @@ export async function runAgentCli(xioArgs: XioArgs, write: (chunk: string) => vo
     write(`Deleted session ${xioArgs.resume.id}\n`);
     return 0;
   }
-  // Resolve git root once for resume lookup + prepareLaunch (no duplicate provenance git).
+
   const cwd = process.cwd();
-  const gitRoot = await WorktreeSandbox.tryResolveMainRoot(cwd);
-  const mainRoot = gitRoot ?? path.resolve(cwd);
-  const stored = await loadRequestedSession({ xioArgs, mainRoot, store });
-  if (xioArgs.resume?.action === "list" && !stored) {
-    return 0;
+  const wantInk = shouldUseInk(
+    xioArgs,
+    {
+      stdinIsTTY: process.stdin.isTTY,
+      stdoutIsTTY: process.stdout.isTTY,
+    },
+    process.env,
+  );
+  // Prefer entry-started early boot; otherwise start now (still before prepareLaunch).
+  let earlyBoot = options.earlyBoot;
+  if (wantInk && xioArgs.resume?.action !== "list" && !earlyBoot) {
+    const { startEarlyBoot } = await import("../tui/early-boot.ts");
+    earlyBoot = startEarlyBoot({ cwd, env: process.env });
+    await earlyBoot.firstFrameReady();
   }
-  const recovered = recoverStoredSession(stored);
-  const sessionId = stored?.metadata.id ?? store.createId();
-  const releaseLease = await store.acquireLease(sessionId);
+  earlyBoot?.setStatus("loading session…");
+
   try {
-    const launch = await prepareLaunch(cwd, process.env, {
-      runtimeExtensionEnabled: xioArgs.runtimeExtensionEnabled,
-      allowDirty: xioArgs.allowDirty,
-      sessionId: recovered && !recovered.filesRecoverable ? undefined : sessionId,
-      resumeWorkspace: recovered?.filesRecoverable ? recovered.workspace : undefined,
-      gitRoot,
-    });
-    if (launch.worktree && recovered?.filesRecoverable && recovered.execution?.checkpoint) {
-      await WorktreeSandbox.validateCheckpoint(launch.worktree, recovered.execution.checkpoint);
+    // Resolve git root once for resume lookup + prepareLaunch (no duplicate provenance git).
+    const gitRoot = await WorktreeSandbox.tryResolveMainRoot(cwd);
+    const mainRoot = gitRoot ?? path.resolve(cwd);
+    const stored = await loadRequestedSession({ xioArgs, mainRoot, store });
+    if (xioArgs.resume?.action === "list" && !stored) {
+      earlyBoot?.unmount();
+      return 0;
     }
-    return await runPreparedLaunch({ xioArgs, launch, store, stored, recovered, sessionId });
-  } finally {
-    await releaseLease();
+    const recovered = recoverStoredSession(stored);
+    const sessionId = stored?.metadata.id ?? store.createId();
+    const releaseLease = await store.acquireLease(sessionId);
+    try {
+      earlyBoot?.setStatus("preparing workspace…");
+      const launch = await prepareLaunch(cwd, process.env, {
+        runtimeExtensionEnabled: xioArgs.runtimeExtensionEnabled,
+        allowDirty: xioArgs.allowDirty,
+        sessionId: recovered && !recovered.filesRecoverable ? undefined : sessionId,
+        resumeWorkspace: recovered?.filesRecoverable ? recovered.workspace : undefined,
+        gitRoot,
+      });
+      if (launch.worktree && recovered?.filesRecoverable && recovered.execution?.checkpoint) {
+        await WorktreeSandbox.validateCheckpoint(launch.worktree, recovered.execution.checkpoint);
+      }
+      return await runPreparedLaunch({
+        xioArgs,
+        launch,
+        store,
+        stored,
+        recovered,
+        sessionId,
+        earlyBoot,
+      });
+    } finally {
+      await releaseLease();
+    }
+  } catch (error) {
+    earlyBoot?.unmount();
+    throw error;
   }
 }
 
@@ -73,6 +119,7 @@ async function runPreparedLaunch(input: Readonly<{
   stored?: StoredSession;
   recovered?: ReturnType<typeof recoverStoredSession>;
   sessionId: string;
+  earlyBoot?: import("../tui/early-boot.ts").EarlyBootHandle;
 }>): Promise<number> {
   const sessionOptions: SessionOptions = {
     cwd: input.launch.cwd,
@@ -80,6 +127,8 @@ async function runPreparedLaunch(input: Readonly<{
     runtimeConfig: input.launch.runtimeConfig,
     env: input.launch.env,
     promptOnce: input.xioArgs.promptOnce,
+    outputFormat: input.xioArgs.outputFormat,
+    sessionId: input.sessionId,
     allowHighRisk: input.xioArgs.allowHighRisk,
     sessionStart: input.launch.sessionStart,
     initialMessages: input.recovered?.messages ?? input.stored?.messages,
@@ -115,9 +164,22 @@ async function runPreparedLaunch(input: Readonly<{
     }).then(() => undefined),
     registerExtensions: createExtensionRegistrar(input.launch),
   };
-  return shouldUseInk(input.xioArgs)
-    ? (await import("../tui/run-ink-session.ts")).runInkSession(sessionOptions)
-    : runSession(sessionOptions);
+  const inkEnv = input.launch.env ?? process.env;
+  if (shouldUseInk(
+    input.xioArgs,
+    {
+      stdinIsTTY: process.stdin.isTTY,
+      stdoutIsTTY: process.stdout.isTTY,
+    },
+    inkEnv,
+  )) {
+    return (await import("../tui/run-ink-session.ts")).runInkSession({
+      ...sessionOptions,
+      earlyBoot: input.earlyBoot,
+    });
+  }
+  input.earlyBoot?.unmount();
+  return runSession(sessionOptions);
 }
 
 function restoredModel(stored: StoredSession | undefined): SessionOptions["model"] {

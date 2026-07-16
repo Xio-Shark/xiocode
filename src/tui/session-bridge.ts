@@ -1,6 +1,11 @@
 import type { InteractiveIO, PromptOptions, SelectChoice } from "../runtime/interactive-io.ts";
-import { formatToolOutputForDisplay, toolCallDetail, toolResultOutput } from "../runtime/session-ui.ts";
+import {
+  formatToolOutputForDisplay,
+  toolCallDetail,
+  toolResultOutput,
+} from "../runtime/session-ui.ts";
 import type { SessionUiSink } from "../runtime/session-ui.ts";
+import type { SubagentUiBridge } from "../runtime/explore/subagent-ui.ts";
 import type { ContextCompactionUiEvent } from "../runtime/types.ts";
 
 export type ConfirmationRequest = Readonly<{
@@ -17,6 +22,13 @@ export type TuiEvent =
   | Readonly<{ kind: "thinking-delta"; text: string }>
   | Readonly<{ kind: "tool-start"; name: string; detail: string; callId?: string }>
   | Readonly<{ kind: "tool-end"; name: string; error: boolean; output: string; callId?: string }>
+  | Readonly<{ kind: "subagent-start"; workerId: number; model: string; role?: string; goal: string }>
+  | Readonly<{ kind: "subagent-end"; workerId: number; success: boolean; status?: string }>
+  | Readonly<{ kind: "subagent-thinking-delta"; workerId: number; text: string }>
+  | Readonly<{ kind: "subagent-assistant-delta"; workerId: number; text: string }>
+  | Readonly<{ kind: "subagent-assistant-text"; workerId: number; text: string }>
+  | Readonly<{ kind: "subagent-tool-start"; workerId: number; name: string; detail: string; callId?: string }>
+  | Readonly<{ kind: "subagent-tool-end"; workerId: number; name: string; error: boolean; output: string; callId?: string }>
   | Readonly<{ kind: "context-compaction"; event: ContextCompactionUiEvent }>
   | Readonly<{ kind: "notice"; text: string; level?: string }>
   | Readonly<{ kind: "status"; key: string; text?: string }>
@@ -199,6 +211,11 @@ export class TuiSessionBridge implements InteractiveIO {
     return this.#preSubscriptionBuffer.length;
   }
 
+  /** Bridge explore nested loops → scoped subagent TuiEvents (never primary live buffer). */
+  createSubagentUiBridge(): SubagentUiBridge {
+    return createTuiSubagentUiBridge((event) => this.emit(event));
+  }
+
   private assertIdle(): void {
     if (this.interactionPending) {
       throw new Error("a TUI interaction is already pending");
@@ -219,6 +236,54 @@ export class TuiSessionBridge implements InteractiveIO {
       listener(event);
     }
   }
+}
+
+export function createTuiSubagentUiBridge(
+  emit: (event: TuiEvent) => void,
+): SubagentUiBridge {
+  return {
+    forWorker: (input) => ({
+      onLifecycle: (phase, meta) => {
+        if (phase === "start") {
+          emit({
+            kind: "subagent-start",
+            workerId: meta.workerId,
+            model: meta.modelLabel,
+            role: meta.role,
+            goal: meta.goal,
+          });
+          return;
+        }
+        emit({
+          kind: "subagent-end",
+          workerId: meta.workerId,
+          success: meta.success === true,
+          status: meta.status,
+        });
+      },
+      onThinkingDelta: (text) => emit({ kind: "subagent-thinking-delta", workerId: input.workerId, text }),
+      onAssistantDelta: (text) => emit({ kind: "subagent-assistant-delta", workerId: input.workerId, text }),
+      onAssistantText: (text) => emit({ kind: "subagent-assistant-text", workerId: input.workerId, text }),
+      onToolStart: (call) => emit({
+        kind: "subagent-tool-start",
+        workerId: input.workerId,
+        name: call.name,
+        detail: toolCallDetail(call),
+        callId: call.id,
+      }),
+      onToolEnd: (call, result) => {
+        const raw = toolResultOutput(result);
+        emit({
+          kind: "subagent-tool-end",
+          workerId: input.workerId,
+          name: call.name,
+          error: result.isError === true,
+          output: formatToolOutputForDisplay(raw) || raw,
+          callId: call.id,
+        });
+      },
+    }),
+  };
 }
 
 export function normalizeConfirmationRequest(

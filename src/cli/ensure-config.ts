@@ -34,7 +34,7 @@ export async function ensureConfigFile(
   const write = options.write ?? writeStderr;
   write(
     `Created ${configPath}\n`
-      + "Set your provider API key env (default: DEEPSEEK_API_KEY), then re-run `xio` in a git repo.\n"
+      + "Set your provider API key env (default: DEEPSEEK_API_KEY), then re-run `xio` from your project directory.\n"
       + "\n"
       + await formatRecommendedCliToolsNotice(),
   );

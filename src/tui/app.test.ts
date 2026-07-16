@@ -62,6 +62,7 @@ describe("App", () => {
         usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
       }),
       abortTurn() {},
+      steer() {},
       getMessages: () => [],
       workspacePerception: stubWorkspacePerception(),
       async close() {},
@@ -513,6 +514,62 @@ describe("App", () => {
     expect(frame).toContain("Set thinking effort.");
     expect(frame).toMatch(/\d+\/\d+/);
   });
+
+  it("busy Enter soft-steers and ! hard-steers via session.steer (not queue-only)", async () => {
+    const host = new ExtensionHost();
+    const steers: Array<{ text: string; mode?: string }> = [];
+    let releasePrompt!: () => void;
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+    const session: PreparedSession = {
+      ...createSession(host),
+      steer(text, mode) {
+        steers.push({ text, mode });
+      },
+      runPrompt: async () => {
+        await promptGate;
+        return {
+          text: "done",
+          success: true,
+          turns: 1,
+          toolCalls: 0,
+          toolErrors: 0,
+          usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
+        };
+      },
+    };
+
+    const instance = render(React.createElement(App, {
+      session,
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    instance.stdin.write("first turn");
+    instance.stdin.write("\r");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    instance.stdin.write("soft redirect");
+    instance.stdin.write("\r");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(steers).toEqual([{ text: "soft redirect", mode: "soft" }]);
+
+    instance.stdin.write("!hard redirect");
+    instance.stdin.write("\r");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(steers).toEqual([
+      { text: "soft redirect", mode: "soft" },
+      { text: "hard redirect", mode: "hard" },
+    ]);
+
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).not.toMatch(/\[queued:/);
+
+    releasePrompt();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
 });
 
 function emptyView(): ViewState {
@@ -548,6 +605,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
       usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
     }),
     abortTurn() {},
+    steer() {},
     getMessages: () => messages,
     workspacePerception: stubWorkspacePerception(),
     async close() {},

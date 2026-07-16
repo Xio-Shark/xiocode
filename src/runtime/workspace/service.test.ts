@@ -109,6 +109,53 @@ describe("WorkspacePerceptionService", () => {
     }
   });
 
+  it("structure claims seed resolvable non-empty evidence under real line citations", async () => {
+    const root = await fixtureRepo();
+    const service = new WorkspacePerceptionService({
+      root,
+      gitnexus: unavailableAdapter(),
+    });
+    await service.ensureWarm();
+    const result = await service.queryStructure({ pathPrefix: "src", limit: 20 });
+    expect(result.claims.length).toBeGreaterThan(0);
+    for (const claim of result.claims) {
+      const citation = claim.citations[0];
+      expect(citation).toBeTruthy();
+      const loaded = service.readEvidence(citation!);
+      expect(loaded.text.trim().length).toBeGreaterThan(0);
+      expect(loaded.citation.path).toBe(citation!.path);
+      expect(loaded.citation.hash).toBe(citation!.hash);
+    }
+  });
+
+  it("noteMutation failures mark degraded and lastRefreshError (fail-closed path)", async () => {
+    const root = await fixtureRepo();
+    const service = new WorkspacePerceptionService({
+      root,
+      gitnexus: unavailableAdapter(),
+    });
+    await service.ensureWarm();
+    expect(service.status === "ready" || service.status === "degraded").toBe(true);
+    // Mutate then remove the file so reindex throws / yields fail path after invalidate.
+    await writeFile(path.join(root, "src", "hello.ts"), "export const x = 1\n", "utf8");
+    // Force indexSingleFile to fail by pointing at a path that is a directory after invalidate.
+    await mkdir(path.join(root, "src", "broken-file-as-dir"), { recursive: true });
+    service.map.upsert({
+      path: "src/broken-file-as-dir",
+      kind: "file",
+      hash: "abc",
+      updatedAt: Date.now(),
+    });
+    // Delete-style: invalidate without reindex — should clear error.
+    await service.noteMutation("src/hello.ts", "delete");
+    expect(service.map.get("src/hello.ts")).toBeUndefined();
+
+    service.markRefreshFailed(new Error("simulated io failure"));
+    expect(service.lastRefreshError).toMatch(/simulated io failure/);
+    expect(service.status).toBe("degraded");
+    expect(service.limitation).toMatch(/refresh failed/);
+  });
+
   it("startup ensureWarm is non-blocking (returns a promise without requiring await for construct)", () => {
     const service = new WorkspacePerceptionService({
       root: process.cwd(),

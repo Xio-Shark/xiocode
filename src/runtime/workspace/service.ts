@@ -31,6 +31,8 @@ export class WorkspacePerceptionService {
   #status: WorkspaceMapStatus = "cold";
   #limitation: string | undefined;
   #warmPromise: Promise<void> | undefined;
+  /** Last mutation refresh failure (observable; does not throw on tool_result path). */
+  #lastRefreshError: string | undefined;
 
   constructor(options: WorkspacePerceptionOptions) {
     this.root = options.root;
@@ -46,6 +48,27 @@ export class WorkspacePerceptionService {
 
   get limitation(): string | undefined {
     return this.#limitation;
+  }
+
+  /** Visible last noteMutation failure message, if any. */
+  get lastRefreshError(): string | undefined {
+    return this.#lastRefreshError;
+  }
+
+  /** Mark map stale after a failed refresh so consumers do not trust cold data silently. */
+  markRefreshFailed(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.#lastRefreshError = message;
+    if (this.#status === "ready") {
+      this.#status = "degraded";
+    }
+    this.#limitation = this.#limitation
+      ? `${this.#limitation}; refresh failed: ${message}`
+      : `refresh failed: ${message}`;
+  }
+
+  clearRefreshError(): void {
+    this.#lastRefreshError = undefined;
   }
 
   /**
@@ -106,6 +129,14 @@ export class WorkspacePerceptionService {
 
     const claims = entries.slice(0, 12).map((entry) => {
       const top = entry.outline?.[0];
+      // Outline snippets are not full-file bodies — putSnippet stores text as-is so
+      // real startLine values never re-slice a one-line synthetic string to empty.
+      const claimText = top
+        ? `${entry.path}: ${top.kind} ${top.name}`
+        : `${entry.path} (${entry.kind}${entry.language ? `, ${entry.language}` : ""})`;
+      const snippetText = top
+        ? `${top.kind} ${top.name}`
+        : `${entry.kind}${entry.language ? ` ${entry.language}` : ""}`;
       const citation = top
         ? {
           path: entry.path,
@@ -119,23 +150,18 @@ export class WorkspacePerceptionService {
           endLine: 1,
           hash: entry.hash,
         };
-      // Seed evidence citation metadata without full file bodies.
-      if (top) {
-        this.evidence.putFromText({
-          path: entry.path,
-          text: `${top.kind} ${top.name}`,
-          startLine: top.line,
-          endLine: top.line,
-          fileHash: entry.hash,
-        });
-      }
+      this.evidence.putSnippet({
+        path: citation.path,
+        text: snippetText,
+        startLine: citation.startLine,
+        endLine: citation.endLine,
+        hash: citation.hash,
+      });
       const confidence: "high" | "medium" | "low" = entry.outline && entry.outline.length > 0
         ? "high"
         : "medium";
       return {
-        claim: top
-          ? `${entry.path}: ${top.kind} ${top.name}`
-          : `${entry.path} (${entry.kind}${entry.language ? `, ${entry.language}` : ""})`,
+        claim: claimText,
         confidence,
         citations: [citation],
       };
@@ -169,9 +195,19 @@ export class WorkspacePerceptionService {
     const rel = relativePath.replace(/\\/g, "/");
     this.map.invalidate(rel);
     this.evidence.invalidatePath(rel);
-    if (kind === "delete") return;
-    const entry = await indexSingleFile(this.root, rel);
-    if (entry) this.map.upsert(entry);
+    if (kind === "delete") {
+      this.clearRefreshError();
+      return;
+    }
+    try {
+      const entry = await indexSingleFile(this.root, rel);
+      if (entry) this.map.upsert(entry);
+      this.clearRefreshError();
+    } catch (error) {
+      // Map entry already invalidated — fail-closed for that path; surface for hosts.
+      this.markRefreshFailed(error);
+      throw error;
+    }
   }
 
   async #runWarm(): Promise<void> {

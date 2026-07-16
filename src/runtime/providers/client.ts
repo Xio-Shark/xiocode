@@ -397,8 +397,8 @@ function anthropicBody(
     modelId: request.model,
     request,
   });
-  const systemMessages = request.messages.filter((message) => message.role === "system");
-  const system = buildAnthropicSystem(systemMessages, controls.promptCache);
+  const { stable, dynamic } = splitSystemMessages(request.messages);
+  const system = buildAnthropicSystem(stable, dynamic, controls.promptCache);
   const tools = request.tools?.map((tool, index, list) => {
     const entry: Record<string, unknown> = {
       name: tool.function.name,
@@ -429,26 +429,55 @@ function anthropicBody(
   return body;
 }
 
+/**
+ * Leading system messages form the cacheable prefix; system messages that appear
+ * after history (e.g. turn_start inject) are dynamic tail and must not own the
+ * cache_control breakpoint (design D4: last *stable* system block).
+ */
+function splitSystemMessages(messages: readonly ChatMessage[]): Readonly<{
+  stable: readonly string[];
+  dynamic: readonly string[];
+}> {
+  const stable: string[] = [];
+  const dynamic: string[] = [];
+  let seenNonSystem = false;
+  for (const message of messages) {
+    if (message.role === "system") {
+      const text = message.content.trim();
+      if (text.length === 0) continue;
+      if (seenNonSystem) dynamic.push(text);
+      else stable.push(text);
+      continue;
+    }
+    seenNonSystem = true;
+  }
+  return { stable, dynamic };
+}
+
 function buildAnthropicSystem(
-  systemMessages: readonly ChatMessage[],
+  stable: readonly string[],
+  dynamic: readonly string[],
   promptCache: boolean,
 ): string | Array<Record<string, unknown>> | undefined {
-  if (systemMessages.length === 0) return undefined;
+  const all = [...stable, ...dynamic];
+  if (all.length === 0) return undefined;
   // Keep a single stable text when not caching; structured blocks only when cache markers apply.
   if (!promptCache) {
-    const joined = systemMessages.map((message) => message.content).join("\n\n");
+    const joined = all.join("\n\n");
     return joined.length > 0 ? joined : undefined;
   }
-  const blocks = systemMessages
-    .map((message) => message.content.trim())
-    .filter((text) => text.length > 0)
-    .map((text, index, list) => {
-      const block: Record<string, unknown> = { type: "text", text };
-      if (index === list.length - 1) {
-        block.cache_control = { type: "ephemeral" };
-      }
-      return block;
-    });
+  const blocks: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < stable.length; index += 1) {
+    const block: Record<string, unknown> = { type: "text", text: stable[index] };
+    // Breakpoint on last stable block so dynamic injects do not invalidate prefix cache.
+    if (index === stable.length - 1) {
+      block.cache_control = { type: "ephemeral" };
+    }
+    blocks.push(block);
+  }
+  for (const text of dynamic) {
+    blocks.push({ type: "text", text });
+  }
   return blocks.length > 0 ? blocks : undefined;
 }
 

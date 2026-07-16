@@ -15,7 +15,7 @@ import { registerContextCommands } from "./context-commands.ts";
 import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
 import { resolveSessionTokenBudget } from "./providers/token-estimate.ts";
 import { thinkingStatusLabel } from "./thinking.ts";
-import { WorkspacePerceptionService } from "./workspace/index.ts";
+import { registerPerceptionCapability, WorkspacePerceptionService } from "./workspace/index.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
@@ -26,11 +26,19 @@ import {
   registerRollbackCommand,
 } from "./session-lifecycle.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
-import { createStdoutSessionUiSink } from "./session-ui.ts";
+import { createStdoutSessionUiSink, createStdoutSubagentUiBridge } from "./session-ui.ts";
 import { registerExploreCapability } from "./explore/index.ts";
+import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
+import { noopSubagentUiBridge } from "./explore/subagent-ui.ts";
 import { registerPlanCapability } from "./plan/index.ts";
 import { MergeGate, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 import { expandHome } from "../cli/config-parser.ts";
+import { createRuntimeEventEmitter } from "./events/emitter.ts";
+import {
+  createStreamJsonSessionUiSink,
+  pipeRuntimeEventsToStreamJson,
+} from "./events/stream-json.ts";
+import { SteerMailbox, type SteerMode } from "./steer.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ContextCompactionResult } from "./context-compaction.ts";
@@ -41,8 +49,11 @@ import type { SessionUiSink } from "./session-ui.ts";
 import type { LlmClient } from "./types.ts";
 import type { AskFn } from "../../extensions/xio-sandbox/src/merge-gate.ts";
 import type { XioRuntimeConfig, XioVerifyConfig } from "../cli/config-parser.ts";
+import type { RuntimeEventEmitter } from "./events/types.ts";
 import { applyThinkingLevel, cycleSessionThinkingLevel } from "./thinking-commands.ts";
 import { availableThinkingLevels, clampThinkingLevel, findProviderModel } from "./thinking.ts";
+
+export type SessionOutputFormat = "text" | "stream-json";
 
 export type SessionOptions = Readonly<{
   cwd?: string;
@@ -50,6 +61,13 @@ export type SessionOptions = Readonly<{
   runtimeConfig: XioRuntimeConfig;
   registerExtensions?: (api: XioExtensionAPI) => Promise<void> | void;
   promptOnce?: string;
+  /**
+   * stdout shape for non-interactive `-p` runs.
+   * `stream-json`: only RuntimeEvent.v1 NDJSON on stdout; diagnostics on stderr.
+   */
+  outputFormat?: SessionOutputFormat;
+  /** Session identity for RuntimeEvent envelopes (stream-json). */
+  sessionId?: string;
   /** Escape hatch for non-interactive high-risk tools (CLI/config). */
   allowHighRisk?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -62,6 +80,18 @@ export type SessionOptions = Readonly<{
   onSessionSnapshot?: (snapshot: SessionSnapshot) => Promise<void> | void;
   model?: ModelInfo;
   initialExecution?: SessionExecution;
+  /**
+   * Optional write for stream-json stdout (tests). Default process.stdout.write.
+   */
+  streamJsonWrite?: (chunk: string) => void;
+  /** Optional stderr for stream-json diagnostics (tests). */
+  streamJsonStderr?: (chunk: string) => void;
+  /** Inject RuntimeEvent bus (tests). When omitted, one is always created for the session. */
+  runtimeEvents?: RuntimeEventEmitter;
+  /** Optional bridge for explore subagent UI streaming (TUI passes TuiSessionBridge bridge). */
+  subagentUi?: SubagentUiBridge;
+  /** Test escape hatch: inject LLM client instead of building from provider registry. */
+  llmClient?: LlmClient;
 }>;
 
 export type SessionSnapshot = Readonly<{
@@ -97,8 +127,14 @@ export type PreparedSession = Readonly<{
     usage: TokenUsage;
     cancelled?: boolean;
   }>;
-  /** Abort the in-flight agent turn (REPL Ctrl+C). No-op when idle. */
+  /** Abort the in-flight agent turn (REPL Ctrl+C). No-op when idle. Pure cancel — no inject/continue. */
   abortTurn: () => void;
+  /**
+   * Mid-turn steer. Hard aborts provider/tools then continues with the steer text.
+   * Soft waits for a tool/provider boundary (never mid-stream HTTP inject).
+   * `auto` → hard when a turn is active, else soft.
+   */
+  steer: (text: string, mode?: SteerMode) => void;
   getMessages: () => readonly ChatMessage[];
   /** Local workspace perception map + evidence store (non-blocking warm). */
   workspacePerception: WorkspacePerceptionService;
@@ -113,22 +149,53 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const model = options.model ?? resolveDefaultModel(options.runtimeConfig);
   const verify = options.runtimeConfig.verify ?? { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] };
   const ask = options.ask ?? defaultAsk;
-  const sink = options.uiSink ?? createStdoutSessionUiSink();
+  const streamJson = options.outputFormat === "stream-json";
+  const sessionEventId = options.sessionId ?? randomUUID().replaceAll("-", "").slice(0, 16);
+  const runEventId = randomUUID().replaceAll("-", "").slice(0, 16);
+  // Always create a RuntimeEvent.v1 bus so product sinks share one stream.
+  const runtimeEvents = options.runtimeEvents
+    ?? createRuntimeEventEmitter({ sessionId: sessionEventId, runId: runEventId });
+  const sink = streamJson
+    ? (options.uiSink ?? createStreamJsonSessionUiSink(options.streamJsonStderr))
+    : (options.uiSink ?? createStdoutSessionUiSink());
+  const subagentUi = options.subagentUi
+    ?? (streamJson ? noopSubagentUiBridge : createStdoutSubagentUiBridge());
+  if (streamJson) {
+    // Product sink A: NDJSON stdout. Evolve (when registered) is sink B via host.getRuntimeEvents().
+    pipeRuntimeEventsToStreamJson(
+      runtimeEvents,
+      options.streamJsonWrite ?? ((chunk) => {
+        process.stdout.write(chunk);
+      }),
+    );
+  }
+  // Text/TUI keep SessionUi callbacks (not bus→UI) so onAssistantText / bridge semantics stay intact.
   const interactive = options.interactive ?? createReadlineInteractiveIO(ask);
+  const steerMailbox = new SteerMailbox();
+  // Perception before host config so main + explore share one warm service.
+  const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
+  // Non-blocking: never await full index on the interactive startup path.
+  void workspacePerception.ensureWarm();
   const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
-    options, model, sink, ask, cwd, workspaceRoot,
+    options, model, sink, ask, cwd, workspaceRoot, workspacePerception, runtimeEvents, subagentUi,
   });
 
   let currentModel = model;
-  let { client, registration } = createSessionClient({ host, model: currentModel, env });
+  let { client, registration } = options.llmClient
+    ? {
+      client: options.llmClient,
+      registration: host.getProvider(currentModel.provider) ?? {
+        name: currentModel.provider,
+        api: "openai-completions" as const,
+        models: [{ id: currentModel.id, name: currentModel.id }],
+      },
+    }
+    : createSessionClient({ host, model: currentModel, env });
   let parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
   let turnAbort: AbortController | undefined;
   let currentExecution: SessionExecution = options.initialExecution ?? { phase: "idle" };
   let workspaceLifecycle: SessionSnapshot["workspaceLifecycle"] = "active";
   const maxSessionMessages = options.runtimeConfig.general.maxSessionMessages ?? 80;
-  const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
-  // Non-blocking: never await full index on the interactive startup path.
-  void workspacePerception.ensureWarm();
   host.on("tool_result", async (payload) => {
     const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
     const call = record.call && typeof record.call === "object"
@@ -147,8 +214,15 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     if (rel.startsWith("..")) return;
     try {
       await workspacePerception.noteMutation(rel.replace(/\\/g, "/"), toolName === "write" ? "write" : "edit");
-    } catch {
-      // Perception is best-effort; tool results must not fail because of map refresh.
+    } catch (error) {
+      // Do not fail the tool_result path; surface refresh failure so map is not silently stale.
+      const message = error instanceof Error ? error.message : String(error);
+      workspacePerception.markRefreshFailed(error);
+      sink.setStatus?.("workspace_perception", `stale: ${message.slice(0, 80)}`);
+      sink.notify?.(
+        `workspace perception refresh failed for ${rel}: ${message}`,
+        "warn",
+      );
     }
   });
   const history = new SessionHistory({
@@ -343,6 +417,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       getParallelToolCalls: () => parallelToolCalls,
       maxSessionMessages,
       getSignal: createTurnSignal,
+      resetSignal: createTurnSignal,
+      steerMailbox,
       getRunId,
       beforePrompt: mergeGate ? async () => {
         const checkpoint = await mergeGate.captureTurnCheckpoint();
@@ -387,6 +463,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       sink,
       history,
       contextCompaction,
+      runtimeEvents,
     }),
     close: createSessionCloser({
       host,
@@ -405,6 +482,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     abortTurn: () => {
       turnAbort?.abort();
     },
+    steer: (text, mode = "auto") => {
+      const busy = turnAbort !== undefined && turnAbort.signal.aborted === false;
+      // auto: hard while a turn signal is live; soft when idle (queued for next boundary/loop).
+      const request = steerMailbox.enqueue({ text, mode, busy: busy || mode === "hard" });
+      runtimeEvents?.emit("steer.requested", {
+        mode: request.mode,
+        text: request.text,
+        id: request.id,
+      });
+      if (request.mode === "hard") {
+        turnAbort?.abort();
+      }
+    },
     getMessages: () => history.getMessages(),
   };
   return session;
@@ -417,6 +507,9 @@ async function createConfiguredHost(input: Readonly<{
   ask: AskFn;
   cwd: string;
   workspaceRoot: string;
+  workspacePerception: WorkspacePerceptionService;
+  runtimeEvents?: RuntimeEventEmitter;
+  subagentUi?: SubagentUiBridge;
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
@@ -427,9 +520,13 @@ async function createConfiguredHost(input: Readonly<{
     input.sink,
     input.options.runtimeConfig.general.defaultThinkingLevel,
   );
+  if (input.runtimeEvents) {
+    host.setRuntimeEvents(input.runtimeEvents);
+  }
   for (const tool of createBuiltinTools({ cwd: input.cwd, workspaceRoot: input.workspaceRoot })) {
     host.registerTool(tool);
   }
+  registerPerceptionCapability(host, { service: input.workspacePerception });
   registerConfiguredProviders(host, input.options.runtimeConfig);
   const worktreeSession = input.options.runtimeConfig.worktree?.session;
   const restoredCheckpoint = input.options.initialExecution?.checkpoint;
@@ -444,6 +541,8 @@ async function createConfiguredHost(input: Readonly<{
     env: input.options.env,
     onNotify: (message) => input.sink.notify?.(message, "info"),
     onStatus: (key, text) => input.sink.setStatus?.(key, text),
+    workspacePerception: input.workspacePerception,
+    subagentUi: input.subagentUi,
   });
   await registerPlanCapability(host, {
     workspaceRoot: input.workspaceRoot,
