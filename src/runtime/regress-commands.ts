@@ -26,6 +26,15 @@ export type RegressCommandOptions = Readonly<{
   now?: () => Date;
 }>;
 
+export type CapturePromptInput = Readonly<{
+  /** Prefer this run id over getRunId() when set. */
+  runId?: string;
+  failure?: string;
+  verify?: string;
+  /** Drafted statement; confirmed via ask before capture (Esc/decline ≠ accept). */
+  draftFailure?: string;
+}>;
+
 /**
  * Session slash command: capture a private case from the current run with minimal prompts.
  */
@@ -38,18 +47,41 @@ export function registerRegressCommands(options: RegressCommandOptions): void {
 
 async function runRegressCommand(options: RegressCommandOptions, rawArgs: string): Promise<string> {
   const parsed = parseSlashArgs(rawArgs);
-  const runId = await options.getRunId();
+  return promptAndCaptureRegression(options, parsed);
+}
+
+/**
+ * Shared write path for `/regress` and failure-signal offer capture.
+ * Always requires an explicit failure statement + verifier (human verdict).
+ */
+export async function promptAndCaptureRegression(
+  options: RegressCommandOptions,
+  input: CapturePromptInput = {},
+): Promise<string> {
+  const runId = input.runId ?? await options.getRunId();
   if (!runId || runId === "none") {
     throw new Error("No current run. Send a prompt first, or use: xio regress capture --last ...");
   }
 
-  let failure = parsed.failure;
+  let failure = input.failure;
+  if (!failure && input.draftFailure) {
+    // Prefer ask over "blank keeps draft": TUI/readline map Esc and empty Enter to
+    // undefined, so blank-keep would also treat Esc as accept (fails human verdict).
+    const acceptDraft = await options.interactive.ask(
+      "Accept drafted failure statement?",
+      input.draftFailure,
+    );
+    if (acceptDraft) {
+      failure = input.draftFailure;
+    }
+  }
   if (!failure) {
-    failure = await options.interactive.prompt("Failure statement (what went wrong)");
+    const answered = await options.interactive.prompt("Failure statement (what went wrong)");
+    failure = answered?.trim();
   }
   if (!failure) return "regress cancelled";
 
-  let verify = parsed.verify;
+  let verify = input.verify;
   if (!verify) {
     const labels = [...VERIFIER_TEMPLATE_COMMANDS, "custom"];
     const picked = await options.interactive.select("Verifier command", choicesFromLabels(labels));
@@ -62,6 +94,17 @@ async function runRegressCommand(options: RegressCommandOptions, rawArgs: string
   }
   if (!verify) return "regress cancelled";
 
+  return persistCapturedRegression(options, {
+    runId,
+    failure,
+    verify,
+  });
+}
+
+export async function persistCapturedRegression(
+  options: RegressCommandOptions,
+  input: Readonly<{ runId: string; failure: string; verify: string }>,
+): Promise<string> {
   const env = options.env ?? process.env;
   const store = options.store ?? new RegressionCaseStore(env.XIO_REGRESSION_ROOT);
   try {
@@ -70,14 +113,14 @@ async function runRegressCommand(options: RegressCommandOptions, rawArgs: string
       store,
       now: options.now,
     }).capture({
-      run_id: runId,
+      run_id: input.runId,
       failure_type: DEFAULT_FAILURE_TYPE,
-      failure_statement: failure,
-      verifier_command: verify,
+      failure_statement: input.failure,
+      verifier_command: input.verify,
     });
     const preflight = await new RegressionPreflight({ store, env }).run(capture.case.case_id);
     const message =
-      `Captured ${capture.case.case_id} from run ${runId}; preflight=${preflight.status}`;
+      `Captured ${capture.case.case_id} from run ${input.runId}; preflight=${preflight.status}`;
     options.sink.notify?.(message, preflight.status === "BASE_RED" ? "info" : "warning");
     return [
       message,
@@ -92,7 +135,7 @@ async function runRegressCommand(options: RegressCommandOptions, rawArgs: string
   }
 }
 
-function parseSlashArgs(raw: string): Readonly<{ failure?: string; verify?: string }> {
+function parseSlashArgs(raw: string): CapturePromptInput {
   const trimmed = raw.trim();
   if (!trimmed) return {};
   const verifyMatch = trimmed.match(/--verify(?:\s+|=)(.+)$/);

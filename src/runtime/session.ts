@@ -11,6 +11,7 @@ import { registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
 import { registerPermissionCommands } from "./agent-commands.ts";
 import { registerRegressCommands } from "./regress-commands.ts";
+import { createFailureCaptureOffer, createLiveFailureStatementDrafter } from "./failure-capture-offer.ts";
 import { registerContextCommands } from "./context-commands.ts";
 import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
 import { resolveSessionTokenBudget } from "./providers/token-estimate.ts";
@@ -28,7 +29,11 @@ import {
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatUsageStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
-import { registerExploreCapability } from "./explore/index.ts";
+import {
+  exploreFallbackModelRef,
+  registerExploreCapability,
+  resolveExploreConfig,
+} from "./explore/index.ts";
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
 import { noopSubagentUiBridge } from "./explore/subagent-ui.ts";
 import { registerPlanCapability } from "./plan/index.ts";
@@ -338,14 +343,89 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     }
     return undefined;
   };
-  registerRegressCommands({
+  const runRoot = expandHome(options.runtimeConfig.general.runRoot);
+  const regressCapture = {
     host,
     interactive,
     sink,
-    runRoot: expandHome(options.runtimeConfig.general.runRoot),
+    runRoot,
     env,
     getRunId,
-  });
+  };
+  registerRegressCommands(regressCapture);
+
+  const resolveFailureDraftIdentity = (): Readonly<{
+    provider: string;
+    model: string;
+  }> => {
+    const explore = resolveExploreConfig(
+      options.runtimeConfig.explore,
+      options.runtimeConfig.general,
+      {
+        forceEnable: true,
+        fallbackModel: exploreFallbackModelRef({
+          exploreModel: options.runtimeConfig.explore.model,
+          sessionProvider: currentModel.provider,
+          sessionModel: currentModel.id,
+          defaultProvider: options.runtimeConfig.general.defaultProvider,
+          defaultModel: options.runtimeConfig.general.defaultModel,
+        }),
+      },
+    );
+    return {
+      provider: explore?.provider ?? currentModel.provider,
+      model: explore?.model ?? currentModel.id,
+    };
+  };
+
+  const failureCapture = interactiveSession
+    ? createFailureCaptureOffer({
+      offerOnFailure: options.runtimeConfig.regress.offerOnFailure,
+      interactive,
+      sink,
+      capture: regressCapture,
+      draftTimeoutMs: 25_000,
+      draftFailureStatement: createLiveFailureStatementDrafter({
+        cwd,
+        workspaceRoot,
+        runRoot,
+        workspacePerception,
+        subagentUi,
+        timeoutMs: 25_000,
+        onDegrade: (message) => sink.notify?.(message, "warning"),
+        getRegistration: () => {
+          const identity = resolveFailureDraftIdentity();
+          return host.getProvider(identity.provider) ?? registration;
+        },
+        resolveApiKey: () => {
+          try {
+            const identity = resolveFailureDraftIdentity();
+            const reg = host.getProvider(identity.provider) ?? registration;
+            return resolveApiKey(reg, env);
+          } catch {
+            return undefined;
+          }
+        },
+        getModelId: () => resolveFailureDraftIdentity().model,
+      }),
+    })
+    : undefined;
+
+  registerRollbackCommand(
+    host,
+    mergeGate,
+    ask,
+    sink,
+    failureCapture
+      ? async ({ kind }) => {
+        await failureCapture.maybeOfferFailureCapture({
+          turnId: `rollback-${kind}-${Date.now().toString(36)}`,
+          signal: "rollback",
+          runId: await getRunId(),
+        });
+      }
+      : undefined,
+  );
 
   const contextCompaction = new ContextCompactionController({
     history,
@@ -437,6 +517,9 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       resetSignal: createTurnSignal,
       steerMailbox,
       getRunId,
+      failureCapture: failureCapture
+        ? { maybeOffer: (input) => failureCapture.maybeOfferFailureCapture(input) }
+        : undefined,
       beforePrompt: mergeGate ? async () => {
         const checkpoint = await mergeGate.captureTurnCheckpoint();
         currentExecution = {
@@ -568,7 +651,7 @@ async function createConfiguredHost(input: Readonly<{
   if (mergeGate) {
     registerMergeCommand(host, mergeGate, input.ask, input.sink);
   }
-  registerRollbackCommand(host, mergeGate, input.ask, input.sink);
+  // Rollback is registered in prepareSession after failure-capture offer is wired.
   // session_start is emitted from prepareSession after /agent filter is installed.
   return { host, mergeGate, ensureExploreForUltra: () => explore.ensure("ultra") };
 }

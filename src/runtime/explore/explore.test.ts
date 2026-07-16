@@ -1368,6 +1368,52 @@ describe("runExploreSubagent integration (stub client)", () => {
   });
 });
 
+describe("runFailureDraftSubagent", () => {
+  it("formats a drafting user prompt with artifact seed", async () => {
+    const { formatFailureDraftUserPrompt } = await import("./subagent.ts");
+    const prompt = formatFailureDraftUserPrompt(
+      "Failure signal: turn failed.",
+      "Operator signal: turn failed.\nEvidence:\n- [tool_error] npm test",
+      ["/tmp/runs/run-1"],
+    );
+    expect(prompt).toMatch(/failure_statement/);
+    expect(prompt).toContain("Artifact seed");
+    expect(prompt).toContain("/tmp/runs/run-1");
+    expect(prompt).not.toMatch(/verbatim.*main content/i);
+  });
+
+  it("uses drafting system prompt and returns concise text", async () => {
+    const { runFailureDraftSubagent } = await import("./subagent.ts");
+    let seenSystem = "";
+    const stubClient: LlmClient = {
+      async complete(req) {
+        const system = req.messages.find((m) => m.role === "system");
+        seenSystem = typeof system?.content === "string" ? system.content : "";
+        return { content: "Verifier red: npm test failed on auth path.", toolCalls: [] };
+      },
+    };
+    const result = await runFailureDraftSubagent({
+      goal: "Failure signal: hard steer.",
+      artifactSeed: "Operator signal: hard steer.",
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      registration: {
+        name: "stub",
+        api: "openai-completions",
+        models: [{ id: "flash", name: "flash", input: ["text"] }],
+      },
+      apiKey: "sk-test",
+      modelId: "flash",
+      maxTurns: 2,
+      createClient: () => stubClient,
+    });
+    expect(result.success).toBe(true);
+    expect(result.text).toMatch(/Verifier red/);
+    expect(seenSystem).toMatch(/failure-statement drafter/i);
+    expect(seenSystem).not.toMatch(/verbatim.*main content/i);
+  });
+});
+
 function runtimeWithExplore(enabled: boolean): XioRuntimeConfig {
   return {
     general: {
@@ -1418,5 +1464,6 @@ function runtimeWithExplore(enabled: boolean): XioRuntimeConfig {
       enqueueImprove: true,
       useLlm: false,
     },
+    regress: { offerOnFailure: true },
   };
 }

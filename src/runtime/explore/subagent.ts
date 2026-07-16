@@ -82,6 +82,10 @@ export type RunExploreSubagentOptions = Readonly<{
   capsule?: PolicyCapsule;
   /** Shared session perception service; workers create a local warm map if omitted. */
   workspacePerception?: WorkspacePerceptionService;
+  /** Override system prompt (failure-draft sibling uses a concise drafting prompt). */
+  systemPrompt?: string;
+  /** Override user prompt; defaults to formatExploreUserPrompt(goal, focusPaths, role). */
+  userPrompt?: string;
   /** Test seam; defaults to provider client factory. */
   createClient?: (input: Readonly<{
     registration: ProviderRegistration;
@@ -90,6 +94,28 @@ export type RunExploreSubagentOptions = Readonly<{
   /** Optional UI scope — nested loop streams here; never primary session history. */
   ui?: SubagentUiScope;
 }>;
+
+/**
+ * Failure-statement drafter (sibling of explore evidence dump).
+ * Same read-only tool host; output is a short operator-facing statement, not a full report.
+ */
+const FAILURE_DRAFT_SYSTEM_PROMPT = [
+  "You are a read-only failure-statement drafter for XioCode private regression capture.",
+  "Your only job: gather last errors / tool failures / relevant paths from run artifacts",
+  "and the workspace, then draft a concise operator-facing failure_statement.",
+  "",
+  "Permissions:",
+  "- Read-only. Tools: read / grep / glob / query_workspace / read_evidence.",
+  "- Never modify files, run bash, apply patches, or change git state.",
+  "- Do not implement fixes or write code.",
+  "",
+  "Output (non-negotiable):",
+  "- 2–8 short sentences or bullet lines the operator can confirm as failure_statement.",
+  "- Name concrete paths, tool errors, and exit/status facts when known.",
+  "- Do NOT dump verbatim file contents, long evidence blocks, or a full explore report.",
+  "- Do NOT invent failures you did not observe in tools or the seed.",
+  "- Stop as soon as the statement is grounded enough for the operator to edit.",
+].join("\n");
 
 /** Nested agent loop on a fresh host — no explore tool (no recursion), no primary extensions. */
 export async function runExploreSubagent(
@@ -152,9 +178,12 @@ export async function runExploreSubagent(
     const modelCfg = registration.models.find((entry) => entry.id === options.modelId)
       ?? registration.models[0];
     host.registerProvider(registration.name, registration);
-    const systemPrompt = buildExploreSystemPrompt(options.role, options.capsule);
+    const systemPrompt = options.systemPrompt
+      ?? buildExploreSystemPrompt(options.role, options.capsule);
+    const userPrompt = options.userPrompt
+      ?? formatExploreUserPrompt(options.goal, options.focusPaths, options.role);
     const result = await runAgentLoop(
-      formatExploreUserPrompt(options.goal, options.focusPaths, options.role),
+      userPrompt,
       {
         host,
         client,
@@ -247,6 +276,53 @@ export async function runExploreSubagent(
       error: message,
     };
   }
+}
+
+/**
+ * Thin explore sibling: same tool host + allowBash:false, drafting-focused prompts.
+ * Prefer this over raw explore when the caller needs a short failure_statement.
+ */
+export async function runFailureDraftSubagent(
+  options: Omit<RunExploreSubagentOptions, "allowBash" | "systemPrompt" | "userPrompt"> & Readonly<{
+    /** Deterministic artifact seed (optional); included in the user prompt. */
+    artifactSeed?: string;
+  }>,
+): Promise<ExploreSubagentResult> {
+  const { artifactSeed, ...exploreOptions } = options;
+  return runExploreSubagent({
+    ...exploreOptions,
+    allowBash: false,
+    systemPrompt: FAILURE_DRAFT_SYSTEM_PROMPT,
+    userPrompt: formatFailureDraftUserPrompt(options.goal, artifactSeed, options.focusPaths),
+  });
+}
+
+export function formatFailureDraftUserPrompt(
+  goal: string,
+  artifactSeed?: string,
+  focusPaths?: readonly string[],
+): string {
+  const lines = [
+    "Draft a concise failure_statement for private regression capture.",
+    `Operator goal / signal context:\n${goal.trim()}`,
+  ];
+  if (artifactSeed?.trim()) {
+    lines.push(`Artifact seed (refine or replace with better evidence; do not invent beyond this + tools):\n${artifactSeed.trim()}`);
+  }
+  if (focusPaths && focusPaths.length > 0) {
+    lines.push(
+      `Prefer these paths first:\n${focusPaths.map((p) => `- ${p}`).join("\n")}`,
+    );
+  }
+  lines.push(
+    [
+      "Constraints:",
+      "- Read-only; no bash.",
+      "- Final reply = the failure_statement only (2–8 sentences/bullets).",
+      "- No full file dumps; cite paths briefly when useful.",
+    ].join("\n"),
+  );
+  return lines.join("\n\n");
 }
 
 export function formatExploreUserPrompt(
