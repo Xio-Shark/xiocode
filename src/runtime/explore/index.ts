@@ -50,6 +50,8 @@ export {
 } from "./scale.ts";
 export { Semaphore } from "./semaphore.ts";
 export { formatExploreUserPrompt, runExploreSubagent, withModelId } from "./subagent.ts";
+export type { SubagentUiBridge, SubagentUiScope, SubagentUiSink } from "./subagent-ui.ts";
+export { noopSubagentUiBridge, scopeSubagentToolCall } from "./subagent-ui.ts";
 
 export type { ExploreSubagentResult, ResolvedExploreConfig } from "./types.ts";
 export {

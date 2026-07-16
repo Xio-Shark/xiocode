@@ -4,37 +4,85 @@ import { writeSync } from "node:fs";
 
 import { prepareSession } from "../runtime/session.ts";
 import { App } from "./app.ts";
+import { startInteractiveBoot } from "./interactive-boot.ts";
+import type { EarlyBootHandle } from "./early-boot.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
 import { getGlobalTracer, isPerfEnabled } from "../runtime/perf/index.ts";
 
 import type { SessionOptions } from "../runtime/session.ts";
 
+export type RunInkSessionOptions = SessionOptions & Readonly<{
+  /** Early no-Ink boot from entry (first_frame already marked). */
+  earlyBoot?: EarlyBootHandle;
+}>;
+
 /**
  * Interactive session using **append-to-scrollback** (route B):
- * - Finalized transcript via Ink `<Static>` → main buffer / native wheel + search
- * - Sticky chrome (header / input / modals) re-renders only
- * - No alternate screen (no self-managed viewport scroll)
+ * 1. Early operable boot (entry) → first_frame
+ * 2. Ink boot shell upgrade while prepareSession runs (input still buffered)
+ * 3. Full App with drained draft
  */
-export async function runInkSession(options: SessionOptions): Promise<number> {
+export async function runInkSession(options: RunInkSessionOptions): Promise<number> {
+  const env = options.env ?? process.env;
+  const cwd = options.cwd ?? process.cwd();
+  const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
-  const session = await prepareSession({
-    ...options,
-    ask: bridge.ask,
-    interactive: bridge,
-    uiSink: bridge.sink,
-  });
-  const tracer = getGlobalTracer(options.env ?? process.env);
-  tracer?.mark("prompt_ready", "success", { attrs: { ui: "ink" } });
-  // first_frame may already be marked at boot shell; record Ink paint as tui.paint.
-  if ((options.env ?? process.env).XIO_PERF_BOOT_EXIT === "1") {
+  const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
+
+  const early = options.earlyBoot;
+  early?.setStatus("loading session…");
+  const earlyDraft = early?.drain() ?? { text: "", pendingSubmit: false };
+  early?.unmount();
+
+  const inkBoot = startInteractiveBoot({ cwd, env });
+  if (earlyDraft.text.length > 0) {
+    inkBoot.buffer.setText(earlyDraft.text);
+  }
+  if (earlyDraft.pendingSubmit && earlyDraft.text.trim().length > 0) {
+    inkBoot.buffer.applyKey("", { return: true });
+  }
+
+  try {
+    await inkBoot.firstFrameReady();
+    inkBoot.setStatus("prompt_context", "loading context…");
+
+    const session = await prepareSession({
+      ...options,
+      ask: bridge.ask,
+      interactive: bridge,
+      uiSink: bridge.sink,
+      subagentUi: bridge.createSubagentUiBridge(),
+    });
+
+    inkBoot.setStatus("ready", "ready");
+    tracer?.mark("prompt_ready", "success", { attrs: { ui: "ink" } });
+
+    if (bootExit) {
+      // Ensure first_frame exists even if early boot was skipped.
+      if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
+        tracer?.mark("first_frame", "success", {
+          attrs: { ui: "ink_boot", operable: true, boot_exit: true },
+        });
+      }
+      emitPerfSpans(tracer);
+      inkBoot.unmount();
+      await session.close();
+      return 0;
+    }
+
+    const drained = inkBoot.buffer.drain();
+    inkBoot.unmount();
+
     let exitCode = 0;
     let closed = false;
-    const paint = tracer?.start("tui.paint", { attrs: { boot: true } });
+    const firstAppPaint = tracer?.start("tui.paint", { attrs: { phase: "app", first: true } });
     const instance = render(React.createElement(App, {
       session,
       bridge,
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       appendScrollback: true,
+      initialDraft: drained.text,
+      autoSubmitInitial: drained.pendingSubmit,
       onExit: async (code) => {
         await session.close();
         closed = true;
@@ -47,48 +95,15 @@ export async function runInkSession(options: SessionOptions): Promise<number> {
     });
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));
-      tracer?.end(paint, "success");
-      if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
-        tracer?.mark("first_frame", "success", { attrs: { ui: "ink", boot_exit: true } });
-      }
-      emitPerfSpans(tracer);
-      instance.unmount();
-      return 0;
+      tracer?.end(firstAppPaint, "success");
+      const value = await instance.waitUntilExit();
+      return typeof value === "number" ? value : exitCode;
     } finally {
       if (!closed) await session.close();
-      void exitCode;
     }
-  }
-
-  let exitCode = 0;
-  let closed = false;
-  const firstPaint = tracer?.start("tui.paint", { attrs: { first: true } });
-  const instance = render(React.createElement(App, {
-    session,
-    bridge,
-    cwd: options.cwd ?? process.cwd(),
-    appendScrollback: true,
-    onExit: async (code) => {
-      await session.close();
-      closed = true;
-      exitCode = code;
-    },
-  }), {
-    // Main buffer: terminal owns scrollback (Pi / Claude Code style).
-    alternateScreen: false,
-    exitOnCtrlC: false,
-    incrementalRendering: true,
-  });
-  try {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    tracer?.end(firstPaint, "success");
-    if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
-      tracer?.mark("first_frame", "success", { attrs: { ui: "ink" } });
-    }
-    const value = await instance.waitUntilExit();
-    return typeof value === "number" ? value : exitCode;
-  } finally {
-    if (!closed) await session.close();
+  } catch (error) {
+    inkBoot.unmount();
+    throw error;
   }
 }
 

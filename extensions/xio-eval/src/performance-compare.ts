@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 
 import type { MetricThreshold } from "./gate-manifest.ts";
-import type { PerformanceSection, PerformanceMetricDelta } from "./types.ts";
+import type {
+  PerformanceSection,
+  PerformanceMetricDelta,
+  PerformanceResourceDelta,
+} from "./types.ts";
 
 export type PerfMetricLike = Readonly<{
   count: number;
@@ -11,10 +15,20 @@ export type PerfMetricLike = Readonly<{
   max_ms: number | null;
 }>;
 
+/** Optional resource / cost aggregates on independent bench reports. */
+export type PerfResourceLike = Readonly<{
+  rss_bytes: number | null;
+  cpu_user_ms: number | null;
+  cpu_system_ms: number | null;
+  cache_tokens: number | null;
+  cost_usd: number | null;
+}>;
+
 export type PerfReportLike = Readonly<{
   schema_version: string;
   bench_id: string;
   metrics: Readonly<Record<string, PerfMetricLike>>;
+  resource?: PerfResourceLike;
 }>;
 
 export type PerformanceCompareResult = Readonly<{
@@ -24,6 +38,14 @@ export type PerformanceCompareResult = Readonly<{
   concerns: readonly string[];
   errors: readonly string[];
 }>;
+
+const RESOURCE_METRICS = new Set([
+  "resource.rss_bytes",
+  "resource.cpu_user_ms",
+  "resource.cpu_system_ms",
+  "usage.cache_tokens",
+  "usage.cost_usd",
+]);
 
 export async function loadPerfReport(filePath: string): Promise<PerfReportLike> {
   const raw = JSON.parse(await readFile(filePath, "utf8")) as unknown;
@@ -52,6 +74,7 @@ export function decodePerfReportLike(value: unknown): PerfReportLike {
     schema_version: root.schema_version,
     bench_id: root.bench_id,
     metrics,
+    resource: decodeResource(root.resource),
   };
 }
 
@@ -89,8 +112,11 @@ export function comparePerformanceReports(
   }
 
   for (const threshold of thresholds) {
-    if (threshold.metric === "usage.total_tokens") {
-      // Token budgets are applied from trial usage in gate-decision, not fixture walls.
+    if (
+      threshold.metric === "usage.total_tokens"
+      || RESOURCE_METRICS.has(threshold.metric)
+    ) {
+      // Token totals applied from trials; resource metrics applied via resource blocks below.
       continue;
     }
     const beforeMetric = before.metrics[threshold.metric];
@@ -109,12 +135,23 @@ export function comparePerformanceReports(
     applyLatencyThreshold(threshold, delta, hardRegressions, softRegressions);
   }
 
+  const resource = compareResourceBlocks(
+    before.resource,
+    candidate.resource,
+    thresholds,
+    hardRegressions,
+    softRegressions,
+    concerns,
+    errors,
+  );
+
   return {
     section: {
       schema_version: "xio-eval-performance.v1",
       before_bench_id: before.bench_id,
       candidate_bench_id: candidate.bench_id,
       deltas,
+      ...(resource ? { resource } : {}),
       hard_regressions: hardRegressions,
       soft_regressions: softRegressions,
     },
@@ -165,6 +202,165 @@ export function compareTokenBudgets(
     );
   }
   return { hard, soft, concerns };
+}
+
+/**
+ * Compare cache/cost averages from trial usage when present.
+ * Thresholds use metric ids `usage.cache_tokens` / `usage.cost_usd` with absolute budgets.
+ */
+export function compareUsageAggregates(
+  before: Readonly<{ cache_tokens: number | null; cost_usd: number | null }>,
+  candidate: Readonly<{ cache_tokens: number | null; cost_usd: number | null }>,
+  thresholds: readonly MetricThreshold[],
+): Readonly<{ hard: string[]; soft: string[]; concerns: string[] }> {
+  const hard: string[] = [];
+  const soft: string[] = [];
+  const concerns: string[] = [];
+  applyAbsoluteMetric(
+    "usage.cache_tokens",
+    before.cache_tokens,
+    candidate.cache_tokens,
+    thresholds.find((row) => row.metric === "usage.cache_tokens"),
+    hard,
+    soft,
+    concerns,
+  );
+  applyAbsoluteMetric(
+    "usage.cost_usd",
+    before.cost_usd,
+    candidate.cost_usd,
+    thresholds.find((row) => row.metric === "usage.cost_usd"),
+    hard,
+    soft,
+    concerns,
+  );
+  return { hard, soft, concerns };
+}
+
+function compareResourceBlocks(
+  before: PerfResourceLike | undefined,
+  candidate: PerfResourceLike | undefined,
+  thresholds: readonly MetricThreshold[],
+  hard: string[],
+  soft: string[],
+  concerns: string[],
+  errors: string[],
+): PerformanceResourceDelta | undefined {
+  if (!before && !candidate) {
+    // Required resource metrics hard-error when block absent; optional stay silent.
+    for (const metric of RESOURCE_METRICS) {
+      if (metric.startsWith("usage.")) continue; // trial-side
+      const threshold = thresholds.find((row) => row.metric === metric);
+      if (threshold?.required) {
+        errors.push(`metric unavailable: ${metric}`);
+      }
+    }
+    return undefined;
+  }
+
+  const b = before ?? emptyResource();
+  const c = candidate ?? emptyResource();
+  const resource: PerformanceResourceDelta = {
+    before_rss_bytes: b.rss_bytes,
+    candidate_rss_bytes: c.rss_bytes,
+    delta_rss_bytes: diffNullable(c.rss_bytes, b.rss_bytes),
+    before_cpu_user_ms: b.cpu_user_ms,
+    candidate_cpu_user_ms: c.cpu_user_ms,
+    delta_cpu_user_ms: diffNullable(c.cpu_user_ms, b.cpu_user_ms),
+    before_cache_tokens: b.cache_tokens,
+    candidate_cache_tokens: c.cache_tokens,
+    delta_cache_tokens: diffNullable(c.cache_tokens, b.cache_tokens),
+    before_cost_usd: b.cost_usd,
+    candidate_cost_usd: c.cost_usd,
+    delta_cost_usd: diffNullable(c.cost_usd, b.cost_usd),
+  };
+
+  applyAbsoluteMetric(
+    "resource.rss_bytes",
+    b.rss_bytes,
+    c.rss_bytes,
+    thresholds.find((row) => row.metric === "resource.rss_bytes"),
+    hard,
+    soft,
+    concerns,
+  );
+  applyAbsoluteMetric(
+    "resource.cpu_user_ms",
+    b.cpu_user_ms,
+    c.cpu_user_ms,
+    thresholds.find((row) => row.metric === "resource.cpu_user_ms"),
+    hard,
+    soft,
+    concerns,
+  );
+  applyAbsoluteMetric(
+    "resource.cpu_system_ms",
+    b.cpu_system_ms,
+    c.cpu_system_ms,
+    thresholds.find((row) => row.metric === "resource.cpu_system_ms"),
+    hard,
+    soft,
+    concerns,
+  );
+  applyAbsoluteMetric(
+    "usage.cache_tokens",
+    b.cache_tokens,
+    c.cache_tokens,
+    thresholds.find((row) => row.metric === "usage.cache_tokens"),
+    hard,
+    soft,
+    concerns,
+  );
+  applyAbsoluteMetric(
+    "usage.cost_usd",
+    b.cost_usd,
+    c.cost_usd,
+    thresholds.find((row) => row.metric === "usage.cost_usd"),
+    hard,
+    soft,
+    concerns,
+  );
+
+  return resource;
+}
+
+function applyAbsoluteMetric(
+  name: string,
+  before: number | null,
+  candidate: number | null,
+  threshold: MetricThreshold | undefined,
+  hard: string[],
+  soft: string[],
+  concerns: string[],
+): void {
+  if (!threshold) return;
+  if (before === null || candidate === null) {
+    const msg = `metric unavailable: ${name}`;
+    if (threshold.required) {
+      hard.push(msg);
+    } else if (before !== null || candidate !== null) {
+      // Partial data is a concern; both missing stays silent for optional metrics.
+      concerns.push(msg);
+    }
+    return;
+  }
+  const delta = candidate - before;
+  const hardBudget = threshold.hard_absolute_regression
+    ?? threshold.hard_p95_regression_ms
+    ?? threshold.hard_token_regression;
+  const softBudget = threshold.soft_absolute_regression
+    ?? threshold.soft_p95_regression_ms
+    ?? threshold.soft_token_regression;
+  if (hardBudget !== undefined && delta > hardBudget) {
+    hard.push(`${name} hard regression +${formatDelta(delta)} (budget ${hardBudget})`);
+  } else if (softBudget !== undefined && delta > softBudget) {
+    soft.push(`${name} soft regression +${formatDelta(delta)} (budget ${softBudget})`);
+  }
+}
+
+function formatDelta(value: number): string {
+  if (Math.abs(value) >= 100 || Number.isInteger(value)) return String(Math.round(value * 1000) / 1000);
+  return value.toFixed(4);
 }
 
 function applyLatencyThreshold(
@@ -222,6 +418,31 @@ function decodeMetric(value: unknown, name: string): PerfMetricLike {
     p95_ms: nullableNumber(metric.p95_ms),
     min_ms: nullableNumber(metric.min_ms),
     max_ms: nullableNumber(metric.max_ms),
+  };
+}
+
+function decodeResource(value: unknown): PerfResourceLike | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("perf report resource must be an object");
+  }
+  const row = value as Record<string, unknown>;
+  return {
+    rss_bytes: nullableNumber(row.rss_bytes),
+    cpu_user_ms: nullableNumber(row.cpu_user_ms),
+    cpu_system_ms: nullableNumber(row.cpu_system_ms),
+    cache_tokens: nullableNumber(row.cache_tokens),
+    cost_usd: nullableNumber(row.cost_usd),
+  };
+}
+
+function emptyResource(): PerfResourceLike {
+  return {
+    rss_bytes: null,
+    cpu_user_ms: null,
+    cpu_system_ms: null,
+    cache_tokens: null,
+    cost_usd: null,
   };
 }
 

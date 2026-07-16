@@ -251,18 +251,37 @@ describe("parseXioArgs", () => {
       allowDirty: false,
       allowHighRisk: false,
       promptOnce: "hello",
+      outputFormat: "text",
     });
   });
 
   it("parses --allow-dirty", () => {
     expect(parseXioArgs(["--allow-dirty", "-p", "hello"]).allowDirty).toBe(true);
   });
+
+  it("parses --output-format stream-json", () => {
+    expect(parseXioArgs(["-p", "hi", "--output-format", "stream-json"])).toMatchObject({
+      promptOnce: "hi",
+      outputFormat: "stream-json",
+    });
+    expect(parseXioArgs(["-p", "hi", "--output-format=stream-json"]).outputFormat).toBe("stream-json");
+  });
+
+  it("rejects unknown output formats", () => {
+    expect(() => parseXioArgs(["-p", "hi", "--output-format", "yaml"])).toThrow(/stream-json/);
+  });
 });
 
 describe("shouldUseInk", () => {
   it("uses ink for interactive tty without promptOnce", () => {
-    expect(shouldUseInk({}, { stdinIsTTY: true, stdoutIsTTY: true })).toBe(true);
-    expect(shouldUseInk({ promptOnce: "hello" }, { stdinIsTTY: true, stdoutIsTTY: true })).toBe(false);
+    expect(shouldUseInk({}, { stdinIsTTY: true, stdoutIsTTY: true }, {})).toBe(true);
+    expect(shouldUseInk({ promptOnce: "hello" }, { stdinIsTTY: true, stdoutIsTTY: true }, {})).toBe(false);
+  });
+
+  it("forces ink for boot measurement even without a TTY", () => {
+    expect(shouldUseInk({}, { stdinIsTTY: false, stdoutIsTTY: false }, { XIO_PERF_BOOT_EXIT: "1" })).toBe(true);
+    expect(shouldUseInk({}, { stdinIsTTY: false, stdoutIsTTY: false }, { XIO_FORCE_INK: "1" })).toBe(true);
+    expect(shouldUseInk({}, { stdinIsTTY: false, stdoutIsTTY: false }, {})).toBe(false);
   });
 });
 

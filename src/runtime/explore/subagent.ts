@@ -12,6 +12,10 @@ import type { LlmClient, ProviderRegistration } from "../types.ts";
 import { formatCapsuleForPrompt, type PolicyCapsule } from "./capsule.ts";
 import type { ExploreRoleId } from "./roles.ts";
 import type { ExploreSubagentResult } from "./types.ts";
+import {
+  scopeSubagentToolCall,
+  type SubagentUiScope,
+} from "./subagent-ui.ts";
 
 /**
  * Subagent contract (parent → Flash/explore worker):
@@ -83,6 +87,8 @@ export type RunExploreSubagentOptions = Readonly<{
     registration: ProviderRegistration;
     apiKey: string;
   }>) => LlmClient;
+  /** Optional UI scope — nested loop streams here; never primary session history. */
+  ui?: SubagentUiScope;
 }>;
 
 /** Nested agent loop on a fresh host — no explore tool (no recursion), no primary extensions. */
@@ -130,7 +136,19 @@ export async function runExploreSubagent(
       ...(options.role ? { role: options.role } : {}),
     },
   });
+  const ui = options.ui;
+  const lifecycleMeta = ui
+    ? {
+        workerId: ui.workerId,
+        modelLabel: ui.modelLabel,
+        role: ui.role,
+        goal: options.goal,
+      }
+    : undefined;
   try {
+    if (lifecycleMeta) {
+      ui?.sink.onLifecycle?.("start", lifecycleMeta);
+    }
     const modelCfg = registration.models.find((entry) => entry.id === options.modelId)
       ?? registration.models[0];
     host.registerProvider(registration.name, registration);
@@ -150,9 +168,24 @@ export async function runExploreSubagent(
         toolChoiceScope: registration.toolChoiceScope,
         parallelToolCalls: true,
         signal: options.signal,
+        onThinkingDelta: (text) => ui?.sink.onThinkingDelta?.(text),
+        onAssistantDelta: (text) => ui?.sink.onAssistantDelta?.(text),
+        onAssistantText: (text) => ui?.sink.onAssistantText?.(text),
+        onToolStart: (call) => ui?.sink.onToolStart?.(scopeSubagentToolCall(ui.workerId, call)),
+        onToolEnd: (call, toolResult) => ui?.sink.onToolEnd?.(
+          scopeSubagentToolCall(ui.workerId, call),
+          toolResult,
+        ),
       },
     );
     const outcome = result.cancelled ? "cancelled" : result.success ? "success" : "failure";
+    if (lifecycleMeta) {
+      ui?.sink.onLifecycle?.("end", {
+        ...lifecycleMeta,
+        success: result.success && !result.cancelled,
+        status: outcome,
+      });
+    }
     tracer?.end(dispatch, outcome, {
       usage: result.usage,
       attrs: {
@@ -187,6 +220,13 @@ export async function runExploreSubagent(
     const cancelled = options.signal?.aborted === true;
     const classified = classifyUnknownError(error);
     const outcome = cancelled ? "cancelled" : classified.outcome;
+    if (lifecycleMeta) {
+      ui?.sink.onLifecycle?.("end", {
+        ...lifecycleMeta,
+        success: false,
+        status: outcome,
+      });
+    }
     tracer?.end(dispatch, outcome, { error_class: classified.error_class });
     tracer?.mark("subagent.evidence_complete", outcome, { error_class: classified.error_class });
     return {

@@ -67,6 +67,15 @@ export type PerfOverheadProbe = Readonly<{
   note: string;
 }>;
 
+/** Optional RSS/CPU aggregates for independent before/candidate gate compare. */
+export type PerfResourceSummary = Readonly<{
+  rss_bytes: number | null;
+  cpu_user_ms: number | null;
+  cpu_system_ms: number | null;
+  cache_tokens: number | null;
+  cost_usd: number | null;
+}>;
+
 export type PerfReport = Readonly<{
   schema_version: typeof PERF_REPORT_SCHEMA;
   bench_id: string;
@@ -78,6 +87,7 @@ export type PerfReport = Readonly<{
   iterations: number;
   fixtures: readonly string[];
   metrics: Readonly<Record<string, PerfMetricSummary>>;
+  resource?: PerfResourceSummary;
   overhead: PerfOverheadProbe;
   notes: readonly string[];
 }>;

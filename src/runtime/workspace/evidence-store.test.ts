@@ -32,4 +32,20 @@ describe("EvidenceStore", () => {
     expect(bounded.text.startsWith("x".repeat(20))).toBe(true);
     expect(bounded.text).toContain("truncated by maxChars=20");
   });
+
+  it("putSnippet stores text as-is under real line citations (no empty re-slice)", () => {
+    const store = new EvidenceStore();
+    const record = store.putSnippet({
+      path: "src/a.ts",
+      text: "function greet",
+      startLine: 12,
+      endLine: 12,
+      hash: "deadbeef",
+    });
+    expect(record.text).toBe("function greet");
+    expect(record.startLine).toBe(12);
+    const loaded = store.readEvidence(record);
+    expect(loaded.text).toBe("function greet");
+    expect(loaded.truncated).toBe(false);
+  });
 });

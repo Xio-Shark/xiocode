@@ -169,6 +169,29 @@ export type SessionStartPayload = Readonly<{
   }>;
 }>;
 
+/**
+ * Agent-loop → trajectory / sinks: end-of-user-turn contract.
+ * turnIndex is **1-based** per session user prompt (prior user messages + 1).
+ * message is a summary only (no secret dumps / full workspace bodies).
+ */
+export type TurnEndToolResultSummary = Readonly<{
+  toolCallId?: string;
+  toolName: string;
+  content: string;
+  isError: boolean;
+}>;
+
+export type TurnEndOutcome = "success" | "cancelled" | "error";
+
+export type TurnEndPayload = Readonly<{
+  turnIndex: number;
+  prompt: string | null;
+  message: Readonly<{ content: string }> | null;
+  toolResults: readonly TurnEndToolResultSummary[];
+  outcome: TurnEndOutcome;
+  error_class?: string;
+}>;
+
 export type ExtensionEventMap = {
   session_start: SessionStartPayload;
   session_end: unknown;
@@ -176,7 +199,7 @@ export type ExtensionEventMap = {
   before_provider_request: unknown;
   provider_response: ProviderResponseEvent;
   turn_start: unknown;
-  turn_end: unknown;
+  turn_end: TurnEndPayload;
   tool_call: ToolCallEvent | Record<string, unknown>;
   tool_result: unknown;
   user_bash: UserBashEvent;
@@ -204,6 +227,11 @@ export type XioExtensionAPI = {
   getThinkingLevel: () => ThinkingLevel;
   setThinkingLevel: (level: ThinkingLevel) => void;
   readonly model: ModelInfo | undefined;
+  /**
+   * Optional RuntimeEvent.v1 bus for this session/run.
+   * Extensions (e.g. evolve trajectory) may subscribe as product sinks.
+   */
+  getRuntimeEvents?: () => import("./events/types.ts").RuntimeEventEmitter | undefined;
 };
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
