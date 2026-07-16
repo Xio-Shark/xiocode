@@ -85,6 +85,10 @@ retain_on_reject = false
 # capability_gate = false  # set true so bare xio improve requires trusted PASS before merge ask
 # private_case = "last"    # optional; "last" or a 64-char case id (requires capability_gate)
 
+# Failure-signal capture offer (rollback / hard steer / turn failed). Verdict stays human.
+# [regress]
+# offer_on_failure = true  # set false to silence offers; /regress manual path unchanged
+
 # Post-task retrospective: after each full agent task, extract blockers → log → washed report.
 # Report injects into the next turn for the primary agent; optional improve-queue goals for xio improve.
 # [retrospective]

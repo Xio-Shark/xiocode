@@ -7,9 +7,16 @@
 ## Product
 
 - **XioCode**: local-first AI coding agent with a self-owned TypeScript runtime (`src/runtime`), outer worktree isolation, and run evidence under `~/.xiocode/runs/`.
+- **Positioning (2026-07-16)**: single-operator daily driver + agent-engineering testbed first; open-sourcing for a wider audience is deferred until a self-set milestone. Differentiation claims are judged against "unique for the operator's workflow", not against the market feature matrix.
+- **Open-source milestone (2026-07-16)**: first full flywheel cycle under real daily use — a genuine failure, captured as a case, fixed by an orchestration change that passes the eval gate on a 10+ case library and merges through MergeGate, while xiocode is the operator's actual daily driver. Both conditions must hold; either alone does not trigger the decision.
+- **Identity (2026-07-16)**: the two flagship capabilities are (1) the trustable-autonomy chain (worktree + MergeGate + rollback + run evidence) and (2) the failure-driven orchestration self-calibration loop (capture → case library → eval-gated experiment). Orchestration breadth and TUI breadth are explicitly not the identity.
+- **TUI scope (2026-07-16)**: feature surface frozen (markdown render, `@` file mention, usage status, `/model` are in). Remaining TUI work is aesthetics / motion / smoothness polish only — no new interaction features; themes, custom keybindings, images stay out.
 - **Goal / north star**: observable, rollback-safe, self-improvable local coding-agent loop under user MergeGate consent — see [docs/GOAL.md](./docs/GOAL.md).
 - **`xio`**: CLI binary. Reads `~/.xiocode/config.toml`, starts the TTY Ink session (or non-TTY/one-shot path), loads extensions in-process.
 - **Harness**: layer between the LLM and the execution environment (tool calls ↔ file/shell actions).
+- **Orchestration (调度机)**: the request→result pipeline — context assembly, model routing, tool dispatch, subagent fan-out (explore waves), result aggregation. Optimization target is **task outcome quality**, explicitly not token cost. Cross-session/background task scheduling is out of scope (2026-07-16).
+- **Orchestration quality oracle (2026-07-16)**: orchestration changes are judged by (1) private regression cases (`xio regress`) captured from the operator's real failures — primary judge; (2) `xio eval compare` as the gate. Subjective feel and external public benchmarks are rejected as judges.
+- **Orchestration variant (2026-07-16)**: a variant is a git ref (code + config as a whole), compared via the existing eval path. Tunables get promoted from code into `config.toml` on demand, one experiment at a time — no upfront policy DSL. Machine-proposed variants (StrategyLearner / PromptEvolver) stay off the default path until the regression case library has meaningful size.
 
 ## Architecture
 
@@ -25,6 +32,7 @@
 - **xio-improve**: self-modification outer loop (`xio improve` / `bin/xio-improve`). T4 GoalStore → worktree edits → verifier → **MergeGate ask**. Green verifier never auto-merges.
 - **xio-eval**: trusted local evaluator. Materializes tiny public fixtures, starts the candidate in its normal worktree path, then runs hidden graders from outside the candidate workspace and writes a versioned report.
 - **xio-regress**: private regression capture (`xio regress`). User verdict + frozen verifier + evidence hashes; pinned-base red preflight. Does not authorize merge.
+- **Case capture flow (2026-07-16)**: failure signals (turn failed / hard steer / `/rollback`) offer one-key capture when `[regress] offer_on_failure = true` → explore-style subagent drafts `failure_statement` (artifact seed/fallback) → operator confirms; enrichment never blocks capture; silent auto-capture rejected. Gate: no orchestration-code experiments before the library holds 10 cases.
 
 ## Run evidence
 
