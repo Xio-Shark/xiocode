@@ -137,6 +137,15 @@ export type XioImproveConfig = Readonly<{
 }>;
 
 /**
+ * Private regression capture UX. Cases still require an explicit human verdict;
+ * this only controls whether failure signals offer one-key capture.
+ */
+export type XioRegressConfig = Readonly<{
+  /** When true, offer capture after rollback / hard steer / turn failure. Default true. */
+  offerOnFailure: boolean;
+}>;
+
+/**
  * Post-task retrospective: after each full agent task, extract blockers → log → washed report
  * for the primary agent (and optional improve queue).
  */
@@ -205,6 +214,7 @@ export type XioConfig = Readonly<{
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
   improve: XioImproveConfig;
+  regress: XioRegressConfig;
   explore: XioExploreConfig;
 }>;
 
@@ -221,6 +231,7 @@ export type XioRuntimeConfig = Readonly<{
   permissions: XioPermissionsConfig;
   explore: XioExploreConfig;
   retrospective: XioRetrospectiveConfig;
+  regress: XioRegressConfig;
 }>;
 
 export type ParsedXioConfig = Readonly<{
@@ -272,6 +283,10 @@ const DEFAULT_IMPROVE: XioImproveConfig = {
   capabilityGate: false,
 };
 
+const DEFAULT_REGRESS: XioRegressConfig = {
+  offerOnFailure: true,
+};
+
 const DEFAULT_RETROSPECTIVE: XioRetrospectiveConfig = {
   enabled: true,
   skipTrivial: true,
@@ -311,6 +326,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
   const improve = parseImprove(getTable(data, "improve"));
+  const regress = parseRegress(getTable(data, "regress"));
   const explore = parseExplore(getTable(data, "explore"));
   const retrospective = parseRetrospective(getTable(data, "retrospective"));
   const xio: XioConfig = {
@@ -326,6 +342,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     mcp,
     permissions,
     improve,
+    regress,
     explore,
   };
   return {
@@ -348,6 +365,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     permissions: config.permissions,
     explore: config.explore,
     retrospective: config.retrospective,
+    regress: config.regress,
   };
 }
 
@@ -514,6 +532,12 @@ function parseImprove(table: Record<string, unknown> | undefined): XioImproveCon
   return {
     capabilityGate: getOptionalBoolean(table, "capability_gate") ?? DEFAULT_IMPROVE.capabilityGate,
     ...(privateCase ? { privateCase } : {}),
+  };
+}
+
+function parseRegress(table: Record<string, unknown> | undefined): XioRegressConfig {
+  return {
+    offerOnFailure: getOptionalBoolean(table, "offer_on_failure") ?? DEFAULT_REGRESS.offerOnFailure,
   };
 }
 

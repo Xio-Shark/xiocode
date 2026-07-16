@@ -142,7 +142,7 @@ Empty tool context after a successful read/bash is a **harness bug** (alignment 
 
 Shortest honest loop for “this failure should make my harness better”:
 
-1. Run interactive agent (`xio` in **any** directory — **no git/worktree required**; opt-in worktree only with `[worktree] enabled = true`). Long sessions use **TUI route B** (append-to-scrollback + callId tool pairing + Ctrl+O full tool output; early-boot input buffer; see STATUS). Mid-turn **steer**: busy Enter → soft (`session.steer`); `!text` → hard (aborts in-flight provider/tools; not mid-stream HTTP inject). On failure, follow nudge → `/regress` or `xio regress capture --last` (explicit failure statement + verifier).
+1. Run interactive agent (`xio` in **any** directory — **no git/worktree required**; opt-in worktree only with `[worktree] enabled = true`). Long sessions use **TUI route B** (append-to-scrollback + callId tool pairing + Ctrl+O full tool output; early-boot input buffer; see STATUS). Mid-turn **steer**: busy Enter → soft (`session.steer`); `!text` → hard (aborts in-flight provider/tools; not mid-stream HTTP inject). On failure signals (turn failed / hard steer / `/rollback`), accept the one-key capture offer (or decline and use `/regress` / `xio regress capture --last`) — still requires explicit failure statement + verifier. Set `[regress] offer_on_failure = false` to silence offers only.
 2. Capture writes case + `~/.xiocode/regressions/.last-case`.
 3. Optionally set `[improve] capability_gate = true` and `private_case = "last"`.
 4. `xio improve` (or flags) **always** edits in a candidate worktree (even when interactive default is direct-cwd) → verifier → joint FIXED × PASS → **MergeGate ask only**.

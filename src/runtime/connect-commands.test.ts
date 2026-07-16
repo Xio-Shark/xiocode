@@ -80,6 +80,7 @@ function baseRuntime(configPath: string): XioRuntimeConfig {
       enqueueImprove: true,
       useLlm: false,
     },
+    regress: { offerOnFailure: true },
   };
 }
 

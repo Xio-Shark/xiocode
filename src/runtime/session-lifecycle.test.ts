@@ -78,6 +78,25 @@ describe("registerRollbackCommand", () => {
     expect(snapshots[0]!.some((message) => message.content === "continued")).toBe(true);
   });
 
+  it("invokes onRollbackSuccess after an approved session rollback", async () => {
+    const session = await createWorktree();
+    const host = new ExtensionHost();
+    const events: string[] = [];
+    registerRollbackCommand(
+      host,
+      new MergeGate(session),
+      async () => true,
+      undefined,
+      async ({ kind }) => {
+        events.push(kind);
+      },
+    );
+    await writeFile(path.join(session.worktreePath, "broken.ts"), "broken\n", "utf8");
+    await expect(host.runCommand("rollback")).resolves.toMatch(/rolled back to session baseline/);
+    expect(events).toEqual(["session"]);
+    await WorktreeSandbox.remove(session, { force: true });
+  });
+
   it("keeps conversation history available after file rollback", async () => {
     const session = await createWorktree();
     const host = new ExtensionHost();

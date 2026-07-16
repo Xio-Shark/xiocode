@@ -482,6 +482,19 @@ Authorization = "Bearer x"
     });
     expect(parsed.runtimeConfig.permissions).toEqual({ allowHighRisk: false });
     expect(parsed.xio.improve).toEqual({ capabilityGate: false });
+    expect(parsed.runtimeConfig.regress).toEqual({ offerOnFailure: true });
+  });
+
+  it("parses regress.offer_on_failure kill-switch", () => {
+    const parsed = parseXioConfig(
+      `
+[regress]
+offer_on_failure = false
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.regress).toEqual({ offerOnFailure: false });
+    expect(parsed.xio.regress).toEqual({ offerOnFailure: false });
   });
 
   it("parses permissions and mcp unknown_source_fail_closed", () => {

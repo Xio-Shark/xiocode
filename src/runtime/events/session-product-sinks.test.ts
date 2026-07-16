@@ -75,6 +75,7 @@ function minimalRuntimeConfig(runRoot: string): XioRuntimeConfig {
       enqueueImprove: false,
       useLlm: false,
     },
+    regress: { offerOnFailure: false },
   };
 }
 
