@@ -10,6 +10,7 @@ import type {
   ToolInfo,
   XioExtensionAPI,
 } from "./types.ts";
+import type { RuntimeEventEmitter } from "./events/types.ts";
 
 type HandlerEntry = Readonly<{
   event: string;
@@ -22,6 +23,7 @@ export type ExtensionHostOptions = Readonly<{
   initialActiveTools?: readonly string[];
   ui?: CommandHandlerContext["ui"];
   getSystemPrompt?: () => string;
+  runtimeEvents?: RuntimeEventEmitter;
 }>;
 
 export class ExtensionHost implements XioExtensionAPI {
@@ -34,6 +36,7 @@ export class ExtensionHost implements XioExtensionAPI {
   #thinkingLevel: ThinkingLevel;
   #systemPrompt = "";
   #activationFilter: ((name: string) => boolean) | undefined;
+  #runtimeEvents: RuntimeEventEmitter | undefined;
   readonly #ui: CommandHandlerContext["ui"];
   readonly #getSystemPrompt: (() => string) | undefined;
 
@@ -43,6 +46,15 @@ export class ExtensionHost implements XioExtensionAPI {
     this.#activeTools = options.initialActiveTools ? [...options.initialActiveTools] : [];
     this.#ui = options.ui;
     this.#getSystemPrompt = options.getSystemPrompt;
+    this.#runtimeEvents = options.runtimeEvents;
+  }
+
+  getRuntimeEvents(): RuntimeEventEmitter | undefined {
+    return this.#runtimeEvents;
+  }
+
+  setRuntimeEvents(bus: RuntimeEventEmitter | undefined): void {
+    this.#runtimeEvents = bus;
   }
 
   on(event: ExtensionEventName | string, handler: ExtensionHandler): void {

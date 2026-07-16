@@ -3,6 +3,7 @@ import type { GateManifest } from "./gate-manifest.ts";
 import {
   comparePerformanceReports,
   compareTokenBudgets,
+  compareUsageAggregates,
   tokenTotalsFromUsage,
   type PerfReportLike,
   type PerformanceCompareResult,
@@ -115,6 +116,21 @@ export function decideMultiAxis(input: MultiAxisInput): MultiAxisDecision {
       if (axes.performance !== "fail") axes.performance = "concern";
       concerns.push(...tokenResult.soft.map((item) => `performance soft regression: ${item}`));
     }
+
+    // Trial-side cache/cost aggregates (provider efficiency) when thresholds present.
+    const usageAgg = compareUsageAggregates(
+      averageUsageExtras(input.before.trials),
+      averageUsageExtras(input.candidate.trials),
+      input.manifest.performance.thresholds,
+    );
+    concerns.push(...usageAgg.concerns);
+    if (usageAgg.hard.length > 0) {
+      axes.performance = "fail";
+      errors.push(...usageAgg.hard.map((item) => `performance hard regression: ${item}`));
+    } else if (usageAgg.soft.length > 0) {
+      if (axes.performance !== "fail") axes.performance = "concern";
+      concerns.push(...usageAgg.soft.map((item) => `performance soft regression: ${item}`));
+    }
   }
 
   const awareness = input.awareness ?? deriveAwareness(input.candidate, input.manifest);
@@ -128,6 +144,9 @@ export function decideMultiAxis(input: MultiAxisInput): MultiAxisDecision {
       concerns.push(...awarenessIssues.soft);
     } else if (awareness.evidence_coverage !== null || awareness.overlap !== null) {
       axes.awareness = "pass";
+    } else {
+      // Optional metrics missing → skipped (gaps stay in section; not a hard/soft fail).
+      axes.awareness = "skipped";
     }
   }
 
@@ -212,12 +231,15 @@ export function decideMultiAxis(input: MultiAxisInput): MultiAxisDecision {
   });
 }
 
+/**
+ * Derive awareness from optional per-trial metrics (explore brief / perception product path).
+ * Averages non-null evidence_coverage and overlap; never fabricates fixed null when data exists.
+ */
 export function deriveAwareness(
   candidate: CandidateSummary,
   manifest: GateManifest | null,
 ): AwarenessSection {
   const gaps: string[] = [];
-  // Without workspace-perception metrics on trials yet, surface task resolution only.
   const taskResolution = candidate.attempted === 0 ? null : candidate.resolved_rate;
   if (taskResolution === null) {
     gaps.push("no completed trials for awareness metrics");
@@ -225,13 +247,62 @@ export function deriveAwareness(
   if (!manifest) {
     gaps.push("gate manifest omitted; awareness thresholds not applied");
   }
+
+  const coverages: number[] = [];
+  const overlaps: number[] = [];
+  for (const trial of candidate.trials) {
+    if (trial.outcome.status === "infra_error") continue;
+    const metrics = trial.awareness ?? parseAwarenessFromConcerns(trial.evidence.concerns);
+    if (!metrics) continue;
+    if (typeof metrics.evidence_coverage === "number" && Number.isFinite(metrics.evidence_coverage)) {
+      coverages.push(clamp01(metrics.evidence_coverage));
+    }
+    if (typeof metrics.overlap === "number" && Number.isFinite(metrics.overlap)) {
+      overlaps.push(clamp01(metrics.overlap));
+    }
+  }
+
+  const evidenceCoverage = coverages.length > 0 ? mean(coverages) : null;
+  const overlap = overlaps.length > 0 ? mean(overlaps) : null;
+  if (evidenceCoverage === null && overlap === null) {
+    gaps.push("trial awareness metrics unavailable (coverage/overlap)");
+  }
+
   return {
     schema_version: "xio-eval-awareness.v1",
-    evidence_coverage: null,
-    overlap: null,
+    evidence_coverage: evidenceCoverage,
+    overlap,
     task_resolution: taskResolution,
     gaps,
   };
+}
+
+/** Accept structured concern tags: awareness.evidence_coverage=0.8, awareness.overlap=0.1 */
+export function parseAwarenessFromConcerns(
+  concerns: readonly string[],
+): Readonly<{ evidence_coverage: number | null; overlap: number | null }> | null {
+  let evidence_coverage: number | null = null;
+  let overlap: number | null = null;
+  let found = false;
+  for (const line of concerns) {
+    const cov = line.match(/awareness\.evidence_coverage\s*=\s*([0-9.]+)/i);
+    if (cov?.[1]) {
+      const value = Number(cov[1]);
+      if (Number.isFinite(value)) {
+        evidence_coverage = value;
+        found = true;
+      }
+    }
+    const ov = line.match(/awareness\.overlap\s*=\s*([0-9.]+)/i);
+    if (ov?.[1]) {
+      const value = Number(ov[1]);
+      if (Number.isFinite(value)) {
+        overlap = value;
+        found = true;
+      }
+    }
+  }
+  return found ? { evidence_coverage, overlap } : null;
 }
 
 function evaluateAwareness(
@@ -270,6 +341,31 @@ function averageTokenTotal(trials: readonly TrialReport[]): number | null {
   }
   if (values.length === 0) return null;
   return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function averageUsageExtras(trials: readonly TrialReport[]): Readonly<{
+  cache_tokens: number | null;
+  cost_usd: number | null;
+}> {
+  const caches: number[] = [];
+  const costs: number[] = [];
+  for (const trial of trials) {
+    if (trial.outcome.status === "infra_error") continue;
+    if (trial.usage.cache_tokens !== null) caches.push(trial.usage.cache_tokens);
+    if (trial.usage.estimated_cost_usd !== null) costs.push(trial.usage.estimated_cost_usd);
+  }
+  return {
+    cache_tokens: caches.length > 0 ? mean(caches) : null,
+    cost_usd: costs.length > 0 ? mean(costs) : null,
+  };
+}
+
+function mean(values: readonly number[]): number {
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 function finalize(input: Readonly<{

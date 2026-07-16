@@ -23,7 +23,7 @@ export type HistoryBlock = Readonly<{
   id: number;
   /** Preview lines rendered into the main buffer via `<Static>`. */
   lines: readonly string[];
-  kind: "user" | "assistant" | "tool" | "notice" | "thinking" | "command";
+  kind: "user" | "assistant" | "tool" | "notice" | "thinking" | "command" | "subagent";
   error?: boolean;
   /** Full tool output retained for the transcript viewer (not only the 8-line preview). */
   output?: string;
@@ -33,16 +33,22 @@ export type HistoryBlock = Readonly<{
   /** When true, Static shows the truncated preview; viewer can still open full output. */
   previewCollapsed?: boolean;
   thoughtSeconds?: number;
+  workerId?: number;
+  model?: string;
 }>;
 
 /**
- * Chunked live text: appends push in place (exclusive ownership of `chunks`);
- * join once per paint/commit. Avoids quadratic full-string rebuild per delta.
+ * Chunked live text: appends push in place (exclusive ownership of `chunks`).
+ * Compacts when the chunk list grows so paint/commit joins stay amortized linear.
+ * Sticky preview reads the tail only (no full join per frame).
  */
 export type LiveTextBuffer = Readonly<{
   chunks: readonly string[];
   length: number;
 }>;
+
+/** Compact many small deltas into one chunk to keep later joins O(n) amortized. */
+export const LIVE_TEXT_COMPACT_CHUNKS = 48;
 
 export function emptyLiveText(): LiveTextBuffer {
   return { chunks: [], length: 0 };
@@ -53,13 +59,43 @@ export function appendLiveText(buffer: LiveTextBuffer, delta: string): LiveTextB
   // Exclusive ownership: reduceScrollback never shares a buffer across live identities.
   const chunks = buffer.chunks as string[];
   chunks.push(delta);
-  return { chunks, length: buffer.length + delta.length };
+  const length = buffer.length + delta.length;
+  if (chunks.length >= LIVE_TEXT_COMPACT_CHUNKS) {
+    const joined = chunks.join("");
+    return { chunks: [joined], length: joined.length };
+  }
+  return { chunks, length };
 }
 
 export function liveTextString(buffer: LiveTextBuffer): string {
   if (buffer.chunks.length === 0) return "";
   if (buffer.chunks.length === 1) return buffer.chunks[0]!;
   return buffer.chunks.join("");
+}
+
+/**
+ * Tail of the live buffer up to `budget` characters without joining the whole stream.
+ * O(chunks from end) until budget is filled — paint path must not call liveTextString.
+ */
+export function liveTextTail(buffer: LiveTextBuffer, budget: number): string {
+  if (buffer.length === 0 || budget <= 0) return "";
+  if (buffer.length <= budget) {
+    return liveTextString(buffer);
+  }
+  let remaining = budget;
+  const parts: string[] = [];
+  for (let i = buffer.chunks.length - 1; i >= 0 && remaining > 0; i -= 1) {
+    const chunk = buffer.chunks[i]!;
+    if (chunk.length <= remaining) {
+      parts.push(chunk);
+      remaining -= chunk.length;
+    } else {
+      parts.push(chunk.slice(chunk.length - remaining));
+      remaining = 0;
+    }
+  }
+  parts.reverse();
+  return parts.join("");
 }
 
 export function liveTextFromString(text: string): LiveTextBuffer {
@@ -86,14 +122,30 @@ export type InFlightTool = Readonly<{
   startedAt?: number;
 }>;
 
+/** One in-flight explore subagent worker (nested loop UI). */
+export type InFlightSubagent = Readonly<{
+  workerId: number;
+  model: string;
+  role?: string;
+  goal: string;
+  live?: LiveBlock;
+  inFlightTools: readonly InFlightTool[];
+  /** Inner lines committed during flight (tools, collapsed thinking). */
+  lines: readonly string[];
+  startedAt: number;
+}>;
+
 export type ScrollbackState = Readonly<{
   blocks: readonly HistoryBlock[];
   /** Active thinking/assistant stream; tools live in `inFlightTools`. */
   live: LiveBlock | undefined;
   inFlightTools: readonly InFlightTool[];
+  inFlightSubagents: readonly InFlightSubagent[];
   nextId: number;
   /** Monotonic synthetic id counter when the provider omits callId. */
   nextSyntheticId: number;
+  /** Synthetic id counter for nested subagent tools. */
+  nextSubagentSyntheticId: number;
 }>;
 
 export function emptyScrollbackState(): ScrollbackState {
@@ -101,8 +153,10 @@ export function emptyScrollbackState(): ScrollbackState {
     blocks: [],
     live: undefined,
     inFlightTools: [],
+    inFlightSubagents: [],
     nextId: 1,
     nextSyntheticId: 1,
+    nextSubagentSyntheticId: 1,
   };
 }
 
@@ -264,6 +318,163 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
       text,
       level: e.stage === "failure" ? "error" : undefined,
     });
+  }
+
+  if (event.kind === "subagent-start") {
+    return {
+      ...state,
+      inFlightSubagents: [
+        ...state.inFlightSubagents,
+        {
+          workerId: event.workerId,
+          model: event.model,
+          role: event.role,
+          goal: event.goal,
+          inFlightTools: [],
+          lines: [],
+          startedAt: Date.now(),
+        },
+      ],
+    };
+  }
+
+  if (event.kind === "subagent-thinking-delta") {
+    const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
+      let live = worker.live;
+      if (live && live.kind !== "thinking") {
+        live = undefined;
+      }
+      if (!live || live.kind !== "thinking") {
+        return {
+          ...worker,
+          live: { kind: "thinking", buffer: liveTextFromString(event.text), startedAt: Date.now() },
+        };
+      }
+      return {
+        ...worker,
+        live: { ...live, buffer: appendLiveText(live.buffer, event.text) },
+      };
+    });
+    return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
+  }
+
+  if (event.kind === "subagent-assistant-delta") {
+    const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
+      let next = worker;
+      if (next.live?.kind === "thinking") {
+        next = commitSubagentThinking(next);
+      }
+      if (!next.live || next.live.kind !== "assistant") {
+        return {
+          ...next,
+          live: { kind: "assistant", buffer: liveTextFromString(event.text) },
+        };
+      }
+      return {
+        ...next,
+        live: { ...next.live, buffer: appendLiveText(next.live.buffer, event.text) },
+      };
+    });
+    return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
+  }
+
+  if (event.kind === "subagent-assistant-text") {
+    const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
+      let next = worker;
+      if (next.live?.kind === "thinking") {
+        next = commitSubagentThinking(next);
+      }
+      if (next.live?.kind === "assistant") {
+        return { ...next, live: undefined };
+      }
+      if (event.text.length === 0) {
+        return { ...next, live: undefined };
+      }
+      return {
+        ...next,
+        live: undefined,
+        lines: [...next.lines, formatSubagentAssistantLine(event.text)],
+      };
+    });
+    return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
+  }
+
+  if (event.kind === "subagent-tool-start") {
+    let nextSyntheticId = state.nextSubagentSyntheticId;
+    const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
+      let next = worker;
+      if (next.live?.kind === "thinking") {
+        next = commitSubagentThinking(next);
+      } else if (next.live?.kind === "assistant") {
+        next = commitSubagentAssistant(next);
+      }
+      let callId = event.callId?.trim() ?? "";
+      if (callId.length === 0) {
+        callId = `sub-synthetic-${nextSyntheticId}`;
+        nextSyntheticId += 1;
+      }
+      return {
+        ...next,
+        live: undefined,
+        inFlightTools: [
+          ...next.inFlightTools,
+          {
+            callId,
+            name: event.name,
+            detail: event.detail,
+            startedAt: Date.now(),
+          },
+        ],
+      };
+    });
+    if (workers === state.inFlightSubagents) return state;
+    return { ...state, inFlightSubagents: workers, nextSubagentSyntheticId: nextSyntheticId };
+  }
+
+  if (event.kind === "subagent-tool-end") {
+    const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
+      const match = matchInFlightTool(worker.inFlightTools, event);
+      const remaining = match
+        ? worker.inFlightTools.filter((tool) => tool.callId !== match.callId)
+        : worker.inFlightTools;
+      const titleName = match?.name ?? event.name;
+      const detail = match?.detail ?? "";
+      const toolLines = buildSubagentInnerToolLines({
+        name: titleName,
+        detail,
+        error: event.error,
+        output: event.output,
+      });
+      return {
+        ...worker,
+        inFlightTools: remaining,
+        lines: [...worker.lines, ...toolLines],
+      };
+    });
+    return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
+  }
+
+  if (event.kind === "subagent-end") {
+    const worker = state.inFlightSubagents.find((entry) => entry.workerId === event.workerId);
+    if (!worker) return state;
+    let finalized = worker;
+    if (finalized.live?.kind === "thinking") {
+      finalized = commitSubagentThinking(finalized);
+    } else if (finalized.live?.kind === "assistant") {
+      finalized = commitSubagentAssistant(finalized);
+    }
+    const block = buildSubagentHistoryBlock({
+      id: state.nextId,
+      worker: finalized,
+      success: event.success,
+      status: event.status,
+    });
+    return {
+      ...state,
+      blocks: [...state.blocks, block],
+      inFlightSubagents: state.inFlightSubagents.filter((entry) => entry.workerId !== event.workerId),
+      nextId: state.nextId + 1,
+    };
   }
 
   return state;
@@ -447,21 +658,21 @@ function liveStreamToBlock(live: LiveBlock, id: number): HistoryBlock {
   return { id, kind: "assistant", lines: [`${theme.sym.answer} ${liveTextString(live.buffer)}`] };
 }
 
-/** Format live stream + in-flight tools for the sticky (non-Static) region. */
+/** Format live stream + in-flight tools + subagent workers for the sticky region. */
 export function formatLiveLines(
   live: LiveBlock | undefined,
   inFlightTools: readonly InFlightTool[] = [],
+  inFlightSubagents: readonly InFlightSubagent[] = [],
   options: Readonly<{ charBudget?: number }> = {},
 ): readonly string[] {
   const budget = options.charBudget ?? LIVE_PREVIEW_CHAR_BUDGET;
   const lines: string[] = [];
   if (live?.kind === "thinking") {
-    const full = liveTextString(live.buffer);
-    const preview = boundLivePreview(full, budget);
+    const preview = boundLivePreviewFromBuffer(live.buffer, budget);
     lines.push(`${theme.sym.think} thinking…`, ...indentLines(preview, "  "));
   } else if (live?.kind === "assistant") {
-    const full = liveTextString(live.buffer);
-    lines.push(`${theme.sym.answer} ${boundLivePreview(full, budget)}`);
+    const preview = boundLivePreviewFromBuffer(live.buffer, budget);
+    lines.push(`${theme.sym.answer} ${preview}`);
   }
   for (const tool of inFlightTools) {
     const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";
@@ -469,6 +680,9 @@ export function formatLiveLines(
     const mark = explore ? theme.sym.explore : theme.sym.tool;
     const title = explore ? formatExploreToolLabel({ running: true }) : tool.name;
     lines.push(`${mark} ${title}${detail}`);
+  }
+  for (const worker of inFlightSubagents) {
+    lines.push(...formatInFlightSubagentLines(worker, budget));
   }
   return lines;
 }
@@ -479,7 +693,131 @@ export function boundLivePreview(text: string, charBudget: number): string {
   return `…${text.slice(text.length - charBudget)}`;
 }
 
+/** Preview from chunked buffer without a full-stream join. */
+export function boundLivePreviewFromBuffer(buffer: LiveTextBuffer, charBudget: number): string {
+  if (buffer.length <= charBudget) {
+    return liveTextString(buffer);
+  }
+  return `…${liveTextTail(buffer, charBudget)}`;
+}
+
 function indentLines(text: string, prefix: string): string[] {
   if (text.length === 0) return [];
   return text.split("\n").map((row) => `${prefix}${row}`);
 }
+
+function updateInFlightSubagent(
+  workers: readonly InFlightSubagent[],
+  workerId: number,
+  update: (worker: InFlightSubagent) => InFlightSubagent,
+): readonly InFlightSubagent[] {
+  const index = workers.findIndex((entry) => entry.workerId === workerId);
+  if (index < 0) return workers;
+  const next = [...workers];
+  next[index] = update(workers[index]!);
+  return next;
+}
+
+function commitSubagentThinking(worker: InFlightSubagent): InFlightSubagent {
+  if (!worker.live || worker.live.kind !== "thinking") return worker;
+  const startedAt = worker.live.startedAt ?? worker.startedAt;
+  const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+  return {
+    ...worker,
+    live: undefined,
+    lines: [...worker.lines, `  ${theme.sym.explore} think ${seconds}s`],
+  };
+}
+
+function commitSubagentAssistant(worker: InFlightSubagent): InFlightSubagent {
+  if (!worker.live || worker.live.kind !== "assistant") return worker;
+  const text = liveTextString(worker.live.buffer);
+  if (text.length === 0) {
+    return { ...worker, live: undefined };
+  }
+  return {
+    ...worker,
+    live: undefined,
+    lines: [...worker.lines, formatSubagentAssistantLine(text)],
+  };
+}
+
+function formatSubagentAssistantLine(text: string): string {
+  const preview = boundLivePreview(text.trim(), LIVE_PREVIEW_CHAR_BUDGET);
+  return `  ${theme.sym.explore} ${preview}`;
+}
+
+function formatInFlightSubagentLines(
+  worker: InFlightSubagent,
+  charBudget: number,
+): string[] {
+  const role = worker.role ? ` [${worker.role}]` : "";
+  const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
+  const lines = [`${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal}`];
+  lines.push(...worker.lines);
+  if (worker.live?.kind === "thinking") {
+    const preview = boundLivePreviewFromBuffer(worker.live.buffer, charBudget);
+    lines.push(`  ${theme.sym.explore} thinking…`, ...indentLines(preview, "    "));
+  } else if (worker.live?.kind === "assistant") {
+    const preview = boundLivePreviewFromBuffer(worker.live.buffer, charBudget);
+    lines.push(`  ${theme.sym.explore} ${preview}`);
+  }
+  for (const tool of worker.inFlightTools) {
+    const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";
+    lines.push(`  ${theme.sym.explore} ${tool.name}${detail}`);
+  }
+  return lines;
+}
+
+function buildSubagentInnerToolLines(input: Readonly<{
+  name: string;
+  detail: string;
+  error: boolean;
+  output: string;
+}>): string[] {
+  const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
+  const status = input.error ? "failed" : "done";
+  const lines: string[] = [`  ${theme.sym.explore} ${input.name}${detailPart} ${status}`];
+  const display = formatToolOutputForDisplay(input.output) || input.output;
+  if (display.length > 0) {
+    const preview = previewText(display, TOOL_OUTPUT_PREVIEW_LINES);
+    for (const row of preview.text.split("\n")) {
+      lines.push(`    ${theme.sym.nest} ${row}`);
+    }
+    if (preview.truncated) {
+      lines.push(`    ${theme.sym.nest} … (truncated · Ctrl+O full output)`);
+    }
+  }
+  return lines;
+}
+
+function buildSubagentHistoryBlock(input: Readonly<{
+  id: number;
+  worker: InFlightSubagent;
+  success: boolean;
+  status?: string;
+}>): HistoryBlock {
+  const { worker } = input;
+  const role = worker.role ? ` [${worker.role}]` : "";
+  const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
+  const statusLabel = input.status ?? (input.success ? "done" : "failed");
+  const header = `${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal} (${statusLabel})`;
+  const lines = [header, ...worker.lines];
+  return {
+    id: input.id,
+    kind: "subagent",
+    lines,
+    error: !input.success,
+    workerId: worker.workerId,
+    model: worker.model,
+    detail: worker.goal,
+  };
+}
+
+function isExploreHistoryBlock(block: HistoryBlock): boolean {
+  if (block.kind === "subagent") return true;
+  if (block.kind === "tool" && isExploreToolName(block.title)) return true;
+  return block.lines.some((line) => line.includes(theme.sym.explore));
+}
+
+export { isExploreHistoryBlock };

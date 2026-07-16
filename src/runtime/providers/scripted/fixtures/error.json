@@ -1,0 +1,11 @@
+{
+  "schema_version": "xio-agent-tape.v1",
+  "name": "error",
+  "turns": [
+    {
+      "steps": [
+        { "type": "error", "class": "ProviderError", "message": "simulated provider failure" }
+      ]
+    }
+  ]
+}

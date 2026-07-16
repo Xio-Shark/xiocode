@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { ExtensionHost } from "./extension-host.ts";
 import { defineTool } from "./define-tool.ts";
 import { Type } from "./schema.ts";
-import { DEFAULT_MAX_TURNS, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
+import { DEFAULT_MAX_TURNS, deriveTurnIndex, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
 
-import type { ChatMessage, LlmClient, StreamEvent } from "./types.ts";
+import type { ChatMessage, LlmClient, StreamEvent, TurnEndPayload } from "./types.ts";
 
 describe("runAgentLoop context wiring", () => {
   it("merges turn_start return value into outbound provider messages", async () => {
@@ -23,6 +23,53 @@ describe("runAgentLoop context wiring", () => {
       message.role === "system" && message.content.includes("git: main")
     )).toBe(true);
     expect(seenMessages.some((message) => message.role === "user" && message.content === "implement feature")).toBe(true);
+  });
+
+  it("keeps stable system prefix and places dynamic turn_start inject in the tail", async () => {
+    let inject = "dynamic: branch=feat/x";
+    const host = new ExtensionHost();
+    host.on("turn_start", () => inject);
+    const seen: ChatMessage[][] = [];
+    const client: LlmClient = {
+      async complete(request) {
+        seen.push([...request.messages]);
+        return { content: `reply-${seen.length}`, toolCalls: [] };
+      },
+    };
+
+    const first = await runAgentLoop("first prompt", {
+      host,
+      client,
+      model: "stub",
+      systemPrompt: "STABLE_SYSTEM_V1",
+    });
+    const firstMsgs = seen[0]!;
+    expect(firstMsgs[0]).toEqual({ role: "system", content: "STABLE_SYSTEM_V1" });
+    expect(firstMsgs.at(-1)).toEqual({ role: "user", content: "first prompt" });
+    expect(firstMsgs.at(-2)).toEqual({ role: "system", content: "dynamic: branch=feat/x" });
+    // Stable at head; dynamic inject immediately before current user (tail of prefix).
+    expect(firstMsgs.findIndex((message) => message.content === "STABLE_SYSTEM_V1")).toBe(0);
+    expect(firstMsgs.findIndex((message) => message.content === "dynamic: branch=feat/x"))
+      .toBe(firstMsgs.length - 2);
+
+    inject = "dynamic: branch=feat/y";
+    await runAgentLoop("second prompt", {
+      host,
+      client,
+      model: "stub",
+      systemPrompt: "STABLE_SYSTEM_V1",
+      priorMessages: first.messages,
+    });
+    const secondMsgs = seen[1]!;
+    expect(secondMsgs[0]).toEqual({ role: "system", content: "STABLE_SYSTEM_V1" });
+    expect(secondMsgs.at(-1)).toEqual({ role: "user", content: "second prompt" });
+    expect(secondMsgs.at(-2)).toEqual({ role: "system", content: "dynamic: branch=feat/y" });
+    // Prior history retained between stable head and dynamic tail.
+    expect(secondMsgs.some((message) => message.content === "first prompt")).toBe(true);
+    expect(secondMsgs.some((message) => message.content === "reply-1")).toBe(true);
+    // First system must remain the original stable prompt (not refreshed to inject).
+    expect(secondMsgs.filter((message) => message.role === "system")[0]?.content)
+      .toBe("STABLE_SYSTEM_V1");
   });
 });
 
@@ -573,5 +620,120 @@ describe("runAgentLoop repeat tool fuse", () => {
   it("fingerprints ignore argument key order", () => {
     expect(toolCallFingerprint({ name: "x", arguments: { a: 1, b: 2 } }))
       .toBe(toolCallFingerprint({ name: "x", arguments: { b: 2, a: 1 } }));
+  });
+});
+
+describe("runAgentLoop turn_end contract", () => {
+  it("emits turnIndex, message, toolResults, and outcome (not prompt-only)", async () => {
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "read_stub",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      async execute() {
+        return { content: [{ type: "text", text: "file body" }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "c1", name: "read_stub", arguments: { path: "a.ts" } }],
+          };
+        }
+        return { content: "- [x] verify turn end", toolCalls: [] };
+      },
+    };
+    const turnEnds: TurnEndPayload[] = [];
+    host.on("turn_end", (payload) => {
+      turnEnds.push(payload as TurnEndPayload);
+    });
+
+    await runAgentLoop("read then answer", { host, client, model: "stub" });
+
+    expect(turnEnds).toHaveLength(1);
+    const turn = turnEnds[0]!;
+    expect(turn.turnIndex).toBe(1);
+    expect(turn.prompt).toBe("read then answer");
+    expect(turn.message).toEqual({ content: "- [x] verify turn end" });
+    expect(turn.toolResults).toHaveLength(1);
+    expect(turn.toolResults[0]).toMatchObject({
+      toolCallId: "c1",
+      toolName: "read_stub",
+      content: "file body",
+      isError: false,
+    });
+    expect(turn.outcome).toBe("success");
+    // Regression lock: payload must not be the old `{ prompt }` shape only.
+    expect("toolResults" in turn).toBe(true);
+    expect("message" in turn).toBe(true);
+    expect("turnIndex" in turn).toBe(true);
+  });
+
+  it("increments turnIndex across multi-prompt priorMessages", async () => {
+    const host = new ExtensionHost();
+    const client: LlmClient = {
+      async complete() {
+        return { content: "ok", toolCalls: [] };
+      },
+    };
+    const turnEnds: TurnEndPayload[] = [];
+    host.on("turn_end", (payload) => {
+      turnEnds.push(payload as TurnEndPayload);
+    });
+
+    const first = await runAgentLoop("first", { host, client, model: "stub" });
+    await runAgentLoop("second", {
+      host,
+      client,
+      model: "stub",
+      priorMessages: first.messages,
+    });
+
+    expect(turnEnds.map((turn) => turn.turnIndex)).toEqual([1, 2]);
+    expect(turnEnds[1]?.prompt).toBe("second");
+    expect(turnEnds[1]?.message).toEqual({ content: "ok" });
+  });
+
+  it("emits cancelled turn_end when aborted before provider", async () => {
+    const host = new ExtensionHost();
+    const controller = new AbortController();
+    controller.abort();
+    const client: LlmClient = {
+      async complete() {
+        return { content: "should not run", toolCalls: [] };
+      },
+    };
+    const turnEnds: TurnEndPayload[] = [];
+    host.on("turn_end", (payload) => {
+      turnEnds.push(payload as TurnEndPayload);
+    });
+
+    const result = await runAgentLoop("abort me", {
+      host,
+      client,
+      model: "stub",
+      signal: controller.signal,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.outcome).toBe("cancelled");
+    expect(turnEnds[0]?.turnIndex).toBe(1);
+    expect(turnEnds[0]?.message).toBeNull();
+    expect(turnEnds[0]?.toolResults).toEqual([]);
+  });
+
+  it("deriveTurnIndex is 1-based on prior user messages", () => {
+    expect(deriveTurnIndex(undefined)).toBe(1);
+    expect(deriveTurnIndex([])).toBe(1);
+    expect(deriveTurnIndex([
+      { role: "system", content: "s" },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+    ])).toBe(2);
   });
 });

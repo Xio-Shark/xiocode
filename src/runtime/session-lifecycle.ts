@@ -100,6 +100,11 @@ export function createPromptRunner(options: Readonly<{
   onCheckpoint?: (checkpoint: AgentLoopCheckpoint) => Promise<void> | void;
   /** Optional current run id for post-failure private-regress nudge. */
   getRunId?: () => Promise<string | undefined> | string | undefined;
+  /** Optional RuntimeEvent.v1 bus (stream-json / multi-sink). */
+  runtimeEvents?: import("./events/types.ts").RuntimeEventEmitter;
+  steerMailbox?: import("./steer.ts").SteerMailbox;
+  /** Fresh AbortSignal after hard-steer abort (must not reuse aborted controller). */
+  resetSignal?: () => AbortSignal | undefined;
 }>): PreparedSession["runPrompt"] {
   const sink = options.sink ?? createStdoutSessionUiSink();
   const history = options.history ?? new SessionHistory({
@@ -121,53 +126,92 @@ export function createPromptRunner(options: Readonly<{
 
   return async (prompt) => {
     await options.beforePrompt?.();
-    const signal = options.getSignal?.();
     let compactionUsage: TokenUsage | undefined;
     if (options.contextCompaction?.needsAutomaticCompaction()) {
-      const compacted = await options.contextCompaction.compact("automatic", undefined, signal);
+      const compacted = await options.contextCompaction.compact(
+        "automatic",
+        undefined,
+        options.getSignal?.(),
+      );
       if (compacted.compacted) compactionUsage = compacted.usage;
     }
-    const model = getModel();
-    const result = await runAgentLoop(prompt, {
-      host: options.host,
-      client: getClient(),
-      model: model.id,
-      providerApi: getProviderApi(),
-      providerName: model.provider,
-      maxTurns: options.maxTurns,
-      repeatToolLimit: options.repeatToolLimit,
-      doneContract: options.doneContract,
-      verifyRepairTurns: options.verify.repairTurns,
-      parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
-      priorMessages: history.getMessages(),
-      maxSessionMessages: options.maxSessionMessages,
-      signal,
-      onAssistantDelta: (text) => sink.onAssistantDelta?.(text),
-      onAssistantText: (text) => sink.onAssistantText?.(text),
-      onThinkingDelta: (text) => sink.onThinkingDelta?.(text),
-      onToolStart: (call) => sink.onToolStart?.(call),
-      onToolEnd: (call, toolResult) => sink.onToolEnd?.(call, toolResult),
-      onCheckpoint: options.onCheckpoint,
-    });
-    await history.replace(result.messages);
-    if (result.cancelled) {
+
+    let nextPrompt = prompt;
+    let totalTurns = 0;
+    let totalToolCalls = 0;
+    let totalToolErrors = 0;
+    const usages: TokenUsage[] = compactionUsage ? [compactionUsage] : [];
+    let lastText = "";
+    let lastSuccess = true;
+    let lastCancelled = false;
+    let lastDoneContract = undefined as import("./verify/done-contract.ts").DoneContractResult | undefined;
+
+    // Hard-steer continuation: abort → synthetic tool results in loop → inject → new loop.
+    // Does not insert into the same in-flight provider stream body.
+    for (let hop = 0; hop < 8; hop += 1) {
+      const signal = hop === 0
+        ? options.getSignal?.()
+        : (options.resetSignal?.() ?? options.getSignal?.());
+      const model = getModel();
+      const result = await runAgentLoop(nextPrompt, {
+        host: options.host,
+        client: getClient(),
+        model: model.id,
+        providerApi: getProviderApi(),
+        providerName: model.provider,
+        maxTurns: options.maxTurns,
+        repeatToolLimit: options.repeatToolLimit,
+        doneContract: options.doneContract,
+        verifyRepairTurns: options.verify.repairTurns,
+        parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
+        priorMessages: history.getMessages(),
+        maxSessionMessages: options.maxSessionMessages,
+        signal,
+        onAssistantDelta: (text) => sink.onAssistantDelta?.(text),
+        onAssistantText: (text) => sink.onAssistantText?.(text),
+        onThinkingDelta: (text) => sink.onThinkingDelta?.(text),
+        onToolStart: (call) => sink.onToolStart?.(call),
+        onToolEnd: (call, toolResult) => sink.onToolEnd?.(call, toolResult),
+        onCheckpoint: options.onCheckpoint,
+        runtimeEvents: options.runtimeEvents,
+        steerMailbox: options.steerMailbox,
+      });
+      await history.replace(result.messages);
+      totalTurns += result.turns;
+      totalToolCalls += result.toolCalls;
+      totalToolErrors += result.toolErrors;
+      usages.push(result.usage);
+      lastText = result.finalText || lastText;
+      lastSuccess = result.success;
+      lastCancelled = result.cancelled === true;
+      lastDoneContract = result.doneContract;
+
+      if (result.hardSteerText && result.cancelled) {
+        nextPrompt = result.hardSteerText;
+        lastCancelled = false;
+        continue;
+      }
+      break;
+    }
+
+    if (lastCancelled) {
       sink.onCancelled?.();
     }
-    if (result.doneContract && !result.doneContract.passed) {
-      sink.onDoneContract?.(result.doneContract.summary);
+    if (lastDoneContract && !lastDoneContract.passed) {
+      sink.onDoneContract?.(lastDoneContract.summary);
     }
-    if (!result.success && !result.cancelled) {
+    if (!lastSuccess && !lastCancelled) {
       const runId = await options.getRunId?.();
       sink.notify?.(formatRegressCaptureHint(runId), "info");
     }
     return {
-      text: result.finalText,
-      success: result.success,
-      turns: result.turns,
-      toolCalls: result.toolCalls,
-      toolErrors: result.toolErrors,
-      usage: compactionUsage ? sumTokenUsage([compactionUsage, result.usage]) : result.usage,
-      cancelled: result.cancelled,
+      text: lastText,
+      success: lastSuccess,
+      turns: totalTurns,
+      toolCalls: totalToolCalls,
+      toolErrors: totalToolErrors,
+      usage: sumTokenUsage(usages),
+      cancelled: lastCancelled,
     };
   };
 }

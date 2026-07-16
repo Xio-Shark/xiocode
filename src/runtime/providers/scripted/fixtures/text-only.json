@@ -1,0 +1,13 @@
+{
+  "schema_version": "xio-agent-tape.v1",
+  "name": "text-only",
+  "turns": [
+    {
+      "steps": [
+        { "type": "delta", "channel": "text", "chunks": ["hel", "lo"] },
+        { "type": "usage", "inputTokens": 10, "outputTokens": 2 },
+        { "type": "done" }
+      ]
+    }
+  ]
+}

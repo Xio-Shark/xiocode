@@ -1,0 +1,161 @@
+[
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 0,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "run.start",
+    "payload": { "model": "scripted" }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 1,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "turn.start",
+    "payload": { "prompt": "use tool", "turnIndex": 1 }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 2,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.request",
+    "payload": { "model": "scripted", "stream": true }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 3,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.first_token",
+    "payload": { "via": "tool_calls" }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 4,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.done",
+    "payload": {
+      "usage": {
+        "cacheTokens": null,
+        "inputTokens": 5,
+        "outputTokens": 1,
+        "reasoningTokens": null
+      }
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 5,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "tool.call",
+    "payload": {
+      "args": { "q": "ping" },
+      "toolCallId": "call-1",
+      "toolName": "echo"
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 6,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "tool.result",
+    "payload": {
+      "content": "pong",
+      "isError": false,
+      "toolCallId": "call-1",
+      "toolName": "echo"
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 7,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.request",
+    "payload": { "model": "scripted", "stream": true }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 8,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.first_token",
+    "payload": {}
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 9,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "text.delta",
+    "payload": { "text": "tool done" }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 10,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.done",
+    "payload": {
+      "usage": {
+        "cacheTokens": null,
+        "inputTokens": 8,
+        "outputTokens": 2,
+        "reasoningTokens": null
+      }
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 11,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "turn.end",
+    "payload": {
+      "message": { "content": "tool done" },
+      "outcome": "success",
+      "prompt": "use tool",
+      "toolResults": [
+        {
+          "content": "pong",
+          "isError": false,
+          "toolCallId": "call-1",
+          "toolName": "echo"
+        }
+      ],
+      "turnIndex": 1
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 12,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "run.end",
+    "payload": {
+      "cancelled": false,
+      "hard_steer": false,
+      "success": true,
+      "toolCalls": 1,
+      "turns": 2
+    }
+  }
+]

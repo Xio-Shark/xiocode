@@ -11,6 +11,7 @@ import { SecretRedactor } from "./secret-redactor.ts";
 import { TodoEnforcer } from "./todo-enforcer.ts";
 import { TrajectoryRecorder } from "./trajectory-recorder.ts";
 import { classifyPrompt, type ModelRouteDecision } from "./model-router.ts";
+import { pipeRuntimeEventsToTrajectory } from "../../../src/runtime/events/adapters.ts";
 
 import type { CommandHandlerContext, ExtensionContext, RunMetadata, ToolHookEvent, ToolResult } from "./types.ts";
 
@@ -63,6 +64,14 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   let lastBaseSystemPrompt = "";
   let currentSystemPrompt = "";
   let promptArtifactWritten = false;
+
+  // Prefer RuntimeEvent bus when session provides one (product multi-sink).
+  // Host tool_result still runs for denoise / error tracking / context invalidate.
+  const runtimeEvents = ctx.getRuntimeEvents?.();
+  const recordViaRuntimeEvents = runtimeEvents !== undefined;
+  if (runtimeEvents) {
+    pipeRuntimeEventsToTrajectory(runtimeEvents, recorder);
+  }
 
   ctx.on?.("session_start", async (payload) => {
     const provenance = sessionProvenance(payload);
@@ -143,7 +152,9 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   });
 
   ctx.on?.("tool_call", async (payload) => {
-    await recorder.recordToolCall(toToolCall(payload));
+    if (!recordViaRuntimeEvents) {
+      await recorder.recordToolCall(toToolCall(payload));
+    }
     return undefined;
   });
 
@@ -157,19 +168,29 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
       contextInjector.getErrorTracker().recordError(event.call.name, textFromToolContent(result.content), event.call.args);
     }
 
-    await recorder.recordToolResult(result ? withToolResult(payload, result) : payload);
+    if (!recordViaRuntimeEvents) {
+      await recorder.recordToolResult(result ? withToolResult(payload, result) : payload);
+    }
     if (shouldInvalidateContext(event)) {
       contextInjector.invalidate();
     }
     return result;
   });
 
-  ctx.on?.("provider_response", (payload) => recorder.recordProviderUsage(payload));
+  ctx.on?.("provider_response", (payload) => {
+    if (!recordViaRuntimeEvents) {
+      recorder.recordProviderUsage(payload);
+    }
+  });
   ctx.on?.("context_compaction", (payload) => {
     const event = asRecord(payload);
     if (event.stage === "success") recorder.recordProviderUsage({ usage: event.usage });
   });
-  ctx.on?.("turn_end", (payload) => recorder.recordTurnEnd(payload));
+  ctx.on?.("turn_end", (payload) => {
+    if (!recordViaRuntimeEvents) {
+      recorder.recordTurnEnd(payload);
+    }
+  });
   ctx.on?.("agent_end", async (payload) => {
     const event = asRecord(payload);
     const cancelled = event.cancelled === true;

@@ -1,5 +1,7 @@
 import { stdout as output } from "node:process";
 
+import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
+import type { ExploreRoleId } from "./explore/roles.ts";
 import type { ChatToolCall, CommandUi, ContextCompactionUiEvent, ToolExecuteResult } from "./types.ts";
 
 /** Default preview line count for tool output in TUI / stdout (OpenCode-like). */
@@ -183,6 +185,77 @@ export function createStdoutSessionUiSink(write: (chunk: string) => void = (chun
     },
     onDoneContract(summary) {
       write(`\n${summary}\n`);
+    },
+  };
+}
+
+function truncateSubagentGoal(text: string, maxChars: number): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= maxChars) return oneLine;
+  return `${oneLine.slice(0, maxChars - 1)}…`;
+}
+
+/** Stdout bridge for nested explore subagent streaming (non-TUI CLI). */
+export function createStdoutSubagentUiBridge(
+  write: (chunk: string) => void = (chunk) => output.write(chunk),
+): SubagentUiBridge {
+  return {
+    forWorker: (input) => {
+      const nest = "  ";
+      let thinkingOpen = false;
+      return {
+        onLifecycle: (phase, meta) => {
+          if (phase === "start") {
+            const role = meta.role ? ` [${meta.role}]` : "";
+            write(`\n⊹ subagent #${meta.workerId} · ${meta.modelLabel}${role}\n`);
+            write(`${nest}${truncateSubagentGoal(meta.goal, 120)}\n`);
+            return;
+          }
+          write(`⊹ subagent #${meta.workerId} ${meta.status ?? (meta.success ? "done" : "failed")}\n`);
+        },
+        onThinkingDelta: (text) => {
+          if (!thinkingOpen) {
+            write(`${nest}[think] `);
+            thinkingOpen = true;
+          }
+          write(text);
+        },
+        onAssistantDelta: (text) => {
+          if (thinkingOpen) {
+            write("\n");
+            thinkingOpen = false;
+          }
+          write(text);
+        },
+        onAssistantText: (text) => {
+          if (thinkingOpen) {
+            write("\n");
+            thinkingOpen = false;
+          }
+          write(`${text}\n`);
+        },
+        onToolStart: (call) => {
+          if (thinkingOpen) {
+            write("\n");
+            thinkingOpen = false;
+          }
+          write(`${nest}> ${call.name}(${toolCallDetail(call)})\n`);
+        },
+        onToolEnd: (call, result) => {
+          const outputText = toolResultOutput(result);
+          const status = result.isError === true ? "failed" : "done";
+          write(`${nest}${call.name} ${status}\n`);
+          if (outputText.length > 0) {
+            const preview = previewText(outputText);
+            for (const row of preview.text.split("\n")) {
+              write(`${nest}${row}\n`);
+            }
+            if (preview.truncated) {
+              write(`${nest}… [truncated]\n`);
+            }
+          }
+        },
+      };
     },
   };
 }

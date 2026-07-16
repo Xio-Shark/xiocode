@@ -1,204 +1,184 @@
 # XioCode
 
-本地终端里的 AI 写代码助手。代码在你自己的电脑上改，记录也留在本机；合进主分支前会问你，不会自动偷偷合并。
+> 一个在终端里运行的 AI 编程助手 —— 帮你读代码、改文件、跑命令。
 
-仓库：<https://github.com/Xio-Shark/xiocode>  
-英文说明：[README.md](./README.md)
+**English → [README.md](./README.md)**
+
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
 
 ---
 
-## 它能干什么
+## XioCode 是什么？
 
-- 在终端里对话，让 AI 读仓库、改文件、跑命令
-- 默认在**独立的工作副本**里改代码，保护你的主目录
-- 想把改动合回主项目时，用 `/merge` 或结束会话时确认
-- 支持常见模型接口（如 DeepSeek 等，在配置里填）
-- 可选：并行只读「探查」子任务、计划清单、会话压缩等
+```
+  ┌─────────────────────────────────────────────┐
+  │               你的终端                        │
+  │                                             │
+  │  $ xio "帮我加一个登录页面"                    │
+  │                                             │
+  │  ┌─────────────────────────────────────┐    │
+  │  │  XioCode 会：                        │    │
+  │  │  → 读取你的项目                       │    │
+  │  │  → 理解代码结构                       │    │
+  │  │  → 修改文件                           │    │
+  │  │  → 跑命令                             │    │
+  │  │  → 展示改动，等你确认                   │    │
+  │  └─────────────────────────────────────┘    │
+  │                                             │
+  │  结果：项目已经改好了                         │
+  └─────────────────────────────────────────────┘
+```
 
-**不是什么：** 不是云端托管服务；也不是「测绿了就自动合进 main」。
+XioCode 是一个**本地 AI 编程智能体**——直接在你自己电脑的项目目录里工作。代码不会离开你的电脑。
+
+**三个核心理念：**
+
+| 理念 | 什么意思 |
+|------|---------|
+| 🏠 **本地优先** | 一切在你的机器上运行，代码不出门 |
+| 👀 **你来确认** | 改了什么都给你看，你批准后才生效 |
+| 🔌 **通用** | 任何项目都能用，不管有没有 git，不管用什么语言 |
 
 ---
 
 ## 环境要求
 
-- **Node.js 22.6 或更高**（用系统自带的 `node` / `npm` 即可）
-- 在一个 **git 仓库**里使用（非 git 目录会直接拒绝进入）
-- 准备好模型 API Key（环境变量或首次进入后用 `/connect`）
+- **Node.js 22.6+**（系统自带就行）
+- 一个模型的 API Key（DeepSeek、OpenAI 等都可以）
 
 ---
 
-## 安装（推荐两种）
-
-### 方式一：一行安装（curl）
-
-从 GitHub 装全局命令 `xio` / `xiocode`：
+## 快速安装
 
 ```bash
+# 一行搞定（推荐）
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
-装完后一般会自动创建本机配置目录（若不存在）。
-
-指定某个发布版本（打了 tag 之后）：
+或者用 npm：
 
 ```bash
-# 把 v1.1.0 换成 Release 页面上的版本号
-export XIO_INSTALL_REF=v1.1.0
-curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/${XIO_INSTALL_REF}/install.sh | bash
-```
-
-### 方式二：npm 全局安装
-
-```bash
-# 跟踪 main 分支最新提交
 npm install -g github:Xio-Shark/xiocode
-
-# 或固定版本 tag（推荐日常使用）
-npm install -g github:Xio-Shark/xiocode#v1.1.0
 ```
 
-装好后确认：
-
-```bash
-xio --version
-# 或
-xiocode --version
-```
-
-若提示找不到命令：把 `npm prefix -g` 下面的 `bin` 加到 PATH，再开一个终端。
-
-### 方式三：从源码开发
-
-```bash
-git clone https://github.com/Xio-Shark/xiocode.git
-cd xiocode
-npm install --ignore-scripts
-npm link
-```
+装完就有 `xio` 和 `xiocode` 命令了。
 
 ---
 
 ## 第一次使用
 
 ```bash
-cd /你的项目  # 必须是 git 仓库
-export DEEPSEEK_API_KEY=你的密钥   # 按你实际用的服务改环境变量名
+cd 你的项目
+export DEEPSEEK_API_KEY=sk-xxxxx   # 换成你的 key
 xio
 ```
 
-也可以不把密钥写在 shell 里：进终端界面后用 `/connect`，密钥会写到本机 `~/.xiocode/credentials.json`（权限较严），**不要**写进项目仓库。
+进入界面后也可以输入 `/connect` 来配置密钥，不用写环境变量。
 
-首次运行会生成 `~/.xiocode/config.toml`（没有才创建）。也可手动：
-
-```bash
-xio init
+```
+  xio
+   │
+   ▼
+  ┌──────────────────────────────┐
+  │  欢迎！                       │
+  │                              │
+  │  输入 /connect 配置密钥       │
+  │  或者直接告诉我要做什么        │
+  │                              │
+  │  > "帮我给支付模块加上错误处理"  │
+  └──────────────────────────────┘
 ```
 
 ---
 
-## 本机目录说明（隐私相关）
+## 工作流程
 
-这些都在**你的用户主目录**下，**默认不会、也不应提交到 GitHub**：
+```
+你输入任务                       XioCode 开始工作
+     │                                │
+     ▼                                ▼
+┌──────────────┐             ┌──────────────────────┐
+│ "帮我加一个   │             │ 1. 读你的代码        │
+│  API 接口"   │ ──────────► │ 2. 规划怎么改        │
+└──────────────┘             │ 3. 修改文件           │
+                             │ 4. 跑命令验证         │
+                             └──────────┬───────────┘
+                                        │
+                                        ▼
+                             ┌──────────────────────┐
+                             │ 展示改动，等你确认     │
+                             │                      │
+                             │ ┌────────────────┐   │
+                             │ │ + 新接口       │   │
+                             │ │ + 参数校验     │   │
+                             │ └────────────────┘   │
+                             │                      │
+                             │ ✅ 确认合并          │
+                             │ ❌ 拒绝修改          │
+                             └──────────────────────┘
+```
 
-| 路径 | 用途 |
-|------|------|
-| `~/.xiocode/config.toml` | 模型与开关配置（不写密钥明文） |
-| `~/.xiocode/credentials.json` | 本机登录/密钥 |
-| `~/.xiocode/runs/` | 运行记录 |
-| `~/.xiocode/sessions/` | 可恢复的对话 |
-| `~/.xiocode/worktrees/` | 会话用的 git 工作副本 |
+默认直接在**当前目录**改文件，不需要 git。
 
-项目里的 agent 约定建议沿用 Claude Code 习惯：`CLAUDE.md`、`.claude/skills/` 等；**密钥永远不要进 git**。
+如果你想要更安全，可以在配置里开启 **worktree 隔离**模式——XioCode 会在独立副本里工作，你用 `/merge` 确认后才合回来。
 
 ---
 
 ## 常用命令
 
-| 命令 | 说明 |
+| 命令 | 作用 |
 |------|------|
-| `xio` | 进入交互界面 |
-| `xio -p "一句话任务"` | 非交互跑一轮（适合脚本） |
-| `xio init` | 补全默认配置 |
-| `xio models` | 看模型列表 |
-| `xio resume` | 恢复以前的会话 |
-| `xio improve` | 改进 XioCode 自身（仍会询问是否合并） |
-| `xio eval` / `xio regress` | 评测与私有回归（进阶） |
+| `xio` | 进入交互模式 |
+| `xio "帮我做件事"` | 一次性任务（非交互） |
+| `xio init` | 生成默认配置 |
+| `xio models` | 查看可用模型 |
+| `xio resume` | 恢复上次会话 |
 
-交互里常用：`/merge` 合入、`/compact` 压缩上下文、`/help` 帮助。
+交互界面里的命令：
 
----
-
-## 发布版本（Release）怎么用、怎么做
-
-### 用户怎么装「某一个版本」
-
-1. 打开：<https://github.com/Xio-Shark/xiocode/releases>  
-2. 选中版本号，例如 `v1.1.0`  
-3. 安装：
-
-```bash
-# curl：指定 REF
-export XIO_INSTALL_REF=v1.1.0
-curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/v1.1.0/install.sh | bash
-
-# npm：指定 tag
-npm install -g github:Xio-Shark/xiocode#v1.1.0
-```
-
-**说明：**
-
-- 当前安装链路走的是 **GitHub 仓库 + npm install -g github:…**，**不强制**发布到 npm 官网公共包名。
-- 若以后要在 `npm install -g xiocode` 用公共 registry，需要维护者登录 npm 后执行 `npm publish`（另一步，与 git tag 独立）。
-
-### 维护者如何打一个 Release（本仓库）
-
-前提：代码已推到 `main`，且 **不含** 密钥、本机 `~/.xiocode`、个人 IDE 配置。
-
-```bash
-# 1) 确认 package.json 里 version 与 tag 一致，例如 1.1.0
-# 2) 打 tag 并推送
-git tag -a v1.1.0 -m "XioCode 1.1.0"
-git push origin v1.1.0
-git push origin main
-
-# 3) 在 GitHub 上建 Release（有 gh 时）
-gh release create v1.1.0 --title "v1.1.0" --notes "安装：curl 安装脚本 或 npm install -g github:Xio-Shark/xiocode#v1.1.0"
-```
-
-用户侧的 curl/npm **不依赖** Release 附件里的二进制；Release 主要用于固定版本号与发布说明。安装仍从该 tag 的源码树拉取。
+| 命令 | 作用 |
+|------|------|
+| `/connect` | 配置 API Key |
+| `/model` | 切换模型 |
+| `/merge` | 查看并确认合并改动 |
+| `/rollback` | 撤回所有改动 |
+| `/compact` | 压缩对话上下文 |
+| `/help` | 查看所有命令 |
 
 ---
 
-## 上传代码时不要带这些
+## 本地数据存储
 
-请勿提交：
-
-- 任何 API Key、`.env`、`credentials.json`
-- 本机 `~/.xiocode/` 下的 runs / sessions / worktrees
-- 个人 `.cursor/`、`.claude/settings.local.json` 等（仓库 `.gitignore` 已忽略常见项）
-- 公司内部未授权代码、客户数据
-
-本仓库只应包含 **XioCode 产品源码与文档**。
-
----
-
-## 验证与开发
-
-```bash
-npm run check    # 类型检查
-./test.sh        # 测试（跳过需要真实 API Key 的端到端）
+```
+~/.xiocode/
+├── config.toml          # 配置（不含密钥）
+├── credentials.json     # API 密钥（永远不要提交到 git！）
+├── runs/                # 运行记录
+├── sessions/            # 对话记录（可恢复）
+└── worktrees/           # git 工作副本（可选）
 ```
 
-更多产品目标与状态见 `docs/GOAL.md`、`docs/STATUS.md`（偏开发者）。
+所有数据都存在**你的电脑上**，不上传任何云端。
 
 ---
 
 ## 许可证
 
-[PolyForm Noncommercial](./LICENSE)（非商业许可；细节以 LICENSE 为准）。
+**双授权：AGPL-3.0 OR Commercial License**
+
+| 使用场景 | 许可 |
+|----------|------|
+| 个人学习、研究、爱好 | ✅ [AGPL-3.0](./LICENSE)（免费） |
+| 开源项目 | ✅ [AGPL-3.0](./LICENSE)（免费） |
+| 商业 / 闭源产品 | ❌ 需购买 [商业授权](./COMMERCIAL.md) |
+| SaaS / 云服务 | ❌ 需购买 [商业授权](./COMMERCIAL.md) |
+
+商业授权请联系：**xioshark.0127@gmail.com**
 
 ---
 
-## 问题反馈
+## 问题和反馈
 
-- Issues：<https://github.com/Xio-Shark/xiocode/issues>
+- Issues：https://github.com/Xio-Shark/xiocode/issues
+- 邮箱：xioshark.0127@gmail.com

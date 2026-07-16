@@ -137,4 +137,54 @@ describe("TuiSessionBridge", () => {
       event: expect.objectContaining({ stage: "success", before: 80, after: 20 }),
     }));
   });
+
+  it("emits scoped subagent events via createSubagentUiBridge", () => {
+    const bridge = new TuiSessionBridge();
+    const events: TuiEvent[] = [];
+    bridge.subscribe((event) => events.push(event));
+    const subagent = bridge.createSubagentUiBridge().forWorker({
+      workerId: 3,
+      modelLabel: "stub/flash",
+      role: "locator",
+      goal: "map routes",
+    });
+    subagent.onLifecycle?.("start", {
+      workerId: 3,
+      modelLabel: "stub/flash",
+      role: "locator",
+      goal: "map routes",
+    });
+    subagent.onThinkingDelta?.("hmm");
+    subagent.onToolStart?.({ id: "w3:1", name: "grep", arguments: { pattern: "route" } });
+    subagent.onLifecycle?.("end", {
+      workerId: 3,
+      modelLabel: "stub/flash",
+      goal: "map routes",
+      success: true,
+      status: "success",
+    });
+
+    expect(events).toContainEqual({
+      kind: "subagent-start",
+      workerId: 3,
+      model: "stub/flash",
+      role: "locator",
+      goal: "map routes",
+    });
+    expect(events).toContainEqual({ kind: "subagent-thinking-delta", workerId: 3, text: "hmm" });
+    expect(events).toContainEqual({
+      kind: "subagent-tool-start",
+      workerId: 3,
+      name: "grep",
+      detail: expect.any(String),
+      callId: "w3:1",
+    });
+    expect(events).toContainEqual({
+      kind: "subagent-end",
+      workerId: 3,
+      success: true,
+      status: "success",
+    });
+    expect(events.some((event) => event.kind === "assistant-delta")).toBe(false);
+  });
 });

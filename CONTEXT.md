@@ -19,7 +19,7 @@
 
 ## Extensions
 
-- **xio-sandbox**: outer git worktree sandbox. `prepareLaunch` creates `~/.xiocode/worktrees/<repo_id>/<session_id>`; agent cwd points there. `/merge` and session-end use MergeGate.
+- **xio-sandbox**: opt-in outer git worktree sandbox (`[worktree] enabled = true`). Default direct-cwd: agent runs in the launch directory (git optional). When enabled, `prepareLaunch` creates `~/.xiocode/worktrees/<repo_id>/<session_id>`; `/merge` and session-end use MergeGate.
 - **xio-evolve** (default path): TodoEnforcer addendum, TrajectoryRecorder, RunStore, ResultDenoiser, ContextInjector. StrategyLearner / PromptEvolver / EvalComparator are **not** on the default path.
 - **xio-hygiene**: in-place agent hygiene — AGENTS.md / CLAUDE.md injection, local skills discovery (`skill` tool), Claude-settings user hooks (SessionStart / PreToolUse / PostToolUse / Stop), tools-first MCP client (`mcp__*`). Kill-switches under `config.toml` `[agents_md]` / `[skills]` / `[hooks]` / `[mcp]`.
 - **xio-improve**: self-modification outer loop (`xio improve` / `bin/xio-improve`). T4 GoalStore → worktree edits → verifier → **MergeGate ask**. Green verifier never auto-merges.
@@ -29,7 +29,7 @@
 ## Run evidence
 
 - **Run**: one session, id `run_YYYYMMDD_HHMMSS`, stored at `~/.xiocode/runs/<run_id>/`.
-- **Chat session**: resumable model/message history stored at `~/.xiocode/sessions/<session_id>/`; separate from run/eval evidence and resumed into a new worktree.
+- **Chat session**: resumable model/message history stored at `~/.xiocode/sessions/<session_id>/`; separate from run/eval evidence; resumed into direct cwd or reattached worktree per saved `workspace.mode`.
 - **Trajectory**: prompts, tool calls/results, todos, timing — `events.jsonl` + `trajectory.json`.
 - **Eval report**: before/after quality, safety, latency, efficiency, nullable usage, hashes, and run references under `~/.xiocode/evals/<eval_id>/`; not a second trajectory store.
 - **Private case**: `~/.xiocode/regressions/<case_id>/case.json` — references run artifacts; does not copy prompt text or trajectories.
@@ -46,12 +46,12 @@
 
 ## Safety & sandbox
 
-- **WorktreeSandbox**: session-outer isolation; non-git dirs fail at launch (G0).
+- **WorktreeSandbox**: opt-in session-outer isolation; non-git dirs are allowed in default direct-cwd mode; worktree mode requires git.
 - **MergeGate**: diff summary + confirm before merging worktree branch into main tree; conflicts abort and keep worktree. Self-improve reuses the same gate — never “测绿即合”.
 - **Permission modes**: `auto` (default) / `full` / `strict` — Shift+Tab or `/permission`; no plan/build split. Strict = read/search tools only; auto asks on high-risk; full auto-allows high-risk.
 - **User hooks**: PreToolUse can block tools (exit 2 / JSON deny); not a resurrected PathGuard / PermissionEngine.
-- **Workspace containment**: builtin `write`/`edit` use `assertInsideWorkspace` against worktree cwd. PathGuard / PermissionEngine / Docker were removed; do not reintroduce.
-- **Config**: `[worktree] enabled` (default true), `retain_on_reject`.
+- **Workspace containment**: builtin `write`/`edit` use `assertInsideWorkspace` against agent cwd. PathGuard / PermissionEngine / Docker were removed; do not reintroduce.
+- **Config**: `[worktree] enabled` (default false), `retain_on_reject`.
 
 ## Self-improve
 

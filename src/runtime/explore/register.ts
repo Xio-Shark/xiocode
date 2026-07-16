@@ -16,6 +16,7 @@ import {
 import { exploreFallbackModelRef, resolveExploreConfig } from "./resolve.ts";
 import { estimateExploreScale, type ExploreScaleEstimate } from "./scale.ts";
 import { withModelId } from "./subagent.ts";
+import type { SubagentUiBridge } from "./subagent-ui.ts";
 
 import type { ResolvedExploreConfig } from "./types.ts";
 
@@ -46,6 +47,8 @@ export type RegisterExploreOptions = Readonly<{
   onStatus?: (key: string, text: string | undefined) => void;
   /** Shared session perception map for explore workers (read-only tools). */
   workspacePerception?: WorkspacePerceptionService;
+  /** Bridge for nested subagent UI streaming (TUI / stdout). */
+  subagentUi?: SubagentUiBridge;
 }>;
 
 export type ExploreCapabilityHandle = Readonly<{
@@ -150,6 +153,7 @@ export async function registerExploreCapability(
         getUserPrompt: () => lastUserPrompt,
         workspacePerception: options.workspacePerception,
         orchestrator,
+        subagentUi: options.subagentUi,
       }));
 
       host.on("before_agent_start", (payload, ctx) => {

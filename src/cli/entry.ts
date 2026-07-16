@@ -8,7 +8,6 @@
 import { realpathSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { XIO_VERSION } from "./version.ts";
 import { handleXioFlag } from "./router-help.ts";
 
 if (isDirectRun()) {
@@ -72,18 +71,37 @@ async function main(): Promise<void> {
     if (handleXioFlag(xioArgs.passthrough, writeStdout)) {
       return;
     }
-    const interactive = xioArgs.promptOnce === undefined;
-    if (interactive && process.stdout.isTTY) {
-      writeStdout(`XioCode ${XIO_VERSION} · starting…\n`);
+
+    // Early operable boot (no Ink) marks first_frame before heavy agent imports.
+    // Ink boot shell upgrades later and inherits the same input buffer.
+    const { shouldUseInk } = await import("./cli-args.ts");
+    const wantInk = shouldUseInk(
+      xioArgs,
+      {
+        stdinIsTTY: process.stdin.isTTY,
+        stdoutIsTTY: process.stdout.isTTY,
+      },
+      process.env,
+    );
+    const skipEarlyBoot = xioArgs.resume?.action === "list" || xioArgs.resume?.action === "delete";
+
+    let earlyBoot: import("../tui/early-boot.ts").EarlyBootHandle | undefined;
+    const agentImport = import("./run-agent-cli.ts");
+    if (wantInk && !skipEarlyBoot) {
+      // early-boot only depends on version + theme helpers — keep graph tiny.
+      const { startEarlyBoot } = await import("../tui/early-boot.ts");
+      earlyBoot = startEarlyBoot({ cwd: process.cwd(), env: process.env });
+      const frameReady = earlyBoot.firstFrameReady();
+      const { runAgentCli } = await agentImport;
+      await frameReady;
+      earlyBoot.setStatus("loading session…");
+      const code = await runAgentCli(xioArgs, writeStdout, { earlyBoot });
+      const { exitCli } = await import("./process-exit.ts");
+      exitCli(code ?? 0);
+      return;
     }
-    // Boot chrome / entry readiness = first_frame; prompt_ready is after prepareSession.
-    if (interactive && (process.env.XIO_PERF === "1" || process.env.XIO_PERF_BOOT_EXIT === "1")) {
-      const { getGlobalTracer } = await import("../runtime/perf/tracer.ts");
-      getGlobalTracer()?.mark("first_frame", "success", {
-        attrs: { ui: process.stdout.isTTY ? "boot_shell" : "boot_shell_notty" },
-      });
-    }
-    const { runAgentCli } = await import("./run-agent-cli.ts");
+
+    const { runAgentCli } = await agentImport;
     const code = await runAgentCli(xioArgs, writeStdout);
     const { exitCli } = await import("./process-exit.ts");
     exitCli(code ?? 0);
@@ -108,5 +126,3 @@ function isDirectRun(): boolean {
 function writeStdout(chunk: string): void {
   writeSync(process.stdout.fd, chunk);
 }
-
-

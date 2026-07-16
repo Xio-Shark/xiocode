@@ -9,6 +9,9 @@ import type {
   ToolCallEvent,
   ToolDefinition,
   ToolExecuteResult,
+  TurnEndOutcome,
+  TurnEndPayload,
+  TurnEndToolResultSummary,
 } from "./types.ts";
 import { assertMessageBudget } from "./context-compaction.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
@@ -18,6 +21,8 @@ import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contr
 
 import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
+import type { RuntimeEventEmitter } from "./events/types.ts";
+import { formatSteerUserMessage, type SteerMailbox } from "./steer.ts";
 
 /** Tools that mutate workspace files and must not race each other (or each other by path). */
 const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
@@ -64,6 +69,22 @@ export type AgentLoopOptions = Readonly<{
   toolChoice?: ProviderToolChoice;
   toolChoiceScope?: ProviderToolChoiceScope;
   onCheckpoint?: (checkpoint: AgentLoopCheckpoint) => Promise<void> | void;
+  /**
+   * Explicit 1-based turn index for trajectory. When omitted, derived as
+   * (prior user messages) + 1.
+   */
+  turnIndex?: number;
+  /**
+   * Optional RuntimeEvent.v1 bus. When set, agent loop dual-writes core events
+   * (turn/text/tool/run) alongside host extension hooks and UI callbacks.
+   */
+  runtimeEvents?: RuntimeEventEmitter;
+  /**
+   * Soft steer mailbox: drained at tool-batch end and after a text-only provider
+   * step. Hard steers are applied by the outer session after abort (see session.steer).
+   * Never injects into the same in-flight provider stream body.
+   */
+  steerMailbox?: SteerMailbox;
 }>;
 
 export type AgentLoopCheckpoint = Readonly<{
@@ -82,6 +103,8 @@ export type AgentLoopResult = Readonly<{
   toolErrors: number;
   usage: TokenUsage;
   cancelled?: boolean;
+  /** When cancelled by hard steer, the steer text to continue with (session applies). */
+  hardSteerText?: string;
 }>;
 
 type SegmentResult = Readonly<{
@@ -91,11 +114,17 @@ type SegmentResult = Readonly<{
   toolErrors: number;
   usages: readonly TokenUsage[];
   cancelled?: boolean;
+  toolResults: readonly TurnEndToolResultSummary[];
 }>;
 
 type LoopProgress = SegmentResult & Readonly<{
   doneContract?: DoneContractResult;
 }>;
+
+/** Mutable collector for tool results within one user-prompt agent loop. */
+type TurnToolCollector = {
+  results: TurnEndToolResultSummary[];
+};
 
 export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions): Promise<AgentLoopResult> {
   const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -103,6 +132,15 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
   const repeatToolLimit = options.repeatToolLimit ?? DEFAULT_REPEAT_TOOL_LIMIT;
   let systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
   options.host.setSystemPrompt(systemPrompt);
+  const turnIndex = options.turnIndex ?? deriveTurnIndex(options.priorMessages);
+  const toolCollector: TurnToolCollector = { results: [] };
+  const bus = options.runtimeEvents;
+  const turnId = `turn-${turnIndex}`;
+  bus?.setTurnId(turnId);
+  // First emission on a fresh bus is run.start (seq 0); multi-prompt reuses bus → skip.
+  if (bus && bus.peekSeq() === 0) {
+    bus.emit("run.start", { model: options.model });
+  }
 
   const beforeStart = await options.host.emit("before_agent_start", {
     prompt: userPrompt,
@@ -117,6 +155,7 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     }
   }
 
+  bus?.emit("turn.start", { prompt: userPrompt, turnIndex });
   const turnStart = await options.host.emit("turn_start", { prompt: userPrompt });
   const injectedContext = collectTurnStartContext(turnStart);
 
@@ -130,6 +169,26 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
   await publishCheckpoint(options, { phase: "turn_started", messages });
 
   if (options.signal?.aborted) {
+    const hardSteer = options.steerMailbox?.takeHard();
+    const cancelledPayload = {
+      turnIndex,
+      prompt: userPrompt,
+      message: null as null,
+      toolResults: toolCollector.results,
+      outcome: "cancelled" as const,
+      error_class: "abort",
+    };
+    await emitTurnEnd(options, cancelledPayload);
+    bus?.emit("cancel", { phase: "before_provider", turnIndex });
+    if (hardSteer) {
+      bus?.emit("steer.applied", { mode: "hard", text: hardSteer.text, id: hardSteer.id });
+    }
+    bus?.emit("run.end", {
+      success: false,
+      cancelled: true,
+      turns: 0,
+      hard_steer: hardSteer !== undefined,
+    });
     await emitCancelledEnd(options, undefined);
     return {
       messages,
@@ -140,6 +199,7 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
       toolErrors: 0,
       usage: emptyTokenUsage(),
       cancelled: true,
+      ...(hardSteer ? { hardSteerText: hardSteer.text } : {}),
     };
   }
 
@@ -147,13 +207,45 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     maxTurns,
     repairTurns: verifyRepairTurns,
     repeatToolLimit,
+    toolCollector,
   });
   await publishCheckpoint(options, { phase: "turn_complete", messages });
 
-  await options.host.emit("turn_end", { prompt: userPrompt });
+  const hardSteer = progress.cancelled ? options.steerMailbox?.takeHard() : undefined;
+  const success = progress.cancelled
+    ? false
+    : progress.doneContract
+      ? progress.doneContract.passed
+      : true;
+  const outcome = resolveTurnOutcome({
+    cancelled: progress.cancelled === true,
+    success,
+  });
+  const turnEndPayload = {
+    turnIndex,
+    prompt: userPrompt,
+    message: progress.finalText.length > 0 ? { content: progress.finalText } : null,
+    toolResults: progress.toolResults,
+    outcome,
+    ...(outcome === "cancelled" ? { error_class: "abort" } : {}),
+  };
+  await emitTurnEnd(options, turnEndPayload);
+  if (outcome === "cancelled") {
+    bus?.emit("cancel", { phase: "turn", turnIndex });
+  }
+  if (hardSteer) {
+    bus?.emit("steer.applied", { mode: "hard", text: hardSteer.text, id: hardSteer.id });
+  }
+  bus?.emit("run.end", {
+    success,
+    cancelled: progress.cancelled === true,
+    turns: progress.turns,
+    toolCalls: progress.toolCalls,
+    hard_steer: hardSteer !== undefined,
+  });
   await options.host.emit("agent_end", {
     doneContract: progress.doneContract,
-    success: progress.cancelled ? false : progress.doneContract ? progress.doneContract.passed : true,
+    success,
     cancelled: progress.cancelled === true,
   });
 
@@ -161,13 +253,39 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
     messages,
     finalText: progress.finalText,
     doneContract: progress.doneContract,
-    success: progress.cancelled ? false : progress.doneContract ? progress.doneContract.passed : true,
+    success,
     turns: progress.turns,
     toolCalls: progress.toolCalls,
     toolErrors: progress.toolErrors,
     usage: sumTokenUsage(progress.usages),
     cancelled: progress.cancelled,
+    ...(hardSteer ? { hardSteerText: hardSteer.text } : {}),
   };
+}
+
+/** 1-based: count prior user messages, then +1 for the current prompt. */
+export function deriveTurnIndex(priorMessages?: readonly ChatMessage[]): number {
+  if (!priorMessages || priorMessages.length === 0) {
+    return 1;
+  }
+  let users = 0;
+  for (const message of priorMessages) {
+    if (message.role === "user") {
+      users += 1;
+    }
+  }
+  return users + 1;
+}
+
+function resolveTurnOutcome(input: Readonly<{ cancelled: boolean; success: boolean }>): TurnEndOutcome {
+  if (input.cancelled) return "cancelled";
+  if (!input.success) return "error";
+  return "success";
+}
+
+async function emitTurnEnd(options: AgentLoopOptions, payload: TurnEndPayload): Promise<void> {
+  options.runtimeEvents?.emit("turn.end", { ...payload });
+  await options.host.emit("turn_end", payload);
 }
 
 function buildMessages(input: Readonly<{
@@ -228,10 +346,15 @@ async function emitCancelledEnd(options: AgentLoopOptions, doneContract: DoneCon
 async function runSegments(
   messages: ChatMessage[],
   options: AgentLoopOptions,
-  budget: Readonly<{ maxTurns: number; repairTurns: number; repeatToolLimit: number }>,
+  budget: Readonly<{
+    maxTurns: number;
+    repairTurns: number;
+    repeatToolLimit: number;
+    toolCollector: TurnToolCollector;
+  }>,
 ): Promise<LoopProgress> {
   const guard = createRepeatToolGuard(budget.repeatToolLimit);
-  const primary = await runUntilIdle(messages, options, budget.maxTurns, guard);
+  const primary = await runUntilIdle(messages, options, budget.maxTurns, guard, budget.toolCollector);
   if (primary.cancelled || !options.doneContract) {
     return primary;
   }
@@ -243,7 +366,7 @@ async function runSegments(
   messages.push({ role: "user", content: formatDoneContractFeedback(firstCheck) });
   // Fresh guard for repair segment so verify feedback is not blocked by prior streaks.
   const repairGuard = createRepeatToolGuard(budget.repeatToolLimit);
-  const repair = await runUntilIdle(messages, options, repairBudget, repairGuard);
+  const repair = await runUntilIdle(messages, options, repairBudget, repairGuard, budget.toolCollector);
   return {
     turns: primary.turns + repair.turns,
     finalText: repair.finalText || primary.finalText,
@@ -251,6 +374,7 @@ async function runSegments(
     toolErrors: primary.toolErrors + repair.toolErrors,
     usages: [...primary.usages, ...repair.usages],
     cancelled: repair.cancelled,
+    toolResults: budget.toolCollector.results,
     doneContract: repair.cancelled ? firstCheck : await runDoneContract(options.doneContract),
   };
 }
@@ -260,6 +384,7 @@ async function runUntilIdle(
   options: AgentLoopOptions,
   maxTurns: number,
   guard: RepeatToolGuard,
+  toolCollector: TurnToolCollector,
 ): Promise<SegmentResult> {
   let finalText = "";
   let turns = 0;
@@ -268,7 +393,15 @@ async function runUntilIdle(
   const usages: TokenUsage[] = [];
   for (; turns < maxTurns; turns += 1) {
     if (options.signal?.aborted) {
-      return { turns, finalText, toolCalls, toolErrors, usages, cancelled: true };
+      return {
+        turns,
+        finalText,
+        toolCalls,
+        toolErrors,
+        usages,
+        cancelled: true,
+        toolResults: toolCollector.results,
+      };
     }
     const tools = options.host.listTools();
     let completion: ChatCompletionResponse;
@@ -277,7 +410,15 @@ async function runUntilIdle(
       completion = await requestCompletion(messages, options, tools);
     } catch (error) {
       if (isAbortError(error) || options.signal?.aborted) {
-        return { turns, finalText, toolCalls, toolErrors, usages, cancelled: true };
+        return {
+          turns,
+          finalText,
+          toolCalls,
+          toolErrors,
+          usages,
+          cancelled: true,
+          toolResults: toolCollector.results,
+        };
       }
       throw error;
     }
@@ -286,6 +427,10 @@ async function runUntilIdle(
 
     if (completion.content) {
       options.onAssistantText?.(completion.content);
+      // Non-stream complete path: surface final text as a single delta for event consumers.
+      if (!options.client.completeStream) {
+        options.runtimeEvents?.emit("text.delta", { text: completion.content });
+      }
       finalText = completion.content;
     }
 
@@ -293,6 +438,10 @@ async function runUntilIdle(
       messages.push({ role: "assistant", content: completion.content });
       await publishCheckpoint(options, { phase: "turn_complete", messages });
       turns += 1;
+      // Soft steer at provider completion boundary (not mid-stream inject).
+      if (applySoftSteers(messages, options)) {
+        continue;
+      }
       break;
     }
 
@@ -307,14 +456,49 @@ async function runUntilIdle(
       pendingTools: completion.toolCalls.map(({ id, name }) => ({ id, name })),
     });
 
-    const metrics = await appendToolResults(messages, options, completion.toolCalls, guard);
+    const metrics = await appendToolResults(messages, options, completion.toolCalls, guard, toolCollector);
     toolCalls += metrics.calls;
     toolErrors += metrics.errors;
     if (metrics.cancelled) {
-      return { turns: turns + 1, finalText, toolCalls, toolErrors, usages, cancelled: true };
+      return {
+        turns: turns + 1,
+        finalText,
+        toolCalls,
+        toolErrors,
+        usages,
+        cancelled: true,
+        toolResults: toolCollector.results,
+      };
     }
+    // Soft steer after tool batch — safe boundary.
+    applySoftSteers(messages, options);
   }
-  return { turns, finalText, toolCalls, toolErrors, usages };
+  return {
+    turns,
+    finalText,
+    toolCalls,
+    toolErrors,
+    usages,
+    toolResults: toolCollector.results,
+  };
+}
+
+/** @returns true when at least one soft steer was applied (caller should continue the loop). */
+function applySoftSteers(messages: ChatMessage[], options: AgentLoopOptions): boolean {
+  const soft = options.steerMailbox?.drainSoft() ?? [];
+  if (soft.length === 0) return false;
+  for (const request of soft) {
+    messages.push({
+      role: "user",
+      content: formatSteerUserMessage(request.text, "soft"),
+    });
+    options.runtimeEvents?.emit("steer.applied", {
+      mode: "soft",
+      text: request.text,
+      id: request.id,
+    });
+  }
+  return true;
 }
 
 async function requestCompletion(
@@ -340,6 +524,10 @@ async function requestCompletion(
       tool_choice: toolChoice ?? "unset",
       tool_schema_cache: cached.cache,
     },
+  });
+  options.runtimeEvents?.emit("provider.request", {
+    model: options.model,
+    stream: Boolean(options.client.completeStream),
   });
   const providerTools = cached.tools;
   const providerPayload = {
@@ -433,58 +621,70 @@ async function consumeStream(
   const { getGlobalTracer, classifyUnknownError } = await import("./perf/index.ts");
   const tracer = getGlobalTracer();
   const completionSpan = tracer?.start("provider.completion", { parentId: parentSpanId });
-  let firstToken: ReturnType<NonNullable<typeof tracer>["start"]> | undefined = tracer?.start(
+  let firstTokenSpan: ReturnType<NonNullable<typeof tracer>["start"]> | undefined = tracer?.start(
     "provider.first_token",
     { parentId: parentSpanId },
   );
+  /** Independent of tracer so RuntimeEvent first_token still fires without a global tracer. */
+  let firstTokenEmitted = false;
   let content = "";
   let toolCalls: ChatToolCall[] = [];
   let usage: TokenUsage = emptyTokenUsage();
   let raw: unknown;
   let sawDelta = false;
+
+  const markFirstToken = (via?: string) => {
+    if (firstTokenEmitted) return;
+    firstTokenEmitted = true;
+    if (firstTokenSpan) {
+      tracer?.end(firstTokenSpan, "success", via ? { attrs: { via } } : undefined);
+      firstTokenSpan = undefined;
+    }
+    options.runtimeEvents?.emit("provider.first_token", via ? { via } : {});
+  };
+
   try {
     for await (const event of client.completeStream(request, { signal: options.signal })) {
       if (event.type === "thinking_delta") {
         options.onThinkingDelta?.(event.text);
+        options.runtimeEvents?.emit("thinking.delta", { text: event.text });
       } else if (event.type === "text_delta") {
-        if (firstToken) {
-          tracer?.end(firstToken, "success");
-          firstToken = undefined;
-        }
+        markFirstToken();
         sawDelta = true;
         options.onAssistantDelta?.(event.text);
+        options.runtimeEvents?.emit("text.delta", { text: event.text });
         content += event.text;
       } else if (event.type === "tool_calls_done") {
-        if (firstToken) {
-          tracer?.end(firstToken, "success", { attrs: { via: "tool_calls" } });
-          firstToken = undefined;
-        }
+        markFirstToken("tool_calls");
         toolCalls = [...event.toolCalls];
       } else if (event.type === "usage") {
         usage = event.usage;
       } else if (event.type === "done") {
-        if (firstToken) {
-          tracer?.end(firstToken, "success", { attrs: { via: "done" } });
-          firstToken = undefined;
+        if (!firstTokenEmitted) {
+          markFirstToken("done");
+        } else if (firstTokenSpan) {
+          tracer?.end(firstTokenSpan, "success", { attrs: { via: "done" } });
+          firstTokenSpan = undefined;
         }
         content = event.content;
         toolCalls = [...event.toolCalls];
         usage = event.usage;
         raw = event.raw;
+        options.runtimeEvents?.emit("provider.done", { usage: event.usage });
       }
     }
     if (!sawDelta && content.length > 0) {
       options.onAssistantDelta?.(content);
     }
-    if (firstToken) {
-      tracer?.end(firstToken, "success", { attrs: { via: "empty" } });
+    if (firstTokenSpan) {
+      tracer?.end(firstTokenSpan, "success", { attrs: { via: "empty" } });
     }
     tracer?.end(completionSpan, "success", { usage });
     return { content, toolCalls, usage, raw };
   } catch (error) {
     const classified = classifyUnknownError(error);
-    if (firstToken) {
-      tracer?.end(firstToken, classified.outcome, { error_class: classified.error_class });
+    if (firstTokenSpan) {
+      tracer?.end(firstTokenSpan, classified.outcome, { error_class: classified.error_class });
     }
     tracer?.end(completionSpan, classified.outcome, { error_class: classified.error_class });
     throw error;
@@ -496,6 +696,7 @@ async function appendToolResults(
   options: AgentLoopOptions,
   calls: readonly ChatToolCall[],
   guard: RepeatToolGuard,
+  toolCollector: TurnToolCollector,
 ): Promise<{ calls: number; errors: number; cancelled?: boolean }> {
   if (options.signal?.aborted) {
     return { calls: 0, errors: 0, cancelled: true };
@@ -521,12 +722,17 @@ async function appendToolResults(
   if (!parallel || calls.length <= 1) {
     for (let index = 0; index < calls.length; index += 1) {
       if (options.signal?.aborted) {
-        await appendInterruptedResults(messages, options, calls.slice(index));
+        await appendInterruptedResults(messages, options, calls.slice(index), toolCollector);
         tracer?.end(batchSpan, "cancelled", { error_class: "abort", attrs: { tools: calls.length } });
         return { calls: index, errors: errors + calls.length - index, cancelled: true };
       }
       const call = calls[index]!;
       options.onToolStart?.(call);
+      options.runtimeEvents?.emit("tool.call", {
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.arguments,
+      });
       const blockReason = blocked.get(index);
       const result = blockReason
         ? blockedToolCallResult(blockReason)
@@ -537,6 +743,7 @@ async function appendToolResults(
       }
       options.onToolEnd?.(call, result);
       appendToolResult(messages, call, result);
+      recordTurnToolResult(toolCollector, call, result, options.runtimeEvents);
       await publishCheckpoint(options, {
         phase: "tool_batch_running",
         messages,
@@ -558,6 +765,11 @@ async function appendToolResults(
 
       const run = async (): Promise<ToolExecuteResult> => {
         options.onToolStart?.(call);
+        options.runtimeEvents?.emit("tool.call", {
+          toolCallId: call.id,
+          toolName: call.name,
+          args: call.arguments,
+        });
         const blockReason = blocked.get(index);
         const result = blockReason
           ? blockedToolCallResult(blockReason)
@@ -604,6 +816,7 @@ async function appendToolResults(
       const call = calls[index]!;
       const result = results[index] ?? interruptedToolResult(call);
       appendToolResult(messages, call, result);
+      recordTurnToolResult(toolCollector, call, result, options.runtimeEvents);
       await publishCheckpoint(options, {
         phase: "tool_batch_running",
         messages,
@@ -622,6 +835,34 @@ async function appendToolResults(
     errors,
     cancelled,
   };
+}
+
+/** Cap stored tool body in turn_end payload (full body still lives in session messages / tool_result hooks). */
+const TURN_END_TOOL_CONTENT_MAX = 4_000;
+
+function recordTurnToolResult(
+  collector: TurnToolCollector,
+  call: ChatToolCall,
+  result: ToolExecuteResult,
+  bus?: RuntimeEventEmitter,
+): void {
+  const raw = toolContentText(result.content);
+  const content = raw.length > TURN_END_TOOL_CONTENT_MAX
+    ? `${raw.slice(0, TURN_END_TOOL_CONTENT_MAX)}…[truncated]`
+    : raw;
+  collector.results.push({
+    toolCallId: call.id,
+    toolName: call.name,
+    content,
+    isError: result.isError === true,
+  });
+  const isError = result.isError === true;
+  bus?.emit(isError ? "tool.error" : "tool.result", {
+    toolCallId: call.id,
+    toolName: call.name,
+    content,
+    isError,
+  });
 }
 
 type RepeatToolGuard = Readonly<{
@@ -690,10 +931,13 @@ async function appendInterruptedResults(
   messages: ChatMessage[],
   options: AgentLoopOptions,
   calls: readonly ChatToolCall[],
+  toolCollector: TurnToolCollector,
 ): Promise<void> {
   for (let index = 0; index < calls.length; index += 1) {
     const call = calls[index]!;
-    appendToolResult(messages, call, interruptedToolResult(call));
+    const result = interruptedToolResult(call);
+    appendToolResult(messages, call, result);
+    recordTurnToolResult(toolCollector, call, result, options.runtimeEvents);
     await publishCheckpoint(options, {
       phase: "tool_batch_running",
       messages,

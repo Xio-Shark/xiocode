@@ -166,6 +166,11 @@ export class TrajectoryRecorder {
   }
 
   recordTurnEnd(event: unknown): void {
+    const record = asRecord(event);
+    // Fail-closed integrity: old agent-loop emitted `{ prompt }` only; do not look green.
+    if (!("turnIndex" in record) || !("message" in record) || !("toolResults" in record)) {
+      this.failureReasons.push("contract:turn_end_incomplete");
+    }
     const turn = toTurn(event);
     const assistantError = assistantErrorMessage(turn.message);
     if (assistantError) {
@@ -422,9 +427,11 @@ function toToolCall(event: unknown): ToolCall {
 
 function toTurn(event: unknown): TrajectoryTurn {
   const record = asRecord(event);
+  const turnIndex = numberValue(record.turnIndex);
   return {
-    turn_index: numberValue(record.turnIndex) ?? 0,
-    message: record.message ?? null,
+    // Prefer explicit turnIndex; do not invent a green multi-turn sequence from missing data.
+    turn_index: turnIndex ?? 0,
+    message: "message" in record ? record.message ?? null : null,
     tool_results: Array.isArray(record.toolResults) ? record.toolResults : [],
   };
 }

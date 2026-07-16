@@ -42,6 +42,11 @@ export type ExtensionContext = Readonly<{
   getAllTools?: () => readonly ToolInfo[];
   setActiveTools?: (toolNames: readonly string[]) => void;
   registerCommand?: (name: string, options: CommandOptions) => void;
+  /**
+   * When present, trajectory recording prefers RuntimeEvent.v1 bus sinks
+   * over host tool/turn hooks (hooks still run for denoise / invalidate).
+   */
+  getRuntimeEvents?: () => import("../../../src/runtime/events/types.ts").RuntimeEventEmitter | undefined;
 }>;
 
 export type ModelInfo = Readonly<{

@@ -34,6 +34,10 @@ import {
   type SkillsConfig,
   type SkillsIndex,
 } from "./skills.ts";
+import {
+  discoveryCacheKey,
+  processDiscoveryCache,
+} from "./discovery-cache.ts";
 
 import type { ExtensionContext } from "../../xio-evolve/src/types.ts";
 import type { ToolDefinition } from "../../../src/runtime/types.ts";
@@ -105,49 +109,30 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
     : undefined;
 
   ctx.on?.("session_start", async () => {
-    const result: Record<string, unknown> = {};
-
-    if (!agentsConfig.enabled) {
-      bundle = { text: "", sources: [], warnings: [] };
-      result.agents_md = { enabled: false, sources: [] };
-    } else {
-      bundle = await loadAgentsMd({
+    // AGENTS and skills are independent — load in parallel with process cache.
+    const [agentsOutcome, skillsOutcome] = await Promise.all([
+      loadAgentsWithCache({
+        enabled: agentsConfig.enabled,
         cwd: options.cwd,
         home: options.home,
         config: agentsConfig,
         warn: options.warn,
-      });
-      result.agents_md = {
-        enabled: true,
-        sources: bundle.sources.map((source) => ({
-          path: source.path,
-          hash: source.hash,
-          truncated: source.truncated,
-          bytes: source.bytes,
-        })),
-        warnings: bundle.warnings,
-      };
-    }
-
-    if (!skillsConfig.enabled) {
-      skillsIndex = { skills: [], warnings: [] };
-      result.skills = { enabled: false, count: 0 };
-    } else {
-      skillsIndex = await discoverSkills({
+      }),
+      loadSkillsWithCache({
+        enabled: skillsConfig.enabled,
         cwd: options.cwd,
         home: options.home,
         config: skillsConfig,
         warn: options.warn,
-      });
-      result.skills = {
-        enabled: true,
-        count: skillsIndex.skills.length,
-        names: skillsIndex.skills.map((skill) => skill.name),
-        warnings: skillsIndex.warnings,
-      };
-    }
+      }),
+    ]);
+    bundle = agentsOutcome.bundle;
+    skillsIndex = skillsOutcome.index;
 
-    return result;
+    return {
+      agents_md: agentsOutcome.result,
+      skills: skillsOutcome.result,
+    };
   });
 
   ctx.on?.("before_agent_start", async (payload, eventCtx) => {
@@ -155,12 +140,14 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
 
     if (agentsConfig.enabled) {
       if (!bundle) {
-        bundle = await loadAgentsMd({
+        const loaded = await loadAgentsWithCache({
+          enabled: true,
           cwd: options.cwd,
           home: options.home,
           config: agentsConfig,
           warn: options.warn,
         });
+        bundle = loaded.bundle;
       }
       const agentsAddendum = formatAgentsMdAddendum(bundle);
       if (agentsAddendum.length > 0) {
@@ -170,12 +157,14 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
 
     if (skillsConfig.enabled) {
       if (!skillsIndex) {
-        skillsIndex = await discoverSkills({
+        const loaded = await loadSkillsWithCache({
+          enabled: true,
           cwd: options.cwd,
           home: options.home,
           config: skillsConfig,
           warn: options.warn,
         });
+        skillsIndex = loaded.index;
       }
       const catalog = formatSkillsCatalog(skillsIndex);
       if (catalog.length > 0) {
@@ -210,6 +199,90 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+async function loadAgentsWithCache(input: Readonly<{
+  enabled: boolean;
+  cwd: string;
+  home?: string;
+  config: AgentsMdConfig;
+  warn?: (message: string) => void;
+}>): Promise<Readonly<{
+  bundle: SpecBundle;
+  result: Record<string, unknown>;
+}>> {
+  if (!input.enabled) {
+    return {
+      bundle: { text: "", sources: [], warnings: [] },
+      result: { enabled: false, sources: [] },
+    };
+  }
+  const key = discoveryCacheKey("agents", input.cwd, input.home, input.config);
+  let bundle = processDiscoveryCache.getAgents(key);
+  const fromCache = bundle !== undefined;
+  if (!bundle) {
+    bundle = await loadAgentsMd({
+      cwd: input.cwd,
+      home: input.home,
+      config: input.config,
+      warn: input.warn,
+    });
+    processDiscoveryCache.setAgents(key, bundle);
+  }
+  return {
+    bundle,
+    result: {
+      enabled: true,
+      sources: bundle.sources.map((source) => ({
+        path: source.path,
+        hash: source.hash,
+        truncated: source.truncated,
+        bytes: source.bytes,
+      })),
+      warnings: bundle.warnings,
+      cache: fromCache ? "hit" : "miss",
+    },
+  };
+}
+
+async function loadSkillsWithCache(input: Readonly<{
+  enabled: boolean;
+  cwd: string;
+  home?: string;
+  config: SkillsConfig;
+  warn?: (message: string) => void;
+}>): Promise<Readonly<{
+  index: SkillsIndex;
+  result: Record<string, unknown>;
+}>> {
+  if (!input.enabled) {
+    return {
+      index: { skills: [], warnings: [] },
+      result: { enabled: false, count: 0 },
+    };
+  }
+  const key = discoveryCacheKey("skills", input.cwd, input.home, input.config);
+  let index = processDiscoveryCache.getSkills(key);
+  const fromCache = index !== undefined;
+  if (!index) {
+    index = await discoverSkills({
+      cwd: input.cwd,
+      home: input.home,
+      config: input.config,
+      warn: input.warn,
+    });
+    processDiscoveryCache.setSkills(key, index);
+  }
+  return {
+    index,
+    result: {
+      enabled: true,
+      count: index.skills.length,
+      names: index.skills.map((skill) => skill.name),
+      warnings: index.warnings,
+      cache: fromCache ? "hit" : "miss",
+    },
+  };
+}
+
 export {
   DEFAULT_AGENTS_MD_CONFIG,
   loadAgentsMd,
@@ -224,6 +297,8 @@ export {
   createSkillTool,
 };
 export type { SkillsConfig, SkillsIndex, SkillEntry } from "./skills.ts";
+
+export { processDiscoveryCache, discoveryCacheKey, DiscoveryCache } from "./discovery-cache.ts";
 
 export {
   DEFAULT_HOOKS_CONFIG,

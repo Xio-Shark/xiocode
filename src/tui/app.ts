@@ -20,14 +20,17 @@ import {
   applyInputChunk,
   clearQueue,
   deleteBackward,
+  deleteForward,
   emptyComposer,
   historyDown,
   historyUp,
   loadQueueIntoDraft,
   moveCursor,
+  moveCursorLine,
   queueWhileBusy,
   rememberSubmission,
   setComposerText,
+  sliceViewerWindow,
   type ComposerState,
 } from "./composer.ts";
 import {
@@ -35,6 +38,7 @@ import {
   blocksFromRestoredMessages,
   emptyScrollbackState,
   formatLiveLines,
+  isExploreHistoryBlock,
   latestExpandableToolBlock,
   reduceScrollback,
   toggleLatestScrollbackExpandable,
@@ -99,6 +103,10 @@ export type AppProps = Readonly<{
    * main buffer (native wheel/search). Tests keep `false` for on-tree transcript rows.
    */
   appendScrollback?: boolean;
+  /** Draft drained from the interactive boot shell (pre-prompt_ready typing). */
+  initialDraft?: string;
+  /** When true, submit initialDraft once after mount (user pressed Enter during boot). */
+  autoSubmitInitial?: boolean;
 }>;
 
 export type SlashCommand = Readonly<{ name: string; description: string }>;
@@ -174,10 +182,12 @@ export function App(props: AppProps): React.JSX.Element {
 
   const {
     input,
+    composer,
     busy,
     slashIndex,
     setSlashIndex,
     transcriptViewer,
+    viewerScrollOffset,
     setTranscriptViewer,
   } = useSessionInteraction(
     props,
@@ -250,8 +260,6 @@ export function App(props: AppProps): React.JSX.Element {
     ? { flexDirection: "column" as const }
     : { flexDirection: "column" as const, height: rows };
 
-  const liveLines = formatLiveLines(scrollback.live, scrollback.inFlightTools);
-
   return h(Box, rootProps,
     appendScrollback
       ? h(Static as React.FC<{ items: HistoryBlock[]; children: (block: HistoryBlock) => React.ReactNode }>, {
@@ -276,6 +284,7 @@ export function App(props: AppProps): React.JSX.Element {
       ? h(TranscriptViewerOverlay, {
         block: transcriptViewer,
         rows,
+        scrollOffset: viewerScrollOffset,
         onClose: () => setTranscriptViewer(undefined),
       })
       : view.confirm
@@ -285,20 +294,11 @@ export function App(props: AppProps): React.JSX.Element {
           : view.prompt
             ? h(PromptView, { prompt: view.prompt })
             : appendScrollback
-              ? (liveLines.length > 0
-                ? h(Box, { flexDirection: "column", marginY: 0 },
-                  ...liveLines.map((line, index) =>
-                    h(Text, {
-                      key: `live-${index}`,
-                      dimColor: true,
-                      wrap: "wrap",
-                      color: line.includes(theme.sym.think)
-                        ? theme.think
-                        : line.includes(theme.sym.explore) || line.includes(theme.sym.tool)
-                          ? theme.tool
-                          : undefined,
-                    }, line)))
-                : null)
+              ? h(LiveStreamRegion, {
+                live: scrollback.live,
+                inFlightTools: scrollback.inFlightTools,
+                inFlightSubagents: scrollback.inFlightSubagents,
+              })
               : h(Box, { flexDirection: "column", flexGrow: 1 },
                 scrolled
                   ? h(Text, { dimColor: true },
@@ -311,9 +311,10 @@ export function App(props: AppProps): React.JSX.Element {
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
-    h(Box, { marginTop: 1 },
-      h(Text, { dimColor: busy }, busy ? theme.sym.busy : theme.sym.prompt),
-      h(Text, null, ` ${view.prompt ? maskPromptDisplay(view.prompt) : input}`)),
+    h(ComposerChrome, {
+      busy,
+      composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
+    }),
     slashOpen
       ? h(SlashMenu, { items: slashItems ?? [], selected: safeSlashIndex })
       : null,
@@ -324,26 +325,88 @@ export function App(props: AppProps): React.JSX.Element {
     }));
 }
 
+/** Sticky live stream — only re-renders when live buffer / in-flight tools change. */
+const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
+  live: ScrollbackState["live"];
+  inFlightTools: ScrollbackState["inFlightTools"];
+  inFlightSubagents: ScrollbackState["inFlightSubagents"];
+}>): React.JSX.Element | null {
+  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents);
+  if (liveLines.length === 0) return null;
+  return h(Box, { flexDirection: "column", marginY: 0 },
+    ...liveLines.map((line, index) =>
+      h(Text, {
+        key: `live-${index}`,
+        dimColor: true,
+        wrap: "wrap",
+        color: line.includes(theme.sym.think)
+          ? theme.think
+          : line.includes(theme.sym.explore)
+            ? theme.explore
+            : line.includes(theme.sym.tool)
+              ? theme.tool
+              : undefined,
+      }, line)));
+});
+
+/** Composer with block cursor and multiline draft (pi Editor-style subset). */
+const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
+  busy: boolean;
+  composer: ComposerState;
+}>): React.JSX.Element {
+  const { text, cursor } = props.composer;
+  const lines = text.length === 0 ? [""] : text.split("\n");
+  let offset = 0;
+  const rows = lines.map((line, rowIndex) => {
+    const lineStart = offset;
+    const lineEnd = offset + line.length;
+    if (rowIndex < lines.length - 1) offset = lineEnd + 1;
+    else offset = lineEnd;
+    const onCursorLine = cursor >= lineStart && cursor <= lineEnd;
+    if (!onCursorLine) {
+      return h(Text, { key: `composer-${rowIndex}`, wrap: "wrap" }, ` ${line}`);
+    }
+    const col = cursor - lineStart;
+    const before = line.slice(0, col);
+    const after = line.slice(col);
+    const cursorChar = after.length > 0 ? after.charAt(0) : " ";
+    const rest = after.length > 1 ? after.slice(1) : "";
+    return h(Text, { key: `composer-${rowIndex}`, wrap: "wrap" },
+      " ",
+      before,
+      h(Text, { inverse: true, color: theme.accent }, cursorChar),
+      rest);
+  });
+  return h(Box, { marginTop: 1, flexDirection: "column" },
+    h(Text, { dimColor: props.busy }, props.busy ? theme.sym.busy : theme.sym.prompt),
+    ...rows);
+});
+
 const HistoryBlockRow = memo(function HistoryBlockRow(
   props: Readonly<{ block: HistoryBlock }>,
 ): React.JSX.Element {
+  const explore = isExploreHistoryBlock(props.block);
   const color = props.block.error
     ? theme.error
-    : props.block.kind === "tool"
-      ? theme.tool
-      : props.block.kind === "thinking"
-        ? theme.think
-        : props.block.kind === "assistant"
-          ? undefined
+    : explore
+      ? theme.explore
+      : props.block.kind === "tool"
+        ? theme.tool
+        : props.block.kind === "thinking"
+          ? theme.think
           : undefined;
   const bold = props.block.kind === "assistant";
+  const dim = props.block.kind === "tool"
+    || props.block.kind === "thinking"
+    || props.block.kind === "notice"
+    || props.block.kind === "subagent";
   return h(Box, { flexDirection: "column", flexShrink: 0 },
     ...props.block.lines.map((line, index) =>
       h(Text, {
         key: `${props.block.id}-${index}`,
         color,
         bold: bold && index === 0,
-        dimColor: props.block.kind === "tool" || props.block.kind === "thinking" || props.block.kind === "notice",
+        dimColor: dim,
         wrap: "wrap",
       }, line)));
 });
@@ -489,17 +552,32 @@ function useSessionInteraction(
   scrollback: ScrollbackState,
 ): Readonly<{
   input: string;
+  composer: ComposerState;
   busy: boolean;
   slashIndex: number;
   setSlashIndex: React.Dispatch<React.SetStateAction<number>>;
   transcriptViewer: HistoryBlock | undefined;
+  viewerScrollOffset: number;
   setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
 }> {
   const { exit } = useApp();
-  const [composer, setComposer] = useState<ComposerState>(emptyComposer);
+  const [composer, setComposer] = useState<ComposerState>(() =>
+    props.initialDraft && props.initialDraft.length > 0
+      ? setComposerText(emptyComposer(), props.initialDraft)
+      : emptyComposer(),
+  );
   const composerRef = useRef(composer);
   composerRef.current = composer;
-  const [transcriptViewer, setTranscriptViewer] = useState<HistoryBlock | undefined>(undefined);
+  const autoSubmitDone = useRef(false);
+  const [transcriptViewer, setTranscriptViewerState] = useState<HistoryBlock | undefined>(undefined);
+  const [viewerScrollOffset, setViewerScrollOffset] = useState(0);
+  const setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>> = (action) => {
+    setTranscriptViewerState((current) => {
+      const next = typeof action === "function" ? action(current) : action;
+      if (next?.id !== current?.id) setViewerScrollOffset(0);
+      return next;
+    });
+  };
   const transcriptViewerRef = useRef(transcriptViewer);
   transcriptViewerRef.current = transcriptViewer;
   const scrollbackRef = useRef(scrollback);
@@ -533,6 +611,9 @@ function useSessionInteraction(
       return next;
     });
   };
+  const scrollViewer = (delta: number) => {
+    setViewerScrollOffset((current) => Math.max(0, current + delta));
+  };
   const scrollTranscript = (delta: number) => {
     if (appendScrollback) return; // terminal owns scroll
     setScrollOffset((current) => Math.max(0, current + delta));
@@ -544,15 +625,38 @@ function useSessionInteraction(
   const submit = async (rawValue = composerRef.current.text) => {
     const value = rawValue.trim();
     if (value.length === 0) return;
-    // Busy turn: queue explicitly (steer not provider-safe yet). Never silent no-op.
+    // Busy turn: soft-steer at next tool/provider boundary (never mid-stream HTTP inject).
+    // Prefix with ! for hard steer (abort + continue). /exit still aborts and quits.
     if (busyRef.current) {
       if (value === "/exit" || value === "/quit") {
         props.session.abortTurn();
         await close(0);
         return;
       }
+      const hard = value.startsWith("!");
+      const steerText = hard ? value.slice(1).trim() : value;
+      if (steerText.length === 0) return;
+      if (typeof props.session.steer === "function") {
+        props.session.steer(steerText, hard ? "hard" : "soft");
+        setComposerState(rememberSubmission(composerRef.current, value));
+        const notice = hard
+          ? `Hard steer: ${steerText.slice(0, 80)}`
+          : `Soft steer queued (applies at tool/provider boundary): ${steerText.slice(0, 80)}`;
+        if (appendScrollback) {
+          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
+        } else {
+          setView((current) => appendEntry(current, "notice", notice));
+        }
+        setView((current) => reduceEvent(current, {
+          kind: "status",
+          key: "queue",
+          text: hard ? "hard-steer" : "soft-steer",
+        }));
+        return;
+      }
+      // Fallback if session lacks steer (older bridges).
       setComposerState(queueWhileBusy(composerRef.current, value));
-      const notice = `Queued for next turn (steer unavailable): ${value.slice(0, 80)}`;
+      const notice = `Queued for next turn: ${value.slice(0, 80)}`;
       if (appendScrollback) {
         setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
       } else {
@@ -603,6 +707,15 @@ function useSessionInteraction(
       }
     }
   };
+  // Drain from interactive boot shell: optional auto-submit after first paint.
+  useEffect(() => {
+    if (autoSubmitDone.current) return;
+    if (props.autoSubmitInitial !== true) return;
+    const draft = composerRef.current.text.trim();
+    if (draft.length === 0) return;
+    autoSubmitDone.current = true;
+    void submit(draft);
+  }, [props.autoSubmitInitial]);
   useInput((character, key) => handleInput({
     character,
     key,
@@ -623,6 +736,8 @@ function useSessionInteraction(
     bridge: props.bridge,
     scrollConfirm: (delta) => setView((current) => scrollConfirmation(current, delta)),
     scrollTranscript,
+    scrollViewer,
+    viewerOpen: () => transcriptViewerRef.current !== undefined,
     appendScrollback,
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
@@ -657,10 +772,12 @@ function useSessionInteraction(
     : composer.text;
   return {
     input: inputDisplay,
+    composer,
     busy,
     slashIndex,
     setSlashIndex,
     transcriptViewer,
+    viewerScrollOffset,
     setTranscriptViewer,
   };
 }
@@ -704,6 +821,8 @@ function handleInput(options: Readonly<{
   slashItems: readonly SlashCommand[] | undefined;
   scrollConfirm: (delta: number) => void;
   scrollTranscript: (delta: number) => void;
+  scrollViewer?: (delta: number) => void;
+  viewerOpen?: () => boolean;
   appendScrollback?: boolean;
   moveSelect: (delta: number) => void;
   setPromptValue: (value: string) => void;
@@ -736,6 +855,28 @@ function handleInput(options: Readonly<{
   if (options.key.escape && options.closeTranscriptViewer?.()) {
     return;
   }
+
+  // Transcript viewer (Route B Ctrl+O): scroll full retained output in-overlay.
+  if (options.viewerOpen?.()) {
+    const step = options.key.pageUp || options.key.pageDown ? 12 : 1;
+    if (options.key.pageUp || options.key.upArrow) {
+      options.scrollViewer?.(-step);
+      return;
+    }
+    if (options.key.pageDown || options.key.downArrow) {
+      options.scrollViewer?.(step);
+      return;
+    }
+    if (options.key.ctrl && options.character === "g") {
+      options.scrollViewer?.(-100_000);
+      return;
+    }
+    if (options.key.ctrl && options.character === "e") {
+      options.scrollViewer?.(100_000);
+      return;
+    }
+  }
+
   // Ctrl+X drops the busy-turn queue without submitting.
   if (options.key.ctrl && options.character === "x" && options.composer.queue) {
     options.clearQueued();
@@ -797,6 +938,15 @@ function handleInput(options: Readonly<{
       return;
     }
   } else {
+    const multilineDraft = options.composer.text.includes("\n");
+    if (options.key.upArrow && multilineDraft) {
+      options.setComposerState(moveCursorLine(options.composer, -1));
+      return;
+    }
+    if (options.key.downArrow && multilineDraft) {
+      options.setComposerState(moveCursorLine(options.composer, 1));
+      return;
+    }
     // Route B: up/down walk prompt history when draft is single-line idle.
     if (options.key.upArrow && !options.busy) {
       options.setComposerState(historyUp(options.composer));
@@ -826,16 +976,26 @@ function handleInput(options: Readonly<{
     if (isMouseLeakChunk(options.character)) return;
     const applied = applyInputChunk(options.composer, options.character, {
       return: options.key.return,
+      shift: options.key.shift,
     });
     options.setComposerState(applied.state);
     if (applied.submit) void options.submit(applied.state.text);
     return;
   }
   if (options.key.return) {
-    void options.submit(options.composer.text);
+    const applied = applyInputChunk(options.composer, "", {
+      return: true,
+      shift: options.key.shift,
+    });
+    if (applied.submit) void options.submit(applied.state.text);
+    else options.setComposerState(applied.state);
     return;
   }
-  if (options.key.backspace || options.key.delete) {
+  if (options.key.delete && !options.key.backspace) {
+    options.setComposerState(deleteForward(options.composer));
+    return;
+  }
+  if (options.key.backspace) {
     options.setComposerState(deleteBackward(options.composer));
     return;
   }
@@ -949,7 +1109,9 @@ export function reduceEvent(state: ViewState, event: TuiEvent): ViewState {
     };
   }
   if (event.kind === "tool-end") return finalizeTool(state, event);
-  return appendEntry(state, "notice", event.text, event.level === "error");
+  if (event.kind.startsWith("subagent-")) return state;
+  if (event.kind === "notice") return appendEntry(state, "notice", event.text, event.level === "error");
+  return state;
 }
 
 function handleConfirmInput(options: Readonly<{
@@ -1388,13 +1550,13 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
 function TranscriptViewerOverlay(props: Readonly<{
   block: HistoryBlock;
   rows: number;
+  scrollOffset: number;
   onClose: () => void;
 }>): React.JSX.Element {
   const body = props.block.output ?? props.block.lines.join("\n");
   const lines = body.split("\n");
-  const viewport = Math.max(6, props.rows - 8);
-  const visible = lines.slice(0, viewport);
-  const truncated = lines.length > viewport;
+  const viewport = Math.max(6, props.rows - 10);
+  const window = sliceViewerWindow(lines, viewport, props.scrollOffset);
   const title = props.block.title
     ? `${props.block.title}${props.block.detail ? ` ${props.block.detail}` : ""}`
     : "tool output";
@@ -1405,17 +1567,16 @@ function TranscriptViewerOverlay(props: Readonly<{
     marginY: 1,
   },
     h(Text, { bold: true }, `Transcript · ${title}`),
-    h(Text, { dimColor: true }, "Ctrl+O / Esc closes · full retained output (not Static preview)"),
-    ...visible.map((line, index) =>
+    h(Text, { dimColor: true }, "↑↓/PgUp/PgDn scroll · Ctrl+O/Esc close · full retained output"),
+    window.indicator
+      ? h(Text, { dimColor: true }, window.indicator)
+      : null,
+    ...window.visible.map((line, index) =>
       h(Text, {
-        key: `tv-${index}`,
+        key: `tv-${window.offset + index}`,
         color: props.block.error ? theme.error : undefined,
         wrap: "truncate-end",
-      }, line || " ")),
-    truncated
-      ? h(Text, { dimColor: true }, `… ${lines.length - viewport} more lines`)
-      : null,
-  );
+      }, line || " ")));
 }
 
 function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX.Element {
@@ -1444,8 +1605,8 @@ function FooterHints(props: Readonly<{
   return h(Box, { flexDirection: "column", marginTop: 1 },
     h(Text, { dimColor: true },
       props.bypass
-        ? `▶▶ bypass on · ▸think ⚙run ●answer · Ctrl+O · Ctrl+C${scrollHint}`
-        : `▸think ⚙run ●answer · Shift+Tab · Tab 思考 · Ctrl+O · Ctrl+C${scrollHint}`));
+        ? `▶▶ bypass on · ▸think ⚙run ●answer · Shift+Enter 换行 · Ctrl+O · Ctrl+C${scrollHint}`
+        : `▸think ⚙run ●answer · Shift+Tab · Tab 思考 · Shift+Enter 换行 · Ctrl+O · Ctrl+C${scrollHint}`));
 }
 
 function SlashMenu(props: Readonly<{

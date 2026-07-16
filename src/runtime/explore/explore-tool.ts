@@ -29,6 +29,7 @@ import {
 import type { ExploreRoleId } from "./roles.ts";
 import { Semaphore } from "./semaphore.ts";
 import { runExploreSubagent, type RunExploreSubagentOptions } from "./subagent.ts";
+import type { SubagentUiBridge, SubagentUiScope } from "./subagent-ui.ts";
 import type { ExploreSubagentResult, ResolvedExploreConfig } from "./types.ts";
 import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 
@@ -190,6 +191,8 @@ export type CreateExploreToolOptions = Readonly<{
   globalMaxCostUsd?: number;
   /** Max worker starts / minute (defaults to config.maxStartsPerMinute; 0 = unlimited). */
   globalMaxStartsPerMinute?: number;
+  /** Optional bridge for nested subagent UI streaming (TUI / stdout). */
+  subagentUi?: SubagentUiBridge;
 }>;
 
 export function createExploreTool(options: CreateExploreToolOptions): ToolDefinition {
@@ -400,12 +403,14 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           : focusPaths;
 
         publishActiveStatus();
-        options.onNotify?.(
-          `subagent #${workerId} started → ${options.config.provider}/${options.config.model}`
-            + ` [${budget.lane ?? budget.mode} cap ${budget.effectiveMax}`
-            + `${assignedRole ? ` role=${assignedRole}` : ""}`
-            + `${workerFocus?.length ? ` paths=${workerFocus.length}` : ""}]: ${truncate(goal, 80)}`,
-        );
+        if (!options.subagentUi) {
+          options.onNotify?.(
+            `subagent #${workerId} started → ${options.config.provider}/${options.config.model}`
+              + ` [${budget.lane ?? budget.mode} cap ${budget.effectiveMax}`
+              + `${assignedRole ? ` role=${assignedRole}` : ""}`
+              + `${workerFocus?.length ? ` paths=${workerFocus.length}` : ""}]: ${truncate(goal, 80)}`,
+          );
+        }
         let apiKey: string;
         try {
           apiKey = resolveApiKey(registration, env);
@@ -453,6 +458,21 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           maxOutputChars: options.config.maxOutputChars,
         });
 
+        const modelLabel = `${options.config.provider}/${options.config.model}`;
+        const uiScope: SubagentUiScope | undefined = options.subagentUi
+          ? {
+              workerId,
+              role: assignedRole,
+              modelLabel,
+              sink: options.subagentUi.forWorker({
+                workerId,
+                role: assignedRole,
+                modelLabel,
+                goal,
+              }),
+            }
+          : undefined;
+
         const result = await runWorker({
           goal,
           focusPaths: workerFocus,
@@ -467,6 +487,7 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           role: assignedRole,
           capsule,
           workspacePerception: options.workspacePerception,
+          ui: uiScope,
         });
 
         // Persist raw worker body into EvidenceStore; primary gets brief only.
@@ -500,11 +521,13 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
               ? "ok"
               : "error";
 
-        options.onNotify?.(
-          `subagent #${workerId} ${status}`
-            + ` (${result.turns} turns, ${result.toolCalls} tools`
-            + `${completion.earlyStopped ? ", early-stop" : ""}): ${truncate(goal, 60)}`,
-        );
+        if (!options.subagentUi) {
+          options.onNotify?.(
+            `subagent #${workerId} ${status}`
+              + ` (${result.turns} turns, ${result.toolCalls} tools`
+              + `${completion.earlyStopped ? ", early-stop" : ""}): ${truncate(goal, 60)}`,
+          );
+        }
 
         // Prefer aggregate WorkspaceBrief (≤12KB) over raw dump.
         const briefText = completion.briefText.length <= DEFAULT_WORKSPACE_BRIEF_MAX_CHARS

@@ -13,6 +13,9 @@ export type MetricThreshold = Readonly<{
   soft_p50_regression_ms?: number;
   hard_token_regression?: number;
   soft_token_regression?: number;
+  /** Absolute regression budgets for non-latency metrics (RSS bytes, CPU ms, cache tokens, cost USD). */
+  hard_absolute_regression?: number;
+  soft_absolute_regression?: number;
 }>;
 
 export type GateManifest = Readonly<{
@@ -109,6 +112,8 @@ function decodeThreshold(value: unknown): MetricThreshold {
     soft_p50_regression_ms: optionalNumber(row.soft_p50_regression_ms),
     hard_token_regression: optionalNumber(row.hard_token_regression),
     soft_token_regression: optionalNumber(row.soft_token_regression),
+    hard_absolute_regression: optionalNumber(row.hard_absolute_regression),
+    soft_absolute_regression: optionalNumber(row.soft_absolute_regression),
   };
 }
 

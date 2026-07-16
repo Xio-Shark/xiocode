@@ -1,0 +1,25 @@
+{
+  "schema_version": "xio-agent-tape.v1",
+  "name": "tool-call",
+  "turns": [
+    {
+      "steps": [
+        {
+          "type": "tool_call",
+          "id": "call-1",
+          "name": "echo",
+          "arguments": { "q": "ping" }
+        },
+        { "type": "usage", "inputTokens": 5, "outputTokens": 1 },
+        { "type": "done" }
+      ]
+    },
+    {
+      "steps": [
+        { "type": "delta", "channel": "text", "chunks": ["tool done"] },
+        { "type": "usage", "inputTokens": 8, "outputTokens": 2 },
+        { "type": "done" }
+      ]
+    }
+  ]
+}

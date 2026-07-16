@@ -123,8 +123,9 @@ export type SaveSessionInput = Readonly<{
   execution?: SessionExecution;
   /**
    * `snapshot` (default): atomic full state.json + truncate journal.
-   * `journal`: append-only WAL for mid-turn checkpoints; falls back to snapshot
-   * when message history is not a pure append of the last materialization.
+   * `journal`: append-only WAL for mid-turn checkpoints (O(delta) when the
+   * process already holds a live cursor). Falls back to snapshot when the
+   * message history is not a pure append of the last materialization.
    */
   durability?: SessionDurability;
 }>;
@@ -140,8 +141,11 @@ export class SessionStore {
   readonly #now: () => Date;
   /** Next journal seq per session id (1-based next write). */
   readonly #nextSeq = new Map<string, number>();
-  /** Message count of last materialized view (snapshot + journal). */
-  readonly #messageCount = new Map<string, number>();
+  /**
+   * In-process materialized view (snapshot + journal). When present, journal
+   * saves are O(delta): no disk reload and no full-history prefix compare.
+   */
+  readonly #live = new Map<string, StoredSession>();
 
   constructor(options: Readonly<{ root: string; now?: () => Date }>) {
     this.#root = path.resolve(options.root);
@@ -221,13 +225,12 @@ export class SessionStore {
 
   async remove(id: string): Promise<void> {
     assertSessionId(id);
-    this.#nextSeq.delete(id);
-    this.#messageCount.delete(id);
+    this.#forget(id);
     await rm(this.#sessionDirectory(id), { recursive: true, force: true });
   }
 
   async #saveSnapshot(input: SaveSessionInput): Promise<StoredSession> {
-    const existing = await this.#loadIfPresent(input.id);
+    const existing = this.#live.get(input.id) ?? await this.#loadIfPresent(input.id);
     const now = this.#now().toISOString();
     const workspace = workspaceSchema.parse(input.workspace ?? existing?.workspace ?? defaultWorkspace(input));
     const execution = executionSchema.parse(input.execution ?? existing?.execution ?? { phase: "idle" });
@@ -249,13 +252,18 @@ export class SessionStore {
     await mkdir(directory, { recursive: true });
     await writeJsonAtomicDurable(path.join(directory, STATE_FILE), state);
     await truncateJournal(directory);
-    this.#nextSeq.set(input.id, 1);
-    this.#messageCount.set(input.id, input.messages.length);
-    return decodeSessionState(state);
+    const stored = decodeSessionState(state);
+    this.#remember(input.id, stored, 1);
+    return stored;
   }
 
   async #saveJournal(input: SaveSessionInput): Promise<StoredSession> {
-    const existing = await this.#loadIfPresent(input.id);
+    // Warm path: in-memory authority — no disk reload, no O(history) prefix scan.
+    const warm = this.#live.has(input.id);
+    let existing = this.#live.get(input.id);
+    if (!existing) {
+      existing = await this.#loadIfPresent(input.id);
+    }
     if (!existing || existing.metadata.schema_version !== "xio-session.v2") {
       // First write or still on v1: must establish a durable snapshot baseline.
       return this.#saveSnapshot(input);
@@ -263,8 +271,10 @@ export class SessionStore {
 
     const priorMessages = existing.messages;
     const priorCount = priorMessages.length;
+    // Warm: trust process-local append-only authority (agent loop only pushes mid-turn;
+    // compaction / replace always take snapshot durability). Cold: content prefix check once.
     const isPureAppend = input.messages.length >= priorCount
-      && messagesPrefixEqual(priorMessages, input.messages, priorCount);
+      && (warm || messagesPrefixEqual(priorMessages, input.messages, priorCount));
 
     if (!isPureAppend) {
       return this.#saveSnapshot(input);
@@ -280,7 +290,7 @@ export class SessionStore {
     const modelChanged = input.model.provider !== existing.metadata.model.provider
       || input.model.id !== existing.metadata.model.id;
     const workspaceChanged = input.workspace !== undefined
-      && JSON.stringify(input.workspace) !== JSON.stringify(existing.workspace);
+      && !workspaceEqual(input.workspace, existing.workspace);
 
     if (
       appendMessages.length === 0
@@ -308,8 +318,6 @@ export class SessionStore {
       ...(modelChanged ? { model: input.model } : {}),
       ...(workspaceChanged && workspace ? { workspace } : {}),
     });
-    this.#nextSeq.set(input.id, nextSeq);
-    this.#messageCount.set(input.id, input.messages.length);
 
     const metadata: SessionMetadataV2 = {
       ...existing.metadata,
@@ -321,12 +329,24 @@ export class SessionStore {
       workspace: workspace ?? existing.workspace!,
       execution: execution ?? existing.execution ?? { phase: "idle" },
     };
-    return {
+    const stored: StoredSession = {
       metadata,
       messages: input.messages,
       workspace: metadata.workspace,
       execution: metadata.execution,
     };
+    this.#remember(input.id, stored, nextSeq);
+    return stored;
+  }
+
+  #remember(id: string, session: StoredSession, nextSeq: number): void {
+    this.#live.set(id, session);
+    this.#nextSeq.set(id, nextSeq);
+  }
+
+  #forget(id: string): void {
+    this.#live.delete(id);
+    this.#nextSeq.delete(id);
   }
 
   async #loadVersioned(id: string): Promise<StoredSession> {
@@ -336,8 +356,7 @@ export class SessionStore {
       const base = decodeSessionState(JSON.parse(text));
       const journal = await readJournal(directory);
       if (journal.length === 0) {
-        this.#nextSeq.set(id, 1);
-        this.#messageCount.set(id, base.messages.length);
+        this.#remember(id, base, 1);
         return base;
       }
       const applied = applyJournal({
@@ -346,8 +365,6 @@ export class SessionStore {
         workspace: base.workspace,
         execution: base.execution,
       }, journal);
-      this.#nextSeq.set(id, applied.lastSeq + 1);
-      this.#messageCount.set(id, applied.messages.length);
       if (base.metadata.schema_version !== "xio-session.v2") {
         throw new Error("journal present without xio-session.v2 snapshot");
       }
@@ -360,16 +377,20 @@ export class SessionStore {
         // Journal advances content; revision stays snapshot revision until next snapshot.
         ...(lastJournalTime ? { updated_at: lastJournalTime } : {}),
       };
-      return {
+      const stored: StoredSession = {
         metadata,
         messages: applied.messages,
         workspace: metadata.workspace,
         execution: metadata.execution,
       };
+      this.#remember(id, stored, applied.lastSeq + 1);
+      return stored;
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
     }
-    return this.#loadV1(directory);
+    const v1 = await this.#loadV1(directory);
+    this.#live.set(id, v1);
+    return v1;
   }
 
   async #loadV1(directory: string): Promise<StoredSession> {
@@ -442,6 +463,24 @@ function messagesPrefixEqual(
     if (JSON.stringify(prior[index]) !== JSON.stringify(next[index])) return false;
   }
   return true;
+}
+
+function workspaceEqual(
+  left: SessionWorkspace | undefined,
+  right: SessionWorkspace | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.mode === right.mode
+    && left.lifecycle === right.lifecycle
+    && left.main_root === right.main_root
+    && left.worktree_path === right.worktree_path
+    && left.branch === right.branch
+    && left.base_ref === right.base_ref
+    && left.baseline_tree === right.baseline_tree
+    && left.repo_id === right.repo_id
+    && left.session_id === right.session_id
+    && left.epoch === right.epoch;
 }
 
 function assertSessionId(id: string): void {

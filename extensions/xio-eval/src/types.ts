@@ -110,6 +110,12 @@ export type TrialIdentity = SuiteIdentity & FixtureIdentity & Readonly<{
   system_prompt_sha: string | null;
 }>;
 
+/** Optional per-trial workspace-awareness metrics (explore brief / perception). */
+export type TrialAwarenessMetrics = Readonly<{
+  evidence_coverage: number | null;
+  overlap: number | null;
+}>;
+
 export type TrialReport = Readonly<{
   schema_version: "xio-eval-trial.v1";
   identity: TrialIdentity;
@@ -150,6 +156,8 @@ export type TrialReport = Readonly<{
     infra_errors: readonly string[];
     irreversible_side_effects: readonly string[];
   }>;
+  /** Optional awareness metrics from explore/perception product path. */
+  awareness?: TrialAwarenessMetrics;
 }>;
 
 export type CandidateSummary = Readonly<{
@@ -191,15 +199,27 @@ export type PerformanceMetricDelta = Readonly<{
   delta_p95_ms: number | null;
 }>;
 
+export type PerformanceResourceDelta = Readonly<{
+  before_rss_bytes: number | null;
+  candidate_rss_bytes: number | null;
+  delta_rss_bytes: number | null;
+  before_cpu_user_ms: number | null;
+  candidate_cpu_user_ms: number | null;
+  delta_cpu_user_ms: number | null;
+  before_cache_tokens: number | null;
+  candidate_cache_tokens: number | null;
+  delta_cache_tokens: number | null;
+  before_cost_usd: number | null;
+  candidate_cost_usd: number | null;
+  delta_cost_usd: number | null;
+}>;
+
 export type PerformanceSection = Readonly<{
   schema_version: "xio-eval-performance.v1";
   before_bench_id: string | null;
   candidate_bench_id: string | null;
   deltas: Readonly<Record<string, PerformanceMetricDelta>>;
-  resource?: Readonly<{
-    before_rss_bytes: number | null;
-    candidate_rss_bytes: number | null;
-  }>;
+  resource?: PerformanceResourceDelta;
   hard_regressions: readonly string[];
   soft_regressions: readonly string[];
 }>;

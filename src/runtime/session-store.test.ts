@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -409,5 +410,102 @@ describe("SessionStore", () => {
     await rm(path.join(root, "legacyv2", JOURNAL_FILE), { force: true });
     const loaded = await store.load("legacyv2");
     expect(loaded.messages[0]?.content).toBe("only-snapshot");
+  });
+
+  it("journal hot path is O(delta): successive appends stay under 20ms P95 with large history", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const historySize = 400;
+    let messages: Array<{ role: "user" | "assistant"; content: string }> = Array.from(
+      { length: historySize },
+      (_, index) => ({ role: "user" as const, content: `hist-${index}-${"x".repeat(64)}` }),
+    );
+    const base = {
+      id: "hotpath",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp/worktree",
+      mainRoot: "/tmp/main",
+    };
+    await store.save({ ...base, messages, durability: "snapshot" });
+    const statePath = path.join(root, "hotpath", "state.json");
+    const before = await stat(statePath);
+
+    const samples: number[] = [];
+    const iterations = 40;
+    for (let index = 0; index < iterations; index += 1) {
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: `tool-result-${index}`,
+          // keep shape close to tool-heavy path
+        },
+      ];
+      const started = performance.now();
+      await store.save({
+        ...base,
+        messages,
+        execution: {
+          phase: "tool_batch_running",
+          turn_id: "t-hot",
+          pending_tools: [{ id: `c${index}`, name: "read" }],
+        },
+        durability: "journal",
+      });
+      samples.push(performance.now() - started);
+    }
+
+    const after = await stat(statePath);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+
+    samples.sort((left, right) => left - right);
+    const p95 = samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)]!;
+    expect(p95).toBeLessThan(20);
+
+    // Cold reload still materializes full history + journal.
+    const reloaded = new SessionStore({ root });
+    const loaded = await reloaded.load("hotpath");
+    expect(loaded.messages).toHaveLength(historySize + iterations);
+    expect(loaded.execution?.phase).toBe("tool_batch_running");
+  });
+
+  it("cold journal path still detects non-append rewrite and snapshots", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const writer = new SessionStore({ root });
+    await writer.save({
+      id: "rewrite",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [
+        { role: "user", content: "a" },
+        { role: "assistant", content: "b" },
+      ],
+    });
+    // Fresh process: no live cursor — content prefix check applies.
+    const cold = new SessionStore({ root });
+    await cold.save({
+      id: "rewrite",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [
+        { role: "user", content: "changed" },
+        { role: "assistant", content: "b" },
+        { role: "user", content: "c" },
+      ],
+      durability: "journal",
+    });
+    const state = JSON.parse(await readFile(path.join(root, "rewrite", "state.json"), "utf8")) as {
+      messages: Array<{ content: string }>;
+      revision: number;
+    };
+    // Non-append forced a snapshot rewrite (journal would leave wrong prefix).
+    expect(state.messages[0]?.content).toBe("changed");
+    expect(state.revision).toBe(2);
+    const journal = await readFile(path.join(root, "rewrite", JOURNAL_FILE), "utf8");
+    expect(journal.trim()).toBe("");
   });
 });

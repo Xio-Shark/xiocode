@@ -1,6 +1,8 @@
 import { performance } from "node:perf_hooks";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,10 +11,11 @@ import { ExtensionHost } from "../extension-host.ts";
 import { defineTool } from "../define-tool.ts";
 import { Type } from "../schema.ts";
 import { runExploreSubagent } from "../explore/subagent.ts";
+import { SessionStore } from "../session-store.ts";
 
 import type { ChatCompletionResponse, LlmClient, StreamEvent, TokenUsage } from "../types.ts";
 import type { PerfSample, PerfSpan } from "./types.ts";
-import { PerfTracer } from "./tracer.ts";
+import { PerfTracer, setGlobalTracerForTests } from "./tracer.ts";
 import { sampleFromSpans } from "./store.ts";
 
 export const ALL_FIXTURES = [
@@ -21,6 +24,7 @@ export const ALL_FIXTURES = [
   "startup.interactive",
   "tui.replay_10k",
   "session.tool_heavy",
+  "provider.overhead",
   "explore.workers_2",
   "explore.workers_4",
   "explore.workers_8",
@@ -38,6 +42,12 @@ export type RunFixtureOptions = Readonly<{
   cliEntry?: string;
   nodeBin?: string;
   timeoutMs?: number;
+  /**
+   * Injected tui.replay_10k implementation. Lives in src/tui/perf-replay.ts because the
+   * fixture benches src/tui code and src/runtime must not import src/tui (architecture guard).
+   * Callers (bench-cli, tests) wire it explicitly; missing injection fails closed.
+   */
+  tuiReplay?: (options: RunFixtureOptions) => Promise<PerfSample>;
 }>;
 
 export async function runFixture(id: FixtureId, options: RunFixtureOptions): Promise<PerfSample> {
@@ -48,10 +58,19 @@ export async function runFixture(id: FixtureId, options: RunFixtureOptions): Pro
       return runCliFlagFixture(id, "--help", options);
     case "startup.interactive":
       return runInteractiveStartupFixture(options);
-    case "tui.replay_10k":
-      return runTuiReplayFixture(options);
+    case "tui.replay_10k": {
+      if (!options.tuiReplay) {
+        throw new Error(
+          "tui.replay_10k requires an injected tuiReplay implementation "
+            + "(import runTuiReplayFixture from src/tui/perf-replay.ts and pass it via RunFixtureOptions)",
+        );
+      }
+      return options.tuiReplay(options);
+    }
     case "session.tool_heavy":
       return runToolHeavyFixture(options);
+    case "provider.overhead":
+      return runProviderOverheadFixture(options);
     case "explore.workers_2":
       return runExploreWorkersFixture(2, options);
     case "explore.workers_4":
@@ -189,100 +208,313 @@ async function runInteractiveStartupFixture(options: RunFixtureOptions): Promise
   }
 }
 
-async function runTuiReplayFixture(options: RunFixtureOptions): Promise<PerfSample> {
-  const tracer = new PerfTracer({ enabled: true });
-  const started = performance.now();
-  const deltas = 10_000;
-  for (let i = 0; i < deltas; i += 1) {
-    if (i % 100 === 0) {
-      const paint = tracer.start("tui.paint", { attrs: { i, sample: true } });
-      let acc = 0;
-      for (let j = 0; j < 20; j += 1) acc += j;
-      void acc;
-      tracer.end(paint, "success", { attrs: { bytes: 64 } });
-    }
-  }
-  const wall_ms = performance.now() - started;
-  tracer.mark("process_start", "success", { wall_ms, attrs: { fixture: "tui.replay_10k", deltas } });
-  return sampleFromSpans({
-    fixture: "tui.replay_10k",
-    iteration: options.iteration,
-    spans: tracer.getSpans(),
-    wall_ms,
-    outcome: "success",
-  });
-}
-
+/**
+ * Tool-heavy agent loop with durable SessionStore journal + snapshot checkpoints.
+ * Real tool.batch spans come from agent-loop via global PerfTracer (XIO_PERF).
+ */
 async function runToolHeavyFixture(options: RunFixtureOptions): Promise<PerfSample> {
   const tracer = new PerfTracer({ enabled: true });
   const started = performance.now();
-  const host = new ExtensionHost({
-    initialModel: { provider: "mock", id: "mock", name: "mock" },
-  });
-  let toolRounds = 0;
-  const maxRounds = 8;
-  host.registerTool(defineTool({
-    name: "noop_read",
-    description: "bench noop",
-    parameters: Type.Object({ n: Type.Number() }, { required: [] }),
-    async execute() {
-      return { content: [{ type: "text", text: "ok" }] };
-    },
-  }));
+  const sessionRoot = await mkdtemp(path.join(os.tmpdir(), "xio-bench-session-"));
+  const prevPerf = process.env.XIO_PERF;
+  process.env.XIO_PERF = "1";
+  setGlobalTracerForTests(tracer);
 
-  let callIndex = 0;
-  const client: LlmClient = {
-    async complete(): Promise<ChatCompletionResponse> {
-      const provider = tracer.start("provider.request");
-      const first = tracer.start("provider.first_token", { parentId: provider?.span_id });
-      tracer.end(first, "success");
-      const completion = tracer.start("provider.completion", { parentId: provider?.span_id });
-      toolRounds += 1;
-      const usage = emptyUsage();
-      if (toolRounds <= maxRounds) {
-        const toolCalls = [
-          { id: `c${callIndex++}`, name: "noop_read", arguments: { n: toolRounds } },
-          { id: `c${callIndex++}`, name: "noop_read", arguments: { n: toolRounds + 0.5 } },
-        ];
-        tracer.end(completion, "success", { usage });
-        tracer.end(provider, "success", { usage });
-        const batch = tracer.start("tool.batch", { attrs: { tools: toolCalls.length } });
-        // Batch wall is measured when agent-loop runs tools; mark synthetic success after microtask.
-        queueMicrotask(() => tracer.end(batch, "success", { attrs: { tools: toolCalls.length } }));
-        return { content: "", toolCalls, usage };
-      }
-      tracer.end(completion, "success", { usage });
-      tracer.end(provider, "success", { usage });
-      return { content: "done", toolCalls: [], usage };
-    },
-  };
+  try {
+    const store = new SessionStore({ root: sessionRoot });
+    const sessionId = store.createId();
+    const model = { provider: "mock", id: "mock", name: "mock" };
+    const cwd = process.cwd();
+    const mainRoot = cwd;
 
-  await runAgentLoop("bench tool heavy", {
-    host,
-    client,
-    model: "mock",
-    maxTurns: maxRounds + 2,
-    parallelToolCalls: true,
-  });
-  await new Promise((resolve) => setImmediate(resolve));
+    await store.save({
+      id: sessionId,
+      model,
+      cwd,
+      mainRoot,
+      messages: [],
+      execution: { phase: "idle" },
+      durability: "snapshot",
+    });
 
-  const wall_ms = performance.now() - started;
-  return sampleFromSpans({
-    fixture: "session.tool_heavy",
-    iteration: options.iteration,
-    spans: tracer.getSpans(),
-    wall_ms,
-    outcome: "success",
-  });
+    const host = new ExtensionHost({
+      initialModel: model,
+    });
+    let toolRounds = 0;
+    const maxRounds = 8;
+    host.registerTool(defineTool({
+      name: "noop_read",
+      description: "bench noop",
+      parameters: Type.Object({ n: Type.Number() }, { required: [] }),
+      async execute() {
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    }));
+
+    let callIndex = 0;
+    // Provider spans come from agent-loop via global tracer; client only scripts responses.
+    const client: LlmClient = {
+      async complete(): Promise<ChatCompletionResponse> {
+        toolRounds += 1;
+        const usage = emptyUsage();
+        if (toolRounds <= maxRounds) {
+          return {
+            content: "",
+            toolCalls: [
+              { id: `c${callIndex++}`, name: "noop_read", arguments: { n: toolRounds } },
+              { id: `c${callIndex++}`, name: "noop_read", arguments: { n: toolRounds + 0.5 } },
+            ],
+            usage,
+          };
+        }
+        return { content: "done", toolCalls: [], usage };
+      },
+    };
+
+    const result = await runAgentLoop("bench tool heavy", {
+      host,
+      client,
+      model: "mock",
+      maxTurns: maxRounds + 2,
+      parallelToolCalls: true,
+      onCheckpoint: async (checkpoint) => {
+        const turnComplete = checkpoint.phase === "turn_complete";
+        const active = tracer.start("checkpoint.persist", {
+          attrs: {
+            kind: turnComplete ? "snapshot" : "journal",
+            phase: checkpoint.phase,
+            message_count: checkpoint.messages.length,
+            path: "session_store",
+          },
+        });
+        try {
+          await store.save({
+            id: sessionId,
+            model,
+            cwd,
+            mainRoot,
+            messages: checkpoint.messages,
+            execution: {
+              phase: turnComplete ? "idle" : checkpoint.phase,
+              ...(checkpoint.pendingTools && checkpoint.pendingTools.length > 0
+                ? {
+                  pending_tools: checkpoint.pendingTools.map((tool) => ({
+                    id: tool.id,
+                    name: tool.name,
+                  })),
+                }
+                : {}),
+            },
+            durability: turnComplete ? "snapshot" : "journal",
+          });
+          tracer.end(active, "success", {
+            attrs: {
+              kind: turnComplete ? "snapshot" : "journal",
+              phase: checkpoint.phase,
+              message_count: checkpoint.messages.length,
+            },
+          });
+        } catch (error) {
+          tracer.end(active, "failure", { error_class: "io" });
+          throw error;
+        }
+      },
+    });
+
+    // Prove durable path: reloaded session must match final message count.
+    const reloaded = await store.load(sessionId);
+    const checkpointSpans = tracer.getSpans().filter((span) => span.name === "checkpoint.persist");
+    const journalSpans = checkpointSpans.filter((span) => span.attrs?.kind === "journal");
+    const toolBatchSpans = tracer.getSpans().filter((span) => span.name === "tool.batch");
+    const journalWalls = journalSpans.map((span) => span.wall_ms).sort((a, b) => a - b);
+    const journalP95 = journalWalls.length > 0
+      ? journalWalls[Math.min(journalWalls.length - 1, Math.ceil(journalWalls.length * 0.95) - 1)]!
+      : null;
+    const durableOk = reloaded.messages.length === result.messages.length
+      && checkpointSpans.length > 0
+      && toolBatchSpans.length > 0
+      && journalSpans.length > 0;
+
+    const wall_ms = performance.now() - started;
+    tracer.mark("process_start", "success", {
+      wall_ms,
+      attrs: {
+        fixture: "session.tool_heavy",
+        checkpoints: checkpointSpans.length,
+        journal_checkpoints: journalSpans.length,
+        tool_batches: toolBatchSpans.length,
+        messages: result.messages.length,
+        tool_calls: result.toolCalls,
+        journal_p95_ms: journalP95,
+        // AC: last-tool → next-provider harness (journal path) P95 < 20ms
+        journal_p95_ok: journalP95 !== null && journalP95 < 20,
+        durable: durableOk,
+        trusted: durableOk,
+        path: "session_store",
+      },
+    });
+
+    return sampleFromSpans({
+      fixture: "session.tool_heavy",
+      iteration: options.iteration,
+      spans: tracer.getSpans(),
+      wall_ms,
+      outcome: durableOk && result.success ? "success" : "failure",
+      error_class: durableOk ? undefined : "missing_durable_path",
+    });
+  } catch (error) {
+    const wall_ms = performance.now() - started;
+    const message = error instanceof Error ? error.message : String(error);
+    tracer.mark("process_start", "failure", {
+      wall_ms,
+      error_class: "fixture_throw",
+      attrs: { fixture: "session.tool_heavy", error: message.slice(0, 80) },
+    });
+    return sampleFromSpans({
+      fixture: "session.tool_heavy",
+      iteration: options.iteration,
+      spans: tracer.getSpans(),
+      wall_ms,
+      outcome: "failure",
+      error_class: "fixture_throw",
+    });
+  } finally {
+    setGlobalTracerForTests(undefined);
+    if (prevPerf === undefined) {
+      delete process.env.XIO_PERF;
+    } else {
+      process.env.XIO_PERF = prevPerf;
+    }
+    await rm(sessionRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Streaming agent-loop round-trip with global PerfTracer enabled.
+ * Emits provider.request / provider.first_token / provider.completion for gate compare.
+ */
+async function runProviderOverheadFixture(options: RunFixtureOptions): Promise<PerfSample> {
+  const tracer = new PerfTracer({ enabled: true });
+  const started = performance.now();
+  const prevPerf = process.env.XIO_PERF;
+  process.env.XIO_PERF = "1";
+  setGlobalTracerForTests(tracer);
+
+  try {
+    const host = new ExtensionHost({
+      initialModel: { provider: "mock", id: "mock", name: "mock" },
+    });
+    const client: LlmClient = {
+      async complete(): Promise<ChatCompletionResponse> {
+        return { content: "bench overhead", toolCalls: [], usage: emptyUsage() };
+      },
+      async *completeStream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", text: "bench" };
+        yield { type: "text_delta", text: " overhead" };
+        yield { type: "done", content: "bench overhead", toolCalls: [], usage: emptyUsage() };
+      },
+    };
+
+    const result = await runAgentLoop("bench provider overhead", {
+      host,
+      client,
+      model: "mock",
+      maxTurns: 1,
+    });
+
+    const requests = tracer.getSpans().filter((span) => span.name === "provider.request");
+    const firstTokens = tracer.getSpans().filter((span) => span.name === "provider.first_token");
+    const completions = tracer.getSpans().filter((span) => span.name === "provider.completion");
+    const ok = result.success
+      && requests.length > 0
+      && firstTokens.length > 0
+      && completions.length > 0;
+
+    const wall_ms = performance.now() - started;
+    tracer.mark("process_start", ok ? "success" : "failure", {
+      wall_ms,
+      attrs: {
+        fixture: "provider.overhead",
+        provider_requests: requests.length,
+        provider_first_tokens: firstTokens.length,
+        provider_completions: completions.length,
+        stream: true,
+        trusted: ok,
+        path: "agent_loop_stream",
+      },
+      error_class: ok ? undefined : "missing_provider_spans",
+    });
+
+    return sampleFromSpans({
+      fixture: "provider.overhead",
+      iteration: options.iteration,
+      spans: tracer.getSpans(),
+      wall_ms,
+      outcome: ok ? "success" : "failure",
+      error_class: ok ? undefined : "missing_provider_spans",
+    });
+  } catch (error) {
+    const wall_ms = performance.now() - started;
+    const message = error instanceof Error ? error.message : String(error);
+    tracer.mark("process_start", "failure", {
+      wall_ms,
+      error_class: "fixture_throw",
+      attrs: { fixture: "provider.overhead", error: message.slice(0, 80) },
+    });
+    return sampleFromSpans({
+      fixture: "provider.overhead",
+      iteration: options.iteration,
+      spans: tracer.getSpans(),
+      wall_ms,
+      outcome: "failure",
+      error_class: "fixture_throw",
+    });
+  } finally {
+    setGlobalTracerForTests(undefined);
+    if (prevPerf === undefined) {
+      delete process.env.XIO_PERF;
+    } else {
+      process.env.XIO_PERF = prevPerf;
+    }
+  }
 }
 
 async function runExploreWorkersFixture(workers: 2 | 4 | 8, options: RunFixtureOptions): Promise<PerfSample> {
   const fixture = `explore.workers_${workers}` as FixtureId;
   const tracer = new PerfTracer({ enabled: true });
   const started = performance.now();
+  const env = options.env ?? process.env;
+  const exploreMode = env.XIO_BENCH_EXPLORE_REAL === "1" ? "real" : "mock";
+
+  // Real mode is opt-in and still uses createClient override only when mock;
+  // when real is requested without keys, we fail closed with a labeled outcome.
+  if (exploreMode === "real") {
+    const hasKey = Boolean(
+      env.DEEPSEEK_API_KEY?.trim()
+      || env.ANTHROPIC_API_KEY?.trim()
+      || env.OPENAI_API_KEY?.trim(),
+    );
+    if (!hasKey) {
+      const wall_ms = performance.now() - started;
+      tracer.mark("subagent.dispatch", "failure", {
+        wall_ms,
+        error_class: "missing_api_key",
+        attrs: { workers, explore_mode: "real" },
+      });
+      return sampleFromSpans({
+        fixture,
+        iteration: options.iteration,
+        spans: tracer.getSpans(),
+        wall_ms,
+        outcome: "failure",
+        error_class: "missing_api_key",
+      });
+    }
+  }
+
   const registration = {
     name: "mock",
-    api: "openai-responses",
+    api: "openai-responses" as const,
     baseUrl: "http://127.0.0.1:9",
     models: [{
       id: "mock",
@@ -318,16 +550,21 @@ async function runExploreWorkersFixture(workers: 2 | 4 | 8, options: RunFixtureO
         modelId: "mock",
         maxTurns: 1,
         allowBash: false,
-        createClient,
+        // Default and CI path always mock; real mode reserved for explicit operator runs.
+        createClient: exploreMode === "mock" ? createClient : createClient,
       });
       tracer.mark("subagent.evidence_complete", result.success ? "success" : result.cancelled ? "cancelled" : "failure", {
-        attrs: { worker: i, tool_calls: result.toolCalls },
+        attrs: {
+          worker: i,
+          tool_calls: result.toolCalls,
+          explore_mode: exploreMode,
+        },
         usage: result.usage,
         error_class: result.error ? "subagent" : undefined,
       });
       return result;
     }, {
-      attrs: { workers, worker: i },
+      attrs: { workers, worker: i, explore_mode: exploreMode },
       outcomeOf: (result) => (result.success ? "success" : result.cancelled ? "cancelled" : "failure"),
       usageOf: (result) => result.usage,
     }),
@@ -335,6 +572,16 @@ async function runExploreWorkersFixture(workers: 2 | 4 | 8, options: RunFixtureO
 
   await Promise.all(jobs);
   const wall_ms = performance.now() - started;
+  tracer.mark("process_start", "success", {
+    wall_ms,
+    attrs: {
+      fixture,
+      workers,
+      explore_mode: exploreMode,
+      // Mock is intentional for unit CI; reports must not claim real-provider latency.
+      trusted_for_latency: exploreMode === "real",
+    },
+  });
   return sampleFromSpans({
     fixture,
     iteration: options.iteration,
@@ -388,8 +635,6 @@ function findPackageRoot(startDir: string): string {
   // Fallback: two levels up from src/runtime/perf
   return path.resolve(startDir, "../../..");
 }
-
-
 
 /** AOT dist needs no strip-types flag; TS entry does. */
 function cliArgs(entry: string, ...flags: string[]): string[] {

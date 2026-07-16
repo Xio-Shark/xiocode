@@ -9,10 +9,19 @@ export type CoalesceFlush = (events: readonly TuiEvent[]) => void;
 const DEFAULT_FRAME_MS = 16;
 
 export function isSoftDelta(event: TuiEvent): event is SoftDeltaEvent {
-  return event.kind === "assistant-delta" || event.kind === "thinking-delta";
+  return event.kind === "assistant-delta"
+    || event.kind === "thinking-delta"
+    || event.kind === "subagent-assistant-delta"
+    || event.kind === "subagent-thinking-delta";
 }
 
-type SoftDeltaEvent = Extract<TuiEvent, { kind: "assistant-delta" | "thinking-delta" }>;
+type SoftDeltaEvent = Extract<TuiEvent, {
+  kind:
+    | "assistant-delta"
+    | "thinking-delta"
+    | "subagent-assistant-delta"
+    | "subagent-thinking-delta";
+}>;
 
 /**
  * Buffers assistant/thinking deltas and flushes on a timer or when a hard event
@@ -79,11 +88,12 @@ export function mergeSoftDeltas(events: readonly TuiEvent[]): readonly TuiEvent[
       && isSoftDelta(last)
       && isSoftDelta(event)
       && last.kind === event.kind
+      && (!("workerId" in last) || !("workerId" in event) || last.workerId === event.workerId)
     ) {
-      const merged: SoftDeltaEvent = {
-        kind: last.kind,
+      const merged = {
+        ...last,
         text: last.text + event.text,
-      };
+      } as SoftDeltaEvent;
       out[out.length - 1] = merged;
     } else {
       out.push(event);

@@ -1,19 +1,20 @@
 {
   "schema_version": "xio-eval-gate-manifest.v1",
   "id": "default-gate",
-  "version": "1.0.0",
-  "description": "Frozen multi-axis gate: safety/capability hard-fail, performance budgets, private join (never auto-merge).",
+  "version": "1.2.0",
+  "description": "Frozen multi-axis gate: safety/capability hard-fail, performance budgets (latency + resource/cache/cost), awareness, private join (never auto-merge).",
   "performance": {
     "groups": {
       "startup": ["cli.version", "cli.help", "startup.interactive"],
       "rendering": ["tui.replay_10k"],
       "persistence": ["session.tool_heavy"],
+      "provider": ["provider.request", "provider.first_token", "provider.completion", "provider.overhead"],
       "subagent": ["explore.workers_2", "explore.workers_4", "explore.workers_8"]
     },
     "thresholds": [
       {
         "metric": "fixture.cli.version.wall",
-        "required": false,
+        "required": true,
         "hard_p95_regression_ms": 200,
         "soft_p95_regression_ms": 50,
         "hard_p50_regression_ms": 100,
@@ -27,7 +28,7 @@
       },
       {
         "metric": "fixture.startup.interactive.wall",
-        "required": false,
+        "required": true,
         "hard_p95_regression_ms": 500,
         "soft_p95_regression_ms": 150
       },
@@ -39,9 +40,27 @@
       },
       {
         "metric": "fixture.session.tool_heavy.wall",
-        "required": false,
+        "required": true,
         "hard_p95_regression_ms": 1000,
         "soft_p95_regression_ms": 250
+      },
+      {
+        "metric": "fixture.provider.overhead.wall",
+        "required": true,
+        "hard_p95_regression_ms": 300,
+        "soft_p95_regression_ms": 100
+      },
+      {
+        "metric": "provider.request",
+        "required": true,
+        "hard_p95_regression_ms": 400,
+        "soft_p95_regression_ms": 120
+      },
+      {
+        "metric": "provider.first_token",
+        "required": true,
+        "hard_p95_regression_ms": 500,
+        "soft_p95_regression_ms": 150
       },
       {
         "metric": "fixture.explore.workers_2.wall",
@@ -63,9 +82,33 @@
       },
       {
         "metric": "usage.total_tokens",
-        "required": false,
+        "required": true,
         "hard_token_regression": 50000,
         "soft_token_regression": 10000
+      },
+      {
+        "metric": "usage.cache_tokens",
+        "required": false,
+        "hard_absolute_regression": 20000,
+        "soft_absolute_regression": 5000
+      },
+      {
+        "metric": "usage.cost_usd",
+        "required": true,
+        "hard_absolute_regression": 1.0,
+        "soft_absolute_regression": 0.25
+      },
+      {
+        "metric": "resource.rss_bytes",
+        "required": true,
+        "hard_absolute_regression": 104857600,
+        "soft_absolute_regression": 33554432
+      },
+      {
+        "metric": "resource.cpu_user_ms",
+        "required": false,
+        "hard_absolute_regression": 2000,
+        "soft_absolute_regression": 500
       }
     ]
   },
