@@ -4,6 +4,7 @@ import {
   createStdoutSessionUiSink,
   createStdoutSubagentUiBridge,
   formatToolOutputForDisplay,
+  formatUsageStatus,
   previewText,
   toolCallDetail,
   toolResultOutput,
@@ -130,5 +131,13 @@ describe("tool transcript helpers", () => {
     expect(preview.truncated).toBe(true);
     expect(preview.text.split("\n")).toHaveLength(9);
     expect(preview.text).toContain("4 more lines");
+  });
+});
+
+describe("formatUsageStatus", () => {
+  it("scales token counts and marks cost as an estimate", () => {
+    expect(formatUsageStatus(950)).toBe("tok:950 ~$0.00");
+    expect(formatUsageStatus(12_345)).toBe("tok:12.3k ~$0.01");
+    expect(formatUsageStatus(2_500_000)).toBe("tok:2.5M ~$2.50");
   });
 });
