@@ -49,7 +49,13 @@ export {
   tierForCount,
 } from "./scale.ts";
 export { Semaphore } from "./semaphore.ts";
-export { formatExploreUserPrompt, runExploreSubagent, withModelId } from "./subagent.ts";
+export {
+  formatExploreUserPrompt,
+  formatFailureDraftUserPrompt,
+  runExploreSubagent,
+  runFailureDraftSubagent,
+  withModelId,
+} from "./subagent.ts";
 export type { SubagentUiBridge, SubagentUiScope, SubagentUiSink } from "./subagent-ui.ts";
 export { noopSubagentUiBridge, scopeSubagentToolCall } from "./subagent-ui.ts";
 
