@@ -63,6 +63,7 @@ describe("App", () => {
       }),
       abortTurn() {},
       steer() {},
+      followUp() {},
       getMessages: () => [],
       workspacePerception: stubWorkspacePerception(),
       async close() {},
@@ -520,6 +521,7 @@ describe("App", () => {
   it("busy Enter soft-steers and ! hard-steers via session.steer (not queue-only)", async () => {
     const host = new ExtensionHost();
     const steers: Array<{ text: string; mode?: string }> = [];
+    const followUps: string[] = [];
     let releasePrompt!: () => void;
     const promptGate = new Promise<void>((resolve) => {
       releasePrompt = resolve;
@@ -528,6 +530,9 @@ describe("App", () => {
       ...createSession(host),
       steer(text, mode) {
         steers.push({ text, mode });
+      },
+      followUp(text) {
+        followUps.push(text);
       },
       runPrompt: async () => {
         await promptGate;
@@ -565,6 +570,12 @@ describe("App", () => {
       { text: "soft redirect", mode: "soft" },
       { text: "hard redirect", mode: "hard" },
     ]);
+
+    instance.stdin.write(">>after this");
+    instance.stdin.write("\r");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(followUps).toEqual(["after this"]);
+    expect(steers).toHaveLength(2);
 
     const frame = instance.lastFrame() ?? "";
     expect(frame).not.toMatch(/\[queued:/);
@@ -608,6 +619,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     }),
     abortTurn() {},
     steer() {},
+    followUp() {},
     getMessages: () => messages,
     workspacePerception: stubWorkspacePerception(),
     async close() {},

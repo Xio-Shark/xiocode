@@ -160,6 +160,12 @@ export type PreparedSession = Readonly<{
    * `auto` → hard when a turn is active, else soft.
    */
   steer: (text: string, mode?: SteerMode) => void;
+  /**
+   * Queue subsequent user work for the natural end of the current run
+   * (no more tool calls and soft steer empty). Distinct from composer UI queue
+   * and from soft steer (which adjusts the current turn).
+   */
+  followUp: (text: string) => void;
   getMessages: () => readonly ChatMessage[];
   /** Local workspace perception map + evidence store (non-blocking warm). */
   workspacePerception: WorkspacePerceptionService;
@@ -657,6 +663,27 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     }),
     abortTurn: () => {
       turnAbort?.abort();
+      // Pure abort (Stop): discard follow-ups visibly — never silent later execution.
+      const discarded = steerMailbox.clearFollowUp();
+      for (const item of discarded) {
+        runtimeEvents?.emit("follow_up.discarded", {
+          text: item.text,
+          id: item.id,
+          reason: "abort",
+        });
+      }
+      if (discarded.length > 0) {
+        runtimeEvents?.emit("queue_updated", {
+          soft: steerMailbox.list().filter((item) => item.mode === "soft").length,
+          hard: steerMailbox.list().filter((item) => item.mode === "hard").length,
+          follow_up: 0,
+        });
+        const preview = discarded.map((item) => item.text.slice(0, 40)).join("; ");
+        sink.notify?.(
+          `Follow-up discarded on abort (${discarded.length}): ${preview}`,
+          "warn",
+        );
+      }
     },
     steer: (text, mode = "auto") => {
       const busy = turnAbort !== undefined && turnAbort.signal.aborted === false;
@@ -667,9 +694,31 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         text: request.text,
         id: request.id,
       });
+      runtimeEvents?.emit("queue_updated", {
+        soft: steerMailbox.list().filter((item) => item.mode === "soft").length,
+        hard: steerMailbox.list().filter((item) => item.mode === "hard").length,
+        follow_up: steerMailbox.listFollowUp().length,
+      });
       if (request.mode === "hard") {
         turnAbort?.abort();
       }
+    },
+    followUp: (text) => {
+      const request = steerMailbox.enqueueFollowUp({ text });
+      runtimeEvents?.emit("follow_up.queued", {
+        text: request.text,
+        id: request.id,
+        pending: steerMailbox.listFollowUp().length,
+      });
+      runtimeEvents?.emit("queue_updated", {
+        soft: steerMailbox.list().filter((item) => item.mode === "soft").length,
+        hard: steerMailbox.list().filter((item) => item.mode === "hard").length,
+        follow_up: steerMailbox.listFollowUp().length,
+      });
+      sink.notify?.(
+        `Follow-up queued (after current task ends): ${request.text.slice(0, 80)}`,
+        "info",
+      );
     },
     getMessages: () => history.getMessages(),
   };
