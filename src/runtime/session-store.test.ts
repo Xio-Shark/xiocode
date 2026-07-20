@@ -508,4 +508,156 @@ describe("SessionStore", () => {
     const journal = await readFile(path.join(root, "rewrite", JOURNAL_FILE), "utf8");
     expect(journal.trim()).toBe("");
   });
+
+  it("persists durable compaction facts that survive kill+resume", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root, now: () => new Date("2026-07-20T00:00:00.000Z") });
+    await store.save({
+      id: "fact1",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "old" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: "continue" },
+      ],
+    });
+
+    const compacted = [
+      { role: "system" as const, content: "system" },
+      {
+        role: "system" as const,
+        name: CONTEXT_SUMMARY_NAME,
+        content: "[context summary]\nGoal: continue",
+      },
+      { role: "user" as const, content: "continue" },
+    ];
+    await store.save({
+      id: "fact1",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: compacted,
+      compaction: {
+        summary: "Goal: continue",
+        beforeMessages: 4,
+        afterMessages: 3,
+        beforeTokens: 40,
+        afterTokens: 20,
+        firstRetainedIndex: 3,
+      },
+    });
+
+    const state = JSON.parse(await readFile(path.join(root, "fact1", "state.json"), "utf8")) as {
+      compaction_log?: Array<{ summary: string; before_messages: number }>;
+      messages: Array<{ name?: string; content: string }>;
+    };
+    expect(state.compaction_log?.[0]?.summary).toBe("Goal: continue");
+    expect(state.compaction_log?.[0]?.before_messages).toBe(4);
+    expect(state.messages.some((message) => message.name === CONTEXT_SUMMARY_NAME)).toBe(true);
+
+    // Simulate process death: fresh store must rebuild projection + facts.
+    const reloaded = new SessionStore({ root });
+    const loaded = await reloaded.load("fact1");
+    expect(loaded.compactionLog?.[0]?.summary).toBe("Goal: continue");
+    expect(loaded.messages.some((message) => message.name === CONTEXT_SUMMARY_NAME)).toBe(true);
+    expect(loaded.messages.some((message) => message.content === "old")).toBe(false);
+  });
+
+  it("rebuilds compacted projection from journal when snapshot never landed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root, now: () => new Date("2026-07-20T01:00:00.000Z") });
+    await store.save({
+      id: "crash-compact",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "old work" },
+        { role: "assistant", content: "done old" },
+        { role: "user", content: "keep me" },
+      ],
+    });
+
+    // Manually append a compaction WAL record as if crash occurred after journal
+    // append and before state.json rewrite / truncate.
+    const { appendJournal } = await import("./session-wal.ts");
+    const projected = [
+      { role: "system" as const, content: "system" },
+      {
+        role: "system" as const,
+        name: CONTEXT_SUMMARY_NAME,
+        content: "[context summary]\ncrash-safe summary",
+      },
+      { role: "user" as const, content: "keep me" },
+    ];
+    await appendJournal({
+      directory: path.join(root, "crash-compact"),
+      nextSeq: 1,
+      now: () => new Date("2026-07-20T01:00:01.000Z"),
+      compaction: {
+        fact: {
+          summary: "crash-safe summary",
+          before_messages: 4,
+          after_messages: 3,
+          before_tokens: 50,
+          after_tokens: 25,
+          first_retained_index: 3,
+        },
+        messages: projected,
+      },
+    });
+
+    const reloaded = new SessionStore({ root });
+    const loaded = await reloaded.load("crash-compact");
+    expect(loaded.messages).toEqual(projected);
+    expect(loaded.compactionLog?.[0]?.summary).toBe("crash-safe summary");
+  });
+
+  it("ignores unknown journal op kinds for forward compatibility", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root, now: () => new Date("2026-07-20T02:00:00.000Z") });
+    await store.save({
+      id: "fwd",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    await store.save({
+      id: "fwd",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ],
+      execution: { phase: "awaiting_provider", turn_id: "t1" },
+      durability: "journal",
+    });
+
+    // Inject a future op between known records by rewriting journal.
+    const journalPath = path.join(root, "fwd", JOURNAL_FILE);
+    const existing = (await readFile(journalPath, "utf8")).trimEnd();
+    const future = JSON.stringify({
+      schema_version: "xio-session-wal.v1",
+      seq: 3,
+      t: "2026-07-20T02:00:01.000Z",
+      op: "future_branch_label",
+      label: "experimental",
+    });
+    await writeFile(journalPath, `${existing}\n${future}\n`, "utf8");
+
+    const reloaded = new SessionStore({ root });
+    const loaded = await reloaded.load("fwd");
+    expect(loaded.messages).toHaveLength(2);
+    expect(loaded.execution?.phase).toBe("awaiting_provider");
+  });
 });

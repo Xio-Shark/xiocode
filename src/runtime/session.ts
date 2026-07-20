@@ -110,6 +110,8 @@ export type SessionSnapshot = Readonly<{
    * state.json rewrite at turn boundaries and session lifecycle events.
    */
   durability?: "snapshot" | "journal";
+  /** Durable compaction fact — appended to WAL before projection rewrite. */
+  compaction?: import("./context-compaction.ts").SessionCompactionFact;
 }>;
 
 export type PreparedSession = Readonly<{
@@ -249,7 +251,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   });
   const history = new SessionHistory({
     initialMessages: options.initialMessages,
-    persist: async (messages) => {
+    persist: async (messages, meta) => {
       const { getGlobalTracer } = await import("./perf/index.ts");
       const tracer = getGlobalTracer(options.env ?? process.env);
       const active = tracer?.start("checkpoint.persist", { attrs: { kind: "session_snapshot" } });
@@ -259,6 +261,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
           messages,
           execution: currentExecution,
           workspaceLifecycle,
+          ...(meta?.compaction ? { compaction: meta.compaction } : {}),
         });
         tracer?.end(active, "success");
       } catch (error) {

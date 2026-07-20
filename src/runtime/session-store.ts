@@ -7,11 +7,16 @@ import { z } from "zod";
 import {
   appendJournal,
   applyJournal,
+  compactionFactSchema,
   readJournal,
   truncateJournal,
   writeJsonAtomicDurable,
 } from "./session-wal.ts";
+import type { WalCompactionFact } from "./session-wal.ts";
+import type { SessionCompactionFact } from "./context-compaction.ts";
 import type { ChatMessage, ModelInfo } from "./types.ts";
+
+export type { SessionCompactionFact } from "./context-compaction.ts";
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 const STATE_FILE = "state.json";
@@ -93,6 +98,8 @@ const metadataV2Schema = z.object({
 
 const stateV2Schema = metadataV2Schema.extend({
   messages: z.array(messageSchema),
+  /** Auditable compaction facts; optional for forward/back compat with older v2 files. */
+  compaction_log: z.array(compactionFactSchema).optional(),
 });
 
 export type SessionWorkspace = z.infer<typeof workspaceSchema>;
@@ -109,6 +116,7 @@ export type StoredSession = Readonly<{
   messages: readonly ChatMessage[];
   workspace?: SessionWorkspace;
   execution?: SessionExecution;
+  compactionLog?: readonly WalCompactionFact[];
 }>;
 
 export type SaveSessionInput = Readonly<{
@@ -122,6 +130,11 @@ export type SaveSessionInput = Readonly<{
   workspace?: SessionWorkspace;
   execution?: SessionExecution;
   /**
+   * When set, append a durable `compaction` journal record before updating the
+   * projection snapshot. Required for audit/resume of context compaction.
+   */
+  compaction?: SessionCompactionFact;
+  /**
    * `snapshot` (default): atomic full state.json + truncate journal.
    * `journal`: append-only WAL for mid-turn checkpoints (O(delta) when the
    * process already holds a live cursor). Falls back to snapshot when the
@@ -132,8 +145,31 @@ export type SaveSessionInput = Readonly<{
 
 export function decodeSessionState(value: unknown): StoredSession {
   const state = stateV2Schema.parse(value);
-  const { messages, ...metadata } = state;
-  return { metadata, messages: messages as ChatMessage[], workspace: state.workspace, execution: state.execution };
+  const { messages, compaction_log: compactionLog, ...metadata } = state;
+  return {
+    metadata,
+    messages: messages as ChatMessage[],
+    workspace: state.workspace,
+    execution: state.execution,
+    ...(compactionLog && compactionLog.length > 0 ? { compactionLog } : {}),
+  };
+}
+
+export function toWalCompactionFact(
+  fact: SessionCompactionFact,
+  timestamp?: string,
+): WalCompactionFact {
+  return compactionFactSchema.parse({
+    summary: fact.summary,
+    before_messages: fact.beforeMessages,
+    after_messages: fact.afterMessages,
+    before_tokens: fact.beforeTokens,
+    after_tokens: fact.afterTokens,
+    first_retained_index: fact.firstRetainedIndex,
+    ...(fact.timestamp || timestamp
+      ? { t: fact.timestamp ?? timestamp }
+      : {}),
+  });
 }
 
 export class SessionStore {
@@ -234,6 +270,35 @@ export class SessionStore {
     const now = this.#now().toISOString();
     const workspace = workspaceSchema.parse(input.workspace ?? existing?.workspace ?? defaultWorkspace(input));
     const execution = executionSchema.parse(input.execution ?? existing?.execution ?? { phase: "idle" });
+    const directory = this.#sessionDirectory(input.id);
+    await mkdir(directory, { recursive: true });
+
+    // Crash-safe order: append durable compaction fact (+ projection) to the
+    // journal before rewriting state. Resume can rebuild from journal alone if
+    // the process dies between append and snapshot truncate.
+    if (input.compaction) {
+      let nextSeq = this.#nextSeq.get(input.id);
+      if (nextSeq === undefined) {
+        const journal = await readJournal(directory);
+        nextSeq = journal.nextSeq;
+      }
+      nextSeq = await appendJournal({
+        directory,
+        nextSeq,
+        now: this.#now,
+        compaction: {
+          fact: toWalCompactionFact(input.compaction, now),
+          messages: input.messages,
+        },
+      });
+      this.#nextSeq.set(input.id, nextSeq);
+    }
+
+    const priorLog = existing?.compactionLog ?? [];
+    const compactionLog = input.compaction
+      ? [...priorLog, toWalCompactionFact(input.compaction, now)].slice(-32)
+      : [...priorLog];
+
     const state = stateV2Schema.parse({
       schema_version: "xio-session.v2",
       revision: previousRevision(existing) + 1,
@@ -247,9 +312,8 @@ export class SessionStore {
       workspace,
       execution,
       messages: input.messages,
+      ...(compactionLog.length > 0 ? { compaction_log: compactionLog } : {}),
     });
-    const directory = this.#sessionDirectory(input.id);
-    await mkdir(directory, { recursive: true });
     await writeJsonAtomicDurable(path.join(directory, STATE_FILE), state);
     await truncateJournal(directory);
     const stored = decodeSessionState(state);
@@ -266,6 +330,11 @@ export class SessionStore {
     }
     if (!existing || existing.metadata.schema_version !== "xio-session.v2") {
       // First write or still on v1: must establish a durable snapshot baseline.
+      return this.#saveSnapshot(input);
+    }
+
+    // Compaction always takes the snapshot path (append fact, then rewrite).
+    if (input.compaction) {
       return this.#saveSnapshot(input);
     }
 
@@ -305,8 +374,8 @@ export class SessionStore {
     await mkdir(directory, { recursive: true });
     let nextSeq = this.#nextSeq.get(input.id);
     if (nextSeq === undefined) {
-      const records = await readJournal(directory);
-      nextSeq = records.length > 0 ? records[records.length - 1]!.seq + 1 : 1;
+      const journal = await readJournal(directory);
+      nextSeq = journal.nextSeq;
     }
 
     nextSeq = await appendJournal({
@@ -334,6 +403,7 @@ export class SessionStore {
       messages: input.messages,
       workspace: metadata.workspace,
       execution: metadata.execution,
+      ...(existing.compactionLog ? { compactionLog: existing.compactionLog } : {}),
     };
     this.#remember(input.id, stored, nextSeq);
     return stored;
@@ -355,8 +425,8 @@ export class SessionStore {
       const text = await readFile(path.join(directory, STATE_FILE), "utf8");
       const base = decodeSessionState(JSON.parse(text));
       const journal = await readJournal(directory);
-      if (journal.length === 0) {
-        this.#remember(id, base, 1);
+      if (journal.records.length === 0) {
+        this.#remember(id, base, journal.nextSeq);
         return base;
       }
       const applied = applyJournal({
@@ -364,11 +434,12 @@ export class SessionStore {
         model: base.metadata.model,
         workspace: base.workspace,
         execution: base.execution,
-      }, journal);
+        compactionLog: base.compactionLog,
+      }, journal.records);
       if (base.metadata.schema_version !== "xio-session.v2") {
         throw new Error("journal present without xio-session.v2 snapshot");
       }
-      const lastJournalTime = journal[journal.length - 1]?.t;
+      const lastJournalTime = journal.records[journal.records.length - 1]?.t;
       const metadata: SessionMetadataV2 = {
         ...base.metadata,
         model: applied.model ?? base.metadata.model,
@@ -382,8 +453,9 @@ export class SessionStore {
         messages: applied.messages,
         workspace: metadata.workspace,
         execution: metadata.execution,
+        ...(applied.compactionLog.length > 0 ? { compactionLog: applied.compactionLog } : {}),
       };
-      this.#remember(id, stored, applied.lastSeq + 1);
+      this.#remember(id, stored, journal.nextSeq);
       return stored;
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;

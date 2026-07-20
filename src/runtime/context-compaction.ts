@@ -28,6 +28,22 @@ export type ContextCompactionResult = Readonly<{
   after: number;
   messages: readonly ChatMessage[];
   usage: TokenUsage;
+  /** Present when compacted — durable fact for SessionStore / WAL. */
+  fact?: SessionCompactionFact;
+}>;
+
+export type SessionCompactionFact = Readonly<{
+  summary: string;
+  beforeMessages: number;
+  afterMessages: number;
+  beforeTokens: number;
+  afterTokens: number;
+  firstRetainedIndex: number;
+  timestamp?: string;
+}>;
+
+export type HistoryPersistMeta = Readonly<{
+  compaction?: SessionCompactionFact;
 }>;
 
 export class ContextCompactionError extends Error {
@@ -41,7 +57,10 @@ export function isContextCompactionError(error: unknown): error is ContextCompac
   return error instanceof ContextCompactionError;
 }
 
-type HistoryPersistence = (messages: readonly ChatMessage[]) => Promise<void> | void;
+type HistoryPersistence = (
+  messages: readonly ChatMessage[],
+  meta?: HistoryPersistMeta,
+) => Promise<void> | void;
 
 export class SessionHistory {
   #messages: ChatMessage[];
@@ -63,14 +82,18 @@ export class SessionHistory {
     return this.#messages.length;
   }
 
-  async replace(messages: readonly ChatMessage[]): Promise<void> {
+  /**
+   * Persist first (durable fact / projection), then update in-memory projection.
+   * If persistence throws, memory is unchanged.
+   */
+  async replace(messages: readonly ChatMessage[], meta?: HistoryPersistMeta): Promise<void> {
     const candidate = [...messages];
-    await this.#persist?.(candidate);
+    await this.#persist?.(candidate, meta);
     this.#messages = candidate;
   }
 
-  async persist(): Promise<void> {
-    await this.#persist?.(this.getMessages());
+  async persist(meta?: HistoryPersistMeta): Promise<void> {
+    await this.#persist?.(this.getMessages(), meta);
   }
 }
 
@@ -134,7 +157,9 @@ export class ContextCompactionController {
         focus,
         signal,
       });
-      if (result.compacted) await this.#history.replace(result.messages);
+      if (result.compacted) {
+        await this.#history.replace(result.messages, result.fact ? { compaction: result.fact } : undefined);
+      }
       await this.#emit({
         stage: result.compacted ? "success" : "skip",
         mode,
@@ -176,8 +201,10 @@ export async function compactSessionMessages(options: Readonly<{
   signal?: AbortSignal;
 }>): Promise<ContextCompactionResult> {
   assertMaxSessionMessages(options.maxMessages);
+  assertCompleteToolBatches(options.messages);
+  const beforeTokens = estimateMessagesTokens(options.messages);
   const tokenPressure = options.maxTokens !== undefined
-    && estimateMessagesTokens(options.messages) > options.maxTokens;
+    && beforeTokens > options.maxTokens;
   const plan = planCompaction(options.messages, options.maxMessages, {
     force: tokenPressure,
     maxTokens: options.maxTokens,
@@ -213,17 +240,56 @@ export async function compactSessionMessages(options: Readonly<{
   if (messages.length >= options.messages.length && !tokenPressure) {
     throw new Error("context compaction did not reduce the session history");
   }
-  if (tokenPressure && estimateMessagesTokens(messages) >= estimateMessagesTokens(options.messages)
+  if (tokenPressure && estimateMessagesTokens(messages) >= beforeTokens
     && messages.length >= options.messages.length) {
     throw new Error("context compaction did not reduce the session history under token budget");
   }
+  const afterTokens = estimateMessagesTokens(messages);
+  const firstRetained = plan.recent[0]?.[0];
+  const firstRetainedIndex = firstRetained
+    ? Math.max(0, options.messages.findIndex((message) => message === firstRetained))
+    : Math.max(0, options.messages.length - 1);
   return {
     compacted: true,
     before: options.messages.length,
     after: messages.length,
     messages,
     usage: completion.usage ?? emptyTokenUsage(),
+    fact: {
+      summary,
+      beforeMessages: options.messages.length,
+      afterMessages: messages.length,
+      beforeTokens,
+      afterTokens,
+      firstRetainedIndex,
+    },
   };
+}
+
+/**
+ * Refuse compaction when any assistant tool call lacks a matching tool result.
+ * Cuts must land on complete turn boundaries (assistant + all tool results).
+ */
+export function assertCompleteToolBatches(messages: readonly ChatMessage[]): void {
+  const pending = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+      for (const call of message.toolCalls) {
+        pending.set(call.id, call.name);
+      }
+    }
+    if (message.role === "tool" && message.toolCallId) {
+      pending.delete(message.toolCallId);
+    }
+  }
+  if (pending.size === 0) return;
+  const missing = [...pending.entries()]
+    .map(([id, name]) => `${name}(${id})`)
+    .join(", ");
+  throw new ContextCompactionError(
+    `context compaction refused: incomplete tool batch (missing results for: ${missing}); `
+    + "wait for a complete turn boundary",
+  );
 }
 
 export function assertMessageBudget(messages: readonly ChatMessage[], maxMessages: number): void {

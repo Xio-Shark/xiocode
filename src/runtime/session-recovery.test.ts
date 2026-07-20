@@ -94,4 +94,87 @@ describe("session recovery", () => {
     expect(recovered?.filesRecoverable).toBe(false);
     expect(recovered?.messages.at(-1)?.content).toMatch(/legacy chat only/i);
   });
+
+  it("repairs compacted interrupted sessions without re-dispatching tools", () => {
+    const stored: StoredSession = {
+      metadata: {
+        schema_version: "xio-session.v2",
+        revision: 2,
+        id: "compacted-resume",
+        model: { provider: "test", id: "model" },
+        cwd: "/tmp/worktree",
+        main_root: "/tmp/main",
+        worktree_path: "/tmp/worktree",
+        created_at: "2026-07-20T00:00:00.000Z",
+        updated_at: "2026-07-20T00:00:00.000Z",
+        workspace: {
+          mode: "worktree",
+          lifecycle: "active",
+          main_root: "/tmp/main",
+          worktree_path: "/tmp/worktree",
+          branch: "xio/compacted",
+          base_ref: "abc",
+          repo_id: "repo",
+          session_id: "compacted-resume",
+          epoch: 0,
+        },
+        execution: {
+          phase: "tool_batch_running",
+          pending_tools: [{ id: "call-9", name: "bash" }],
+        },
+      },
+      workspace: {
+        mode: "worktree",
+        lifecycle: "active",
+        main_root: "/tmp/main",
+        worktree_path: "/tmp/worktree",
+        branch: "xio/compacted",
+        base_ref: "abc",
+        repo_id: "repo",
+        session_id: "compacted-resume",
+        epoch: 0,
+      },
+      execution: {
+        phase: "tool_batch_running",
+        pending_tools: [{ id: "call-9", name: "bash" }],
+      },
+      compactionLog: [{
+        summary: "Prior turns compacted",
+        before_messages: 20,
+        after_messages: 4,
+        before_tokens: 8000,
+        after_tokens: 400,
+        first_retained_index: 16,
+        t: "2026-07-20T00:00:00.000Z",
+      }],
+      messages: [
+        { role: "system", content: "system" },
+        {
+          role: "system",
+          name: "xiocode_context_summary",
+          content: "[context summary]\nPrior turns compacted",
+        },
+        { role: "user", content: "finish the edit" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call-9", name: "bash", arguments: { command: "true" } }],
+        },
+      ],
+    };
+
+    // Recovery is pure message projection repair — no tool executor is involved.
+    const recovered = recoverStoredSession(stored, new Date("2026-07-20T01:00:00.000Z"));
+    expect(recovered?.interruptedTools).toBe(1);
+    expect(recovered?.messages.some((message) =>
+      message.role === "tool" && message.toolCallId === "call-9"
+      && String(message.content).includes("completion unknown")
+    )).toBe(true);
+    expect(recovered?.messages.some((message) => message.name === "xiocode_context_summary")).toBe(true);
+    // Historical tool call remains a message fact; it is not executed.
+    expect(recovered?.messages.some((message) =>
+      message.role === "assistant"
+      && message.toolCalls?.some((call) => call.id === "call-9")
+    )).toBe(true);
+  });
 });

@@ -136,6 +136,38 @@ describe("compactSessionMessages", () => {
       .toEqual(["one", "two"]);
     expect(result.messages.filter((message) => message.role === "tool").map((message) => message.toolCallId))
       .toEqual(["one", "two"]);
+    expect(result.fact?.summary).toBe("old summary");
+    expect(result.fact?.beforeMessages).toBe(messages.length);
+  });
+
+  it("rejects compaction when a tool batch is incomplete (half-batch cut)", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "system" },
+      { role: "user", content: "old" },
+      { role: "assistant", content: "old answer" },
+      { role: "user", content: "latest" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "one", name: "read", arguments: { path: "a" } },
+          { id: "two", name: "read", arguments: { path: "b" } },
+        ],
+      },
+      { role: "tool", toolCallId: "one", name: "read", content: "a" },
+      // missing tool result for "two"
+    ];
+    const client: LlmClient = {
+      async complete() {
+        return { content: "should not run", toolCalls: [] };
+      },
+    };
+    await expect(compactSessionMessages({
+      messages,
+      client,
+      model: "stub",
+      maxMessages: 8,
+    })).rejects.toThrow(/incomplete tool batch/i);
   });
 });
 
@@ -180,6 +212,38 @@ describe("ContextCompactionController", () => {
 
     await expect(controller.compact("manual")).rejects.toThrow("disk full");
     expect(history.getMessages()).toEqual(baseHistory);
+  });
+
+  it("persists compaction fact before updating in-memory projection", async () => {
+    const order: string[] = [];
+    let persistedFact: { summary: string } | undefined;
+    const history = new SessionHistory({
+      initialMessages: baseHistory,
+      persist: async (_messages, meta) => {
+        order.push("persist");
+        expect(meta?.compaction?.summary).toBe("durable summary");
+        persistedFact = meta?.compaction;
+        // Projection must still be the pre-compact history until persist returns.
+        expect(history.getMessages()).toEqual(baseHistory);
+      },
+    });
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => ({
+        async complete() {
+          return { content: "durable summary", toolCalls: [] };
+        },
+      }),
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 8,
+    });
+
+    const result = await controller.compact("manual");
+    order.push("done");
+    expect(result.compacted).toBe(true);
+    expect(persistedFact?.summary).toBe("durable summary");
+    expect(history.getMessages().some((message) => message.name === CONTEXT_SUMMARY_NAME)).toBe(true);
+    expect(order).toEqual(["persist", "done"]);
   });
 
   it("uses the configured budget as the automatic trigger", () => {

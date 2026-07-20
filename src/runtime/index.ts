@@ -36,6 +36,7 @@ export {
   ContextCompactionError,
   ContextCompactionController,
   SessionHistory,
+  assertCompleteToolBatches,
   compactSessionMessages,
   isContextCompactionError,
 } from "./context-compaction.ts";
@@ -122,7 +123,7 @@ export type {
 
 export type { DoneContract, DoneContractResult, DoneCommand } from "./verify/done-contract.ts";
 export type { SessionUiSink } from "./session-ui.ts";
-export type { ContextCompactionResult } from "./context-compaction.ts";
+export type { ContextCompactionResult, SessionCompactionFact } from "./context-compaction.ts";
 export type { AgentLoopCheckpoint } from "./agent-loop.ts";
 export type {
   SaveSessionInput,

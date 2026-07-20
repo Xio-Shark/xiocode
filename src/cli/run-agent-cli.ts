@@ -161,6 +161,7 @@ async function runPreparedLaunch(input: Readonly<{
       execution: snapshot.execution,
       createdAt: input.stored?.metadata.created_at,
       durability: snapshot.durability ?? "snapshot",
+      ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}),
     }).then(() => undefined),
     registerExtensions: createExtensionRegistrar(input.launch),
   };
