@@ -1,21 +1,19 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-20** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; active: Trellis parallel B/C).
+> Single delivery snapshot. Updated **2026-07-20** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
-> Active Trellis: [trellis-parallel-task-orchestration](../.trellis/tasks/07-16-trellis-parallel-task-orchestration/) (P2, MVP A archived → B/C/gate planning). Recently completed: [agent-harness-design-gaps](../.trellis/tasks/07-16-agent-harness-design-gaps/) (P1, **6/6**).
+> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**).
 
 ## Active Trellis (honest — not shipped)
 
 | Tree | Pri | Progress | What it closes |
 |------|-----|----------|----------------|
-| `07-16-trellis-parallel-task-orchestration` | P2 | **1/4** (MVP A archived) | Trellis **task DAG** (not product multi-tenant queue): sibling edges via `depends_on`; ready-set dispatch; xiocode optional worker only. |
-| └ MVP A | | **archived** | DAG protocol + CLI — `07-16-trellis-parallel-protocol-cli` |
-| └ Phase B/C + Full | | planning | `trellis-parallel-auto-spawn` → `trellis-parallel-xio-worker` → `trellis-parallel-integration-gate` |
+| _(none)_ | | | Parallel task DAG parent + children archived 2026-07-20. |
 
 ## Agent harness ↔ tutorial alignment (2026-07-20)
 
-Semantic parity with [Agent 工程教程](../Agent工程教程-完整参考.md) — **not** a file-format / API clone. Closed by `07-16-agent-harness-design-gaps`.
+Semantic parity with the local Agent engineering tutorial (not shipped in the public tree) — **not** a file-format / API clone. Closed by `07-16-agent-harness-design-gaps`.
 
 | Tutorial | Status | XioCode shape |
 |----------|--------|---------------|
@@ -139,14 +137,15 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - Mid-turn **steer** (`SteerMailbox`): soft at tool/provider boundaries; hard aborts in-flight provider/tools (incl. open-tool cancel); TUI busy Enter / `!text` / `>>text` (follow-up) wired; **never** inject into in-flight provider HTTP body.
   - **Follow-up queue**: drains only at natural end (no tool calls + soft empty); abort clears with visible `follow_up.discarded` (hard-steer hops keep queue).
   - Board: [agent-runtime-event-board](../.trellis/tasks/07-15-agent-runtime-event-board.md). Does **not** merge Session WAL with Run evidence storage.
-- **Trellis task DAG — MVP A** (archived `07-16-trellis-parallel-protocol-cli`; parent `07-16-trellis-parallel-task-orchestration`):
+- **Trellis task DAG — A→B→C→Integrate** (archived parent `07-16-trellis-parallel-task-orchestration` + children):
   - **Tree ≠ DAG**：`parent` / `children` 只表达归属；**依赖边是 sibling `depends_on`**（任务目录名列表），与树正交。
-  - **权威落点**：`task.json.depends_on` + `isolation`（`"worktree"` \| `"shared"`）；`prd.md` / `implement.md` 双写为投影；`task.py drift` 警告不一致（不阻断）。
+  - **权威落点**：`task.json.depends_on` + `isolation`（`"worktree"` \| `"shared"`）；`prd.md` / `implement.md` 双写为投影；`task.py drift` 警告不一致（B 可升 fail-closed）。
   - **Ready set**：每个 `depends_on` 目标为 completed/archived 才 ready；`task.py ready <parent>` 列 ready / blocked + 原因 + isolation；环检测 fail closed。
   - **隔离**：改码并行强制 `isolation=worktree`（独立 cwd/branch）；文档/只读可用 `shared`；**永不**同 cwd 裸多写。
-  - **执行（MVP）**：人确认后**手动**并行派 worker；无 parent / 空 `depends_on` 时行为与串行一致。
-  - **所有权**：DAG 调度在 **Trellis**；xiocode **不**内嵌 `depends_on` 引擎（Phase C 最多当 worker）。
-  - **未交付**：B `dispatch-ready` 自动 spawn / 波次；C 默认 `xio` worker + 上下文注入；Full 父任务 merge/check 集成闸门。
+  - **B `dispatch-ready`**：ready-set 波次 spawn、失败不解锁下游、`parallel.auto_confirm` / drift fail-closed。
+  - **C 默认 `xio` worker**：`parallel.worker`（fallback channel）、Active task + 规划产物注入、worktree cwd。
+  - **Full / L4**：`task.py integrate` merge + verify；冲突 → 串行 fix stub；worktree 子任务父 archive 需 `integrate_ok`。
+  - **所有权**：DAG 调度在 **Trellis**；xiocode **不**内嵌 `depends_on` 引擎（最多当 worker）。
 
 ## Known gaps (honest — do not paper over)
 
@@ -155,7 +154,6 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 - **Alignment observability**: steer + follow-up + tool integrity shipped; no single bench score for "model drift" yet; empty-tool-context bugs remain P0 harness defects.
 - **Performance residual**: live bench may omit full resource aggregates until harness emits them on every fixture path.
 - **RuntimeEvent follow-ups** (out of suite): bus→SessionUi for Text/TUI; explicit `reportProgress()` if progress is promised.
-- **Trellis task DAG B/C/Full** (active P2): protocol/ready/drift shipped; **scheduler** (`dispatch-ready` 对 ready set 自动 channel spawn、失败不解锁下游)、**xio worker**、**父集成闸门**仍 planning。
 - **Identity–behavior gap**: north star is speed + alignment + direct-cwd; self-improve flywheel is opt-in and still needs explicit failure + MergeGate (one-key offer lowers friction; does not auto-capture).
 - **Host isolation**: default is direct-cwd (not sandboxed); opt-in worktree is merge isolation only; `bash` / MCP remain host-reachable (`host_isolation: unsupported`).
 - **Cost / tracing (G8)**: TUI shows usage footer; no versioned price table yet → `estimated_cost_usd` often `null`; product-facing span tracing incomplete.
