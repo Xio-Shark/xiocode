@@ -41,6 +41,7 @@ export type HarnessControllerOptions = Readonly<{
  * Rules (tutorial §15):
  * - Structural ops (prompt, compaction) check+switch phase before first await.
  * - Soft steer stays queue-based (not admitted here).
+ * - Follow-up stays queue-based (natural-end drain only; not admitted here).
  * - waitForIdle drains tracked listener/persist work and does not return early.
  */
 export class HarnessController {

@@ -25,8 +25,10 @@ export {
 } from "./providers/scripted/index.ts";
 export {
   SteerMailbox,
+  formatFollowUpUserMessage,
   formatSteerUserMessage,
   resolveSteerMode,
+  type FollowUpRequest,
   type SteerMode,
   type SteerRequest,
 } from "./steer.ts";

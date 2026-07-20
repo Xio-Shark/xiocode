@@ -11,6 +11,7 @@ import {
   loadQueueIntoDraft,
   moveCursor,
   moveCursorLine,
+  parseBusySubmitIntent,
   queueWhileBusy,
   rememberSubmission,
   setComposerText,
@@ -83,6 +84,14 @@ describe("composer", () => {
     state = loadQueueIntoDraft(state);
     expect(state.queue).toBeUndefined();
     expect(state.text).toBe("follow up");
+  });
+
+  it("parseBusySubmitIntent distinguishes follow-up, hard, and soft", () => {
+    expect(parseBusySubmitIntent(">> later")).toEqual({ kind: "follow_up", text: "later" });
+    expect(parseBusySubmitIntent("!stop")).toEqual({ kind: "hard", text: "stop" });
+    expect(parseBusySubmitIntent("redirect")).toEqual({ kind: "soft", text: "redirect" });
+    expect(parseBusySubmitIntent(">>")).toBeUndefined();
+    expect(parseBusySubmitIntent("!")).toBeUndefined();
   });
 
   it("inserts newline on Shift+Enter without submitting", () => {
