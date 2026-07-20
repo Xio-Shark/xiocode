@@ -128,6 +128,15 @@ export type XioPermissionsConfig = Readonly<{
   allowHighRisk: boolean;
 }>;
 
+/**
+ * Project trust gate — whether to load project-local hooks/skills/MCP and allow write/exec.
+ * Persist decisions in ~/.xiocode/trust.json (see `src/runtime/project-trust.ts`).
+ */
+export type XioTrustConfig = Readonly<{
+  /** ask (default) | trust (always) | off (disable gate / dogfood). */
+  mode: "ask" | "trust" | "off";
+}>;
+
 /** Dogfood defaults for `xio improve` when CLI flags are omitted. */
 export type XioImproveConfig = Readonly<{
   /** Opt-in trusted capability gate before MergeGate ask. Default false. */
@@ -213,6 +222,7 @@ export type XioConfig = Readonly<{
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
+  trust: XioTrustConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
   explore: XioExploreConfig;
@@ -229,6 +239,8 @@ export type XioRuntimeConfig = Readonly<{
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
+  /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
+  trust?: XioTrustConfig;
   explore: XioExploreConfig;
   retrospective: XioRetrospectiveConfig;
   regress: XioRegressConfig;
@@ -279,6 +291,10 @@ const DEFAULT_PERMISSIONS: XioPermissionsConfig = {
   allowHighRisk: false,
 };
 
+const DEFAULT_TRUST: XioTrustConfig = {
+  mode: "ask",
+};
+
 const DEFAULT_IMPROVE: XioImproveConfig = {
   capabilityGate: false,
 };
@@ -325,6 +341,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const hooks = parseHooks(getTable(data, "hooks"));
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
+  const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
   const explore = parseExplore(getTable(data, "explore"));
@@ -341,6 +358,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     hooks,
     mcp,
     permissions,
+    trust,
     improve,
     regress,
     explore,
@@ -363,6 +381,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     hooks: config.hooks,
     mcp: config.mcp,
     permissions: config.permissions,
+    trust: config.trust,
     explore: config.explore,
     retrospective: config.retrospective,
     regress: config.regress,
@@ -519,6 +538,17 @@ function parsePermissions(table: Record<string, unknown> | undefined): XioPermis
   return {
     allowHighRisk: getOptionalBoolean(table, "allow_high_risk") ?? DEFAULT_PERMISSIONS.allowHighRisk,
   };
+}
+
+function parseTrust(table: Record<string, unknown> | undefined): XioTrustConfig {
+  const raw = getOptionalString(table, "mode")?.trim().toLowerCase();
+  if (raw === undefined) {
+    return { ...DEFAULT_TRUST };
+  }
+  if (raw === "ask" || raw === "trust" || raw === "off") {
+    return { mode: raw };
+  }
+  throw new Error(`trust.mode must be ask|trust|off (got ${JSON.stringify(raw)})`);
 }
 
 function parseImprove(table: Record<string, unknown> | undefined): XioImproveConfig {
