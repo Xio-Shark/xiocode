@@ -724,7 +724,7 @@ function liveConfigFromOptions(options: AgentLoopOptions): LiveConfigView {
     },
     modelId: options.model,
     providerName: options.providerName ?? options.host.model?.provider,
-    providerApi: options.providerApi ?? "openai-completions",
+    providerApi: options.providerApi ?? "unknown",
     client: options.client,
     parallelToolCalls: options.parallelToolCalls !== false,
     tools: options.host.listTools(),
