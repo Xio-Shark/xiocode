@@ -99,6 +99,8 @@ export type LoadMcpConfigsOptions = Readonly<{
   cwd: string;
   home?: string;
   config: McpConfig;
+  /** When false, skip project `.mcp.json` (user Claude/Cursor + config.toml still load). */
+  includeProject?: boolean;
   warn?: (message: string) => void;
 }>;
 
@@ -106,6 +108,8 @@ export type RegisterMcpBridgeOptions = Readonly<{
   cwd: string;
   home?: string;
   config: McpConfig;
+  /** When false, skip project `.mcp.json`. */
+  includeProject?: boolean;
   registerTool: (tool: ToolDefinition) => void;
   warn?: (message: string) => void;
   /** Called after each successful server registers its tools (hot-add). */
@@ -226,13 +230,15 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
     options.warn?.(message);
   }
 
-  await applyFile(path.join(cwd, ".mcp.json"), "project", (data) => {
-    const root = asRecord(data);
-    if (!root) {
-      return undefined;
-    }
-    return asRecord(root.mcpServers) ?? asRecord(root.servers);
-  });
+  if (options.includeProject !== false) {
+    await applyFile(path.join(cwd, ".mcp.json"), "project", (data) => {
+      const root = asRecord(data);
+      if (!root) {
+        return undefined;
+      }
+      return asRecord(root.mcpServers) ?? asRecord(root.servers);
+    });
+  }
 
   if (config.servers) {
     for (const [name, spec] of Object.entries(config.servers)) {
@@ -319,6 +325,7 @@ export function registerMcpBridge(
       cwd: options.cwd,
       home: options.home,
       config,
+      includeProject: options.includeProject,
       warn,
     });
 

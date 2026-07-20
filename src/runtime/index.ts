@@ -121,7 +121,17 @@ export type {
 } from "./types.ts";
 
 export type { DoneContract, DoneContractResult, DoneCommand } from "./verify/done-contract.ts";
-export type { SessionUiSink } from "./session-ui.ts";
+export {
+  decideTrust,
+  ensureProjectTrust,
+  grantTrust,
+  revokeTrust,
+  allowsProjectResources,
+  normalizeTrustPath,
+  type TrustDecision,
+  type TrustMode,
+  type ProjectTrustState,
+} from "./project-trust.ts";
 export type { ContextCompactionResult } from "./context-compaction.ts";
 export type { AgentLoopCheckpoint } from "./agent-loop.ts";
 export type {
