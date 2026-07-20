@@ -23,7 +23,11 @@ import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contr
 import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
 import type { RuntimeEventEmitter } from "./events/types.ts";
-import { formatSteerUserMessage, type SteerMailbox } from "./steer.ts";
+import {
+  formatFollowUpUserMessage,
+  formatSteerUserMessage,
+  type SteerMailbox,
+} from "./steer.ts";
 import {
   createTurnSnapshot,
   type LiveConfigView,
@@ -86,8 +90,10 @@ export type AgentLoopOptions = Readonly<{
    */
   runtimeEvents?: RuntimeEventEmitter;
   /**
-   * Soft steer mailbox: drained at tool-batch end and after a text-only provider
-   * step. Hard steers are applied by the outer session after abort (see session.steer).
+   * Soft/hard steer + follow-up mailbox.
+   * Soft: drained at tool-batch end and after a text-only provider step.
+   * Follow-up: drained only when the loop would otherwise end (no tools + soft empty).
+   * Hard: applied by the outer session after abort (see session.steer).
    * Never injects into the same in-flight provider stream body.
    */
   steerMailbox?: SteerMailbox;
@@ -196,6 +202,9 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
 
   if (options.signal?.aborted) {
     const hardSteer = options.steerMailbox?.takeHard();
+    if (!hardSteer) {
+      discardFollowUpsOnAbort(options, "abort");
+    }
     const cancelledPayload = {
       turnIndex,
       prompt: userPrompt,
@@ -238,6 +247,9 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
   await publishCheckpoint(options, { phase: "turn_complete", messages });
 
   const hardSteer = progress.cancelled ? options.steerMailbox?.takeHard() : undefined;
+  if (progress.cancelled && !hardSteer) {
+    discardFollowUpsOnAbort(options, "abort");
+  }
   const success = progress.cancelled
     ? false
     : progress.doneContract
@@ -474,6 +486,10 @@ async function runUntilIdle(
       if (applySoftSteers(messages, options)) {
         continue;
       }
+      // Follow-up only when soft is empty and the loop would otherwise end.
+      if (applyFollowUp(messages, options)) {
+        continue;
+      }
       break;
     }
 
@@ -530,7 +546,56 @@ function applySoftSteers(messages: ChatMessage[], options: AgentLoopOptions): bo
       id: request.id,
     });
   }
+  emitQueueUpdated(options);
   return true;
+}
+
+/**
+ * Drain one follow-up at natural end (no tool calls + soft empty).
+ * @returns true when a follow-up was applied (caller should continue the loop).
+ */
+function applyFollowUp(messages: ChatMessage[], options: AgentLoopOptions): boolean {
+  // Soft already drained by caller; hard pending means abort/steer owns the path.
+  if (options.steerMailbox?.hasHard()) return false;
+  const next = options.steerMailbox?.takeFollowUp();
+  if (!next) return false;
+  messages.push({
+    role: "user",
+    content: formatFollowUpUserMessage(next.text),
+  });
+  options.runtimeEvents?.emit("follow_up.applied", {
+    text: next.text,
+    id: next.id,
+  });
+  emitQueueUpdated(options);
+  return true;
+}
+
+function discardFollowUpsOnAbort(
+  options: AgentLoopOptions,
+  reason: "abort",
+): void {
+  const discarded = options.steerMailbox?.clearFollowUp() ?? [];
+  for (const item of discarded) {
+    options.runtimeEvents?.emit("follow_up.discarded", {
+      text: item.text,
+      id: item.id,
+      reason,
+    });
+  }
+  if (discarded.length > 0) {
+    emitQueueUpdated(options);
+  }
+}
+
+function emitQueueUpdated(options: AgentLoopOptions): void {
+  const mailbox = options.steerMailbox;
+  if (!mailbox) return;
+  options.runtimeEvents?.emit("queue_updated", {
+    soft: mailbox.list().filter((item) => item.mode === "soft").length,
+    hard: mailbox.list().filter((item) => item.mode === "hard").length,
+    follow_up: mailbox.listFollowUp().length,
+  });
 }
 
 async function requestCompletion(

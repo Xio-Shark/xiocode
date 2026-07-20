@@ -34,6 +34,7 @@ import {
   loadQueueIntoDraft,
   moveCursor,
   moveCursorLine,
+  parseBusySubmitIntent,
   queueWhileBusy,
   rememberSubmission,
   setComposerText,
@@ -700,23 +701,21 @@ function useSessionInteraction(
   const submit = async (rawValue = composerRef.current.text) => {
     const value = rawValue.trim();
     if (value.length === 0) return;
-    // Busy turn: soft-steer at next tool/provider boundary (never mid-stream HTTP inject).
-    // Prefix with ! for hard steer (abort + continue). /exit still aborts and quits.
+    // Busy turn: soft/hard steer at next tool/provider boundary (never mid-stream HTTP inject).
+    // Prefix with ! for hard steer (abort + continue). Prefix with >> for follow-up
+    // (runs only after natural end: no tools + soft empty). /exit still aborts and quits.
     if (busyRef.current) {
       if (value === "/exit" || value === "/quit") {
         props.session.abortTurn();
         await close(0);
         return;
       }
-      const hard = value.startsWith("!");
-      const steerText = hard ? value.slice(1).trim() : value;
-      if (steerText.length === 0) return;
-      if (typeof props.session.steer === "function") {
-        props.session.steer(steerText, hard ? "hard" : "soft");
+      const intent = parseBusySubmitIntent(value);
+      if (!intent) return;
+      if (intent.kind === "follow_up" && typeof props.session.followUp === "function") {
+        props.session.followUp(intent.text);
         setComposerState(rememberSubmission(composerRef.current, value));
-        const notice = hard
-          ? `Hard steer: ${steerText.slice(0, 80)}`
-          : `Soft steer queued (applies at tool/provider boundary): ${steerText.slice(0, 80)}`;
+        const notice = `Follow-up queued (after current task ends): ${intent.text.slice(0, 80)}`;
         if (appendScrollback) {
           setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
         } else {
@@ -725,7 +724,25 @@ function useSessionInteraction(
         setView((current) => reduceEvent(current, {
           kind: "status",
           key: "queue",
-          text: hard ? "hard-steer" : "soft-steer",
+          text: "follow-up",
+        }));
+        return;
+      }
+      if (typeof props.session.steer === "function" && (intent.kind === "soft" || intent.kind === "hard")) {
+        props.session.steer(intent.text, intent.kind);
+        setComposerState(rememberSubmission(composerRef.current, value));
+        const notice = intent.kind === "hard"
+          ? `Hard steer: ${intent.text.slice(0, 80)}`
+          : `Soft steer queued (applies at tool/provider boundary): ${intent.text.slice(0, 80)}`;
+        if (appendScrollback) {
+          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
+        } else {
+          setView((current) => appendEntry(current, "notice", notice));
+        }
+        setView((current) => reduceEvent(current, {
+          kind: "status",
+          key: "queue",
+          text: intent.kind === "hard" ? "hard-steer" : "soft-steer",
         }));
         return;
       }

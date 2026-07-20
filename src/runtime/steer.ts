@@ -9,6 +9,12 @@ export type SteerRequest = Readonly<{
   requestedAt: string;
 }>;
 
+export type FollowUpRequest = Readonly<{
+  id: string;
+  text: string;
+  requestedAt: string;
+}>;
+
 export type EnqueueSteerInput = Readonly<{
   text: string;
   mode?: SteerMode;
@@ -20,14 +26,22 @@ export type EnqueueSteerInput = Readonly<{
   now?: () => Date;
 }>;
 
+export type EnqueueFollowUpInput = Readonly<{
+  text: string;
+  now?: () => Date;
+}>;
+
 /**
- * Thread-safe enough for single-threaded JS event loop.
- * Hard steers abort; soft steers wait for tool/provider boundaries.
+ * Dual queues for mid-run adjustment (steer) and post-run continuation (follow-up).
+ *
+ * - Soft/hard steer: turn / tool-batch boundaries (never mid-stream provider inject).
+ * - Follow-up: only when the loop would otherwise end (no tool calls + soft empty).
  *
  * **Invariant:** never inject into an in-flight provider HTTP body.
  */
 export class SteerMailbox {
   private readonly pending: SteerRequest[] = [];
+  private readonly followUps: FollowUpRequest[] = [];
 
   enqueue(input: EnqueueSteerInput): SteerRequest {
     const text = input.text.trim();
@@ -45,12 +59,30 @@ export class SteerMailbox {
     return request;
   }
 
+  enqueueFollowUp(input: EnqueueFollowUpInput): FollowUpRequest {
+    const text = input.text.trim();
+    if (text.length === 0) {
+      throw new Error("follow-up text must be non-empty");
+    }
+    const request: FollowUpRequest = {
+      id: randomUUID().replaceAll("-", "").slice(0, 12),
+      text,
+      requestedAt: (input.now ?? (() => new Date()))().toISOString(),
+    };
+    this.followUps.push(request);
+    return request;
+  }
+
   hasPending(): boolean {
     return this.pending.length > 0;
   }
 
   hasHard(): boolean {
     return this.pending.some((item) => item.mode === "hard");
+  }
+
+  hasFollowUp(): boolean {
+    return this.followUps.length > 0;
   }
 
   /** Drain all soft requests (FIFO). Leaves hard requests in queue. */
@@ -74,13 +106,37 @@ export class SteerMailbox {
     return item;
   }
 
-  /** Snapshot for tests. */
+  /**
+   * Take one follow-up (FIFO). Caller must only invoke at natural-end boundary
+   * (no tool calls remaining and soft steer queue empty).
+   */
+  takeFollowUp(): FollowUpRequest | undefined {
+    return this.followUps.shift();
+  }
+
+  /** Snapshot of pending follow-ups (tests / UI). */
+  listFollowUp(): readonly FollowUpRequest[] {
+    return this.followUps.slice();
+  }
+
+  /**
+   * Clear follow-ups (abort path). Returns discarded items for events/UI notice.
+   * Does not touch soft/hard steer entries.
+   */
+  clearFollowUp(): FollowUpRequest[] {
+    const discarded = this.followUps.splice(0, this.followUps.length);
+    return discarded;
+  }
+
+  /** Snapshot for tests (steer only). */
   list(): readonly SteerRequest[] {
     return this.pending.slice();
   }
 
+  /** Clear steer + follow-up queues. */
   clear(): void {
     this.pending.length = 0;
+    this.followUps.length = 0;
   }
 }
 
@@ -92,4 +148,12 @@ export function resolveSteerMode(mode: SteerMode, busy: boolean): "hard" | "soft
 /** User-visible steer injection (not claimed as mid-stream provider inject). */
 export function formatSteerUserMessage(text: string, mode: "hard" | "soft"): string {
   return `[steer:${mode}] ${text}`;
+}
+
+/**
+ * Follow-up is ordinary subsequent user work in the same session run
+ * (tutorial-aligned), not a steer tag.
+ */
+export function formatFollowUpUserMessage(text: string): string {
+  return text;
 }

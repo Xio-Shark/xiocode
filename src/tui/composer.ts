@@ -1,6 +1,15 @@
 /**
  * Dedicated composer state: cursor, grapheme-safe edit, multiline paste,
- * history, and busy-turn queue (steer deferred until provider-safe).
+ * history, and busy-turn UI draft queue.
+ *
+ * **Composer `queue` vs runtime follow-up (do not conflate):**
+ * - `ComposerState.queue` — UI-only draft buffer when the session lacks `steer`
+ *   (fallback). Restored into the draft after idle for the user to edit/submit.
+ * - `session.followUp()` — runtime mailbox consumed automatically at natural end
+ *   of the agent run (no tool calls + soft steer empty). Prefer `>>text` while
+ *   busy in the TUI, or call `followUp` explicitly.
+ * - Soft/hard `session.steer()` — adjusts the *current* turn at provider-safe
+ *   boundaries; not deferred-to-idle user work.
  */
 
 export type ComposerState = Readonly<{
@@ -16,7 +25,8 @@ export type ComposerState = Readonly<{
   draftBeforeHistory: string;
   /**
    * Input queued while a turn is busy. Visible, editable, removable.
-   * Executed only when the user submits it after the turn ends (or via explicit flush).
+   * UI draft only — executed when the user submits it after the turn ends
+   * (or via explicit flush). Not the same as `session.followUp()`.
    */
   queue: string | undefined;
 }>;
@@ -221,6 +231,31 @@ export function queueWhileBusy(state: ComposerState, value: string): ComposerSta
     queue: trimmed,
     historyIndex: -1,
   };
+}
+
+/**
+ * Classify busy-turn submit text for the TUI.
+ * - `>>…` → runtime follow-up (after natural end)
+ * - `!…` → hard steer
+ * - otherwise → soft steer
+ */
+export type BusySubmitIntent =
+  | Readonly<{ kind: "follow_up"; text: string }>
+  | Readonly<{ kind: "hard"; text: string }>
+  | Readonly<{ kind: "soft"; text: string }>;
+
+export function parseBusySubmitIntent(raw: string): BusySubmitIntent | undefined {
+  const value = raw.trim();
+  if (value.length === 0) return undefined;
+  if (value.startsWith(">>")) {
+    const text = value.slice(2).trim();
+    return text.length > 0 ? { kind: "follow_up", text } : undefined;
+  }
+  if (value.startsWith("!")) {
+    const text = value.slice(1).trim();
+    return text.length > 0 ? { kind: "hard", text } : undefined;
+  }
+  return { kind: "soft", text: value };
 }
 
 export function clearQueue(state: ComposerState): ComposerState {
