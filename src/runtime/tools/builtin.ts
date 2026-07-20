@@ -5,6 +5,8 @@ import path from "node:path";
 import { applyPatch, parsePatch } from "diff";
 
 import { defineTool } from "../define-tool.ts";
+import { FileReadSet } from "../file-read-set.ts";
+import { FileWriteQueue } from "../file-write-queue.ts";
 import { Type } from "../schema.ts";
 import { verifyWriteBack } from "../verify/write-back.ts";
 import { withFixHint } from "./error-guidance.ts";
@@ -36,6 +38,21 @@ export type BuiltinToolsOptions = Readonly<{
    * @deprecated Use `searchEngine`. Kept for tests: `null` forces Node; path forces rg-compatible binary.
    */
   rgBinary?: string | null;
+  /**
+   * Shared write/edit queue (realpath-keyed). When omitted, a fresh queue is created
+   * for this tool set so same-path mutations still serialize within the set.
+   */
+  writeQueue?: FileWriteQueue;
+  /**
+   * Session/run read tracker. When omitted, a fresh set is created for this tool set.
+   * Clear on new user turn (session `beforePrompt`); keep across abort within a run.
+   */
+  readSet?: FileReadSet;
+  /**
+   * Require a successful `read` (or prior successful write/edit) before edit or
+   * overwrite-write. Default true. Set false to rollback ([tools] require_read_before_edit).
+   */
+  requireReadBeforeEdit?: boolean;
 }>;
 
 export {
@@ -54,17 +71,20 @@ export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly 
   const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : path.resolve(cwd);
   const writeBackVerify = options.writeBackVerify !== false;
   const searchOverride = options.searchEngine !== undefined ? options.searchEngine : options.rgBinary;
+  const writeQueue = options.writeQueue ?? new FileWriteQueue();
+  const readSet = options.readSet ?? new FileReadSet();
+  const requireReadBeforeEdit = options.requireReadBeforeEdit !== false;
   return [
-    createReadTool(cwd),
-    createWriteTool(cwd, workspaceRoot, writeBackVerify),
-    createEditTool(cwd, workspaceRoot, writeBackVerify),
+    createReadTool(cwd, readSet),
+    createWriteTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit),
+    createEditTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit),
     createBashTool(cwd),
     createGrepTool(cwd, searchOverride),
     createGlobTool(cwd, searchOverride),
   ];
 }
 
-function createReadTool(cwd: string): ToolDefinition {
+function createReadTool(cwd: string, readSet: FileReadSet): ToolDefinition {
   return defineTool({
     name: "read",
     description: "Read a file. Optionally limit to a line range with offset and limit.",
@@ -75,21 +95,36 @@ function createReadTool(cwd: string): ToolDefinition {
     }, { required: ["path"] }),
     async execute(_id, params) {
       const filePath = resolvePath(cwd, String(params.path));
-      const content = await readFile(filePath, "utf8");
-      const lines = content.split("\n");
-      const offset = typeof params.offset === "number" && params.offset > 0 ? Math.floor(params.offset) : 1;
-      const limit = typeof params.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : lines.length;
-      const slice = lines.slice(offset - 1, offset - 1 + limit);
-      const numbered = slice.map((line, index) => `${offset + index}|${line}`).join("\n");
-      return textResult(numbered);
+      try {
+        const content = await readFile(filePath, "utf8");
+        const lines = content.split("\n");
+        const offset = typeof params.offset === "number" && params.offset > 0 ? Math.floor(params.offset) : 1;
+        const limit = typeof params.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : lines.length;
+        const slice = lines.slice(offset - 1, offset - 1 + limit);
+        const numbered = slice.map((line, index) => `${offset + index}|${line}`).join("\n");
+        await readSet.mark(filePath);
+        return textResult(numbered);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return errorResult("read", message);
+      }
     },
   });
 }
 
-function createWriteTool(cwd: string, workspaceRoot: string, writeBackVerify: boolean): ToolDefinition {
+function createWriteTool(
+  cwd: string,
+  workspaceRoot: string,
+  writeBackVerify: boolean,
+  writeQueue: FileWriteQueue,
+  readSet: FileReadSet,
+  requireReadBeforeEdit: boolean,
+): ToolDefinition {
   return defineTool({
     name: "write",
-    description: "Write content to a file, creating parent directories as needed. Content is verified by read-back.",
+    description:
+      "Write content to a file, creating parent directories as needed. Content is verified by read-back. "
+      + "Overwriting an existing file requires a prior successful read (or write/edit) of that path.",
     parameters: Type.Object({
       path: Type.String({ description: "File path to write." }),
       content: Type.String({ description: "Full file content." }),
@@ -100,27 +135,47 @@ function createWriteTool(cwd: string, workspaceRoot: string, writeBackVerify: bo
       if (containment) {
         return errorResult("write", containment);
       }
-      const content = String(params.content ?? "");
-      await mkdir(path.dirname(filePath), { recursive: true });
-      await writeFile(filePath, content, "utf8");
-      if (!writeBackVerify) {
-        return textResult(`wrote ${filePath}`);
-      }
-      const verified = await verifyWriteBack(filePath, content);
-      if (!verified.ok) {
-        return errorResult("write", verified.message);
-      }
-      return textResult(`wrote ${filePath}; ${verified.message}`);
+      return writeQueue.run(filePath, async () => {
+        if (requireReadBeforeEdit && await pathExists(filePath)) {
+          if (!(await readSet.has(filePath))) {
+            return errorResult(
+              "write",
+              `write blocked: path not read in this run before overwrite: ${filePath}`,
+            );
+          }
+        }
+        const content = String(params.content ?? "");
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content, "utf8");
+        if (!writeBackVerify) {
+          await readSet.mark(filePath);
+          return textResult(`wrote ${filePath}`);
+        }
+        const verified = await verifyWriteBack(filePath, content);
+        if (!verified.ok) {
+          return errorResult("write", verified.message);
+        }
+        await readSet.mark(filePath);
+        return textResult(`wrote ${filePath}; ${verified.message}`);
+      });
     },
   });
 }
 
-function createEditTool(cwd: string, workspaceRoot: string, writeBackVerify: boolean): ToolDefinition {
+function createEditTool(
+  cwd: string,
+  workspaceRoot: string,
+  writeBackVerify: boolean,
+  writeQueue: FileWriteQueue,
+  readSet: FileReadSet,
+  requireReadBeforeEdit: boolean,
+): ToolDefinition {
   return defineTool({
     name: "edit",
     description:
       "Edit a file by exact unique old_string→new_string replace (default), optional replace_all, " +
       "or optional unified patch. On not-found, one whitespace-normalized fuzzy retry may apply. " +
+      "Requires a prior successful read (or write/edit) of the path in this run. " +
       "Result is verified by read-back.",
     parameters: Type.Object({
       path: Type.String({ description: "File path to edit." }),
@@ -135,27 +190,43 @@ function createEditTool(cwd: string, workspaceRoot: string, writeBackVerify: boo
       if (containment) {
         return errorResult("edit", containment);
       }
-      const content = await readFile(filePath, "utf8");
-      const patchText = typeof params.patch === "string" ? params.patch : undefined;
-      if (patchText !== undefined && patchText.length > 0) {
-        const patched = applyUnifiedPatch(content, patchText);
-        if (!patched.ok) {
-          return errorResult("edit", patched.error);
+      if (requireReadBeforeEdit && !(await readSet.has(filePath))) {
+        return errorResult(
+          "edit",
+          `edit blocked: path not read in this run before edit: ${filePath}`,
+        );
+      }
+      return writeQueue.run(filePath, async () => {
+        // Re-check after queue entry — another writer may have raced conceptually;
+        // readSet is still the authority for edit-before-read.
+        if (requireReadBeforeEdit && !(await readSet.has(filePath))) {
+          return errorResult(
+            "edit",
+            `edit blocked: path not read in this run before edit: ${filePath}`,
+          );
         }
-        return finishEdit(filePath, patched.next, writeBackVerify);
-      }
+        const content = await readFile(filePath, "utf8");
+        const patchText = typeof params.patch === "string" ? params.patch : undefined;
+        if (patchText !== undefined && patchText.length > 0) {
+          const patched = applyUnifiedPatch(content, patchText);
+          if (!patched.ok) {
+            return errorResult("edit", patched.error);
+          }
+          return finishEdit(filePath, patched.next, writeBackVerify, readSet);
+        }
 
-      if (params.old_string === undefined || params.new_string === undefined) {
-        return errorResult("edit", "edit failed: old_string and new_string are required unless patch is set");
-      }
-      const oldString = String(params.old_string);
-      const newString = String(params.new_string);
-      const replaceAll = params.replace_all === true;
-      const replaced = replaceInFileContent(filePath, content, oldString, newString, replaceAll);
-      if (!replaced.ok) {
-        return errorResult("edit", replaced.error);
-      }
-      return finishEdit(filePath, replaced.next, writeBackVerify, replaced.fuzzy);
+        if (params.old_string === undefined || params.new_string === undefined) {
+          return errorResult("edit", "edit failed: old_string and new_string are required unless patch is set");
+        }
+        const oldString = String(params.old_string);
+        const newString = String(params.new_string);
+        const replaceAll = params.replace_all === true;
+        const replaced = replaceInFileContent(filePath, content, oldString, newString, replaceAll);
+        if (!replaced.ok) {
+          return errorResult("edit", replaced.error);
+        }
+        return finishEdit(filePath, replaced.next, writeBackVerify, readSet, replaced.fuzzy);
+      });
     },
   });
 }
@@ -164,17 +235,20 @@ async function finishEdit(
   filePath: string,
   next: string,
   writeBackVerify: boolean,
+  readSet: FileReadSet,
   fuzzy = false,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError: boolean }> {
   await writeFile(filePath, next, "utf8");
   const fuzzyNote = fuzzy ? "; fuzzy: whitespace normalized" : "";
   if (!writeBackVerify) {
+    await readSet.mark(filePath);
     return textResult(`edited ${filePath}${fuzzyNote}`);
   }
   const verified = await verifyWriteBack(filePath, next);
   if (!verified.ok) {
     return errorResult("edit", verified.message);
   }
+  await readSet.mark(filePath);
   return textResult(`edited ${filePath}${fuzzyNote}; ${verified.message}`);
 }
 
