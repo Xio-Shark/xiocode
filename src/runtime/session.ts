@@ -20,6 +20,12 @@ import { registerPerceptionCapability, WorkspacePerceptionService } from "./work
 import type { PermissionMode } from "./permission-mode.ts";
 import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
+  allowsProjectResources,
+  ensureProjectTrust,
+  type ProjectTrustState,
+  type TrustMode,
+} from "./project-trust.ts";
+import {
   createPromptRunner,
   createSessionCloser,
   createSessionHost,
@@ -78,6 +84,11 @@ export type SessionOptions = Readonly<{
   sessionId?: string;
   /** Escape hatch for non-interactive high-risk tools (CLI/config). */
   allowHighRisk?: boolean;
+  /**
+   * Pre-resolved project trust (tests). When omitted, resolved via ensureProjectTrust
+   * using [trust] mode from runtimeConfig (default ask).
+   */
+  projectTrust?: ProjectTrustState;
   env?: NodeJS.ProcessEnv;
   ask?: (question: string) => Promise<boolean>;
   interactive?: InteractiveIO;
@@ -181,6 +192,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   }
   // Text/TUI keep SessionUi callbacks (not bus→UI) so onAssistantText / bridge semantics stay intact.
   const interactive = options.interactive ?? createReadlineInteractiveIO(ask);
+  const interactiveSession = options.promptOnce === undefined;
+  const trustMode: TrustMode = options.runtimeConfig.trust?.mode ?? "ask";
+  const projectTrust = options.projectTrust ?? await ensureProjectTrust({
+    cwd,
+    mode: trustMode,
+    interactiveSession,
+    ask: (question, detail) => interactive.ask(question, detail),
+    notify: (message) => sink.notify?.(message, "info"),
+  });
+  // Hygiene loaders (session_start) honor this for the remainder of the session.
+  process.env.XIO_INCLUDE_PROJECT = allowsProjectResources(projectTrust.decision) ? "1" : "0";
+  sink.setStatus?.("trust", `trust:${projectTrust.decision}`);
+
   const steerMailbox = new SteerMailbox();
   // Perception before host config so main + explore share one warm service.
   const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
@@ -344,13 +368,13 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   // Permission mode + high-risk gate before session_start so MCP hot-register respects filters.
   const allowHighRisk =
     options.allowHighRisk === true || options.runtimeConfig.permissions?.allowHighRisk === true;
-  const interactiveSession = options.promptOnce === undefined;
   const permission = registerPermissionCommands({
     host,
     sink,
     interactive,
     allowHighRisk,
     interactiveSession,
+    getTrust: () => projectTrust.decision,
   });
   const getRunId = async (): Promise<string | undefined> => {
     try {

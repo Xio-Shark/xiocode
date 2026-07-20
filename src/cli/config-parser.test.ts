@@ -481,6 +481,7 @@ Authorization = "Bearer x"
       servers: {},
     });
     expect(parsed.runtimeConfig.permissions).toEqual({ allowHighRisk: false });
+    expect(parsed.runtimeConfig.trust).toEqual({ mode: "ask" });
     expect(parsed.xio.improve).toEqual({ capabilityGate: false });
     expect(parsed.runtimeConfig.regress).toEqual({ offerOnFailure: true });
   });
