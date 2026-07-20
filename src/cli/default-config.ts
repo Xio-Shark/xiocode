@@ -79,6 +79,11 @@ retain_on_reject = false
 # [tools]
 # require_read_before_edit = true  # set false to allow edit/overwrite without a prior read
 
+# Project trust gate: untrusted cwd skips project hooks/skills/MCP and restricts write/exec.
+# Decisions persist in ~/.xiocode/trust.json (normalized paths; revocable).
+# [trust]
+# mode = "ask"    # ask (default) | trust (always allow) | off (disable gate / dogfood)
+
 # [mcp]
 # unknown_source_fail_closed = false  # set true to skip Claude/Cursor user MCP auto-import
 # # read_cursor = true               # auto-loads ~/.cursor/mcp.json (broken command paths will warn)
