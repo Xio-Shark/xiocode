@@ -30,6 +30,16 @@ export {
   type SteerMode,
   type SteerRequest,
 } from "./steer.ts";
+export {
+  HarnessController,
+  SessionBusyError,
+  isSessionBusyError,
+  createTurnSnapshot,
+  type HarnessPhase,
+  type LiveConfigView,
+  type StructuralOp,
+  type TurnSnapshot,
+} from "./harness/index.ts";
 export { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 export {
   CONTEXT_SUMMARY_NAME,
