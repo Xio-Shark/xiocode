@@ -4,7 +4,7 @@
 > **Not** the default daily coding path — interactive `xio` runs **direct-cwd** with **no git/worktree requirement**.
 > Serves final-goal item 4 (self-improvable under merge-ask): [GOAL.md](./GOAL.md).
 > Product north stars (all paths): **extreme speed** + **model stays on-task** — see GOAL §北星优先级.
-> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-16** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**).
+> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-20** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**; **one-key failure capture offer** on turn-fail / hard steer / `/rollback` — still human verdict; **H12 harness design-gaps 6/6 archived**; Trellis parallel A→B→C→Integrate is **not** this loop's ACs).
 
 ## Daily path vs improve path
 
@@ -135,24 +135,30 @@ Mechanisms that keep the **primary agent on-task** without forcing git/worktree:
 | **Mid-turn steer** | Soft at boundaries; hard aborts in-flight provider/tools (`!text`) — not HTTP body inject |
 | **Compaction G4** | Transactional summary + persisted resume marker — model knows history was compressed |
 | **Tool risk G7** | High-risk bash/MCP/write asks once per session (or deny in `-p`) |
+| **`@` file mentions** | Composer picks workspace paths into context (gitignore-aware) |
+| **Failure capture offer** | On turn-fail / hard steer / `/rollback`: one-key regress draft; human still confirms |
 
 Empty tool context after a successful read/bash is a **harness bug** (alignment + speed waste), not user error.
+
+**Shipped harness contracts** (H12, `07-16-agent-harness-design-gaps` **6/6 archived**): follow-up queue (separate from soft steer), same-path write serialization + edit-before-read hard gate, immutable turn snapshot / admission, project trust — alignment table in [STATUS.md](./STATUS.md). Deferred: SDK/RPC, JSONL session tree, remote Ops.
 
 ## Dogfood path (G10)
 
 Shortest honest loop for “this failure should make my harness better”:
 
-1. Run interactive agent (`xio` in **any** directory — **no git/worktree required**; opt-in worktree only with `[worktree] enabled = true`). Long sessions use **TUI route B** (append-to-scrollback + callId tool pairing + Ctrl+O full tool output; early-boot input buffer; see STATUS). Mid-turn **steer**: busy Enter → soft (`session.steer`); `!text` → hard (aborts in-flight provider/tools; not mid-stream HTTP inject). On failure signals (turn failed / hard steer / `/rollback`), accept the one-key capture offer (or decline and use `/regress` / `xio regress capture --last`) — still requires explicit failure statement + verifier. Set `[regress] offer_on_failure = false` to silence offers only.
+1. Run interactive agent (`xio` in **any** directory — **no git/worktree required**; opt-in worktree only with `[worktree] enabled = true`). Long sessions use **TUI route B** (append-to-scrollback + markdown finalize + `@` file mentions + callId tool pairing + Ctrl+O; early-boot input buffer; see STATUS). Mid-turn **steer**: busy Enter → soft (`session.steer`); `!text` → hard (aborts in-flight provider/tools; not mid-stream HTTP inject). On failure signals (turn failed / hard steer / `/rollback`), accept the one-key capture offer (`07-16-failure-capture-hook` archived) — explore-style draft of `failure_statement` is best-effort; decline is sticky per turn; or use `/regress` / `xio regress capture --last`. Still requires operator confirm + verifier. Set `[regress] offer_on_failure = false` to silence offers only.
 2. Capture writes case + `~/.xiocode/regressions/.last-case`.
 3. Optionally set `[improve] capability_gate = true` and `private_case = "last"`.
 4. `xio improve` (or flags) **always** edits in a candidate worktree (even when interactive default is direct-cwd) → verifier → joint FIXED × PASS → **MergeGate ask only**.
 5. User rejects → main tree unchanged; worktree retained for inspection.
 
-This is **not** auto-capture and **not** auto-merge.
+This is **not** auto-capture and **not** auto-merge. The offer is a fuel pump for an empty case library; it does not invent a verdict.
 
 **Evidence prerequisite for dogfood**: tool bodies must reach the model (nested `tool_result` + Denoiser contract above) **and** the TUI transcript model (callId pairing + retained full output). Empty UI / empty tool messages after a successful read, or parallel tools swapping output, are harness bugs — not “empty worktree”.
 
 **Eval vs interactive workspace**: credentialed / trusted eval candidates must leave a gradeable worktree under the trial root. Interactive direct-cwd is a UX default only; it must not disable eval/improve isolation.
+
+**Not this loop**: Archived H12 harness contracts and the Trellis **task DAG** (`depends_on` / `dispatch-ready` / `integrate` under `07-16-trellis-parallel-task-orchestration`) improve **dev orchestration / harness contracts**, not the improve MergeGate path. Do not treat those ACs as self-improve delivery; xiocode does not own the DAG engine.
 
 ## Out of scope
 
