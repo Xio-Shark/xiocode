@@ -14,6 +14,7 @@ import type {
   TurnEndToolResultSummary,
 } from "./types.ts";
 import { assertMessageBudget } from "./context-compaction.ts";
+import { FileWriteQueue } from "./file-write-queue.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 import { getCachedProviderTools } from "./providers/tool-schema-cache.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
@@ -24,7 +25,7 @@ import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts
 import type { RuntimeEventEmitter } from "./events/types.ts";
 import { formatSteerUserMessage, type SteerMailbox } from "./steer.ts";
 
-/** Tools that mutate workspace files and must not race each other (or each other by path). */
+/** Tools that mutate workspace files and must not race each other by realpath. */
 const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
 const DEFAULT_MAX_SESSION_MESSAGES = 80;
 /** Per user-prompt agent↔model turns (provider requests). Configurable via general.max_turns. */
@@ -85,6 +86,11 @@ export type AgentLoopOptions = Readonly<{
    * Never injects into the same in-flight provider stream body.
    */
   steerMailbox?: SteerMailbox;
+  /**
+   * Optional shared realpath write queue. When omitted, a per-batch queue is used
+   * so same-path write/edit still serialize within the batch.
+   */
+  fileWriteQueue?: FileWriteQueue;
 }>;
 
 export type AgentLoopCheckpoint = Readonly<{
@@ -751,8 +757,8 @@ async function appendToolResults(
       });
     }
   } else {
-    let writeChain: Promise<void> = Promise.resolve();
-    const pathLocks = new Map<string, Promise<void>>();
+    // Per-realpath serialization: different files may run concurrently; same realpath waits.
+    const writeQueue = options.fileWriteQueue ?? new FileWriteQueue();
 
     await Promise.all(calls.map(async (call, index) => {
       if (options.signal?.aborted) {
@@ -780,26 +786,8 @@ async function appendToolResults(
 
       if (WRITE_SERIAL_TOOLS.has(call.name)) {
         const filePath = typeof call.arguments.path === "string" ? String(call.arguments.path) : "";
-        const previousPath = filePath.length > 0 ? (pathLocks.get(filePath) ?? Promise.resolve()) : Promise.resolve();
-        const previousWrite = writeChain;
-        let releasePath: () => void = () => undefined;
-        const pathGate = new Promise<void>((resolve) => {
-          releasePath = () => {
-            resolve();
-          };
-        });
-        if (filePath.length > 0) {
-          pathLocks.set(filePath, previousPath.then(() => pathGate));
-        }
-        const writeTask = previousWrite
-          .catch(() => undefined)
-          .then(() => previousPath)
-          .catch(() => undefined)
-          .then(run);
-        writeChain = writeTask.then(() => undefined, () => undefined).finally(() => {
-          releasePath();
-        });
-        results[index] = await writeTask;
+        const queueKey = filePath.length > 0 ? filePath : `__anon_write_${call.id}`;
+        results[index] = await writeQueue.run(queueKey, run);
         return;
       }
 
@@ -980,20 +968,48 @@ async function executeToolCall(
       isError: true,
     };
   }
-  const toolCallEvent: ToolCallEvent = { toolName: call.name, input: call.arguments };
+  const tool = host.getTool(call.name);
+  const args = tool ? stripUnknownToolArgs(tool, call.arguments) : call.arguments;
+  const normalizedCall: ChatToolCall = args === call.arguments ? call : { ...call, arguments: args };
+  const toolCallEvent: ToolCallEvent = { toolName: normalizedCall.name, input: normalizedCall.arguments };
   const hookResults = await host.emit("tool_call", {
     ...toolCallEvent,
-    call: { id: call.id, name: call.name, args: call.arguments },
+    call: { id: normalizedCall.id, name: normalizedCall.name, args: normalizedCall.arguments },
   });
-  const blocked = blockedToolResult(call, hookResults);
+  const blocked = blockedToolResult(normalizedCall, hookResults);
   if (blocked) {
-    return emitToolResult(host, call, blocked);
+    return emitToolResult(host, normalizedCall, blocked);
   }
-  const tool = host.getTool(call.name);
   const result = tool
-    ? await runTool(tool, call, signal)
-    : { content: [{ type: "text", text: `tool not found: ${call.name}` }], isError: true } as ToolExecuteResult;
-  return emitToolResult(host, call, result);
+    ? await runTool(tool, normalizedCall, signal)
+    : { content: [{ type: "text", text: `tool not found: ${normalizedCall.name}` }], isError: true } as ToolExecuteResult;
+  return emitToolResult(host, normalizedCall, result);
+}
+
+/**
+ * Tolerant input: drop schema-unknown keys before execute (models often add
+ * commentary fields). Does not loosen required/typed fields — those stay enforced
+ * by tool logic.
+ */
+export function stripUnknownToolArgs(
+  tool: ToolDefinition,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = tool.parameters.properties;
+  if (!properties || typeof properties !== "object") {
+    return args;
+  }
+  const allowed = new Set(Object.keys(properties));
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (allowed.has(key)) {
+      next[key] = value;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : args;
 }
 
 function blockedToolResult(call: ChatToolCall, hookResults: readonly unknown[]): ToolExecuteResult | undefined {
