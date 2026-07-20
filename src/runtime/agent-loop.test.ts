@@ -229,7 +229,48 @@ describe("runAgentLoop parallel tools", () => {
 });
 
 describe("runAgentLoop write serialization", () => {
-  it("runs write tools one at a time even when parallelToolCalls is true", async () => {
+  it("serializes same-path write tools even when parallelToolCalls is true", async () => {
+    const host = new ExtensionHost();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    host.registerTool(defineTool({
+      name: "write",
+      description: "write",
+      parameters: Type.Object({ path: Type.String(), content: Type.String() }),
+      async execute(_id, params) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        inFlight -= 1;
+        return { content: [{ type: "text", text: `wrote ${String(params.path)}` }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [
+              { id: "1", name: "write", arguments: { path: "same.ts", content: "a" } },
+              { id: "2", name: "write", arguments: { path: "same.ts", content: "b" } },
+            ],
+          };
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+    await runAgentLoop("write same file twice", {
+      host,
+      client,
+      model: "stub",
+      parallelToolCalls: true,
+    });
+    expect(maxInFlight).toBe(1);
+  });
+
+  it("allows different-path write tools to overlap when parallelToolCalls is true", async () => {
     const host = new ExtensionHost();
     let inFlight = 0;
     let maxInFlight = 0;
@@ -267,7 +308,7 @@ describe("runAgentLoop write serialization", () => {
       model: "stub",
       parallelToolCalls: true,
     });
-    expect(maxInFlight).toBe(1);
+    expect(maxInFlight).toBe(2);
   });
 });
 

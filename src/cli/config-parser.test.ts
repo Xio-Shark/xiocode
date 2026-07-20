@@ -512,6 +512,20 @@ unknown_source_fail_closed = true
     expect(parsed.runtimeConfig.mcp.unknownSourceFailClosed).toBe(true);
   });
 
+  it("parses tools.require_read_before_edit (default true)", () => {
+    const defaults = parseXioConfig("", { cwd: "/repo" });
+    expect(defaults.runtimeConfig.tools).toEqual({ requireReadBeforeEdit: true });
+
+    const off = parseXioConfig(
+      `
+[tools]
+require_read_before_edit = false
+`,
+      { cwd: "/repo" },
+    );
+    expect(off.runtimeConfig.tools).toEqual({ requireReadBeforeEdit: false });
+  });
+
   it("parses improve capability_gate and private_case defaults", () => {
     const caseId = "d".repeat(64);
     const parsed = parseXioConfig(

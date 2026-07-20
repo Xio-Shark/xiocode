@@ -20,6 +20,9 @@ export function fixHintFor(tool: string, message: string): string | undefined {
   const name = tool.toLowerCase();
 
   if (name === "edit" || m.includes("edit failed")) {
+    if (m.includes("not read") || m.includes("before edit")) {
+      return "Call read on this path first (or create it with write), then re-run edit with an exact unique old_string.";
+    }
     if (m.includes("matched") && m.includes("must be unique")) {
       return (
         "Include more surrounding lines so old_string matches once, "
@@ -42,6 +45,9 @@ export function fixHintFor(tool: string, message: string): string | undefined {
   }
 
   if (name === "write" || m.includes("write-back")) {
+    if (m.includes("not read") || m.includes("before overwrite")) {
+      return "Call read on the existing path first, then re-run write — or write to a new path that does not exist yet.";
+    }
     if (m.includes("mismatch")) {
       return "Re-read the path; do not claim the write succeeded. Retry write/edit only after verifying disk content.";
     }
