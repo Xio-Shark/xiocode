@@ -65,16 +65,47 @@ const executionSchema = z.object({
   interrupted_at: z.string().datetime().optional(),
 });
 
+/** Durable compaction audit fact (snake_case for JSONL / state.json). */
+export const compactionFactSchema = z.object({
+  summary: z.string(),
+  before_messages: z.number().int().nonnegative(),
+  after_messages: z.number().int().nonnegative(),
+  before_tokens: z.number().int().nonnegative(),
+  after_tokens: z.number().int().nonnegative(),
+  first_retained_index: z.number().int().nonnegative(),
+  t: z.string().datetime().optional(),
+});
+
+export type WalCompactionFact = z.infer<typeof compactionFactSchema>;
+
+const KNOWN_WAL_OPS = [
+  "execution",
+  "append_messages",
+  "set_messages",
+  "set_model",
+  "set_workspace",
+  "compaction",
+] as const;
+
 const walRecordSchema = z.object({
   schema_version: z.literal(WAL_SCHEMA),
   seq: z.number().int().positive(),
   t: z.string().datetime(),
-  op: z.enum(["execution", "append_messages", "set_messages", "set_model", "set_workspace"]),
+  op: z.enum(KNOWN_WAL_OPS),
   execution: executionSchema.optional(),
   messages: z.array(messageSchema).optional(),
   model: modelSchema.optional(),
   workspace: workspaceSchema.optional(),
+  compaction: compactionFactSchema.optional(),
 });
+
+/** Loose header used to skip unknown future ops without failing the journal. */
+const walRecordHeaderSchema = z.object({
+  schema_version: z.literal(WAL_SCHEMA),
+  seq: z.number().int().positive(),
+  t: z.string().datetime(),
+  op: z.string().min(1),
+}).passthrough();
 
 export type WalRecord = z.infer<typeof walRecordSchema>;
 export type WalExecution = z.infer<typeof executionSchema>;
@@ -85,6 +116,7 @@ export type JournalMaterial = Readonly<{
   model?: ModelInfo;
   workspace?: WalWorkspace;
   execution?: WalExecution;
+  compactionLog: WalCompactionFact[];
   lastSeq: number;
 }>;
 
@@ -97,6 +129,14 @@ export type JournalAppendInput = Readonly<{
   appendMessages?: readonly ChatMessage[];
   /** Full message list replace (compaction); use sparingly mid-turn. */
   setMessages?: readonly ChatMessage[];
+  /**
+   * Durable compaction fact + replacement projection.
+   * Prefer this over bare `setMessages` so resume can audit and rebuild.
+   */
+  compaction?: Readonly<{
+    fact: WalCompactionFact;
+    messages: readonly ChatMessage[];
+  }>;
   model?: ModelInfo;
   workspace?: WalWorkspace;
 }>;
@@ -127,7 +167,20 @@ export function encodeWalRecords(input: JournalAppendInput): WalRecord[] {
       messages: input.appendMessages,
     }));
   }
-  if (input.setMessages) {
+  if (input.compaction) {
+    const fact = compactionFactSchema.parse({
+      ...input.compaction.fact,
+      t: input.compaction.fact.t ?? t,
+    });
+    records.push(walRecordSchema.parse({
+      schema_version: WAL_SCHEMA,
+      seq: seq++,
+      t,
+      op: "compaction",
+      compaction: fact,
+      messages: input.compaction.messages,
+    }));
+  } else if (input.setMessages) {
     records.push(walRecordSchema.parse({
       schema_version: WAL_SCHEMA,
       seq: seq++,
@@ -173,16 +226,20 @@ export async function appendJournal(input: JournalAppendInput): Promise<number> 
   return records[records.length - 1]!.seq + 1;
 }
 
-export async function readJournal(directory: string): Promise<readonly WalRecord[]> {
+export async function readJournal(directory: string): Promise<Readonly<{
+  records: readonly WalRecord[];
+  /** Next seq to write (1 when empty). Accounts for skipped unknown ops. */
+  nextSeq: number;
+}>> {
   const file = journalPath(directory);
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return [];
+    if (errorCode(error) === "ENOENT") return { records: [], nextSeq: 1 };
     throw error;
   }
-  if (text.trim().length === 0) return [];
+  if (text.trim().length === 0) return { records: [], nextSeq: 1 };
   const records: WalRecord[] = [];
   let expectedSeq = 1;
   const lines = text.split("\n");
@@ -195,19 +252,27 @@ export async function readJournal(directory: string): Promise<readonly WalRecord
     } catch {
       throw new Error(`corrupt session journal at line ${index + 1}: invalid JSON`);
     }
+    const header = walRecordHeaderSchema.safeParse(parsed);
+    if (!header.success) {
+      throw new Error(`corrupt session journal at line ${index + 1}: ${header.error.message}`);
+    }
+    if (header.data.seq !== expectedSeq) {
+      throw new Error(
+        `corrupt session journal at line ${index + 1}: expected seq ${expectedSeq}, got ${header.data.seq}`,
+      );
+    }
+    expectedSeq = header.data.seq + 1;
+    // Forward-compatible: unknown op kinds advance seq but do not fail load.
+    if (!(KNOWN_WAL_OPS as readonly string[]).includes(header.data.op)) {
+      continue;
+    }
     const record = walRecordSchema.safeParse(parsed);
     if (!record.success) {
       throw new Error(`corrupt session journal at line ${index + 1}: ${record.error.message}`);
     }
-    if (record.data.seq !== expectedSeq) {
-      throw new Error(
-        `corrupt session journal at line ${index + 1}: expected seq ${expectedSeq}, got ${record.data.seq}`,
-      );
-    }
     records.push(record.data);
-    expectedSeq = record.data.seq + 1;
   }
-  return records;
+  return { records, nextSeq: expectedSeq };
 }
 
 export function applyJournal(
@@ -216,6 +281,7 @@ export function applyJournal(
     model?: ModelInfo;
     workspace?: WalWorkspace;
     execution?: WalExecution;
+    compactionLog?: readonly WalCompactionFact[];
   }>,
   records: readonly WalRecord[],
 ): JournalMaterial {
@@ -223,6 +289,7 @@ export function applyJournal(
   let model = base.model;
   let workspace = base.workspace;
   let execution = base.execution;
+  const compactionLog = [...(base.compactionLog ?? [])];
   let lastSeq = 0;
   for (const record of records) {
     lastSeq = record.seq;
@@ -236,6 +303,10 @@ export function applyJournal(
       case "set_messages":
         if (record.messages) messages = [...(record.messages as ChatMessage[])];
         break;
+      case "compaction":
+        if (record.messages) messages = [...(record.messages as ChatMessage[])];
+        if (record.compaction) compactionLog.push(record.compaction);
+        break;
       case "set_model":
         if (record.model) model = record.model;
         break;
@@ -244,7 +315,7 @@ export function applyJournal(
         break;
     }
   }
-  return { messages, model, workspace, execution, lastSeq };
+  return { messages, model, workspace, execution, compactionLog, lastSeq };
 }
 
 /** Truncate journal after a durable full snapshot (empty file + fsync). */
