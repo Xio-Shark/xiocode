@@ -138,6 +138,18 @@ export type XioToolsConfig = Readonly<{
 }>;
 
 /**
+ * Harness turn-snapshot / admission knobs.
+ * Defaults keep snapshot isolation on; set snapshot=false to rollback.
+ */
+export type XioHarnessConfig = Readonly<{
+  /**
+   * When true (default), freeze an immutable TurnSnapshot before each provider request.
+   * Live model/tools changes take effect only on the next save-point.
+   */
+  snapshot: boolean;
+}>;
+
+/**
  * Project trust gate — whether to load project-local hooks/skills/MCP and allow write/exec.
  * Persist decisions in ~/.xiocode/trust.json (see `src/runtime/project-trust.ts`).
  */
@@ -233,6 +245,8 @@ export type XioConfig = Readonly<{
   permissions: XioPermissionsConfig;
   /** Optional; when omitted, defaults to require_read_before_edit = true. */
   tools?: XioToolsConfig;
+  /** Optional; when omitted, defaults to snapshot = true. */
+  harness?: XioHarnessConfig;
   trust: XioTrustConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
@@ -252,6 +266,8 @@ export type XioRuntimeConfig = Readonly<{
   permissions: XioPermissionsConfig;
   /** Optional; when omitted, runtime treats require_read_before_edit as true. */
   tools?: XioToolsConfig;
+  /** Optional; when omitted, runtime treats harness.snapshot as true. */
+  harness?: XioHarnessConfig;
   /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
   trust?: XioTrustConfig;
   explore: XioExploreConfig;
@@ -308,6 +324,10 @@ const DEFAULT_TOOLS: XioToolsConfig = {
   requireReadBeforeEdit: true,
 };
 
+const DEFAULT_HARNESS: XioHarnessConfig = {
+  snapshot: true,
+};
+
 const DEFAULT_TRUST: XioTrustConfig = {
   mode: "ask",
 };
@@ -359,6 +379,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
   const tools = parseTools(getTable(data, "tools"));
+  const harness = parseHarness(getTable(data, "harness"));
   const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
@@ -377,6 +398,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     mcp,
     permissions,
     tools,
+    harness,
     trust,
     improve,
     regress,
@@ -401,6 +423,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     mcp: config.mcp,
     permissions: config.permissions,
     tools: config.tools,
+    harness: config.harness,
     trust: config.trust,
     explore: config.explore,
     retrospective: config.retrospective,
@@ -564,6 +587,12 @@ function parseTools(table: Record<string, unknown> | undefined): XioToolsConfig 
   return {
     requireReadBeforeEdit:
       getOptionalBoolean(table, "require_read_before_edit") ?? DEFAULT_TOOLS.requireReadBeforeEdit,
+  };
+}
+
+function parseHarness(table: Record<string, unknown> | undefined): XioHarnessConfig {
+  return {
+    snapshot: getOptionalBoolean(table, "snapshot") ?? DEFAULT_HARNESS.snapshot,
   };
 }
 
