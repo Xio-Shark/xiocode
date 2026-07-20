@@ -26,6 +26,8 @@ import {
   registerMergeCommand,
   registerRollbackCommand,
 } from "./session-lifecycle.ts";
+import { FileReadSet } from "./file-read-set.ts";
+import { FileWriteQueue } from "./file-write-queue.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatUsageStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
@@ -184,8 +186,24 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
   // Non-blocking: never await full index on the interactive startup path.
   void workspacePerception.ensureWarm();
+  // Shared across the session: same-path write/edit serialize; readSet survives abort
+  // within a run and clears on each new user turn (see beforePrompt below).
+  const fileWriteQueue = new FileWriteQueue();
+  const fileReadSet = new FileReadSet();
+  const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
   const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
-    options, model, sink, ask, cwd, workspaceRoot, workspacePerception, runtimeEvents, subagentUi,
+    options,
+    model,
+    sink,
+    ask,
+    cwd,
+    workspaceRoot,
+    workspacePerception,
+    runtimeEvents,
+    subagentUi,
+    fileWriteQueue,
+    fileReadSet,
+    requireReadBeforeEdit,
   });
 
   let currentModel = model;
@@ -523,14 +541,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       failureCapture: failureCapture
         ? { maybeOffer: (input) => failureCapture.maybeOfferFailureCapture(input) }
         : undefined,
-      beforePrompt: mergeGate ? async () => {
-        const checkpoint = await mergeGate.captureTurnCheckpoint();
-        currentExecution = {
-          phase: "turn_started",
-          turn_id: randomUUID().replaceAll("-", ""),
-          checkpoint,
-        };
-      } : undefined,
+      beforePrompt: async () => {
+        // New user turn: reset read discipline so prior-turn reads do not authorize edits.
+        // Abort / hard-steer hops within the same runPrompt do not hit this path.
+        fileReadSet.clear();
+        if (mergeGate) {
+          const checkpoint = await mergeGate.captureTurnCheckpoint();
+          currentExecution = {
+            phase: "turn_started",
+            turn_id: randomUUID().replaceAll("-", ""),
+            checkpoint,
+          };
+        }
+      },
       onCheckpoint: async (checkpoint) => {
         const turnComplete = checkpoint.phase === "turn_complete";
         currentExecution = {
@@ -613,6 +636,9 @@ async function createConfiguredHost(input: Readonly<{
   workspacePerception: WorkspacePerceptionService;
   runtimeEvents?: RuntimeEventEmitter;
   subagentUi?: SubagentUiBridge;
+  fileWriteQueue?: FileWriteQueue;
+  fileReadSet?: FileReadSet;
+  requireReadBeforeEdit?: boolean;
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
@@ -626,7 +652,13 @@ async function createConfiguredHost(input: Readonly<{
   if (input.runtimeEvents) {
     host.setRuntimeEvents(input.runtimeEvents);
   }
-  for (const tool of createBuiltinTools({ cwd: input.cwd, workspaceRoot: input.workspaceRoot })) {
+  for (const tool of createBuiltinTools({
+    cwd: input.cwd,
+    workspaceRoot: input.workspaceRoot,
+    writeQueue: input.fileWriteQueue,
+    readSet: input.fileReadSet,
+    requireReadBeforeEdit: input.requireReadBeforeEdit,
+  })) {
     host.registerTool(tool);
   }
   registerPerceptionCapability(host, { service: input.workspacePerception });
