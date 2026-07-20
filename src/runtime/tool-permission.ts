@@ -3,6 +3,10 @@ import {
   type PermissionMode,
 } from "./permission-mode.ts";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
+import {
+  allowsProjectResources,
+  type TrustDecision,
+} from "./project-trust.ts";
 
 import type { ExtensionHost } from "./extension-host.ts";
 import type { InteractiveIO } from "./interactive-io.ts";
@@ -23,6 +27,21 @@ export type ToolPermissionGateOptions = Readonly<{
   highRiskPolicy?: HighRiskPolicy;
   /** false for `xio -p` non-interactive: auto mode denies high-risk instead of asking. */
   interactiveSession?: boolean;
+  /**
+   * Project trust decision. Untrusted workspaces restrict write/exec/MCP
+   * regardless of permission mode (read/search still allowed).
+   */
+  getTrust?: () => TrustDecision;
+  /**
+   * Policy for write/edit when untrusted.
+   * Default: ask when interactive, deny for `-p`.
+   */
+  untrustedWritePolicy?: HighRiskPolicy;
+  /**
+   * Policy for exec/network/MCP when untrusted.
+   * Default: ask when interactive, deny for `-p`.
+   */
+  untrustedHighRiskPolicy?: HighRiskPolicy;
 }>;
 
 export type ToolPermissionGate = Readonly<{
@@ -44,6 +63,16 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     return highRiskPolicyForMode(options.getMode(), interactiveSession);
   };
 
+  const resolveUntrustedWrite = (): HighRiskPolicy => {
+    if (options.untrustedWritePolicy) return options.untrustedWritePolicy;
+    return interactiveSession ? "ask" : "deny";
+  };
+
+  const resolveUntrustedHighRisk = (): HighRiskPolicy => {
+    if (options.untrustedHighRiskPolicy) return options.untrustedHighRiskPolicy;
+    return interactiveSession ? "ask" : "deny";
+  };
+
   options.host.on("tool_call", async (event) => {
     const record = asRecord(event);
     const name = toolNameFromEvent(record);
@@ -55,6 +84,19 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
         block: true,
         reason: `tool blocked in permission mode ${mode}: ${name}`,
       };
+    }
+
+    const trust = options.getTrust?.() ?? "trusted";
+    if (!allowsProjectResources(trust)) {
+      const trustBlock = await enforceUntrustedTool({
+        name,
+        approved,
+        writePolicy: resolveUntrustedWrite(),
+        highRiskPolicy: resolveUntrustedHighRisk(),
+        interactive: options.interactive,
+        sink: options.sink,
+      });
+      if (trustBlock) return trustBlock;
     }
 
     if (!toolNeedsHighRiskGate(name)) {
@@ -124,6 +166,66 @@ export function resolveHighRiskPolicy(input: Readonly<{
   if (input.allowHighRisk) return "allow";
   if (input.promptOnce !== undefined) return "deny";
   return "ask";
+}
+
+/** Tools restricted when the project is untrusted (read/search remain allowed). */
+export function toolNeedsTrustGate(name: string): boolean {
+  if (name.startsWith("mcp__")) return true;
+  const risk = toolRisk(name);
+  return risk === "write" || risk === "exec" || risk === "network" || risk === "merge";
+}
+
+async function enforceUntrustedTool(input: Readonly<{
+  name: string;
+  approved: Set<string>;
+  writePolicy: HighRiskPolicy;
+  highRiskPolicy: HighRiskPolicy;
+  interactive: InteractiveIO;
+  sink: SessionUiSink;
+}>): Promise<{ block: true; reason: string } | undefined> {
+  if (!toolNeedsTrustGate(input.name)) {
+    return undefined;
+  }
+
+  const risk = toolRisk(input.name) ?? (input.name.startsWith("mcp__") ? "exec" : "write");
+  const isWrite = risk === "write";
+  const policy = isWrite ? input.writePolicy : input.highRiskPolicy;
+  const approvalKey = `trust:${input.name}`;
+
+  if (input.approved.has(approvalKey) || input.approved.has(input.name)) {
+    return undefined;
+  }
+
+  if (policy === "allow") {
+    input.approved.add(approvalKey);
+    return undefined;
+  }
+
+  if (policy === "deny") {
+    return {
+      block: true,
+      reason:
+        `tool blocked: project is untrusted (${input.name}, ${risk}). `
+        + "Trust this directory (interactive prompt / [trust] mode = trust) or use read-only tools.",
+    };
+  }
+
+  const ok = await input.interactive.ask(
+    `Untrusted project: allow ${risk} tool "${input.name}" for this session? [y/N] `,
+    `tool: ${input.name}\nrisk: ${risk}\ntrust: untrusted\nscope: session`,
+  );
+  if (!ok) {
+    return {
+      block: true,
+      reason: `user denied untrusted-project tool: ${input.name} (${risk})`,
+    };
+  }
+  input.approved.add(approvalKey);
+  input.sink.notify?.(
+    `Approved ${input.name} (${risk}) for this untrusted session.`,
+    "warning",
+  );
+  return undefined;
 }
 
 function toolNameFromEvent(record: Record<string, unknown> | undefined): string | undefined {

@@ -49,6 +49,11 @@ export type XioHygieneOptions = Readonly<{
   skills?: Partial<SkillsConfig>;
   hooks?: Partial<HooksConfig>;
   mcp?: Partial<McpConfig>;
+  /**
+   * When false, skip project-local AGENTS/skills/hooks/MCP (user global still loads).
+   * Used by the project trust gate for untrusted workspaces.
+   */
+  includeProject?: boolean;
   /** Register extension tools (e.g. `skill`, `mcp__*`). */
   registerTool?: (tool: ToolDefinition) => void;
   warn?: (message: string) => void;
@@ -81,6 +86,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
     ...DEFAULT_MCP_CONFIG,
     ...options.mcp,
   };
+  const includeProject = options.includeProject !== false;
 
   let bundle: SpecBundle | undefined;
   let skillsIndex: SkillsIndex | undefined;
@@ -94,6 +100,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
       cwd: options.cwd,
       home: options.home,
       config: hooksConfig,
+      includeProject,
       warn: options.warn,
     })
     : undefined;
@@ -103,6 +110,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
       cwd: options.cwd,
       home: options.home,
       config: mcpConfig,
+      includeProject,
       registerTool: options.registerTool,
       warn: options.warn,
     })
@@ -116,6 +124,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
         cwd: options.cwd,
         home: options.home,
         config: agentsConfig,
+        includeProject,
         warn: options.warn,
       }),
       loadSkillsWithCache({
@@ -123,6 +132,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
         cwd: options.cwd,
         home: options.home,
         config: skillsConfig,
+        includeProject,
         warn: options.warn,
       }),
     ]);
@@ -145,6 +155,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
           cwd: options.cwd,
           home: options.home,
           config: agentsConfig,
+          includeProject,
           warn: options.warn,
         });
         bundle = loaded.bundle;
@@ -162,6 +173,7 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
           cwd: options.cwd,
           home: options.home,
           config: skillsConfig,
+          includeProject,
           warn: options.warn,
         });
         skillsIndex = loaded.index;
@@ -204,6 +216,7 @@ async function loadAgentsWithCache(input: Readonly<{
   cwd: string;
   home?: string;
   config: AgentsMdConfig;
+  includeProject?: boolean;
   warn?: (message: string) => void;
 }>): Promise<Readonly<{
   bundle: SpecBundle;
@@ -215,7 +228,11 @@ async function loadAgentsWithCache(input: Readonly<{
       result: { enabled: false, sources: [] },
     };
   }
-  const key = discoveryCacheKey("agents", input.cwd, input.home, input.config);
+  const includeProject = input.includeProject !== false;
+  const key = discoveryCacheKey("agents", input.cwd, input.home, {
+    ...input.config,
+    includeProject,
+  });
   let bundle = processDiscoveryCache.getAgents(key);
   const fromCache = bundle !== undefined;
   if (!bundle) {
@@ -223,6 +240,7 @@ async function loadAgentsWithCache(input: Readonly<{
       cwd: input.cwd,
       home: input.home,
       config: input.config,
+      includeProject,
       warn: input.warn,
     });
     processDiscoveryCache.setAgents(key, bundle);
@@ -239,6 +257,7 @@ async function loadAgentsWithCache(input: Readonly<{
       })),
       warnings: bundle.warnings,
       cache: fromCache ? "hit" : "miss",
+      includeProject,
     },
   };
 }
@@ -248,6 +267,7 @@ async function loadSkillsWithCache(input: Readonly<{
   cwd: string;
   home?: string;
   config: SkillsConfig;
+  includeProject?: boolean;
   warn?: (message: string) => void;
 }>): Promise<Readonly<{
   index: SkillsIndex;
@@ -259,7 +279,11 @@ async function loadSkillsWithCache(input: Readonly<{
       result: { enabled: false, count: 0 },
     };
   }
-  const key = discoveryCacheKey("skills", input.cwd, input.home, input.config);
+  const includeProject = input.includeProject !== false;
+  const key = discoveryCacheKey("skills", input.cwd, input.home, {
+    ...input.config,
+    includeProject,
+  });
   let index = processDiscoveryCache.getSkills(key);
   const fromCache = index !== undefined;
   if (!index) {
@@ -267,6 +291,7 @@ async function loadSkillsWithCache(input: Readonly<{
       cwd: input.cwd,
       home: input.home,
       config: input.config,
+      includeProject,
       warn: input.warn,
     });
     processDiscoveryCache.setSkills(key, index);
@@ -279,6 +304,7 @@ async function loadSkillsWithCache(input: Readonly<{
       names: index.skills.map((skill) => skill.name),
       warnings: index.warnings,
       cache: fromCache ? "hit" : "miss",
+      includeProject,
     },
   };
 }

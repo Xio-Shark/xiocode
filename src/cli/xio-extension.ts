@@ -49,11 +49,18 @@ export async function registerRuntimeFromConfig(
     configRoot?: string;
     /** When true, skip provider registration and use default hygiene only (no config file). */
     minimal?: boolean;
+    /**
+     * When false, skip project-local hooks/skills/AGENTS/MCP.
+     * Defaults from XIO_INCLUDE_PROJECT env ("0" → false) or true.
+     */
+    includeProject?: boolean;
   }>,
 ): Promise<void> {
   const evolveApi = adaptEvolveApi(api);
   const home = options.home ?? os.homedir();
   const workspaceCwd = options.workspaceCwd;
+  const includeProject = options.includeProject
+    ?? process.env.XIO_INCLUDE_PROJECT !== "0";
 
   if (options.minimal) {
     const [{ registerXioHygiene }, { registerXioEvolve }, { registerXioSandbox }] = await Promise.all([
@@ -64,6 +71,7 @@ export async function registerRuntimeFromConfig(
     registerXioHygiene(evolveApi, {
       cwd: workspaceCwd,
       home,
+      includeProject,
       registerTool: (tool) => api.registerTool(tool),
       warn: (message) => console.warn(message),
     });
@@ -79,6 +87,7 @@ export async function registerRuntimeFromConfig(
   registerXioHygiene(evolveApi, {
     cwd: workspaceCwd,
     home,
+    includeProject,
     agentsMd: config.agentsMd ?? {
       enabled: true,
       readClaudeDirs: true,

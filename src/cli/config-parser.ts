@@ -137,6 +137,15 @@ export type XioToolsConfig = Readonly<{
   requireReadBeforeEdit: boolean;
 }>;
 
+/**
+ * Project trust gate — whether to load project-local hooks/skills/MCP and allow write/exec.
+ * Persist decisions in ~/.xiocode/trust.json (see `src/runtime/project-trust.ts`).
+ */
+export type XioTrustConfig = Readonly<{
+  /** ask (default) | trust (always) | off (disable gate / dogfood). */
+  mode: "ask" | "trust" | "off";
+}>;
+
 /** Dogfood defaults for `xio improve` when CLI flags are omitted. */
 export type XioImproveConfig = Readonly<{
   /** Opt-in trusted capability gate before MergeGate ask. Default false. */
@@ -224,6 +233,7 @@ export type XioConfig = Readonly<{
   permissions: XioPermissionsConfig;
   /** Optional; when omitted, defaults to require_read_before_edit = true. */
   tools?: XioToolsConfig;
+  trust: XioTrustConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
   explore: XioExploreConfig;
@@ -242,6 +252,8 @@ export type XioRuntimeConfig = Readonly<{
   permissions: XioPermissionsConfig;
   /** Optional; when omitted, runtime treats require_read_before_edit as true. */
   tools?: XioToolsConfig;
+  /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
+  trust?: XioTrustConfig;
   explore: XioExploreConfig;
   retrospective: XioRetrospectiveConfig;
   regress: XioRegressConfig;
@@ -296,6 +308,10 @@ const DEFAULT_TOOLS: XioToolsConfig = {
   requireReadBeforeEdit: true,
 };
 
+const DEFAULT_TRUST: XioTrustConfig = {
+  mode: "ask",
+};
+
 const DEFAULT_IMPROVE: XioImproveConfig = {
   capabilityGate: false,
 };
@@ -343,6 +359,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
   const tools = parseTools(getTable(data, "tools"));
+  const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
   const explore = parseExplore(getTable(data, "explore"));
@@ -360,6 +377,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     mcp,
     permissions,
     tools,
+    trust,
     improve,
     regress,
     explore,
@@ -383,6 +401,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     mcp: config.mcp,
     permissions: config.permissions,
     tools: config.tools,
+    trust: config.trust,
     explore: config.explore,
     retrospective: config.retrospective,
     regress: config.regress,
@@ -546,6 +565,17 @@ function parseTools(table: Record<string, unknown> | undefined): XioToolsConfig 
     requireReadBeforeEdit:
       getOptionalBoolean(table, "require_read_before_edit") ?? DEFAULT_TOOLS.requireReadBeforeEdit,
   };
+}
+
+function parseTrust(table: Record<string, unknown> | undefined): XioTrustConfig {
+  const raw = getOptionalString(table, "mode")?.trim().toLowerCase();
+  if (raw === undefined) {
+    return { ...DEFAULT_TRUST };
+  }
+  if (raw === "ask" || raw === "trust" || raw === "off") {
+    return { mode: raw };
+  }
+  throw new Error(`trust.mode must be ask|trust|off (got ${JSON.stringify(raw)})`);
 }
 
 function parseImprove(table: Record<string, unknown> | undefined): XioImproveConfig {
