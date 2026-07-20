@@ -128,6 +128,15 @@ export type XioPermissionsConfig = Readonly<{
   allowHighRisk: boolean;
 }>;
 
+/** Builtin coding-tool discipline knobs. */
+export type XioToolsConfig = Readonly<{
+  /**
+   * Require a successful read (or prior write/edit) before edit / overwrite-write.
+   * Default true. Set false to rollback the edit-before-read gate.
+   */
+  requireReadBeforeEdit: boolean;
+}>;
+
 /** Dogfood defaults for `xio improve` when CLI flags are omitted. */
 export type XioImproveConfig = Readonly<{
   /** Opt-in trusted capability gate before MergeGate ask. Default false. */
@@ -213,6 +222,8 @@ export type XioConfig = Readonly<{
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
+  /** Optional; when omitted, defaults to require_read_before_edit = true. */
+  tools?: XioToolsConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
   explore: XioExploreConfig;
@@ -229,6 +240,8 @@ export type XioRuntimeConfig = Readonly<{
   hooks: XioHooksConfig;
   mcp: XioMcpConfig;
   permissions: XioPermissionsConfig;
+  /** Optional; when omitted, runtime treats require_read_before_edit as true. */
+  tools?: XioToolsConfig;
   explore: XioExploreConfig;
   retrospective: XioRetrospectiveConfig;
   regress: XioRegressConfig;
@@ -279,6 +292,10 @@ const DEFAULT_PERMISSIONS: XioPermissionsConfig = {
   allowHighRisk: false,
 };
 
+const DEFAULT_TOOLS: XioToolsConfig = {
+  requireReadBeforeEdit: true,
+};
+
 const DEFAULT_IMPROVE: XioImproveConfig = {
   capabilityGate: false,
 };
@@ -325,6 +342,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const hooks = parseHooks(getTable(data, "hooks"));
   const mcp = parseMcp(getTable(data, "mcp"));
   const permissions = parsePermissions(getTable(data, "permissions"));
+  const tools = parseTools(getTable(data, "tools"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
   const explore = parseExplore(getTable(data, "explore"));
@@ -341,6 +359,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     hooks,
     mcp,
     permissions,
+    tools,
     improve,
     regress,
     explore,
@@ -363,6 +382,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     hooks: config.hooks,
     mcp: config.mcp,
     permissions: config.permissions,
+    tools: config.tools,
     explore: config.explore,
     retrospective: config.retrospective,
     regress: config.regress,
@@ -518,6 +538,13 @@ function parseMcp(table: Record<string, unknown> | undefined): XioMcpConfig {
 function parsePermissions(table: Record<string, unknown> | undefined): XioPermissionsConfig {
   return {
     allowHighRisk: getOptionalBoolean(table, "allow_high_risk") ?? DEFAULT_PERMISSIONS.allowHighRisk,
+  };
+}
+
+function parseTools(table: Record<string, unknown> | undefined): XioToolsConfig {
+  return {
+    requireReadBeforeEdit:
+      getOptionalBoolean(table, "require_read_before_edit") ?? DEFAULT_TOOLS.requireReadBeforeEdit,
   };
 }
 
