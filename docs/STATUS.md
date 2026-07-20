@@ -1,17 +1,43 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-16** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**).
+> Single delivery snapshot. Updated **2026-07-20** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; active: Trellis parallel B/C).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
+> Active Trellis: [trellis-parallel-task-orchestration](../.trellis/tasks/07-16-trellis-parallel-task-orchestration/) (P2, MVP A archived → B/C/gate planning). Recently completed: [agent-harness-design-gaps](../.trellis/tasks/07-16-agent-harness-design-gaps/) (P1, **6/6**).
+
+## Active Trellis (honest — not shipped)
+
+| Tree | Pri | Progress | What it closes |
+|------|-----|----------|----------------|
+| `07-16-trellis-parallel-task-orchestration` | P2 | **1/4** (MVP A archived) | Trellis **task DAG** (not product multi-tenant queue): sibling edges via `depends_on`; ready-set dispatch; xiocode optional worker only. |
+| └ MVP A | | **archived** | DAG protocol + CLI — `07-16-trellis-parallel-protocol-cli` |
+| └ Phase B/C + Full | | planning | `trellis-parallel-auto-spawn` → `trellis-parallel-xio-worker` → `trellis-parallel-integration-gate` |
+
+## Agent harness ↔ tutorial alignment (2026-07-20)
+
+Semantic parity with [Agent 工程教程](../Agent工程教程-完整参考.md) — **not** a file-format / API clone. Closed by `07-16-agent-harness-design-gaps`.
+
+| Tutorial | Status | XioCode shape |
+|----------|--------|---------------|
+| ch08/09 session fact vs projection | **aligned** | WAL/state `compaction` fact + `compaction_log`; projection via `SessionHistory`; resume rebuilds, no tool replay |
+| ch15 turn snapshot / admission / save-point | **aligned** | `TurnSnapshot` + `HarnessController`; busy → `SessionBusyError`; persist → save_point → settle/`waitForIdle` |
+| ch03/10 write queue + edit-before-read | **aligned** | `FileWriteQueue` (realpath) + `FileReadSet`; `[tools] require_read_before_edit` (default true) |
+| ch07 steer + follow-up | **aligned** | soft/hard steer kept; follow-up drains at natural end; abort clears with `follow_up.discarded`; TUI `>>text` |
+| ch12 project trust | **aligned** | `TrustStore` (`~/.xiocode/trust.json`) + `[trust] mode=ask\|trust\|off`; untrusted skips project hooks/skills/MCP |
+| ch13 SDK/RPC | **deferred** | stream-json + TUI + `-p` only |
+| JSONL parentId session tree | **deferred** | enhance existing WAL; no dual fact source |
+| Operations SSH/container | **deferred** | interface shape only; not productized |
+
+Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[trust] mode`.
 
 ## Product priorities (north star)
 
 | Priority | Shipped baseline | Honest next |
 |----------|------------------|-------------|
 | **Extreme speed** | early-boot first_frame P50~42ms; `--version` P50~25ms; Session WAL journal P95 ~4.3ms; TUI projection P95≪25ms; AGENTS/skills `DiscoveryCache`; provider schema cache + stable-prefix; eval hard perf axes (`default-gate.v1.2.0`) | Bench regressions are P0; live TTFT on gateway may INFRA 503 — do not silently relax thresholds |
-| **Model on-task** | plan mode; TodoEnforcer; ContextInjector; steer soft/hard; tool_result integrity (no silent wipe); compaction marker; callId tool pairing in TUI | Bus→TUI UI; token-accurate `/context`; stronger alignment proxies in bench |
-| **Zero-friction workspace** | **Default direct-cwd** — git **optional**, worktree **off** (`DIRECT / NO MERGEGATE` badge); non-git dirs start (`nogit`) | Do not reintroduce git/worktree as startup gate |
-| **Provable self-improve** (opt-in) | `xio improve` / trusted eval **always** use candidate worktree + MergeGate; decoupled from interactive default | Corpus under `~/.xiocode/runs/` still thin for strong personalization claims |
+| **Model on-task** | plan mode; TodoEnforcer; ContextInjector; steer soft/hard + **follow-up**; tool_result integrity; durable compaction facts; turn snapshot/admission; same-path write queue + edit-before-read; project trust gate; callId tool pairing; markdown scrollback + `@` mentions | bus→TUI UI; token-accurate `/context` |
+| **Zero-friction workspace** | **Default direct-cwd** — git **optional**, worktree **off** (`DIRECT / NO MERGEGATE` badge); non-git dirs start (`nogit`) — `07-16-nongit-direct-cwd` archived | Do not reintroduce git/worktree as startup gate; project trust must not kill zero-friction cwd |
+| **Provable self-improve** (opt-in) | `xio improve` / trusted eval **always** use candidate worktree + MergeGate; **one-key failure capture** on turn-fail / hard steer / `/rollback` (`07-16-failure-capture-hook`) | Corpus under `~/.xiocode/runs/` still thin; capture still needs human verdict + verifier |
 
 ## Shipping
 
@@ -62,7 +88,7 @@
 - **Permission modes** (`strict` / `auto` / `full`; Shift+Tab or `/permission`), **`xio models`**, Ink TUI core + merge/rollback/bypass + session resume
 - **Plan board**: `plan` tool → PRD + implement + `tasks.json` under **`.claude/plan/`** (Claude Code tree; legacy `.xiocode/plan` still readable); TUI todo panel; `plan update`
 - **Agent config layout**: target-repo Claude Code paths — `CLAUDE.md` / `.claude/CLAUDE.md` / skills / hooks / MCP; `~/.xiocode` is runtime state only (config, runs, sessions, worktrees, evals, regress, improve)
-- **Ink TUI polish**（`.trellis/tasks/07-15-fix-tui-interaction-regressions` 收尾）：
+- **Ink TUI polish**（`07-15-fix-tui-interaction-regressions` + **`07-16-tui-interaction-parity` / `07-16-tui-pi-interaction` archived**）：
   - 分层语义：`▸` thinking / `⚙` tool / `●` answer（tool 开始时折叠进行中 thought）
   - **默认滚动路线 B — append-to-scrollback**（`src/tui/run-ink-session.ts` + `transcript-log.ts`）：
     - `alternateScreen: false`（主 buffer，不占满屏自管视口）
@@ -73,17 +99,26 @@
     - 并行同名 tool 按 provider `callId` 配对；缺 id 时用 `synthetic-N`
     - 定稿块保留**完整** `output`；Static 只渲染 8 行 preview
     - **Ctrl+O** 打开 transcript viewer overlay（读保留全文，不改 `<Static>` 历史）
+  - **Markdown scrollback**（定稿块）：标题/加粗/列表/围栏代码高亮；live 流式预览可保持纯文本（perf：不在 hot delta 路径渲染）
+  - **`@` file mentions**：composer `@` 打开模糊文件选择；选中路径注入模型上下文（尊重 `.gitignore`）
+  - **Usage footer**：会话累计 tokens + cost（cost 仍可为 `null`，直至 G8 price table）
+  - **`/model` switcher**：slash 选择 provider/model；下一 turn 生效
   - **Startup / resume**：`TuiSessionBridge` 预订阅缓冲，prepareSession 通知不丢不重；resume 渲染 compaction / `completion unknown`
-  - **Composer**（`src/tui/composer.ts`）：光标、grapheme 删除、多行/bracketed paste、历史；busy Enter → **steer**（`session.steer` soft；`!text` hard；open-tool cancel + TUI routing tested）
+  - **Composer**（`src/tui/composer.ts`）：光标、grapheme 删除、多行/bracketed paste、历史；busy Enter → **steer**（soft）；`!text` hard；`>>text` **follow-up**；composer UI `queue` 仍是草稿缓冲（与 follow-up 队列分离）
   - **Structured confirm**：`ask(question, detail?)` 显式 detail；MergeGate / high-risk 不再靠 last-notice 侧信道
   - **隔离徽章**：header 持久 `DIRECT / NO MERGEGATE` 或 `WORKTREE`
   - 测试 / 可选路线 A：`appendScrollback: false` 时仍可用行级 `sliceTranscriptWindow`（自管视口，供单测；pairing 仍在 `reduceEvent`）
   - select/resume accent；confirm `lines a–b/n`；busy `working…`；`/help` from `collectSlashCommands`
   - 工具结果展示：剥 bash wrapper；与 tool_result 完整性配合
+- **Explore subagent UI**（`07-16-ultra-subagent-ui` archived）：explore worker 内部 thinking/assistant/tool 流式进 TUI/stdout，`theme.explore` + 缩进；不污染主 session messages 持久化
+- **Perf fixture guard**（`07-16-fix-perf-fixture-tui-import` archived）：`tui.replay_10k` 经 `RunFixtureOptions.tuiReplay` 注入，runtime↛tui 架构守卫恢复
 - **Trusted eval isolation**：`prepareCandidateSession` **强制** gradeable candidate worktree，**不继承**交互默认 `[worktree] enabled = false`；缺 worktree → `INFRA_ERROR`
-- **Context compaction G4**: one session-history owner; `/compact [focus]`; automatic `max_session_messages` trigger; same-provider continuation summary; complete-turn/tool-pair retention; atomic snapshot publish; persisted resume marker
+- **Context compaction G4**: one session-history owner; `/compact [focus]`; automatic `max_session_messages` trigger; same-provider continuation summary; complete-turn/tool-pair retention; atomic snapshot publish; persisted resume marker; **durable compaction WAL/state facts** before projection replace (half-batch cuts rejected)
 - **Execution/file checkpoint-resume G5**: atomic `xio-session.v2` state; v1 load compatibility; original worktree attach/validation; durable hidden-ref turn checkpoint; interrupted tool calls closed as `completion unknown` without replay; resumed MergeGate rollback checkpoint
-- **Session WAL (incremental)**: mid-turn `journal.jsonl` overlay + turn-boundary snapshot rewrite; resume = snapshot + journal; warm save uses live cursor O(delta) via SessionStore (perf task 4 archived)
+- **Session WAL (incremental)**: mid-turn `journal.jsonl` overlay + turn-boundary snapshot rewrite; resume = snapshot + journal; warm save uses live cursor O(delta) via SessionStore (perf task 4 archived); unknown journal ops ignored (forward-compat)
+- **Harness turn control (ch15)**: immutable `TurnSnapshot` per provider request; admission (`SessionBusyError` for busy prompt/compaction); save-point then listener settle; `[harness] snapshot` rollback flag
+- **Tool write discipline (ch10)**: realpath `FileWriteQueue`; `FileReadSet` + edit/overwrite-before-read; `[tools] require_read_before_edit`
+- **Project trust (ch12)**: `~/.xiocode/trust.json`; `[trust] mode`; untrusted → no project hooks/skills/MCP + write/exec gate; zero-friction cwd launch retained
 - Provider usage normalization (input/output/cache/reasoning; unknown → `null`)
 - Secret redaction in trajectories (env-style secrets redacted; usage counters preserved)
 - Harness throughput H1–H5; session/turn rollback G5b
@@ -96,25 +131,37 @@
   - `max_concurrency` = absolute ceiling **1–16** (default **16**)
   - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler) with **nonzero product budgets** (`max_tokens` / `max_cost_usd` / `max_starts_per_minute`; `0`=unlimited; `provider_rate_budget` skip)
   - No recursive explore; plan mode allows explore
+  - **Subagent stream UI** shipped (see above); ultra enables explore tool — still does **not** auto-spawn workers
 - **Agent Runtime Event suite** (**5/5 done**):
   - RuntimeEvent.v1 bus (`src/runtime/events/`); product sinks: **stream-json stdout** + **evolve trajectory** (Text/TUI UI still callback-based).
   - `xio -p --output-format stream-json` — stdout NDJSON only; diagnostics on stderr (prepareSession E2E).
   - Scripted LLM tape (`xio-agent-tape.v1` + goldens via `src/runtime/providers/scripted/`); turn_end trajectory contract (`xio-evolve` prefers RuntimeEvent bus → `pipeRuntimeEventsToTrajectory` when session exposes bus).
-  - Mid-turn **steer** (`SteerMailbox`): soft at tool/provider boundaries; hard aborts in-flight provider/tools (incl. open-tool cancel); TUI busy Enter / `!text` wired; **never** inject into in-flight provider HTTP body.
+  - Mid-turn **steer** (`SteerMailbox`): soft at tool/provider boundaries; hard aborts in-flight provider/tools (incl. open-tool cancel); TUI busy Enter / `!text` / `>>text` (follow-up) wired; **never** inject into in-flight provider HTTP body.
+  - **Follow-up queue**: drains only at natural end (no tool calls + soft empty); abort clears with visible `follow_up.discarded` (hard-steer hops keep queue).
   - Board: [agent-runtime-event-board](../.trellis/tasks/07-15-agent-runtime-event-board.md). Does **not** merge Session WAL with Run evidence storage.
+- **Trellis task DAG — MVP A** (archived `07-16-trellis-parallel-protocol-cli`; parent `07-16-trellis-parallel-task-orchestration`):
+  - **Tree ≠ DAG**：`parent` / `children` 只表达归属；**依赖边是 sibling `depends_on`**（任务目录名列表），与树正交。
+  - **权威落点**：`task.json.depends_on` + `isolation`（`"worktree"` \| `"shared"`）；`prd.md` / `implement.md` 双写为投影；`task.py drift` 警告不一致（不阻断）。
+  - **Ready set**：每个 `depends_on` 目标为 completed/archived 才 ready；`task.py ready <parent>` 列 ready / blocked + 原因 + isolation；环检测 fail closed。
+  - **隔离**：改码并行强制 `isolation=worktree`（独立 cwd/branch）；文档/只读可用 `shared`；**永不**同 cwd 裸多写。
+  - **执行（MVP）**：人确认后**手动**并行派 worker；无 parent / 空 `depends_on` 时行为与串行一致。
+  - **所有权**：DAG 调度在 **Trellis**；xiocode **不**内嵌 `depends_on` 引擎（Phase C 最多当 worker）。
+  - **未交付**：B `dispatch-ready` 自动 spawn / 波次；C 默认 `xio` worker + 上下文注入；Full 父任务 merge/check 集成闸门。
 
 ## Known gaps (honest — do not paper over)
 
 - **Speed regression guard**: Trellis 07-15 suite archived (8/8); any future change that regresses startup/provider/WAL/TUI bench axes is P0 — not optional polish.
-- **Alignment observability**: steer + tool integrity shipped; no single bench score for "model drift" yet; empty-tool-context bugs remain P0 harness defects.
+- **Harness deferred (by design)**: tutorial ch13 SDK/RPC product shell; JSONL parentId session-tree migration; Operations SSH/container backends — see alignment table above.
+- **Alignment observability**: steer + follow-up + tool integrity shipped; no single bench score for "model drift" yet; empty-tool-context bugs remain P0 harness defects.
 - **Performance residual**: live bench may omit full resource aggregates until harness emits them on every fixture path.
 - **RuntimeEvent follow-ups** (out of suite): bus→SessionUi for Text/TUI; explicit `reportProgress()` if progress is promised.
-- **Identity–behavior gap**: north star is speed + alignment + direct-cwd; self-improve flywheel is opt-in and still needs explicit failure + MergeGate.
+- **Trellis task DAG B/C/Full** (active P2): protocol/ready/drift shipped; **scheduler** (`dispatch-ready` 对 ready set 自动 channel spawn、失败不解锁下游)、**xio worker**、**父集成闸门**仍 planning。
+- **Identity–behavior gap**: north star is speed + alignment + direct-cwd; self-improve flywheel is opt-in and still needs explicit failure + MergeGate (one-key offer lowers friction; does not auto-capture).
 - **Host isolation**: default is direct-cwd (not sandboxed); opt-in worktree is merge isolation only; `bash` / MCP remain host-reachable (`host_isolation: unsupported`).
-- **Cost / tracing (G8)**: no versioned price table yet; `estimated_cost_usd` stays `null` without it; product-facing span tracing incomplete (bench path is local/framework).
+- **Cost / tracing (G8)**: TUI shows usage footer; no versioned price table yet → `estimated_cost_usd` often `null`; product-facing span tracing incomplete.
 - **Isolation ladder (G6)**: container / microVM path not productized; docs ladder still the target narrative.
-- **TUI residual**: Route A `reduceEvent` still has a separate tool-pairing path for the test renderer; external prompt editor not shipped.
-- **Corpus**: stronger self-iteration claims need a growing private run corpus under `~/.xiocode/runs/`.
+- **TUI residual**: Route A `reduceEvent` still has a separate tool-pairing path for the test renderer; external prompt editor / themes / image paste not shipped (deliberate vs pi community surface).
+- **Corpus**: stronger self-iteration claims need a growing private run corpus + regression cases under `~/.xiocode/` (failure offer is the fuel pump; library still thin).
 
 ## Not on default path / not shipped
 
@@ -144,7 +191,7 @@ npm pack --dry-run   # prepack: typecheck then payload existence
 # Evidence: ./bin/xio -p "ok" && jq . ~/.xiocode/runs/<latest>/metadata.json
 # Dirty WIP in target repo (e.g. bm_bff_web): cd <repo> && xio --allow-dirty
 #   → worktree under ~/.xiocode/worktrees/<repoId>/… with HEAD + visible baseline tree (git-native)
-# Interactive TUI: append-to-scrollback + callId pairing + Ctrl+O full output + composer steer + early-boot buffer
+# Interactive TUI: append-to-scrollback + markdown/@/usage/model + callId pairing + Ctrl+O + composer steer + early-boot buffer
 # Runtime events + steer:
 #   npx vitest run src/runtime/events src/runtime/steer.test.ts src/runtime/providers/scripted
 # Perf + eval gate smoke:
@@ -156,7 +203,12 @@ npm pack --dry-run   # prepack: typecheck then payload existence
 #     src/cli/session-delete.test.ts src/tui/ extensions/xio-evolve/test/index.test.ts src/runtime/agent-loop.test.ts \
 #     extensions/xio-eval/test/credentialed-evidence.test.ts
 # xio regress create/preflight requires an existing local run and user verifier
+# Failure offer: turn failed / hard steer / /rollback → one-key capture (kill-switch [regress] offer_on_failure)
 # Session cleanup: xio resume --delete <id>  # removes worktree/branch/checkpoint refs then metadata
+# Active Trellis (not yet shipping claims): 07-16-trellis-parallel-* (B/C/gate)
+# Harness design-gaps (closed 2026-07-20):
+#   npx vitest run src/runtime/harness src/runtime/steer.test.ts src/runtime/file-write-queue.test.ts \
+#     src/runtime/project-trust.test.ts src/runtime/context-compaction.test.ts src/runtime/session-store.test.ts
 ```
 
 ### G9 credentialed smoke (manual, 2026-07-12)

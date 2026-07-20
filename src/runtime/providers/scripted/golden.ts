@@ -25,6 +25,8 @@ export function runtimeEventNames(events: readonly RuntimeEventV1[]): readonly s
 function stabilizePayload(payload: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(payload).sort()) {
+    // snapshot_id is allocated per request and is not golden-stable
+    if (key === "snapshot_id") continue;
     out[key] = payload[key];
   }
   return out;
