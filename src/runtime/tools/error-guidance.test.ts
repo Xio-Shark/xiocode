@@ -11,6 +11,20 @@ describe("error-guidance", () => {
     expect(out.toLowerCase()).toMatch(/replace_all|unique/);
   });
 
+  it("adds Fix for unread edit", () => {
+    const msg = "edit blocked: path not read in this run before edit: /ws/a.ts";
+    const out = withFixHint("edit", msg);
+    expect(out).toMatch(/Fix:/);
+    expect(out.toLowerCase()).toContain("read");
+  });
+
+  it("adds Fix for unread overwrite write", () => {
+    const msg = "write blocked: path not read in this run before overwrite: /ws/a.ts";
+    const out = withFixHint("write", msg);
+    expect(out).toMatch(/Fix:/);
+    expect(out.toLowerCase()).toContain("read");
+  });
+
   it("adds Fix for bash non-zero exit", () => {
     const out = withFixHint("bash", "exit_code=1\n\nstderr:\nboom");
     expect(out).toMatch(/Fix:/);

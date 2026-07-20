@@ -196,6 +196,15 @@ describe("builtin edit robustness", () => {
     return root;
   }
 
+  async function readThen(
+    tools: readonly ToolDefinition[],
+    filePath: string,
+  ): Promise<void> {
+    const read = toolByName(tools, "read");
+    const result = await textOf(read, { path: filePath });
+    expect(result.isError).toBeFalsy();
+  }
+
   it("keeps exact unique replace as the default", async () => {
     const root = await makeEditFixture();
     try {
@@ -210,6 +219,7 @@ describe("builtin edit robustness", () => {
       ]);
       expect(edit.parameters.required).toEqual(["path"]);
 
+      await readThen(tools, "exact.ts");
       const result = await textOf(edit, {
         path: "exact.ts",
         old_string: "const a = 1;",
@@ -224,11 +234,65 @@ describe("builtin edit robustness", () => {
     }
   });
 
+  it("rejects edit before read with Fix guidance", async () => {
+    const root = await makeEditFixture();
+    try {
+      const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
+      const edit = toolByName(tools, "edit");
+      const blocked = await textOf(edit, {
+        path: "exact.ts",
+        old_string: "const a = 1;",
+        new_string: "const a = 10;",
+      });
+      expect(blocked.isError).toBe(true);
+      expect(blocked.text).toContain("not read");
+      expect(blocked.text).toMatch(/Fix:/);
+      expect(await readFile(path.join(root, "exact.ts"), "utf8")).toBe("const a = 1;\nconst b = 2;\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects overwrite write before read with Fix guidance", async () => {
+    const root = await makeEditFixture();
+    try {
+      const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
+      const write = toolByName(tools, "write");
+      const blocked = await textOf(write, {
+        path: "exact.ts",
+        content: "hijacked\n",
+      });
+      expect(blocked.isError).toBe(true);
+      expect(blocked.text).toContain("before overwrite");
+      expect(blocked.text).toMatch(/Fix:/);
+      expect(await readFile(path.join(root, "exact.ts"), "utf8")).toBe("const a = 1;\nconst b = 2;\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows create-write without prior read", async () => {
+    const root = await makeEditFixture();
+    try {
+      const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
+      const write = toolByName(tools, "write");
+      const created = await textOf(write, {
+        path: "brand-new.ts",
+        content: "ok\n",
+      });
+      expect(created.isError).toBeFalsy();
+      expect(await readFile(path.join(root, "brand-new.ts"), "utf8")).toBe("ok\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects ambiguous multi-match unless replace_all", async () => {
     const root = await makeEditFixture();
     try {
       const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
       const edit = toolByName(tools, "edit");
+      await readThen(tools, "multi.ts");
       const ambiguous = await textOf(edit, {
         path: "multi.ts",
         old_string: "foo",
@@ -257,6 +321,7 @@ describe("builtin edit robustness", () => {
     try {
       const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
       const edit = toolByName(tools, "edit");
+      await readThen(tools, "crlf.ts");
       const result = await textOf(edit, {
         path: "crlf.ts",
         old_string: "const a = 1;\nconst b = 2;\n",
@@ -275,6 +340,7 @@ describe("builtin edit robustness", () => {
     try {
       const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
       const edit = toolByName(tools, "edit");
+      await readThen(tools, "exact.ts");
 
       const ok = await textOf(edit, {
         path: "exact.ts",
@@ -330,6 +396,36 @@ describe("builtin edit robustness", () => {
       });
       expect(escaped.isError).toBe(true);
       expect(escaped.text).toContain("path escapes workspace root");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent same-path write/edit without lost updates", async () => {
+    const root = await makeEditFixture();
+    try {
+      const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
+      await readThen(tools, "exact.ts");
+      const edit = toolByName(tools, "edit");
+      const write = toolByName(tools, "write");
+
+      await Promise.all([
+        textOf(edit, {
+          path: "exact.ts",
+          old_string: "const a = 1;",
+          new_string: "const a = 2;",
+        }),
+        (async () => {
+          await new Promise((r) => setTimeout(r, 5));
+          return textOf(write, {
+            path: "exact.ts",
+            content: "final\n",
+          });
+        })(),
+      ]);
+
+      // Both completed through the queue; last scheduled write should be intact.
+      expect(await readFile(path.join(root, "exact.ts"), "utf8")).toBe("final\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
