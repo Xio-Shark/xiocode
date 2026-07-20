@@ -27,6 +27,12 @@ export const RUNTIME_EVENT_NAMES = [
   "cancel",
   "steer.requested",
   "steer.applied",
+  /** Harness phase: idle | turn | compaction | retry */
+  "harness.phase",
+  /** Messages persisted; pending listener writes may still be in flight. */
+  "harness.save_point",
+  /** Structural op finished and tracked settles drained. */
+  "harness.settled",
 ] as const;
 
 export type RuntimeEventName = (typeof RUNTIME_EVENT_NAMES)[number];
@@ -64,4 +70,9 @@ export type RuntimeEventEmitter = Readonly<{
   setTurnId: (turnId: string | null) => void;
   /** Next seq that will be assigned (for tests). */
   peekSeq: () => number;
+  /**
+   * Await all in-flight async subscribe handlers.
+   * Used by harness waitForIdle / settle so listeners cannot outlive the run.
+   */
+  flushPending: () => Promise<void>;
 }>;

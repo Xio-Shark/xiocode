@@ -527,6 +527,20 @@ require_read_before_edit = false
     expect(off.runtimeConfig.tools).toEqual({ requireReadBeforeEdit: false });
   });
 
+  it("parses harness.snapshot (default true)", () => {
+    const defaults = parseXioConfig("", { cwd: "/repo" });
+    expect(defaults.runtimeConfig.harness).toEqual({ snapshot: true });
+
+    const off = parseXioConfig(
+      `
+[harness]
+snapshot = false
+`,
+      { cwd: "/repo" },
+    );
+    expect(off.runtimeConfig.harness).toEqual({ snapshot: false });
+  });
+
   it("parses improve capability_gate and private_case defaults", () => {
     const caseId = "d".repeat(64);
     const parsed = parseXioConfig(

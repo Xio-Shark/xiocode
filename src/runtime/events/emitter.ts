@@ -31,6 +31,7 @@ export function createRuntimeEventEmitter(
   const now = options.now ?? (() => new Date());
   const shouldRedact = options.redact !== false;
   const handlers = new Set<RuntimeEventHandler>();
+  const pending = new Set<Promise<unknown>>();
 
   return {
     emit(event: RuntimeEventName, payload: Readonly<Record<string, unknown>> = {}, ids?) {
@@ -51,7 +52,14 @@ export function createRuntimeEventEmitter(
         try {
           const result = handler(envelope);
           if (result && typeof (result as Promise<void>).then === "function") {
-            void (result as Promise<void>).catch(() => undefined);
+            const tracked = Promise.resolve(result as Promise<void>).then(
+              () => undefined,
+              () => undefined,
+            );
+            pending.add(tracked);
+            void tracked.finally(() => {
+              pending.delete(tracked);
+            });
           }
         } catch {
           // Subscriber failures must not break the agent loop.
@@ -73,6 +81,11 @@ export function createRuntimeEventEmitter(
     },
     peekSeq() {
       return seq;
+    },
+    async flushPending() {
+      while (pending.size > 0) {
+        await Promise.allSettled([...pending]);
+      }
     },
   };
 }

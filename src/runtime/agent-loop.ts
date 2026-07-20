@@ -24,6 +24,11 @@ import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
 import type { RuntimeEventEmitter } from "./events/types.ts";
 import { formatSteerUserMessage, type SteerMailbox } from "./steer.ts";
+import {
+  createTurnSnapshot,
+  type LiveConfigView,
+  type TurnSnapshot,
+} from "./harness/turn-snapshot.ts";
 
 /** Tools that mutate workspace files and must not race each other by realpath. */
 const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
@@ -91,6 +96,21 @@ export type AgentLoopOptions = Readonly<{
    * so same-path write/edit still serialize within the batch.
    */
   fileWriteQueue?: FileWriteQueue;
+  /**
+   * Live config getters for per-provider-request TurnSnapshot.
+   * When set (default path from session), each provider call freezes a snapshot
+   * so mid-request live model/tools changes cannot mutate the in-flight request.
+   * When omitted, a snapshot is built once from static options at first request
+   * and reused for the rest of the loop (rollback / unit-test path).
+   */
+  getLiveConfig?: () => LiveConfigView;
+  /**
+   * When true (default), rebuild TurnSnapshot from getLiveConfig (or static options)
+   * before every provider request. When false, freeze once at first request.
+   */
+  turnSnapshot?: boolean;
+  /** Test/telemetry hook: observe each frozen snapshot. */
+  onTurnSnapshot?: (snapshot: TurnSnapshot) => void;
 }>;
 
 export type AgentLoopCheckpoint = Readonly<{
@@ -397,6 +417,8 @@ async function runUntilIdle(
   let toolCalls = 0;
   let toolErrors = 0;
   const usages: TokenUsage[] = [];
+  /** When turnSnapshot=false, reuse one frozen snapshot for the whole segment. */
+  let stickySnapshot: TurnSnapshot | undefined;
   for (; turns < maxTurns; turns += 1) {
     if (options.signal?.aborted) {
       return {
@@ -409,11 +431,15 @@ async function runUntilIdle(
         toolResults: toolCollector.results,
       };
     }
-    const tools = options.host.listTools();
+    const snapshot = resolveProviderSnapshot(options, stickySnapshot);
+    if (options.turnSnapshot === false) {
+      stickySnapshot = snapshot;
+    }
+    options.onTurnSnapshot?.(snapshot);
     let completion: ChatCompletionResponse;
     try {
       await publishCheckpoint(options, { phase: "awaiting_provider", messages });
-      completion = await requestCompletion(messages, options, tools);
+      completion = await requestCompletion(messages, options, snapshot);
     } catch (error) {
       if (isAbortError(error) || options.signal?.aborted) {
         return {
@@ -434,7 +460,7 @@ async function runUntilIdle(
     if (completion.content) {
       options.onAssistantText?.(completion.content);
       // Non-stream complete path: surface final text as a single delta for event consumers.
-      if (!options.client.completeStream) {
+      if (!snapshot.client.completeStream) {
         options.runtimeEvents?.emit("text.delta", { text: completion.content });
       }
       finalText = completion.content;
@@ -510,37 +536,39 @@ function applySoftSteers(messages: ChatMessage[], options: AgentLoopOptions): bo
 async function requestCompletion(
   messages: ChatMessage[],
   options: AgentLoopOptions,
-  tools: readonly ToolDefinition[],
+  snapshot: TurnSnapshot,
 ): Promise<ChatCompletionResponse> {
   const { getGlobalTracer, classifyUnknownError } = await import("./perf/index.ts");
   const tracer = getGlobalTracer();
-  const api = options.providerApi ?? "openai-completions";
-  const registration = resolveRegistration(options);
-  const cached = getCachedProviderTools(api, tools);
-  const maxTokens = options.maxTokens
-    ?? registration?.models.find((model) => model.id === options.model)?.maxTokens
+  const api = snapshot.providerApi;
+  const registration = resolveRegistration(options, snapshot);
+  const cached = getCachedProviderTools(api, snapshot.tools);
+  const maxTokens = snapshot.maxTokens
+    ?? registration?.models.find((model) => model.id === snapshot.modelId)?.maxTokens
     ?? registration?.models[0]?.maxTokens;
-  const toolChoice = options.toolChoice ?? registration?.toolChoice;
-  const toolChoiceScope = options.toolChoiceScope ?? registration?.toolChoiceScope;
+  const toolChoice = snapshot.toolChoice ?? registration?.toolChoice;
+  const toolChoiceScope = snapshot.toolChoiceScope ?? registration?.toolChoiceScope;
   const requestSpan = tracer?.start("provider.request", {
     attrs: {
-      model: options.model,
-      stream: Boolean(options.client.completeStream),
+      model: snapshot.modelId,
+      stream: Boolean(snapshot.client.completeStream),
       max_tokens: maxTokens ?? null,
       tool_choice: toolChoice ?? "unset",
       tool_schema_cache: cached.cache,
+      snapshot_id: snapshot.id,
     },
   });
   options.runtimeEvents?.emit("provider.request", {
-    model: options.model,
-    stream: Boolean(options.client.completeStream),
+    model: snapshot.modelId,
+    stream: Boolean(snapshot.client.completeStream),
+    snapshot_id: snapshot.id,
   });
   const providerTools = cached.tools;
   const providerPayload = {
-    model: options.model,
+    model: snapshot.modelId,
     messages,
     tools: providerTools,
-    parallelToolCalls: options.parallelToolCalls,
+    parallelToolCalls: snapshot.parallelToolCalls,
     maxTokens,
     toolChoice,
     toolChoiceScope,
@@ -548,12 +576,12 @@ async function requestCompletion(
   try {
     const enhanced = await options.host.emit("before_provider_request", { payload: providerPayload });
     const request = asRecord(enhanced.at(-1)) ?? providerPayload;
-    const requestedModel = typeof request.model === "string" ? request.model : options.model;
+    const requestedModel = typeof request.model === "string" ? request.model : snapshot.modelId;
     const requestMessages = (Array.isArray(request.messages) ? request.messages : messages) as ChatMessage[];
     const requestTools = Array.isArray(request.tools) ? request.tools as typeof providerTools : providerTools;
     const parallelToolCalls = typeof request.parallelToolCalls === "boolean"
       ? request.parallelToolCalls
-      : options.parallelToolCalls;
+      : snapshot.parallelToolCalls;
     const requestMaxTokens = typeof request.maxTokens === "number" ? request.maxTokens : maxTokens;
     const requestToolChoice = (typeof request.toolChoice === "string"
       ? request.toolChoice
@@ -574,12 +602,12 @@ async function requestCompletion(
     };
 
     let completion: ChatCompletionResponse;
-    if (options.client.completeStream) {
-      completion = await consumeStream(options.client, completionRequest, options, requestSpan?.span_id);
+    if (snapshot.client.completeStream) {
+      completion = await consumeStream(snapshot.client, completionRequest, options, requestSpan?.span_id);
     } else {
       const completionSpan = tracer?.start("provider.completion", { parentId: requestSpan?.span_id });
       try {
-        completion = await options.client.complete(completionRequest, { signal: options.signal });
+        completion = await snapshot.client.complete(completionRequest, { signal: options.signal });
         tracer?.end(completionSpan, "success", { usage: completion.usage ?? emptyTokenUsage() });
       } catch (error) {
         const classified = classifyUnknownError(error);
@@ -589,7 +617,7 @@ async function requestCompletion(
     }
 
     await options.host.emit("provider_response", {
-      providerApi: options.providerApi ?? "unknown",
+      providerApi: snapshot.providerApi,
       model: requestedModel,
       usage: completion.usage ?? emptyTokenUsage(),
     });
@@ -599,6 +627,7 @@ async function requestCompletion(
         tool_calls: completion.toolCalls.length,
         tool_schema_cache: cached.cache,
         max_tokens: requestMaxTokens ?? null,
+        snapshot_id: snapshot.id,
       },
     });
     return completion;
@@ -609,8 +638,39 @@ async function requestCompletion(
   }
 }
 
-function resolveRegistration(options: AgentLoopOptions) {
-  const name = options.providerName ?? options.host.model?.provider;
+/**
+ * Freeze live config for this provider request.
+ * Live changes after this returns do not mutate the in-flight snapshot.
+ */
+function resolveProviderSnapshot(
+  options: AgentLoopOptions,
+  sticky: TurnSnapshot | undefined,
+): TurnSnapshot {
+  if (sticky) return sticky;
+  const live = options.getLiveConfig?.() ?? liveConfigFromOptions(options);
+  return createTurnSnapshot(live);
+}
+
+function liveConfigFromOptions(options: AgentLoopOptions): LiveConfigView {
+  return {
+    model: {
+      provider: options.providerName ?? options.host.model?.provider ?? "unknown",
+      id: options.model,
+    },
+    modelId: options.model,
+    providerName: options.providerName ?? options.host.model?.provider,
+    providerApi: options.providerApi ?? "openai-completions",
+    client: options.client,
+    parallelToolCalls: options.parallelToolCalls !== false,
+    tools: options.host.listTools(),
+    ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+    ...(options.toolChoice !== undefined ? { toolChoice: options.toolChoice } : {}),
+    ...(options.toolChoiceScope !== undefined ? { toolChoiceScope: options.toolChoiceScope } : {}),
+  };
+}
+
+function resolveRegistration(options: AgentLoopOptions, snapshot?: TurnSnapshot) {
+  const name = snapshot?.providerName ?? options.providerName ?? options.host.model?.provider;
   if (!name) return undefined;
   return options.host.getProvider(name);
 }

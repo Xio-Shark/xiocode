@@ -53,6 +53,10 @@ import {
   pipeRuntimeEventsToStreamJson,
 } from "./events/stream-json.ts";
 import { SteerMailbox, type SteerMode } from "./steer.ts";
+import {
+  HarnessController,
+  type HarnessPhase,
+} from "./harness/admission.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ContextCompactionResult } from "./context-compaction.ts";
@@ -160,6 +164,10 @@ export type PreparedSession = Readonly<{
   /** Local workspace perception map + evidence store (non-blocking warm). */
   workspacePerception: WorkspacePerceptionService;
   close: () => Promise<void>;
+  /** Wait until harness phase is idle and tracked settle work has finished. */
+  waitForIdle: () => Promise<void>;
+  /** Coarse harness phase (idle | turn | compaction | retry). */
+  getHarnessPhase: () => HarnessPhase;
 }>;
 
 export async function prepareSession(options: SessionOptions): Promise<PreparedSession> {
@@ -206,6 +214,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   sink.setStatus?.("trust", `trust:${projectTrust.decision}`);
 
   const steerMailbox = new SteerMailbox();
+  const harness = new HarnessController({ runtimeEvents });
+  const turnSnapshotEnabled = options.runtimeConfig.harness?.snapshot !== false;
   // Perception before host config so main + explore share one warm service.
   const workspacePerception = new WorkspacePerceptionService({ root: workspaceRoot });
   // Non-blocking: never await full index on the interactive startup path.
@@ -497,8 +507,20 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       }
     },
   });
-  const compact = (mode: ContextCompactionMode, focus?: string) =>
-    contextCompaction.compact(mode, focus, createTurnSignal());
+  const compact = async (mode: ContextCompactionMode, focus?: string) => {
+    // Manual / automatic-from-command compaction only when idle.
+    // Automatic pre-prompt compaction runs inside an admitted prompt turn.
+    if (mode !== "automatic") {
+      harness.begin("compaction");
+    }
+    try {
+      return await contextCompaction.compact(mode, focus, createTurnSignal());
+    } finally {
+      if (mode !== "automatic") {
+        await harness.end();
+      }
+    }
+  };
   registerContextCommands({ host, compact });
 
   // Surface workspace identity so TUI + agent know main vs worktree.
@@ -547,6 +569,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     cyclePermissionMode: () => permission.cycleMode(),
     compact: (focus) => compact("manual", focus),
     workspacePerception,
+    waitForIdle: () => harness.waitForIdle(),
+    getHarnessPhase: () => harness.phase,
     runPrompt: createPromptRunner({
       host,
       getClient: () => client,
@@ -561,6 +585,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       getSignal: createTurnSignal,
       resetSignal: createTurnSignal,
       steerMailbox,
+      harness,
+      turnSnapshot: turnSnapshotEnabled,
       getRunId,
       failureCapture: failureCapture
         ? { maybeOffer: (input) => failureCapture.maybeOfferFailureCapture(input) }
