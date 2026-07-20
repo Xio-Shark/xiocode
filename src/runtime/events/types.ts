@@ -27,6 +27,14 @@ export const RUNTIME_EVENT_NAMES = [
   "cancel",
   "steer.requested",
   "steer.applied",
+  /** Follow-up enqueued (runs only after natural end: no tools + soft empty). */
+  "follow_up.queued",
+  /** Follow-up injected as the next user message in the same run. */
+  "follow_up.applied",
+  /** Follow-up discarded on abort (must not run silently later). */
+  "follow_up.discarded",
+  /** Pending soft/follow-up counts changed (UI status). */
+  "queue_updated",
   /** Harness phase: idle | turn | compaction | retry */
   "harness.phase",
   /** Messages persisted; pending listener writes may still be in flight. */
