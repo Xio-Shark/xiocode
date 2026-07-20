@@ -4,6 +4,7 @@ import { ContextCompactionController, SessionHistory, isContextCompactionError }
 import { ExtensionHost } from "./extension-host.ts";
 import { createStdoutSessionUiSink } from "./session-ui.ts";
 import { sumTokenUsage } from "./usage.ts";
+import type { HarnessController } from "./harness/admission.ts";
 
 import type { XioVerifyConfig } from "../cli/config-parser.ts";
 import type { PreparedSession } from "./session.ts";
@@ -12,6 +13,7 @@ import type { WorktreeDisposition } from "../../extensions/xio-sandbox/src/merge
 import type { DoneContract } from "./verify/done-contract.ts";
 import type { AgentLoopCheckpoint } from "./agent-loop.ts";
 import type { ChatMessage, LlmClient, ModelInfo, TokenUsage } from "./types.ts";
+import type { LiveConfigView } from "./harness/turn-snapshot.ts";
 
 export function createSessionHost(
   model: ModelInfo,
@@ -123,6 +125,16 @@ export function createPromptRunner(options: Readonly<{
   steerMailbox?: import("./steer.ts").SteerMailbox;
   /** Fresh AbortSignal after hard-steer abort (must not reuse aborted controller). */
   resetSignal?: () => AbortSignal | undefined;
+  /**
+   * Harness admission + settle. When set, structural prompts refuse while busy
+   * and waitForIdle drains pending listener work after the run.
+   */
+  harness?: HarnessController;
+  /**
+   * When false, freeze TurnSnapshot once per agent-loop segment (rollback).
+   * Default true: rebuild snapshot before each provider request from live getters.
+   */
+  turnSnapshot?: boolean;
 }>): PreparedSession["runPrompt"] {
   const sink = options.sink ?? createStdoutSessionUiSink();
   const history = options.history ?? new SessionHistory({
@@ -143,116 +155,153 @@ export function createPromptRunner(options: Readonly<{
   });
 
   return async (prompt) => {
-    await options.beforePrompt?.();
-    let compactionUsage: TokenUsage | undefined;
-    if (options.contextCompaction?.needsAutomaticCompaction()) {
-      const compacted = await options.contextCompaction.compact(
-        "automatic",
-        undefined,
-        options.getSignal?.(),
-      );
-      if (compacted.compacted) compactionUsage = compacted.usage;
-    }
-
-    const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // Phase switch before first await (admission invariant).
+    options.harness?.begin("prompt");
     try {
-      let nextPrompt = prompt;
-      let totalTurns = 0;
-      let totalToolCalls = 0;
-      let totalToolErrors = 0;
-      const usages: TokenUsage[] = compactionUsage ? [compactionUsage] : [];
-      let lastText = "";
-      let lastSuccess = true;
-      let lastCancelled = false;
-      let sawHardSteer = false;
-      let lastDoneContract = undefined as import("./verify/done-contract.ts").DoneContractResult | undefined;
+      await options.beforePrompt?.();
+      let compactionUsage: TokenUsage | undefined;
+      if (options.contextCompaction?.needsAutomaticCompaction()) {
+        const compacted = await options.contextCompaction.compact(
+          "automatic",
+          undefined,
+          options.getSignal?.(),
+        );
+        if (compacted.compacted) compactionUsage = compacted.usage;
+      }
 
-      // Hard-steer continuation: abort → synthetic tool results in loop → inject → new loop.
-      // Does not insert into the same in-flight provider stream body.
-      for (let hop = 0; hop < 8; hop += 1) {
-        const signal = hop === 0
-          ? options.getSignal?.()
-          : (options.resetSignal?.() ?? options.getSignal?.());
-        const model = getModel();
-        const result = await runAgentLoop(nextPrompt, {
-          host: options.host,
-          client: getClient(),
-          model: model.id,
-          providerApi: getProviderApi(),
-          providerName: model.provider,
-          maxTurns: options.maxTurns,
-          repeatToolLimit: options.repeatToolLimit,
-          doneContract: options.doneContract,
-          verifyRepairTurns: options.verify.repairTurns,
-          parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
-          priorMessages: history.getMessages(),
-          maxSessionMessages: options.maxSessionMessages,
-          signal,
-          onAssistantDelta: (text) => sink.onAssistantDelta?.(text),
-          onAssistantText: (text) => sink.onAssistantText?.(text),
-          onThinkingDelta: (text) => sink.onThinkingDelta?.(text),
-          onToolStart: (call) => sink.onToolStart?.(call),
-          onToolEnd: (call, toolResult) => sink.onToolEnd?.(call, toolResult),
-          onCheckpoint: options.onCheckpoint,
-          runtimeEvents: options.runtimeEvents,
-          steerMailbox: options.steerMailbox,
-        });
-        await history.replace(result.messages);
-        totalTurns += result.turns;
-        totalToolCalls += result.toolCalls;
-        totalToolErrors += result.toolErrors;
-        usages.push(result.usage);
-        lastText = result.finalText || lastText;
-        lastSuccess = result.success;
-        lastCancelled = result.cancelled === true;
-        lastDoneContract = result.doneContract;
+      const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        let nextPrompt = prompt;
+        let totalTurns = 0;
+        let totalToolCalls = 0;
+        let totalToolErrors = 0;
+        const usages: TokenUsage[] = compactionUsage ? [compactionUsage] : [];
+        let lastText = "";
+        let lastSuccess = true;
+        let lastCancelled = false;
+        let sawHardSteer = false;
+        let lastDoneContract = undefined as import("./verify/done-contract.ts").DoneContractResult | undefined;
 
-        if (result.hardSteerText && result.cancelled) {
-          sawHardSteer = true;
-          nextPrompt = result.hardSteerText;
-          lastCancelled = false;
-          continue;
+        const getLiveConfig = (): LiveConfigView => {
+          const model = getModel();
+          return {
+            model,
+            modelId: model.id,
+            providerName: model.provider,
+            providerApi: getProviderApi(),
+            client: getClient(),
+            parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls !== false,
+            tools: options.host.listTools(),
+          };
+        };
+
+        const onCheckpoint: typeof options.onCheckpoint = options.onCheckpoint
+          || options.harness
+          ? async (checkpoint) => {
+            // Persist messages first (save-point ordering).
+            await options.onCheckpoint?.(checkpoint);
+            options.harness?.noteSavePoint({
+              phase: checkpoint.phase,
+              message_count: checkpoint.messages.length,
+            });
+            // Track event-bus async listeners so settle cannot return early.
+            if (options.runtimeEvents) {
+              options.harness?.trackSettle(options.runtimeEvents.flushPending());
+            }
+          }
+          : undefined;
+
+        // Hard-steer continuation: abort → synthetic tool results in loop → inject → new loop.
+        // Does not insert into the same in-flight provider stream body.
+        for (let hop = 0; hop < 8; hop += 1) {
+          const signal = hop === 0
+            ? options.getSignal?.()
+            : (options.resetSignal?.() ?? options.getSignal?.());
+          const model = getModel();
+          const result = await runAgentLoop(nextPrompt, {
+            host: options.host,
+            client: getClient(),
+            model: model.id,
+            providerApi: getProviderApi(),
+            providerName: model.provider,
+            maxTurns: options.maxTurns,
+            repeatToolLimit: options.repeatToolLimit,
+            doneContract: options.doneContract,
+            verifyRepairTurns: options.verify.repairTurns,
+            parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
+            priorMessages: history.getMessages(),
+            maxSessionMessages: options.maxSessionMessages,
+            signal,
+            onAssistantDelta: (text) => sink.onAssistantDelta?.(text),
+            onAssistantText: (text) => sink.onAssistantText?.(text),
+            onThinkingDelta: (text) => sink.onThinkingDelta?.(text),
+            onToolStart: (call) => sink.onToolStart?.(call),
+            onToolEnd: (call, toolResult) => sink.onToolEnd?.(call, toolResult),
+            onCheckpoint,
+            runtimeEvents: options.runtimeEvents,
+            steerMailbox: options.steerMailbox,
+            getLiveConfig,
+            turnSnapshot: options.turnSnapshot,
+          });
+          await history.replace(result.messages);
+          totalTurns += result.turns;
+          totalToolCalls += result.toolCalls;
+          totalToolErrors += result.toolErrors;
+          usages.push(result.usage);
+          lastText = result.finalText || lastText;
+          lastSuccess = result.success;
+          lastCancelled = result.cancelled === true;
+          lastDoneContract = result.doneContract;
+
+          if (result.hardSteerText && result.cancelled) {
+            sawHardSteer = true;
+            nextPrompt = result.hardSteerText;
+            lastCancelled = false;
+            continue;
+          }
+          break;
         }
-        break;
-      }
 
-      if (lastCancelled) {
-        sink.onCancelled?.();
-      }
-      if (lastDoneContract && !lastDoneContract.passed) {
-        sink.onDoneContract?.(lastDoneContract.summary);
-      }
-
-      // Post-settle only: never offer while a provider stream / tool batch is in flight.
-      const runId = await options.getRunId?.();
-      if (options.failureCapture) {
-        if (sawHardSteer) {
-          await options.failureCapture.maybeOffer({ turnId, signal: "hard_steer", runId });
-        } else if (!lastSuccess && !lastCancelled) {
-          await options.failureCapture.maybeOffer({ turnId, signal: "turn_failed", runId });
+        if (lastCancelled) {
+          sink.onCancelled?.();
         }
-      } else if (!lastSuccess && !lastCancelled) {
-        sink.notify?.(formatRegressCaptureHint(runId), "info");
-      }
-      return {
-        text: lastText,
-        success: lastSuccess,
-        turns: totalTurns,
-        toolCalls: totalToolCalls,
-        toolErrors: totalToolErrors,
-        usage: sumTokenUsage(usages),
-        cancelled: lastCancelled,
-      };
-    } catch (error) {
-      if (!isContextCompactionError(error)) {
+        if (lastDoneContract && !lastDoneContract.passed) {
+          sink.onDoneContract?.(lastDoneContract.summary);
+        }
+
+        // Post-settle only: never offer while a provider stream / tool batch is in flight.
         const runId = await options.getRunId?.();
         if (options.failureCapture) {
-          await options.failureCapture.maybeOffer({ turnId, signal: "turn_failed", runId });
-        } else {
+          if (sawHardSteer) {
+            await options.failureCapture.maybeOffer({ turnId, signal: "hard_steer", runId });
+          } else if (!lastSuccess && !lastCancelled) {
+            await options.failureCapture.maybeOffer({ turnId, signal: "turn_failed", runId });
+          }
+        } else if (!lastSuccess && !lastCancelled) {
           sink.notify?.(formatRegressCaptureHint(runId), "info");
         }
+        return {
+          text: lastText,
+          success: lastSuccess,
+          turns: totalTurns,
+          toolCalls: totalToolCalls,
+          toolErrors: totalToolErrors,
+          usage: sumTokenUsage(usages),
+          cancelled: lastCancelled,
+        };
+      } catch (error) {
+        if (!isContextCompactionError(error)) {
+          const runId = await options.getRunId?.();
+          if (options.failureCapture) {
+            await options.failureCapture.maybeOffer({ turnId, signal: "turn_failed", runId });
+          } else {
+            sink.notify?.(formatRegressCaptureHint(runId), "info");
+          }
+        }
+        throw error;
       }
-      throw error;
+    } finally {
+      await options.harness?.end();
     }
   };
 }

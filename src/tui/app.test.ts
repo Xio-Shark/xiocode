@@ -66,6 +66,8 @@ describe("App", () => {
       getMessages: () => [],
       workspacePerception: stubWorkspacePerception(),
       async close() {},
+      waitForIdle: async () => {},
+      getHarnessPhase: () => "idle" as const,
     };
 
     const output = renderToString(React.createElement(App, {
@@ -609,6 +611,8 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     getMessages: () => messages,
     workspacePerception: stubWorkspacePerception(),
     async close() {},
+    waitForIdle: async () => {},
+    getHarnessPhase: () => "idle" as const,
   };
 }
 
