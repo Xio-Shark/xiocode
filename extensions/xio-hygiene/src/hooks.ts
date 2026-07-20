@@ -59,6 +59,8 @@ export type LoadHooksOptions = Readonly<{
   cwd: string;
   home?: string;
   config: HooksConfig;
+  /** When false, skip project `.claude/settings*.json` (user global still loads). */
+  includeProject?: boolean;
   warn?: (message: string) => void;
 }>;
 
@@ -66,6 +68,8 @@ export type RegisterHooksBridgeOptions = Readonly<{
   cwd: string;
   home?: string;
   config: HooksConfig;
+  /** When false, skip project hook settings. */
+  includeProject?: boolean;
   warn?: (message: string) => void;
   /** Injectable runner for tests. */
   runCommand?: typeof runCommandHook;
@@ -112,9 +116,13 @@ export async function loadHooks(options: LoadHooksOptions): Promise<LoadedHooks>
   const candidates = [
     path.join(home, ".claude", "settings.json"),
     path.join(home, ".claude", "settings.local.json"),
-    path.join(cwd, ".claude", "settings.json"),
-    path.join(cwd, ".claude", "settings.local.json"),
   ];
+  if (options.includeProject !== false) {
+    candidates.push(
+      path.join(cwd, ".claude", "settings.json"),
+      path.join(cwd, ".claude", "settings.local.json"),
+    );
+  }
 
   for (const filePath of candidates) {
     const parsed = await readSettingsHooks(filePath, warn);
@@ -176,6 +184,7 @@ export function registerHooksBridge(
       cwd: options.cwd,
       home: options.home,
       config,
+      includeProject: options.includeProject,
       warn,
     });
 
@@ -253,6 +262,7 @@ export function registerHooksBridge(
         cwd: options.cwd,
         home: options.home,
         config,
+        includeProject: options.includeProject,
         warn,
       });
     }
@@ -320,6 +330,7 @@ export function registerHooksBridge(
         cwd: options.cwd,
         home: options.home,
         config,
+        includeProject: options.includeProject,
         warn,
       });
     }
@@ -374,6 +385,7 @@ export function registerHooksBridge(
         cwd: options.cwd,
         home: options.home,
         config,
+        includeProject: options.includeProject,
         warn,
       });
     }
