@@ -35,6 +35,8 @@ export type PermissionCommandOptions = Readonly<{
    * When omitted, policy follows permission mode.
    */
   highRiskPolicy?: HighRiskPolicy;
+  /** Project trust decision for write/exec restrictions when untrusted. */
+  getTrust?: () => import("./project-trust.ts").TrustDecision;
 }>;
 
 /** @deprecated Use PermissionCommandOptions */
@@ -65,6 +67,7 @@ export function registerPermissionCommands(
     getMode: () => mode,
     interactiveSession,
     ...(options.highRiskPolicy ? { highRiskPolicy: options.highRiskPolicy } : {}),
+    ...(options.getTrust ? { getTrust: options.getTrust } : {}),
   });
 
   const applyFilter = (): void => {
@@ -123,7 +126,11 @@ export function registerPermissionCommands(
       description: existing.description ?? "Show XioCode runtime and run status.",
       handler: async (args, ctx) => {
         const result = await existing.handler(args, ctx);
-        const enrichment = statusEnrichment(mode, highRiskPolicyForMode(mode, interactiveSession));
+        const enrichment = statusEnrichment(
+          mode,
+          highRiskPolicyForMode(mode, interactiveSession),
+          options.getTrust?.(),
+        );
         if (result && typeof result === "object" && !Array.isArray(result)) {
           return { ...(result as Record<string, unknown>), ...enrichment };
         }
@@ -133,7 +140,11 @@ export function registerPermissionCommands(
   } else {
     options.host.registerCommand("status", {
       description: "Show permission mode and allowed tool risk classes.",
-      handler: async () => statusEnrichment(mode, highRiskPolicyForMode(mode, interactiveSession)),
+      handler: async () => statusEnrichment(
+        mode,
+        highRiskPolicyForMode(mode, interactiveSession),
+        options.getTrust?.(),
+      ),
     });
   }
 
@@ -149,7 +160,11 @@ export function registerPermissionCommands(
 /** @deprecated Use registerPermissionCommands */
 export const registerAgentCommands = registerPermissionCommands;
 
-function statusEnrichment(mode: PermissionMode, highRiskPolicy: HighRiskPolicy) {
+function statusEnrichment(
+  mode: PermissionMode,
+  highRiskPolicy: HighRiskPolicy,
+  trust?: import("./project-trust.ts").TrustDecision,
+) {
   return {
     permission: mode,
     permission_label: permissionModeDisplay(mode),
@@ -157,6 +172,7 @@ function statusEnrichment(mode: PermissionMode, highRiskPolicy: HighRiskPolicy) 
     write_exec: mode === "strict" ? "denied" : "allowed",
     high_risk_policy: highRiskPolicy,
     host_isolation: "unsupported",
+    ...(trust ? { project_trust: trust } : {}),
   };
 }
 

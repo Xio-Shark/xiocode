@@ -27,6 +27,8 @@ export type LoadAgentsMdOptions = Readonly<{
   cwd: string;
   home?: string;
   config: AgentsMdConfig;
+  /** When false, skip project CLAUDE.md/AGENTS.md (user ~/.claude still loads). */
+  includeProject?: boolean;
   /** Optional warn sink (defaults to no-op). */
   warn?: (message: string) => void;
 }>;
@@ -60,8 +62,8 @@ export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBu
   const sections: string[] = [];
   let remaining = Math.max(0, config.maxBytes);
 
-  const roots = allowedRoots(cwd, home);
-  const candidates = listCandidates(cwd, home, config.readClaudeDirs);
+  const roots = allowedRoots(cwd, home, options.includeProject !== false);
+  const candidates = listCandidates(cwd, home, config.readClaudeDirs, options.includeProject !== false);
 
   for (const filePath of candidates) {
     if (remaining <= 0) {
@@ -99,22 +101,32 @@ export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBu
   };
 }
 
-function listCandidates(cwd: string, home: string, readClaudeDirs: boolean): string[] {
+function listCandidates(
+  cwd: string,
+  home: string,
+  readClaudeDirs: boolean,
+  includeProject: boolean,
+): string[] {
   const paths: string[] = [];
   if (readClaudeDirs) {
     paths.push(path.join(home, ".claude", "CLAUDE.md"));
-    paths.push(path.join(cwd, ".claude", "CLAUDE.md"));
+    if (includeProject) {
+      paths.push(path.join(cwd, ".claude", "CLAUDE.md"));
+    }
   }
-  paths.push(path.join(cwd, "CLAUDE.md"));
-  paths.push(path.join(cwd, "AGENTS.md"));
+  if (includeProject) {
+    paths.push(path.join(cwd, "CLAUDE.md"));
+    paths.push(path.join(cwd, "AGENTS.md"));
+  }
   return paths;
 }
 
-function allowedRoots(cwd: string, home: string): readonly string[] {
-  return [
-    path.resolve(cwd),
-    path.resolve(home, ".claude"),
-  ];
+function allowedRoots(cwd: string, home: string, includeProject: boolean): readonly string[] {
+  const roots = [path.resolve(home, ".claude")];
+  if (includeProject) {
+    roots.unshift(path.resolve(cwd));
+  }
+  return roots;
 }
 
 type LoadFileResult = Readonly<{

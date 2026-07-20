@@ -146,4 +146,21 @@ describe("registerToolPermissionGate", () => {
       host_isolation: "unsupported",
     });
   });
+
+  it("blocks write when project is untrusted (non-interactive deny)", async () => {
+    const host = new ExtensionHost();
+    registerToolPermissionGate({
+      host,
+      interactive: fakeIo(),
+      sink: {},
+      getMode: () => "auto",
+      interactiveSession: false,
+      getTrust: () => "untrusted",
+    });
+    const result = await host.emit("tool_call", {
+      toolName: "edit",
+      call: { id: "1", name: "edit", args: {} },
+    });
+    expect(blocked(result)).toBe(true);
+  });
 });

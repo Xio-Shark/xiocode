@@ -37,6 +37,8 @@ export type DiscoverSkillsOptions = Readonly<{
   cwd: string;
   home?: string;
   config: SkillsConfig;
+  /** When false, skip project `.claude`/`.cursor` skills (user global still loads). */
+  includeProject?: boolean;
   warn?: (message: string) => void;
 }>;
 
@@ -70,7 +72,7 @@ export async function discoverSkills(options: DiscoverSkillsOptions): Promise<Sk
   const warnings: string[] = [];
   const byName = new Map<string, SkillEntry>();
 
-  const roots = listSkillRoots(cwd, home, config);
+  const roots = listSkillRoots(cwd, home, config, options.includeProject !== false);
   // Parallelize independent skill roots (user/project trees do not depend on each other).
   const rootBatches = await Promise.all(roots.map(async (root) => {
     const localWarnings: string[] = [];
@@ -107,16 +109,17 @@ function listSkillRoots(
   cwd: string,
   home: string,
   config: SkillsConfig,
+  includeProject: boolean,
 ): readonly { dir: string; kind: SkillSourceKind }[] {
   const roots: { dir: string; kind: SkillSourceKind }[] = [];
   // Lower priority first so later overwrites win when priorities tie on first-seen.
   if (config.readClaude) {
     roots.push({ dir: path.join(home, ".claude", "skills"), kind: "user-claude" });
   }
-  if (config.readCursor) {
+  if (includeProject && config.readCursor) {
     roots.push({ dir: path.join(cwd, ".cursor", "skills"), kind: "project-cursor" });
   }
-  if (config.readClaude) {
+  if (includeProject && config.readClaude) {
     roots.push({ dir: path.join(cwd, ".claude", "skills"), kind: "project-claude" });
   }
   return roots;
