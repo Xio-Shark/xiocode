@@ -14,6 +14,8 @@ import type { SessionOptions } from "../runtime/session.ts";
 export type RunInkSessionOptions = SessionOptions & Readonly<{
   /** Early no-Ink boot from entry (first_frame already marked). */
   earlyBoot?: EarlyBootHandle;
+  /** Background npm update check; delivered as a TUI notice when ready. */
+  updateNotice?: Promise<string | null>;
 }>;
 
 /**
@@ -40,6 +42,13 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
   }
   if (earlyDraft.pendingSubmit && earlyDraft.text.trim().length > 0) {
     inkBoot.buffer.applyKey("", { return: true });
+  }
+
+  // Deliver update notice into the pre-subscription buffer so it appears in scrollback.
+  if (options.updateNotice) {
+    void options.updateNotice.then((message) => {
+      if (message) bridge.sink.notify?.(message);
+    }).catch(() => undefined);
   }
 
   try {

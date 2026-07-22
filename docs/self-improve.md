@@ -4,7 +4,7 @@
 > **Not** the default daily coding path — interactive `xio` runs **direct-cwd** with **no git/worktree requirement**.
 > Serves final-goal item 4 (self-improvable under merge-ask): [GOAL.md](./GOAL.md).
 > Product north stars (all paths): **extreme speed** + **model stays on-task** — see GOAL §北星优先级.
-> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-20** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**; **one-key failure capture offer** on turn-fail / hard steer / `/rollback` — still human verdict; **H12 harness design-gaps 6/6 archived**; Trellis parallel A→B→C→Integrate is **not** this loop's ACs).
+> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-22** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**; **one-key failure capture offer** on turn-fail / hard steer / `/rollback` — still human verdict; **H12 harness design-gaps 6/6 archived**; Trellis parallel A→B→C→Integrate + ultra `parallel-plan.v1` bridge **archived** — **not** this loop's ACs).
 
 ## Daily path vs improve path
 
@@ -109,18 +109,21 @@ Interactive and improve paths share the same agent-loop → `tool_result` hooks:
 
 The trusted gate is opt-in until credentialed real-model series are established. Stub evaluation exercises controller → child → worktree → hidden grader → report, but is always reported with concerns and cannot authorize merge. Candidate package scripts and tests are advisory; they do not define the trusted outcome.
 
-## Post-task retrospective (evolve)
+## Post-task / session retrospective (evolve)
 
-After each **full** agent task (`agent_end`, non-trivial tool use), xio-evolve runs a deterministic post-task pipeline (subagent-style evidence gatherer + wash):
+Pipeline (authoritative report is **session-end**, not every `agent_end`):
 
-1. **Extract blockers** from trajectory events / failure_reasons → `blockers.log.json` under the run dir
-2. **Wash report** → `retrospective-report.json` + `retrospective-report.md` (locations, causes, optimize actions: config vs xio code)
-3. **Inject** the report into the **next** `turn_start` so the **primary agent** can optimize XioCode or `~/.xiocode/config.toml`
-4. **Enqueue** high/medium actions as entropy-keyed ImproveGoal drafts (`~/.xiocode/improve/queue/entropy-<action_id>.json`) for `xio improve` (loaded before seeds; same key overwrites with fresher evidence + `seen` count; never auto-merge)
+1. **`agent_end` preflight** — extract blockers → `blockers.preflight.json`; legacy `retrospective-report.*` may exist but is marked `superseded_by: session`
+2. **`session_end` authoritative** — optional LLM subagent (`[retrospective] session_end_subagent`, default true) with timeout → `session-retrospective.json` + `.md` + `blockers.log.json`; no provider / timeout → deterministic wash + notify (teardown must not hang)
+3. **Inject** the authoritative report into the **next** `turn_start` (primary agent)
+4. **Enqueue** high/medium **non-norms** actions as entropy-keyed ImproveGoal drafts (`~/.xiocode/improve/queue/entropy-<action_id>.json`) for `xio improve` (never auto-merge)
+5. **Norms** — always draft `norms-recommendations.md` when norms actions/proposals exist. `[retrospective] norms_auto_write=false` (default) keeps drafts only. When `true`, strong confirm (path list + summary) is required; if session teardown cannot ask, pending lands in `~/.xiocode/retrospective/pending-norms.json` for next session start. Allowlist only: workspace `AGENTS.md`, `CLAUDE.md`, `.trellis/spec/**`. Never write `~/.claude` / `.cursor/rules` / silent exit writes.
 
-Commands: `/retrospect` (show latest markdown), `/retrospect rerun` (rebuild from last run summary).
+Commands: `/retrospect` (prefer `session-retrospective.md`, fallback legacy), `/retrospect rerun` / `session` (rebuild).
 
-Config (`[retrospective]`): `enabled`, `skip_trivial`, `min_tool_calls`, `auto_inject`, `enqueue_improve`, `use_llm` (reserved; wash is always deterministic first).
+Config (`[retrospective]`): `enabled`, `skip_trivial`, `min_tool_calls`, `auto_inject`, `enqueue_improve`, `use_llm` (reserved), `session_end_subagent`, `model`, `session_end_timeout_ms`, `norms_auto_write`.
+
+Related harness flags from the same task: `[agent] streaming_tools` (default false), `[context] tool_result_max_chars` / `keep_tool_rounds`.
 
 ## Model alignment (daily path — not improve-only)
 
@@ -158,7 +161,7 @@ This is **not** auto-capture and **not** auto-merge. The offer is a fuel pump fo
 
 **Eval vs interactive workspace**: credentialed / trusted eval candidates must leave a gradeable worktree under the trial root. Interactive direct-cwd is a UX default only; it must not disable eval/improve isolation.
 
-**Not this loop**: Archived H12 harness contracts and the Trellis **task DAG** (`depends_on` / `dispatch-ready` / `integrate` under `07-16-trellis-parallel-task-orchestration`) improve **dev orchestration / harness contracts**, not the improve MergeGate path. Do not treat those ACs as self-improve delivery; xiocode does not own the DAG engine.
+**Not this loop**: Archived H12 harness contracts and the Trellis **task DAG** (`depends_on` / `dispatch-ready` / `integrate` under `07-16-trellis-parallel-task-orchestration`, plus ultra bridge `parallel-plan.v1` / `plan-import` / `write_scope` / `max_concurrency` / ultra `parallel_draft` under `07-21-ultra-parallel-dag-pipeline`) improve **dev orchestration**, not the improve MergeGate path. Ultra plan handoff is human-confirm and never auto-spawns write workers. Do not treat those ACs as self-improve delivery; xiocode does not own the DAG engine.
 
 ## Out of scope
 

@@ -33,7 +33,7 @@ export type BlockerLog = Readonly<{
   tool_call_count: number;
 }>;
 
-export type RetrospectiveActionTarget = "config" | "xiocode" | "workflow" | "unknown";
+export type RetrospectiveActionTarget = "config" | "xiocode" | "workflow" | "norms" | "unknown";
 
 export type RetrospectiveAction = Readonly<{
   id: string;
@@ -58,6 +58,8 @@ export type RetrospectiveReport = Readonly<{
   markdown: string;
   /** When true, main agent should prioritize acting on this report. */
   pending_for_main: boolean;
+  /** When set, this report is preflight-only (session report is authoritative). */
+  superseded_by?: "session";
 }>;
 
 export type RetrospectiveConfig = Readonly<{
@@ -73,6 +75,17 @@ export type RetrospectiveConfig = Readonly<{
   enqueueImprove: boolean;
   /** Optional LLM polish after deterministic wash (needs callback). Default false. */
   useLlm: boolean;
+  /** Run LLM subagent on session_end for authoritative report. Default true. */
+  sessionEndSubagent: boolean;
+  /** Optional cheap model id for session-end subagent. */
+  model?: string;
+  /** Session-end subagent timeout ms. Default 45000. */
+  sessionEndTimeoutMs: number;
+  /**
+   * When true, offer strong-confirm write of norms proposals into the target
+   * workspace allowlist. Default false (drafts only).
+   */
+  normsAutoWrite: boolean;
 }>;
 
 export const DEFAULT_RETROSPECTIVE_CONFIG: RetrospectiveConfig = {
@@ -82,4 +95,7 @@ export const DEFAULT_RETROSPECTIVE_CONFIG: RetrospectiveConfig = {
   autoInject: true,
   enqueueImprove: true,
   useLlm: false,
+  sessionEndSubagent: true,
+  sessionEndTimeoutMs: 45_000,
+  normsAutoWrite: false,
 };

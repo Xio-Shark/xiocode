@@ -58,7 +58,7 @@ export function formatInjectionContext(report: RetrospectiveReport): string {
       ? `\nEntropy queue keys: ${highMed.map((a) => a.id).join(", ")}`
       : "",
     "",
-    "Full report: run store retrospective-report.md.",
+    "Full report: run store session-retrospective.md (fallback: retrospective-report.md).",
   ].filter((line) => line !== undefined).join("\n");
 }
 

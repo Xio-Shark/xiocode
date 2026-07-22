@@ -74,6 +74,9 @@ function minimalRuntimeConfig(runRoot: string): XioRuntimeConfig {
       autoInject: false,
       enqueueImprove: false,
       useLlm: false,
+      sessionEndSubagent: false,
+      sessionEndTimeoutMs: 45_000,
+      normsAutoWrite: false,
     },
     regress: { offerOnFailure: false },
   };

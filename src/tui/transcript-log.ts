@@ -7,11 +7,12 @@
  */
 
 import {
-  TOOL_OUTPUT_PREVIEW_LINES,
+  exploreReportBody,
+  exploreReportStatus,
   formatExploreToolLabel,
+  formatToolExpandHint,
   formatToolOutputForDisplay,
   isExploreToolName,
-  previewText,
 } from "../runtime/session-ui.ts";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
@@ -26,12 +27,15 @@ export type HistoryBlock = Readonly<{
   lines: readonly string[];
   kind: "user" | "assistant" | "tool" | "notice" | "thinking" | "command" | "subagent";
   error?: boolean;
-  /** Full tool output retained for the transcript viewer (not only the 8-line preview). */
+  /** Full tool / subagent transcript retained for Ctrl+O (Static stays collapsed). */
   output?: string;
   title?: string;
   detail?: string;
   callId?: string;
-  /** When true, Static shows the truncated preview; viewer can still open full output. */
+  /**
+   * When true (default for tools/subagents with body), Static shows header + expand hint only.
+   * Full body is never written into immutable Static lines — open Ctrl+O.
+   */
   previewCollapsed?: boolean;
   thoughtSeconds?: number;
   workerId?: number;
@@ -521,26 +525,28 @@ export function buildToolHistoryBlock(input: Readonly<{
   output: string;
 }>): HistoryBlock {
   const explore = isExploreToolName(input.name);
-  const status = input.error ? "failed" : "done";
-  const title = explore ? formatExploreToolLabel({ status }) : input.name;
+  const display = formatToolOutputForDisplay(input.output) || input.output;
+  const reportStatus = explore ? exploreReportStatus(display) : undefined;
+  const exploreLabel = input.error
+    ? "failed"
+    : reportStatus && reportStatus !== "ok"
+      ? reportStatus
+      : "done";
+  const title = explore ? `subagent ${exploreLabel}` : input.name;
   const mark = explore ? theme.sym.explore : theme.sym.tool;
   const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
-  const statusPart = explore ? "" : ` ${status}`;
+  const statusPart = explore ? "" : (input.error ? " failed" : " done");
   const lines: string[] = [`${mark} ${title}${detailPart}${statusPart}`];
-  const display = formatToolOutputForDisplay(input.output) || input.output;
   const lineCount = display.length === 0 ? 0 : display.split("\n").length;
-  const previewCollapsed = lineCount > TOOL_OUTPUT_PREVIEW_LINES;
-  if (display.length > 0) {
-    const preview = previewText(display, TOOL_OUTPUT_PREVIEW_LINES);
-    for (const row of preview.text.split("\n")) {
-      lines.push(`  ${theme.sym.nest} ${row}`);
+  // Claude-quiet: Static keeps header (+ optional one-line peek) + expand hint.
+  // Metadata dumps and tool bodies stay in Ctrl+O so scrollback can reach session start.
+  if (explore) {
+    const peek = exploreReportBody(display)?.split("\n").find((row) => row.trim().length > 0);
+    if (peek) {
+      lines.push(`  ${theme.sym.nest} ${truncateToolDetail(peek.trim(), 96)}`);
     }
-    if (preview.truncated) {
-      lines.push(`  ${theme.sym.nest} … (truncated · Ctrl+O full output)`);
-    }
-  } else {
-    lines.push(`  ${theme.sym.nest} (empty)`);
   }
+  lines.push(`  ${theme.sym.nest} … (${formatToolExpandHint(lineCount)})`);
   return {
     id: input.id,
     kind: "tool",
@@ -550,7 +556,7 @@ export function buildToolHistoryBlock(input: Readonly<{
     title: input.name,
     detail: input.detail,
     callId: input.callId,
-    previewCollapsed,
+    previewCollapsed: true,
   };
 }
 
@@ -611,7 +617,7 @@ export function blocksFromRestoredMessages(
 }
 
 /**
- * Toggle expand metadata on the latest long tool / thinking block.
+ * Toggle expand metadata on the latest long tool / subagent block.
  * Does not mutate Static history lines; the overlay viewer reads retained fields.
  */
 export function toggleLatestScrollbackExpandable(state: ScrollbackState): ScrollbackState {
@@ -621,9 +627,7 @@ export function toggleLatestScrollbackExpandable(state: ScrollbackState): Scroll
       // Thinking is already collapsed to a duration label in route B; nothing to expand in Static.
       continue;
     }
-    if (block.kind === "tool" && (block.output?.length ?? 0) > 0) {
-      const lineCount = block.output!.split("\n").length;
-      if (lineCount <= TOOL_OUTPUT_PREVIEW_LINES) continue;
+    if ((block.kind === "tool" || block.kind === "subagent") && (block.output?.length ?? 0) > 0) {
       const next = [...state.blocks];
       next[index] = { ...block, previewCollapsed: !block.previewCollapsed };
       return { ...state, blocks: next };
@@ -632,12 +636,13 @@ export function toggleLatestScrollbackExpandable(state: ScrollbackState): Scroll
   return state;
 }
 
-/** Latest tool block with retained full output longer than the preview window. */
+/** Latest tool/subagent block with retained full output for Ctrl+O. */
 export function latestExpandableToolBlock(state: ScrollbackState): HistoryBlock | undefined {
   for (let index = state.blocks.length - 1; index >= 0; index -= 1) {
     const block = state.blocks[index]!;
-    if (block.kind !== "tool" || !block.output) continue;
-    if (block.output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES) return block;
+    if (block.kind !== "tool" && block.kind !== "subagent") continue;
+    if (!block.output || block.output.length === 0) continue;
+    return block;
   }
   return undefined;
 }
@@ -789,18 +794,8 @@ function buildSubagentInnerToolLines(input: Readonly<{
 }>): string[] {
   const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
   const status = input.error ? "failed" : "done";
-  const lines: string[] = [`  ${theme.sym.explore} ${input.name}${detailPart} ${status}`];
-  const display = formatToolOutputForDisplay(input.output) || input.output;
-  if (display.length > 0) {
-    const preview = previewText(display, TOOL_OUTPUT_PREVIEW_LINES);
-    for (const row of preview.text.split("\n")) {
-      lines.push(`    ${theme.sym.nest} ${row}`);
-    }
-    if (preview.truncated) {
-      lines.push(`    ${theme.sym.nest} … (truncated · Ctrl+O full output)`);
-    }
-  }
-  return lines;
+  // In-flight / committed worker lines: title only — body stays on the tool-end event for Ctrl+O.
+  return [`  ${theme.sym.explore} ${input.name}${detailPart} ${status}`];
 }
 
 function buildSubagentHistoryBlock(input: Readonly<{
@@ -814,15 +809,31 @@ function buildSubagentHistoryBlock(input: Readonly<{
   const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
   const statusLabel = input.status ?? (input.success ? "done" : "failed");
   const header = `${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal} (${statusLabel})`;
-  const lines = [header, ...worker.lines];
+  // Collapse tool-call history into Ctrl+O. Keep one assistant peek if present.
+  const assistantPeek = [...worker.lines].reverse().find((line) => {
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith(theme.sym.explore)) return false;
+    if (/\bthink \d+s$/.test(trimmed)) return false;
+    if (/\b(done|failed)$/.test(trimmed)) return false;
+    return true;
+  });
+  const fullOutput = worker.lines.join("\n");
+  const lineCount = fullOutput.length === 0 ? 0 : fullOutput.split("\n").length;
+  const lines = [header];
+  if (assistantPeek) {
+    lines.push(assistantPeek);
+  }
+  lines.push(`  ${theme.sym.nest} … (${formatToolExpandHint(lineCount)})`);
   return {
     id: input.id,
     kind: "subagent",
     lines,
     error: !input.success,
+    output: fullOutput,
     workerId: worker.workerId,
     model: worker.model,
     detail: worker.goal,
+    previewCollapsed: true,
   };
 }
 

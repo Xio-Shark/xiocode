@@ -132,6 +132,15 @@ describe("tool transcript helpers", () => {
     expect(preview.text.split("\n")).toHaveLength(9);
     expect(preview.text).toContain("4 more lines");
   });
+
+  it("parses explore report status/body and formats expand hints", async () => {
+    const { exploreReportBody, exploreReportStatus, formatToolExpandHint } = await import("./session-ui.ts");
+    const report = "## Explore report (cancelled)\nmodel: p/m\n\nfound branch logic";
+    expect(exploreReportStatus(report)).toBe("cancelled");
+    expect(exploreReportBody(report)).toBe("found branch logic");
+    expect(formatToolExpandHint(1)).toBe("Ctrl+O · 1 line");
+    expect(formatToolExpandHint(12)).toBe("Ctrl+O · 12 lines");
+  });
 });
 
 describe("formatUsageStatus", () => {

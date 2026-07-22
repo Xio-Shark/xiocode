@@ -19,6 +19,8 @@ export type RunAgentCliOptions = Readonly<{
    * before session/sandbox imports. Handed off to the Ink shell in runInkSession.
    */
   earlyBoot?: import("../tui/early-boot.ts").EarlyBootHandle;
+  /** Background npm update check started from entry (never blocks first_frame). */
+  updateNotice?: Promise<string | null>;
 }>;
 
 export async function runAgentCli(
@@ -89,6 +91,7 @@ export async function runAgentCli(
         recovered,
         sessionId,
         earlyBoot,
+        updateNotice: options.updateNotice,
       });
     } finally {
       await releaseLease();
@@ -120,6 +123,7 @@ async function runPreparedLaunch(input: Readonly<{
   recovered?: ReturnType<typeof recoverStoredSession>;
   sessionId: string;
   earlyBoot?: import("../tui/early-boot.ts").EarlyBootHandle;
+  updateNotice?: Promise<string | null>;
 }>): Promise<number> {
   const sessionOptions: SessionOptions = {
     cwd: input.launch.cwd,
@@ -177,10 +181,24 @@ async function runPreparedLaunch(input: Readonly<{
     return (await import("../tui/run-ink-session.ts")).runInkSession({
       ...sessionOptions,
       earlyBoot: input.earlyBoot,
+      updateNotice: input.updateNotice,
     });
   }
   input.earlyBoot?.unmount();
+  void deliverUpdateNotice(input.updateNotice, (message) => {
+    process.stderr.write(`${message}\n`);
+  });
   return runSession(sessionOptions);
+}
+
+function deliverUpdateNotice(
+  notice: Promise<string | null> | undefined,
+  deliver: (message: string) => void,
+): void {
+  if (!notice) return;
+  void notice.then((message) => {
+    if (message) deliver(message);
+  }).catch(() => undefined);
 }
 
 function restoredModel(stored: StoredSession | undefined): SessionOptions["model"] {

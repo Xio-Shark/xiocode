@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { ExtensionHost } from "./extension-host.ts";
 import { defineTool } from "./define-tool.ts";
@@ -537,6 +540,179 @@ describe("runAgentLoop streaming", () => {
     expect(deltas).toEqual(["answer"]);
     expect(result.finalText).toBe("answer");
     expect(result.messages.some((message) => message.content.includes("reason"))).toBe(false);
+  });
+
+  it("streamingTools=true starts tools before stream done", async () => {
+    const host = new ExtensionHost();
+    let toolStartedAt = 0;
+    let streamDoneAt = 0;
+    let releaseTool!: () => void;
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    host.registerTool(defineTool({
+      name: "slow",
+      description: "slow",
+      parameters: Type.Object({ n: Type.Number() }),
+      async execute() {
+        toolStartedAt = Date.now();
+        await toolGate;
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    }));
+
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        return { content: "done", toolCalls: [] };
+      },
+      async *completeStream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "text_delta", text: "working" };
+          yield {
+            type: "tool_calls_done",
+            toolCalls: [{ id: "t1", name: "slow", arguments: { n: 1 } }],
+          };
+          // Remaining stream events after tools are ready — overlap window.
+          await new Promise((r) => setTimeout(r, 30));
+          yield {
+            type: "done",
+            content: "working",
+            toolCalls: [{ id: "t1", name: "slow", arguments: { n: 1 } }],
+            usage: { inputTokens: 1, outputTokens: 1, cacheTokens: null, reasoningTokens: null },
+          };
+          streamDoneAt = Date.now();
+          releaseTool();
+          return;
+        }
+        yield {
+          type: "done",
+          content: "done",
+          toolCalls: [],
+          usage: { inputTokens: 1, outputTokens: 1, cacheTokens: null, reasoningTokens: null },
+        };
+      },
+    };
+
+    const toolStarts: string[] = [];
+    const result = await runAgentLoop("stream tools", {
+      host,
+      client,
+      model: "stub",
+      streamingTools: true,
+      onToolStart: (call) => toolStarts.push(call.id),
+    });
+
+    expect(toolStarts).toEqual(["t1"]);
+    expect(toolStartedAt).toBeGreaterThan(0);
+    expect(streamDoneAt).toBeGreaterThan(0);
+    expect(toolStartedAt).toBeLessThan(streamDoneAt);
+    expect(result.toolCalls).toBe(1);
+    expect(result.messages.some((m) => m.role === "tool" && m.toolCallId === "t1")).toBe(true);
+  });
+
+  it("streamingTools=false keeps post-completion batch (tool start after stream done)", async () => {
+    const host = new ExtensionHost();
+    let toolStartedAt = 0;
+    let streamDoneAt = 0;
+    host.registerTool(defineTool({
+      name: "ping",
+      description: "ping",
+      parameters: Type.Object({}),
+      async execute() {
+        toolStartedAt = Date.now();
+        return { content: [{ type: "text", text: "pong" }] };
+      },
+    }));
+
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        return { content: "done", toolCalls: [] };
+      },
+      async *completeStream(): AsyncIterable<StreamEvent> {
+        calls += 1;
+        if (calls === 1) {
+          yield {
+            type: "tool_calls_done",
+            toolCalls: [{ id: "t1", name: "ping", arguments: {} }],
+          };
+          await new Promise((r) => setTimeout(r, 20));
+          yield {
+            type: "done",
+            content: "",
+            toolCalls: [{ id: "t1", name: "ping", arguments: {} }],
+            usage: { inputTokens: 1, outputTokens: 1, cacheTokens: null, reasoningTokens: null },
+          };
+          streamDoneAt = Date.now();
+          return;
+        }
+        yield {
+          type: "done",
+          content: "done",
+          toolCalls: [],
+          usage: { inputTokens: 1, outputTokens: 1, cacheTokens: null, reasoningTokens: null },
+        };
+      },
+    };
+
+    await runAgentLoop("batch tools", {
+      host,
+      client,
+      model: "stub",
+      streamingTools: false,
+    });
+
+    expect(toolStartedAt).toBeGreaterThanOrEqual(streamDoneAt);
+  });
+});
+
+describe("runAgentLoop tool_result budget", () => {
+  it("spills oversized tool results before the next provider request", async () => {
+    const spillDir = await mkdtemp(path.join(os.tmpdir(), "xio-loop-spill-"));
+    try {
+      const host = new ExtensionHost();
+      host.registerTool(defineTool({
+        name: "dump",
+        description: "dump",
+        parameters: Type.Object({}),
+        async execute() {
+          return { content: [{ type: "text", text: "Z".repeat(400) }] };
+        },
+      }));
+      let secondRequestToolContent = "";
+      let calls = 0;
+      const client: LlmClient = {
+        async complete(request) {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              content: "",
+              toolCalls: [{ id: "d1", name: "dump", arguments: {} }],
+            };
+          }
+          const toolMsg = request.messages.find((m) => m.role === "tool" && m.toolCallId === "d1");
+          secondRequestToolContent = toolMsg?.content ?? "";
+          return { content: "done", toolCalls: [] };
+        },
+      };
+      await runAgentLoop("spill", {
+        host,
+        client,
+        model: "stub",
+        toolResultMaxChars: 256,
+        toolResultSpillDir: spillDir,
+      });
+      expect(secondRequestToolContent).toContain("[tool_result spilled:");
+      expect(secondRequestToolContent).toContain(spillDir);
+      const match = /\[tool_result spilled: (.+)\]/.exec(secondRequestToolContent);
+      expect(match?.[1]).toBeTruthy();
+      const body = await readFile(match![1]!, "utf8");
+      expect(body).toBe("Z".repeat(400));
+    } finally {
+      await rm(spillDir, { recursive: true, force: true });
+    }
   });
 });
 

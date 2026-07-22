@@ -56,7 +56,10 @@ export { prepareSession, runSession, toDoneContract } from "./session.ts";
 export {
   createStdoutSessionUiSink,
   TOOL_OUTPUT_PREVIEW_LINES,
+  exploreReportBody,
+  exploreReportStatus,
   formatExploreToolLabel,
+  formatToolExpandHint,
   isExploreToolName,
   previewText,
   toolCallDetail,

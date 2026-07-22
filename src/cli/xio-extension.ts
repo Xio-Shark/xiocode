@@ -113,7 +113,10 @@ export async function registerRuntimeFromConfig(
   if (config.extensions.evolve?.enabled !== false) {
     registerXioEvolve(evolveApi, {
       runStore,
-      retrospective: config.retrospective,
+      retrospective: {
+        ...config.retrospective,
+        getWorkspaceRoot: () => workspaceCwd,
+      },
     });
   }
 

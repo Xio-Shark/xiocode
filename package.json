@@ -1,5 +1,5 @@
 {
-  "name": "xiocode",
+  "name": "@xioshark/xiocode",
   "version": "1.1.0",
   "description": "A local-first AI coding agent for your terminal with self-owned runtime.",
   "type": "module",
@@ -8,19 +8,15 @@
     "xiocode": "bin/xio",
     "xio-improve": "bin/xio-improve"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "bin",
     "dist",
-    "src",
-    "extensions",
     "LICENSE",
     "README.md",
-    "!**/*.test.ts",
-    "!**/test/**",
-    "!**/package.json",
-    "!install.sh",
-    "!scripts/**",
-    "!docs/**"
+    "!dist/**/*.map"
   ],
   "repository": {
     "type": "git",

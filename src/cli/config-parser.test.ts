@@ -327,6 +327,44 @@ repeat_tool_limit = 2
     expect(parsed.runtimeConfig.general.repeatToolLimit).toBe(2);
   });
 
+  it("parses agent.streaming_tools (default false)", () => {
+    const defaults = parseXioConfig(``, { cwd: "/repo" });
+    expect(defaults.runtimeConfig.agent?.streamingTools).toBe(false);
+
+    const enabled = parseXioConfig(
+      `
+[agent]
+streaming_tools = true
+`,
+      { cwd: "/repo" },
+    );
+    expect(enabled.runtimeConfig.agent?.streamingTools).toBe(true);
+  });
+
+  it("rejects non-boolean agent.streaming_tools", () => {
+    expect(() => parseXioConfig(`[agent]\nstreaming_tools = "yes"\n`, { cwd: "/repo" }))
+      .toThrow(/streaming_tools|boolean/i);
+  });
+
+  it("parses context.tool_result_max_chars (default 16000)", () => {
+    const defaults = parseXioConfig(``, { cwd: "/repo" });
+    expect(defaults.runtimeConfig.context?.toolResultMaxChars).toBe(16_000);
+
+    const custom = parseXioConfig(
+      `
+[context]
+tool_result_max_chars = 4096
+`,
+      { cwd: "/repo" },
+    );
+    expect(custom.runtimeConfig.context?.toolResultMaxChars).toBe(4096);
+  });
+
+  it("rejects invalid context.tool_result_max_chars", () => {
+    expect(() => parseXioConfig(`[context]\ntool_result_max_chars = 100\n`, { cwd: "/repo" }))
+      .toThrow(/tool_result_max_chars/);
+  });
+
   it("rejects invalid general.max_turns", () => {
     expect(() => parseXioConfig(`[general]\nmax_turns = 0\n`, { cwd: "/repo" }))
       .toThrow(/general\.max_turns/);

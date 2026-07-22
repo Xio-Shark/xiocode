@@ -103,6 +103,35 @@ export function previewText(text: string, maxLines = TOOL_OUTPUT_PREVIEW_LINES):
 }
 
 /**
+ * Parse `## Explore report (status)` — used to keep Static chrome quiet while
+ * still showing cancel/timeout/ok without dumping metadata.
+ */
+export function exploreReportStatus(output: string): string | undefined {
+  const match = /^## Explore report \(([^)]+)\)/m.exec(output);
+  const status = match?.[1]?.trim();
+  return status && status.length > 0 ? status : undefined;
+}
+
+/**
+ * Primary body of an explore report (after the blank line that follows metadata).
+ * Returns undefined when there is no non-meta content.
+ */
+export function exploreReportBody(output: string): string | undefined {
+  const parts = output.split(/\n\n+/);
+  if (parts.length < 2) return undefined;
+  const body = parts.slice(1).join("\n\n").trim();
+  return body.length > 0 ? body : undefined;
+}
+
+/**
+ * One-line Static expand hint (Claude-quiet): bodies stay in Ctrl+O, not history.
+ */
+export function formatToolExpandHint(lineCount: number): string {
+  if (lineCount <= 0) return "(empty)";
+  return `Ctrl+O · ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+}
+
+/**
  * Cumulative session usage for the status row. Tokens are provider-reported;
  * cost is the same blended ~$1/M estimate the explore budgets use (no real
  * per-model price table in the runtime yet) — the `~` marks it an estimate.

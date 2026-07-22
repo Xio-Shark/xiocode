@@ -333,7 +333,7 @@ export function registerMcpBridge(
     const ui = eventCtx?.ui;
     if (planned.length > 0) {
       ui?.setStatus?.("mcp", `mcp:connecting(${planned.length})`);
-      ui?.notify?.(`mcp: connecting ${planned.length} server(s) in background…`, "info");
+      // Status only — final `mcp: N ready` notice fires after all connects.
     } else {
       ui?.setStatus?.("mcp", undefined);
     }
@@ -482,10 +482,7 @@ async function connectServersInBackground(options: Readonly<{
       };
       options.setStatuses([...nextStatuses]);
       options.onToolsChanged?.();
-      options.ui?.notify?.(
-        `mcp: ready ${server.name} (${toolNames.length} tool${toolNames.length === 1 ? "" : "s"})`,
-        "info",
-      );
+      // Per-server ready stays in status only — avoid N transcript spam (Claude-quiet).
     } catch (error) {
       if (connection) {
         removeLive(connection);
@@ -530,6 +527,11 @@ async function connectServersInBackground(options: Readonly<{
     "mcp",
     failed > 0 ? `mcp:${ready}ok/${failed}fail` : `mcp:ready(${ready})`,
   );
+  if (ready > 0 && failed === 0) {
+    options.ui?.notify?.(`mcp: ${ready} ready`, "info");
+  } else if (ready > 0 && failed > 0) {
+    options.ui?.notify?.(`mcp: ${ready} ready, ${failed} failed`, "warning");
+  }
 }
 
 export async function connectMcpServer(

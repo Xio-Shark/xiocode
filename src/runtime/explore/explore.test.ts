@@ -1463,6 +1463,9 @@ function runtimeWithExplore(enabled: boolean): XioRuntimeConfig {
       autoInject: true,
       enqueueImprove: true,
       useLlm: false,
+      sessionEndSubagent: true,
+      sessionEndTimeoutMs: 45_000,
+      normsAutoWrite: false,
     },
     regress: { offerOnFailure: true },
   };

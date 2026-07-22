@@ -4,11 +4,10 @@ import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
 
 import {
-  TOOL_OUTPUT_PREVIEW_LINES,
   formatExploreToolLabel,
+  formatToolExpandHint,
   formatToolOutputForDisplay,
   isExploreToolName,
-  previewText,
 } from "../runtime/session-ui.ts";
 import { isMouseLeakChunk, stripMouseLeak } from "./mouse-scroll.ts";
 import {
@@ -263,8 +262,7 @@ export function App(props: AppProps): React.JSX.Element {
 
   const modelLabel = view.statuses.model ?? `${props.session.getModel().provider}/${props.session.getModel().id}`;
   const thinkingLabel = view.statuses.thinking ?? `think:${props.session.getThinkingLevel()}`;
-  const permissionLabel = view.statuses.permission
-    ?? `perm:${props.session.getPermissionMode()}`;
+  const permissionMode = props.session.getPermissionMode();
   const planLabel = view.statuses.plan;
   const workspaceLabel = view.statuses.workspace
     ?? view.statuses.isolation
@@ -288,14 +286,13 @@ export function App(props: AppProps): React.JSX.Element {
       version: PACKAGE_VERSION,
       model: modelLabel,
       thinking: thinkingLabel,
-      permission: permissionLabel,
       plan: planLabel,
-      cwd: props.cwd,
-      context: view.statuses.context,
-      usage: view.statuses.usage,
-      explore: view.statuses.explore,
-      workspace: workspaceLabel,
       busy,
+      phase: busyPhaseLabel({
+        busy,
+        inFlightToolCount: scrollback.inFlightTools.length,
+        liveKind: scrollback.live?.kind,
+      }),
     }),
     transcriptViewer
       ? h(TranscriptViewerOverlay, {
@@ -340,8 +337,13 @@ export function App(props: AppProps): React.JSX.Element {
       : null,
     h(FooterHints, {
       bypass: view.bypass || Boolean(view.statuses.bypass),
-      scrolled,
-      appendScrollback,
+      permissionMode,
+      cwd: props.cwd,
+      context: view.statuses.context,
+      usage: view.statuses.usage,
+      explore: view.statuses.explore,
+      workspace: workspaceLabel,
+      mcp: view.statuses.mcp,
     }));
 }
 
@@ -397,7 +399,13 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
       h(Text, { inverse: true, color: theme.accent }, cursorChar),
       rest);
   });
-  return h(Box, { marginTop: 1, flexDirection: "column" },
+  return h(Box, {
+    marginTop: 1,
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: "gray",
+    paddingX: 1,
+  },
     h(Text, { dimColor: props.busy }, props.busy ? theme.sym.busy : theme.sym.prompt),
     ...rows);
 });
@@ -531,9 +539,7 @@ export function estimateTranscriptEntryLines(
     const output = entry.output ?? "";
     const finished = entry.text === "done" || entry.text === "failed";
     const body = formatToolOutputBody(output, entry.previewCollapsed !== false, finished);
-    const showExpand = entry.previewCollapsed === true
-      && output.length > 0
-      && output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES;
+    const showExpand = entry.previewCollapsed === true && output.length > 0;
     // title row + body rows + optional expand hint
     let lines = 1;
     for (const row of body) {
@@ -1145,7 +1151,7 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
     if (value === "/help") {
       const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
       bridge.sink.notify?.(
-        `Commands: ${names} · ▸think ⚙run ●answer · Shift+Tab 权限 · Tab 思考 · Ctrl+O`,
+        `Commands: ${names} · Shift+Tab permissions · Tab thinking · Ctrl+O transcript · ? /help`,
         "info",
       );
       return;
@@ -1406,12 +1412,11 @@ function finalizeTool(
   event: Extract<TuiEvent, { kind: "tool-end" }>,
 ): ViewState {
   const output = event.output ?? "";
-  const lineCount = output.length === 0 ? 0 : output.split("\n").length;
   const patch = {
     text: event.error ? "failed" : "done",
     error: event.error,
     output,
-    previewCollapsed: lineCount > TOOL_OUTPUT_PREVIEW_LINES,
+    previewCollapsed: true,
     ...(event.callId ? { callId: event.callId } : {}),
   } as const;
 
@@ -1452,19 +1457,20 @@ function finalizeTool(
 
 /** Exported for unit tests of Ctrl+O expand/collapse. */
 export function toggleLatestExpandable(state: ViewState): ViewState {
+  // Prefer latest tool body (Ctrl+O), then thinking fold.
+  for (let index = state.entries.length - 1; index >= 0; index -= 1) {
+    const entry = state.entries[index]!;
+    if (entry.kind === "tool" && (entry.output?.length ?? 0) > 0) {
+      const next = [...state.entries];
+      next[index] = { ...entry, previewCollapsed: !entry.previewCollapsed };
+      return { ...state, entries: next };
+    }
+  }
   for (let index = state.entries.length - 1; index >= 0; index -= 1) {
     const entry = state.entries[index]!;
     if (entry.kind === "thinking" && entry.text.length > 0) {
       const next = [...state.entries];
       next[index] = { ...entry, collapsed: !entry.collapsed };
-      return { ...state, entries: next };
-    }
-    if (entry.kind === "tool" && (entry.output?.length ?? 0) > 0) {
-      const lineCount = entry.output!.split("\n").length;
-      // Short outputs are already fully visible — keep scanning for an older expandable.
-      if (lineCount <= TOOL_OUTPUT_PREVIEW_LINES) continue;
-      const next = [...state.entries];
-      next[index] = { ...entry, previewCollapsed: !entry.previewCollapsed };
       return { ...state, entries: next };
     }
   }
@@ -1568,9 +1574,7 @@ function renderToolRow(entry: TranscriptEntry): React.JSX.Element {
   const status = explore ? "" : (entry.text ? ` ${entry.text}` : " …");
   const output = entry.output ?? "";
   const bodyLines = formatToolOutputBody(output, entry.previewCollapsed !== false, finished);
-  const showExpand = entry.previewCollapsed === true
-    && output.length > 0
-    && output.split("\n").length > TOOL_OUTPUT_PREVIEW_LINES;
+  const showExpand = entry.previewCollapsed === true && output.length > 0;
 
   return h(Box, { flexDirection: "column", marginY: 0, flexShrink: 0 },
     h(Text, {
@@ -1586,7 +1590,7 @@ function renderToolRow(entry: TranscriptEntry): React.JSX.Element {
         wrap: "wrap",
       }, line)),
     showExpand
-      ? h(Text, { dimColor: true }, `  ${theme.sym.nest} Ctrl+O expand`)
+      ? h(Text, { dimColor: true }, `  ${theme.sym.nest} … (${formatToolExpandHint(output.split("\n").length)})`)
       : null);
 }
 
@@ -1605,7 +1609,7 @@ export function thoughtLabel(entry: Readonly<{ collapsed?: boolean; thoughtSecon
   return "thinking…";
 }
 
-/** Tool output under the title: always show a nest line when finished (incl. empty). */
+/** Tool output under the title: collapsed = no body (Ctrl+O); expanded = full. */
 export function formatToolOutputBody(
   output: string,
   previewCollapsed: boolean,
@@ -1614,10 +1618,11 @@ export function formatToolOutputBody(
   if (!finished && output.length === 0) return [];
   const display = formatToolOutputForDisplay(output) || output;
   if (display.length === 0) {
-    return [`  ${theme.sym.nest} (empty)`];
+    return finished ? [`  ${theme.sym.nest} (empty)`] : [];
   }
-  const text = previewCollapsed ? previewText(display).text : display;
-  return indentBlock(text, `  ${theme.sym.nest} `).split("\n");
+  // Default collapsed: keep Static / Route A short so scrollback can reach the start.
+  if (previewCollapsed) return [];
+  return indentBlock(display, `  ${theme.sym.nest} `).split("\n");
 }
 
 function indentBlock(text: string, prefix: string): string {
@@ -1625,56 +1630,42 @@ function indentBlock(text: string, prefix: string): string {
   return text.split("\n").map((line) => `${prefix}${line}`).join("\n");
 }
 
+/** Header chrome for the current turn: requesting → streaming → tool-use. */
+export function busyPhaseLabel(input: Readonly<{
+  busy: boolean;
+  inFlightToolCount: number;
+  liveKind?: "thinking" | "assistant";
+}>): string | undefined {
+  if (!input.busy) return undefined;
+  if (input.inFlightToolCount > 0) return "tools…";
+  if (input.liveKind === "assistant" || input.liveKind === "thinking") return "streaming…";
+  return "working…";
+}
+
 const SessionHeader = memo(function SessionHeader(props: Readonly<{
   version: string;
   model: string;
   thinking: string;
-  permission: string;
   plan?: string;
-  cwd: string;
-  context?: string;
-  /** Cumulative session tokens + estimated cost, e.g. "tok:12.3k ~$0.01". */
-  usage?: string;
-  /** Active explore subagents, e.g. "subs:3". */
-  explore?: string;
-  /** Persistent isolation badge: DIRECT / NO MERGEGATE or WORKTREE. */
-  workspace?: string;
   busy?: boolean;
+  /** Turn phase chrome: working… / streaming… / tools… */
+  phase?: string;
 }>): React.JSX.Element {
+  // Path / permission / usage / workspace live in the Claude-style footer.
   const parts = [
     props.model,
     props.thinking,
-    props.permission,
-    props.workspace,
     props.plan,
-    props.explore,
-    props.busy ? "working…" : undefined,
-    props.context,
-    props.usage,
-    formatShortCwd(props.cwd),
+    props.phase ?? (props.busy ? "working…" : undefined),
   ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Text, null,
       h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
       h(Text, { bold: true }, `XioCode v${props.version}`)),
-    h(Text, { dimColor: true, wrap: "truncate-end" },
-      ...parts.flatMap((part, index) => {
-        const sep = index > 0 ? " · " : "";
-        if (props.explore && part === props.explore) {
-          return [sep, h(Text, { key: `h-${index}`, color: theme.explore, dimColor: false }, part)];
-        }
-        if (props.workspace && part === props.workspace) {
-          const warn = part.includes("DIRECT");
-          return [sep, h(Text, {
-            key: `h-${index}`,
-            color: warn ? theme.error : theme.tool,
-            dimColor: false,
-            bold: true,
-          }, part)];
-        }
-        return [`${sep}${part}`];
-      })));
+    parts.length > 0
+      ? h(Text, { dimColor: true, wrap: "truncate-end" }, parts.join(` ${theme.sym.meta} `))
+      : null);
 });
 
 /** Route B Ctrl+O overlay: full retained tool output without mutating Static history. */
@@ -1722,22 +1713,94 @@ function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX
       h(Text, { key: `tl-${index}`, dimColor: index > 0, wrap: "truncate-end" }, line)));
 }
 
-/** Footer is hints (+ bypass) only — model/think/cwd/perm live in the header (D2). */
+/**
+ * Claude-style footer: elevate permission only when non-default;
+ * always show path + context/usage; workspace/mcp stay dim on the right.
+ */
 function FooterHints(props: Readonly<{
   bypass: boolean;
-  scrolled?: boolean;
-  appendScrollback?: boolean;
+  permissionMode: string;
+  cwd: string;
+  context?: string;
+  /** Cumulative session tokens + estimated cost, e.g. "tok:12.3k ~$0.01". */
+  usage?: string;
+  /** Active explore subagents, e.g. "subs:3". */
+  explore?: string;
+  workspace?: string;
+  mcp?: string;
 }>): React.JSX.Element {
-  const scrollHint = props.appendScrollback
-    ? " · 触控板/滚轮=终端滚动"
-    : props.scrolled
-      ? " · ↑scrolled PgUp/PgDn"
-      : " · ↑↓/PgUp PgDn 滚动";
-  return h(Box, { flexDirection: "column", marginTop: 1 },
-    h(Text, { dimColor: true },
-      props.bypass
-        ? `▶▶ bypass on · ▸think ⚙run ●answer · Shift+Enter 换行 · Ctrl+O · Ctrl+C${scrollHint}`
-        : `▸think ⚙run ●answer · Shift+Tab · Tab 思考 · Shift+Enter 换行 · Ctrl+O · Ctrl+C${scrollHint}`));
+  const elevated = props.bypass || !isDefaultPermissionMode(props.permissionMode);
+  const modeLabel = props.bypass
+    ? "bypass permissions on"
+    : `permissions ${props.permissionMode} on`;
+  const path = formatShortCwd(props.cwd);
+  const contextLabel = props.context ?? props.usage;
+  const exploreLabel = props.explore ? formatExploreFooter(props.explore) : undefined;
+  const workspaceLabel = formatWorkspaceFooter(props.workspace);
+  const mcpLabel = formatMcpFooter(props.mcp);
+
+  const rightParts = [workspaceLabel, mcpLabel].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+
+  return h(Box, {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 1,
+    marginTop: 1,
+  },
+    h(Text, { wrap: "truncate-end" },
+      elevated
+        ? h(React.Fragment, null,
+          h(Text, { color: theme.brand }, ">> "),
+          h(Text, { color: theme.brand }, modeLabel),
+          h(Text, { dimColor: true }, " (shift+tab to cycle)"))
+        : h(Text, { dimColor: true }, "? for shortcuts"),
+      h(Text, { dimColor: true }, ` ${theme.sym.meta} ${path}`),
+      contextLabel
+        ? h(Text, { dimColor: true }, ` ${theme.sym.meta} ${contextLabel}`)
+        : null,
+      exploreLabel
+        ? h(Text, { dimColor: true }, ` ${theme.sym.meta} ${exploreLabel}`)
+        : null),
+    rightParts.length > 0
+      ? h(Text, { dimColor: true, wrap: "truncate-end" },
+        rightParts.join(` ${theme.sym.meta} `))
+      : null);
+}
+
+/** Default permission mode stays quiet in the footer (Claude parity). */
+export function isDefaultPermissionMode(mode: string): boolean {
+  return mode === "auto";
+}
+
+/** Map statuses.explore ("subs:3") → "← 3 agents" for footer parity with Claude. */
+export function formatExploreFooter(explore: string): string {
+  const match = /^subs:(\d+)$/.exec(explore.trim());
+  if (!match) return explore;
+  const count = Number(match[1]);
+  if (!Number.isFinite(count) || count <= 0) return explore;
+  return `← ${count} agent${count === 1 ? "" : "s"}`;
+}
+
+/** Short workspace badge for footer (never scream-red in the header). */
+export function formatWorkspaceFooter(workspace?: string): string | undefined {
+  if (!workspace) return undefined;
+  const lower = workspace.toLowerCase();
+  if (lower.includes("worktree")) return "worktree";
+  if (lower.includes("direct")) return "direct";
+  return workspace;
+}
+
+/** Compact MCP status for footer right side. */
+export function formatMcpFooter(mcp?: string): string | undefined {
+  if (!mcp) return undefined;
+  const ready = /^mcp:ready\((\d+)\)$/.exec(mcp.trim());
+  if (ready) return `${ready[1]} mcp`;
+  const mixed = /^mcp:(\d+)ok\/(\d+)fail$/.exec(mcp.trim());
+  if (mixed) return `mcp ${mixed[1]}ok/${mixed[2]}fail`;
+  if (mcp.startsWith("mcp:connecting")) return "mcp…";
+  return mcp.startsWith("mcp:") ? mcp.slice(4) : mcp;
 }
 
 function SlashMenu(props: Readonly<{
