@@ -11,6 +11,20 @@ export {
 } from "./plan-tool.ts";
 export { registerPlanCapability } from "./register.ts";
 export {
+  detectTrellis,
+  formatParallelPlanHandoff,
+  formatTrellisDegradeNotice,
+  PARALLEL_PLAN_FILE,
+  PARALLEL_PLAN_VERSION,
+  parallelPlanPath,
+  ULTRA_PARALLEL_PLAN_ADDENDUM,
+  validateParallelPlan,
+  writeParallelPlan,
+  type ParallelPlanChild,
+  type ParallelPlanV1,
+  type TrellisPresence,
+} from "./parallel-plan.ts";
+export {
   createEmptyBoard,
   defaultImplementMarkdown,
   defaultPrdMarkdown,

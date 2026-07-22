@@ -1,6 +1,11 @@
 import type { ExtensionHost } from "../extension-host.ts";
 import type { SessionUiSink } from "../session-ui.ts";
 import { formatTasklistWidget } from "./format.ts";
+import {
+  detectTrellis,
+  formatTrellisDegradeNotice,
+  ULTRA_PARALLEL_PLAN_ADDENDUM,
+} from "./parallel-plan.ts";
 import { createPlanTool, PLAN_PROMPT_ADDENDUM, PLAN_TOOL_NAME } from "./plan-tool.ts";
 import { loadPlanBoard } from "./store.ts";
 import { TASKLIST_WIDGET } from "./types.ts";
@@ -20,14 +25,26 @@ export async function registerPlanCapability(
     sink: options.sink,
   }));
 
+  const presence = await detectTrellis(options.workspaceRoot);
+
   host.on("before_agent_start", (_payload, ctx) => {
     const base = ctx?.getSystemPrompt?.() ?? "";
-    if (base.includes("## Plan → tasks → implement")) {
+    const parts: string[] = [];
+    if (!base.includes("## Plan → tasks → implement")) {
+      parts.push(PLAN_PROMPT_ADDENDUM);
+    }
+    const ultra = host.getThinkingLevel() === "ultra";
+    if (ultra && presence.hasTrellis && !base.includes("## Ultra → Trellis parallel-plan.v1")) {
+      parts.push(ULTRA_PARALLEL_PLAN_ADDENDUM);
+    } else if (ultra && !presence.hasTrellis && !base.includes("并行写码派发不可用")) {
+      const notice = formatTrellisDegradeNotice(presence);
+      if (notice) parts.push(`## Parallel dispatch\n${notice}`);
+    }
+    if (parts.length === 0) {
       return undefined;
     }
-    const next = base.length > 0
-      ? `${base}\n\n${PLAN_PROMPT_ADDENDUM}`
-      : PLAN_PROMPT_ADDENDUM;
+    const addendum = parts.join("\n\n");
+    const next = base.length > 0 ? `${base}\n\n${addendum}` : addendum;
     return { systemPrompt: next };
   });
 
