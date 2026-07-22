@@ -159,10 +159,9 @@ export function BootShell(props: BootShellProps): React.JSX.Element {
     h(Box, { marginTop: 1 },
       h(Text, { dimColor: true }, theme.sym.prompt),
       h(Text, null, ` ${draft}${pending ? " ↵" : ""}`)),
-    h(Text, { dimColor: true },
-      pending
-        ? "Buffered · will send when session is ready"
-        : "Starting… input is buffered until ready"));
+    pending
+      ? h(Text, { dimColor: true }, "Buffered · will send when session is ready")
+      : null);
 }
 
 export function readinessLabel(readiness: BootReadiness, status: string): string {

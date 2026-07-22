@@ -51,7 +51,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     buffer,
     captureInput,
   }), {
-    alternateScreen: false,
+    alternateScreen: true,
     exitOnCtrlC: false,
     incrementalRendering: true,
   });
