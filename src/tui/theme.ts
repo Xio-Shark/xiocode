@@ -17,6 +17,10 @@ export type Theme = Readonly<{
   /** Explore / subagent tool rows. */
   explore: ThemeColor;
   error: ThemeColor;
+  /** Pixel shark body (header mascot). */
+  shark: ThemeColor;
+  /** Shark eye socket fill (dark so pupils read). */
+  sharkEyeBg: ThemeColor;
   /** Max visible path length before middle-ellipsis. */
   pathMax: number;
   /** Max chars for tool detail on the title line. */
@@ -47,6 +51,8 @@ export const theme: Theme = {
   think: "blue",
   explore: "magenta",
   error: "red",
+  shark: "magenta",
+  sharkEyeBg: "#1a1a1a",
   pathMax: 42,
   toolDetailMax: 72,
   slashNameWidth: 16,
