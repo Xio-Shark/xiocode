@@ -151,4 +151,33 @@ describe("RetrospectiveRunner", () => {
     expect(result.skipped).toBe(true);
     expect(result.reason).toBe("trivial");
   });
+
+  it("agent_end preflight does not claim session authority; session_end writes session-retrospective", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-retro-pre-"));
+    tempDirs.push(root);
+    const store = new RunStore({ root: path.join(root, "runs") });
+    const record = await store.createRun({ run_id: "run-pre" });
+    await store.appendJsonl(record.run_id, "events.jsonl", {
+      event: "tool.error",
+      tool_name: "bash",
+      payload: { result: { content: "exit_code=1", isError: true }, args: { command: "false" } },
+    });
+    const runner = new RetrospectiveRunner({
+      runStore: store,
+      config: { sessionEndSubagent: false, autoInject: true, enqueueImprove: false },
+    });
+    const pre = await runner.runPreflight({
+      runId: record.run_id,
+      summary: summary({ run_id: record.run_id }),
+    });
+    expect(pre.skipped).toBe(false);
+    expect(pre.report?.superseded_by).toBe("session");
+    const preflight = await readFile(store.filePath(record.run_id, "blockers.preflight.json"), "utf8");
+    expect(preflight).toContain("run-pre");
+
+    const session = await runner.runSessionEnd({ runId: record.run_id, summary: summary({ run_id: record.run_id }) });
+    expect(session.sessionReport?.schema_version).toBe("xio-session-retrospective.v1");
+    const md = await readFile(store.filePath(record.run_id, "session-retrospective.md"), "utf8");
+    expect(md).toContain("xio-session-retrospective.v1");
+  });
 });

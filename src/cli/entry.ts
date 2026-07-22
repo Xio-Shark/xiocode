@@ -85,6 +85,10 @@ async function main(): Promise<void> {
     );
     const skipEarlyBoot = xioArgs.resume?.action === "list" || xioArgs.resume?.action === "delete";
 
+    // Background npm update check — never blocks first_frame.
+    const { scheduleUpdateCheck } = await import("./update-check.ts");
+    const updateNotice = scheduleUpdateCheck({ env: process.env });
+
     let earlyBoot: import("../tui/early-boot.ts").EarlyBootHandle | undefined;
     const agentImport = import("./run-agent-cli.ts");
     if (wantInk && !skipEarlyBoot) {
@@ -95,14 +99,14 @@ async function main(): Promise<void> {
       const { runAgentCli } = await agentImport;
       await frameReady;
       earlyBoot.setStatus("loading session…");
-      const code = await runAgentCli(xioArgs, writeStdout, { earlyBoot });
+      const code = await runAgentCli(xioArgs, writeStdout, { earlyBoot, updateNotice });
       const { exitCli } = await import("./process-exit.ts");
       exitCli(code ?? 0);
       return;
     }
 
     const { runAgentCli } = await agentImport;
-    const code = await runAgentCli(xioArgs, writeStdout);
+    const code = await runAgentCli(xioArgs, writeStdout, { updateNotice });
     const { exitCli } = await import("./process-exit.ts");
     exitCli(code ?? 0);
   } catch (error) {

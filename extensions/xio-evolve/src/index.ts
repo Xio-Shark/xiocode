@@ -4,6 +4,12 @@ import { decodeRunProvenance } from "../../xio-regress/src/decoder.ts";
 import { ContextInjector } from "./context-injector.ts";
 import { ResultDenoiser } from "./result-denoiser.ts";
 import { RetrospectiveRunner } from "./retrospective/runner.ts";
+import {
+  applyNormsWrites,
+  clearPendingNormsOffer,
+  formatNormsConfirmDetail,
+  readPendingNormsOffer,
+} from "./retrospective/norms-write.ts";
 import type { BlockerLog, RetrospectiveConfig } from "./retrospective/types.ts";
 import { collectRuntimeStatus, formatStatusWidget } from "./runtime-status.ts";
 import { RunStore } from "./run-store.ts";
@@ -28,6 +34,12 @@ export type XioEvolveOptions = Readonly<{
       log: BlockerLog;
       draftMarkdown: string;
     }>) => Promise<string | undefined>;
+    getSessionClient?: () => Readonly<{
+      client: import("../../../src/runtime/types.ts").LlmClient;
+      model: string;
+    }> | undefined;
+    ask?: (question: string, detail?: string) => Promise<boolean>;
+    getWorkspaceRoot?: () => string | undefined;
   }>;
 }>;
 
@@ -52,8 +64,10 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     runStore,
     config: options.retrospective,
     summarizeWithLlm: options.retrospective?.summarizeWithLlm,
+    getSessionClient: options.retrospective?.getSessionClient,
+    ask: options.retrospective?.ask,
+    getWorkspaceRoot: options.retrospective?.getWorkspaceRoot,
     notify: (message) => {
-      // best-effort; command UI may not be available during agent_end
       void message;
     },
   });
@@ -86,6 +100,8 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
       await runStore.writeJson(metadata.run_id, "provenance.json", provenance);
     }
     options.onRunStart?.(metadata);
+    // Deferred norms confirm from a prior session_end that could not ask.
+    await maybeConfirmPendingNorms(ctx, options);
     return metadata;
   });
 
@@ -199,8 +215,8 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     if (!currentRun) {
       return summary;
     }
-    // Post-task "subagent": extract blockers → log → wash report for main agent / improve queue.
-    await retrospective.runForFinishedTask({
+    // Preflight only — authoritative session report is written on session_end.
+    await retrospective.runPreflight({
       runId: currentRun.run_id,
       summary,
       agentSuccess,
@@ -209,8 +225,24 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     return summary;
   });
 
+  ctx.on?.("session_end", async () => {
+    if (!currentRun) return undefined;
+    // Bound teardown: subagent has its own timeout; never hang exit.
+    const ac = new AbortController();
+    const hard = setTimeout(() => ac.abort(), retrospective.config.sessionEndTimeoutMs + 5_000);
+    try {
+      await retrospective.runSessionEnd({
+        runId: currentRun.run_id,
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(hard);
+    }
+    return undefined;
+  });
+
   ctx.registerCommand?.("retrospect", {
-    description: "Show or re-run the latest post-task retrospective report.",
+    description: "Show or re-run the latest session retrospective report.",
     handler: async (args, commandCtx) => {
       const recent = await runStore.listRecent(1);
       const run = recent[0];
@@ -218,28 +250,32 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
         return "no runs yet";
       }
       const arg = typeof args === "string" ? args.trim() : "";
-      if (arg === "rerun" || arg === "run") {
+      if (arg === "rerun" || arg === "run" || arg === "session") {
         const summaryRaw = await runStoreReadJson(runStore, run.run_id, "summary.json");
         if (!summaryRaw || typeof summaryRaw !== "object") {
           return `no summary for ${run.run_id}`;
         }
-        const result = await retrospective.runForFinishedTask({
+        const result = await retrospective.runSessionEnd({
           runId: run.run_id,
           summary: summaryRaw as import("./types.ts").RunSummary,
-          agentSuccess: (summaryRaw as { success?: boolean }).success === true,
+          forceSubagent: true,
         });
         if (result.skipped) {
           return `retrospective skipped: ${result.reason ?? "unknown"}`;
         }
         commandCtx?.ui?.notify?.(`retrospective refreshed for ${run.run_id}`, "info");
-        return result.report?.markdown ?? "ok";
+        return result.sessionReport?.markdown ?? result.report?.markdown ?? "ok";
       }
       try {
         const { readFile } = await import("node:fs/promises");
-        const md = await readFile(runStore.filePath(run.run_id, "retrospective-report.md"), "utf8");
-        return md;
+        try {
+          return await readFile(runStore.filePath(run.run_id, "session-retrospective.md"), "utf8");
+        } catch {
+          const md = await readFile(runStore.filePath(run.run_id, "retrospective-report.md"), "utf8");
+          return md;
+        }
       } catch {
-        return `no retrospective yet for ${run.run_id} — complete a multi-step task first, or /retrospect rerun`;
+        return `no retrospective yet for ${run.run_id} — end the session, or /retrospect rerun`;
       }
     },
   });
@@ -411,13 +447,42 @@ async function runStoreReadJson(
   }
 }
 
+async function maybeConfirmPendingNorms(
+  _ctx: ExtensionContext,
+  options: XioEvolveOptions,
+): Promise<void> {
+  if (options.retrospective?.normsAutoWrite !== true) return;
+  const ask = options.retrospective.ask;
+  if (!ask) return;
+  const pending = await readPendingNormsOffer();
+  if (!pending || pending.files.length === 0) return;
+  const ok = await ask(
+    "Apply deferred norms writes from the previous session?",
+    formatNormsConfirmDetail(pending.files),
+  );
+  if (!ok) return;
+  const result = await applyNormsWrites({
+    workspaceRoot: pending.workspace_root,
+    files: pending.files,
+  });
+  if (result.rejected.length === 0 && result.written.length > 0) {
+    await clearPendingNormsOffer();
+  }
+}
+
 export { ContextInjector, ResultDenoiser, RunStore, TodoEnforcer, TrajectoryRecorder };
 export { RetrospectiveRunner, loadRetrospectiveImproveGoals } from "./retrospective/runner.ts";
 export { extractBlockerLog } from "./retrospective/extract.ts";
 export { washRetrospectiveReport, formatInjectionContext } from "./retrospective/wash.ts";
+export {
+  resolveNormsAllowlistPath,
+  applyNormsWrites,
+  formatNormsConfirmDetail,
+} from "./retrospective/norms-write.ts";
 export type { ToolCall, ToolResult } from "./types.ts";
 export type {
   BlockerLog,
   RetrospectiveConfig,
   RetrospectiveReport,
 } from "./retrospective/types.ts";
+export type { SessionRetrospectiveReport } from "./retrospective/session-subagent.ts";

@@ -8,10 +8,15 @@ import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
   App,
+  busyPhaseLabel,
   collectSlashCommands,
   filterSlashCommands,
+  formatExploreFooter,
+  formatMcpFooter,
   formatToolOutputBody,
+  formatWorkspaceFooter,
   estimateTranscriptEntryLines,
+  isDefaultPermissionMode,
   isExploreTool,
   reduceEvent,
   slashQuery,
@@ -39,10 +44,43 @@ function stubWorkspacePerception(): WorkspacePerceptionService {
   });
 }
 
+describe("busyPhaseLabel", () => {
+  it("maps requesting → streaming → tools chrome", () => {
+    expect(busyPhaseLabel({ busy: false, inFlightToolCount: 0 })).toBeUndefined();
+    expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0 })).toBe("working…");
+    expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0, liveKind: "assistant" })).toBe("streaming…");
+    expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0, liveKind: "thinking" })).toBe("streaming…");
+    expect(busyPhaseLabel({
+      busy: true,
+      inFlightToolCount: 2,
+      liveKind: "assistant",
+    })).toBe("tools…");
+  });
+});
+
+describe("Claude-quiet footer helpers", () => {
+  it("treats auto as the quiet default permission mode", () => {
+    expect(isDefaultPermissionMode("auto")).toBe(true);
+    expect(isDefaultPermissionMode("full")).toBe(false);
+    expect(isDefaultPermissionMode("strict")).toBe(false);
+  });
+
+  it("formats explore / workspace / mcp for the footer right side", () => {
+    expect(formatExploreFooter("subs:1")).toBe("← 1 agent");
+    expect(formatExploreFooter("subs:3")).toBe("← 3 agents");
+    expect(formatWorkspaceFooter("DIRECT / NO MERGEGATE")).toBe("direct");
+    expect(formatWorkspaceFooter("WORKTREE")).toBe("worktree");
+    expect(formatWorkspaceFooter("direct")).toBe("direct");
+    expect(formatMcpFooter("mcp:ready(2)")).toBe("2 mcp");
+    expect(formatMcpFooter("mcp:1ok/1fail")).toBe("mcp 1ok/1fail");
+    expect(formatMcpFooter("mcp:connecting(3)")).toBe("mcp…");
+  });
+});
+
 describe("App", () => {
   afterEach(() => cleanup());
 
-  it("renders header context and a slim hint footer without duplicating model/path", () => {
+  it("renders lean header and Claude-style footer with path", () => {
     const session: PreparedSession = {
       host: new ExtensionHost(),
       model: { provider: "test", id: "model-a" },
@@ -76,22 +114,39 @@ describe("App", () => {
       bridge: new TuiSessionBridge(),
       cwd: "/tmp/project",
       async onExit() {},
-    }), { columns: 80 });
+    }), { columns: 100 });
 
     expect(output).toContain("XioCode v");
     expect(output).toContain("test/model-a");
     expect(output).toContain("think:off");
-    expect(output).toContain("perm:auto");
-    expect(output).toContain("/tmp/project");
-    expect(output).toContain("Shift+Tab");
-    expect(output).toMatch(/PgUp|滚动/);
     expect(output).toContain(">");
     expect(output).not.toContain("idle");
     expect(output).not.toMatch(/\|\s*think:off\s*\|/);
-    // Footer must not re-pipe the full status chrome (model · think · path).
-    const footerHintIndex = output.lastIndexOf("Shift+Tab 权限");
-    const headerContext = output.slice(0, footerHintIndex);
-    expect(headerContext).toContain("test/model-a · think:off · perm:auto · /tmp/project");
+    // Header: model · think — no path / perm / usage dump.
+    expect(output).toContain("test/model-a · think:off");
+    expect(output).not.toContain("perm:auto · /tmp/project");
+    // Footer: quiet default mode + cwd (Claude parity).
+    expect(output).toContain("?");
+    expect(output).toContain("for shortcuts");
+    expect(output).toContain("/tmp/project");
+    expect(output).not.toContain("permissions auto");
+    expect(output).not.toMatch(/▸think|触控板|Shift\+Enter 换行|DIRECT \/ NO MERGEGATE/);
+  });
+
+  it("shows usage status in the Claude-style footer", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    bridge.sink.setStatus?.("usage", "tok:12.3k ~$0.01");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("? for shortcuts");
+    expect(frame).toContain("/tmp/project");
+    expect(frame).toContain("tok:12.3k ~$0.01");
   });
 
   it("executes pasted slash input and renders the command result", async () => {
@@ -185,7 +240,7 @@ describe("App", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(bridge.bypass).toBe(true);
-    expect(instance.lastFrame()).toContain("bypass on");
+    expect(instance.lastFrame()).toContain("bypass permissions on");
   });
 
   it("masks secret prompt input and does not append the secret to the transcript", async () => {
@@ -264,7 +319,7 @@ describe("App", () => {
     expect(output).not.toContain("Confirm");
   });
 
-  it("shows compaction progress only in the header and appends a success notice", async () => {
+  it("shows compaction progress in the footer and appends a success notice", async () => {
     const bridge = new TuiSessionBridge();
     const instance = render(React.createElement(App, {
       session: createSession(new ExtensionHost()),
@@ -274,8 +329,11 @@ describe("App", () => {
     }));
     bridge.sink.onContextCompaction?.({ stage: "start", mode: "automatic", before: 80 });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(instance.lastFrame()).toContain("think:off · perm:auto · compacting... · /tmp/project");
-    expect(instance.lastFrame()).toContain("Shift+Tab");
+    const compacting = instance.lastFrame() ?? "";
+    expect(compacting).toContain("? for shortcuts");
+    expect(compacting).toContain("/tmp/project");
+    expect(compacting).toContain("compacting...");
+    expect(compacting).not.toContain("think:off · perm:auto · compacting...");
 
     bridge.sink.onContextCompaction?.({
       stage: "success",
@@ -329,7 +387,8 @@ describe("App", () => {
     expect(isExploreTool("explore")).toBe(true);
     expect(isExploreTool("bash")).toBe(false);
     expect(formatToolOutputBody("", true, true)).toEqual([`  ${theme.sym.nest} (empty)`]);
-    expect(formatToolOutputBody("hi", true, true)[0]).toContain("hi");
+    expect(formatToolOutputBody("hi", true, true)).toEqual([]);
+    expect(formatToolOutputBody("hi", false, true)[0]).toContain("hi");
     expect(truncateToolDetail("a".repeat(100)).endsWith("…")).toBe(true);
   });
 
@@ -353,11 +412,11 @@ describe("App", () => {
   });
 
   it("line-based window: few tall tools still allow scroll (maxOffset > 0)", () => {
-    // Three tools each ~10 rows; viewport 12 → cannot show all; must scroll.
+    // Expanded tools each ~10 rows; viewport 12 → cannot show all; must scroll.
     const entries = [
-      { id: 1, kind: "tool" as const, text: "done", title: "read", output: "a\n".repeat(12) },
-      { id: 2, kind: "tool" as const, text: "done", title: "glob", output: "b\n".repeat(12) },
-      { id: 3, kind: "tool" as const, text: "done", title: "bash", output: "c\n".repeat(12) },
+      { id: 1, kind: "tool" as const, text: "done", title: "read", output: "a\n".repeat(12), previewCollapsed: false },
+      { id: 2, kind: "tool" as const, text: "done", title: "glob", output: "b\n".repeat(12), previewCollapsed: false },
+      { id: 3, kind: "tool" as const, text: "done", title: "bash", output: "c\n".repeat(12), previewCollapsed: false },
     ];
     const height = (entry: (typeof entries)[number]) => estimateTranscriptEntryLines(entry, 80);
     const total = entries.reduce((sum, e) => sum + height(e), 0);
@@ -376,11 +435,11 @@ describe("App", () => {
     expect(up.visible.some((e) => e.id === 1 || e.id === 2)).toBe(true);
   });
 
-  it("estimates multi-line tool rows taller than a single entry", () => {
+  it("estimates multi-line tool rows taller when expanded", () => {
     const short = estimateTranscriptEntryLines({
       id: 1, kind: "notice", text: "hi",
     }, 80);
-    const tall = estimateTranscriptEntryLines({
+    const collapsed = estimateTranscriptEntryLines({
       id: 2,
       kind: "tool",
       text: "done",
@@ -388,7 +447,16 @@ describe("App", () => {
       output: Array.from({ length: 20 }, (_, i) => `${i}|line`).join("\n"),
       previewCollapsed: true,
     }, 80);
+    const tall = estimateTranscriptEntryLines({
+      id: 3,
+      kind: "tool",
+      text: "done",
+      title: "read",
+      output: Array.from({ length: 20 }, (_, i) => `${i}|line`).join("\n"),
+      previewCollapsed: false,
+    }, 80);
     expect(short).toBe(1);
+    expect(collapsed).toBeLessThanOrEqual(3);
     expect(tall).toBeGreaterThan(short + 5);
   });
 
@@ -466,15 +534,17 @@ describe("App", () => {
     expect(tools[1]).toMatchObject({ callId: "r2", detail: "b.ts", output: "body-b" });
   });
 
-  it("expands long tool output and skips short tools when toggling", () => {
+  it("toggles latest tool body via Ctrl+O (collapsed by default)", () => {
     let state: ViewState = emptyView();
     state = reduceEvent(state, { kind: "thinking-delta", text: "reason" });
     state = reduceEvent(state, { kind: "assistant-delta", text: "ok" });
     state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "echo hi" });
     state = reduceEvent(state, { kind: "tool-end", name: "bash", error: false, output: "hi" });
-    // Short tool must not swallow Ctrl+O — re-expand collapsed thinking.
+    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", previewCollapsed: true });
+    // Latest tool wins over older thinking.
     state = toggleLatestExpandable(state);
-    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({ collapsed: false });
+    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", previewCollapsed: false });
+    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({ collapsed: true });
 
     const long = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
     state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "seq" });

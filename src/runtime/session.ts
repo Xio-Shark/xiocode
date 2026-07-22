@@ -537,19 +537,15 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     const main = provenance?.main_root ?? workspaceRoot;
     const wt = provenance?.workspace_root ?? cwd;
     const directCwd = path.resolve(main) === path.resolve(wt);
-    const hasMergeGate = Boolean(options.runtimeConfig.worktree?.session);
-    sink.setStatus?.(
-      "workspace",
-      directCwd
-        ? (hasMergeGate ? "DIRECT" : "DIRECT / NO MERGEGATE")
-        : "WORKTREE",
-    );
-    sink.notify?.(
-      directCwd
-        ? `workspace: ${main} (main tree${hasMergeGate ? "" : ", no MergeGate"})`
-        : `workspace: agent cwd = worktree (from launch directory)\n  main: ${main}\n  worktree: ${wt}`,
-      "info",
-    );
+    // Quiet badge for footer — never scream DIRECT / NO MERGEGATE into the header.
+    sink.setStatus?.("workspace", directCwd ? "direct" : "worktree");
+    // Only announce when actually sandboxed; direct-cwd is the default UX.
+    if (!directCwd) {
+      sink.notify?.(
+        `workspace: agent cwd = worktree (from launch directory)\n  main: ${main}\n  worktree: ${wt}`,
+        "info",
+      );
+    }
   }
 
   await host.emit("session_start", {
@@ -593,6 +589,14 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       steerMailbox,
       harness,
       turnSnapshot: turnSnapshotEnabled,
+      streamingTools: options.runtimeConfig.agent?.streamingTools === true,
+      toolResultMaxChars: options.runtimeConfig.context?.toolResultMaxChars,
+      toolResultKeepRounds: options.runtimeConfig.context?.keepToolRounds,
+      getToolResultSpillDir: async () => {
+        const runId = await getRunId();
+        if (!runId) return undefined;
+        return path.join(runRoot, runId, "tool-results");
+      },
       getRunId,
       failureCapture: failureCapture
         ? { maybeOffer: (input) => failureCapture.maybeOfferFailureCapture(input) }

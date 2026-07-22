@@ -20,6 +20,10 @@ default_model = "deepseek-chat"
 #   grep order: ugrep → rg → grep → node
 #   glob order: ugrep → rg → bfs → find → node
 # Recommended: brew install ugrep ripgrep bfs
+#
+# Update checks (startup): XioCode polls npm for a newer @xioshark/xiocode release
+# about once per day and shows a one-line notice. Disable with:
+#   export XIO_DISABLE_UPDATE_CHECK=1
 
 [providers.deepseek]
 kind = "openai"
@@ -97,6 +101,17 @@ retain_on_reject = false
 # [regress]
 # offer_on_failure = true  # set false to silence offers; /regress manual path unchanged
 
+# Agent-loop tool scheduling. When true, tools start as soon as complete tool_calls
+# arrive on the provider stream (overlap with remaining stream events). Default false.
+# [agent]
+# streaming_tools = false
+
+# Context / tool_result pressure before each provider request.
+# Oversized tool bodies spill under the run dir (or ~/.xiocode/spills) and become stubs.
+# [context]
+# tool_result_max_chars = 16000
+# keep_tool_rounds = 4          # microcompact: keep newest N tool rounds; 0 = off
+
 # Post-task retrospective: after each full agent task, extract blockers → log → washed report.
 # Report injects into the next turn for the primary agent; optional improve-queue goals for xio improve.
 # [retrospective]
@@ -105,5 +120,9 @@ retain_on_reject = false
 # min_tool_calls = 1
 # auto_inject = true
 # enqueue_improve = true
-# use_llm = false          # reserved; deterministic wash always runs
+# use_llm = false                 # reserved; deterministic wash always runs
+# session_end_subagent = true     # authoritative LLM/deterministic report on session_end
+# # model = "deepseek-chat"       # optional cheap model for session-end subagent
+# session_end_timeout_ms = 45000
+# norms_auto_write = false        # drafts only unless true + strong confirm (never silent)
 `;
