@@ -3,13 +3,13 @@
 > Single delivery snapshot. Updated **2026-07-22** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline integrate_ok**).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
-> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**) · [ultra-parallel-dag-pipeline](../.trellis/tasks/07-21-ultra-parallel-dag-pipeline/) (P1, **5/5 + integrate_ok**).
+> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**) · [ultra-parallel-dag-pipeline](../.trellis/tasks/archive/2026-07/07-21-ultra-parallel-dag-pipeline/) (P1, **5/5 archived**).
 
 ## Active Trellis (honest — not shipped)
 
 | Tree | Pri | Progress | What it closes |
 |------|-----|----------|----------------|
-| _(none pending)_ | | | `07-21-ultra-parallel-dag-pipeline` integrate_ok; archive pending confirmation. |
+| _(none)_ | | | `07-21-ultra-parallel-dag-pipeline` archived 2026-07-22. |
 
 ## Agent harness ↔ tutorial alignment (2026-07-20)
 
@@ -146,7 +146,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - **C 默认 `xio` worker**：`parallel.worker`（fallback channel）、Active task + 规划产物注入、worktree cwd。
   - **Full / L4**：`task.py integrate` merge + verify；冲突 → 串行 fix stub；worktree 子任务父 archive 需 `integrate_ok`。
   - **所有权**：DAG 调度在 **Trellis**；xiocode **不**内嵌 `depends_on` 引擎（最多当 worker）。
-- **Ultra parallel DAG pipeline**（parent `07-21-ultra-parallel-dag-pipeline`，**5/5 children done · integrate noop · ready to archive**）：
+- **Ultra parallel DAG pipeline**（parent `07-21-ultra-parallel-dag-pipeline`，**archived 2026-07-22**）：
   - **`parallel-plan.v1` + `task.py plan-import`**：一份 JSON → 批量 create/链边/双写/环 fail-closed；`isolation=worktree` 预建 `.trellis/worktrees/<dir>`（默认 dry-run，`--yes` 物化）。
   - **`write_scope` guard**：无依赖边 sibling 写域相交 → plan-import / dispatch-ready fail-closed（保守近似；可漏报未入库文件）；`parallel.scope_fail_closed`（默认 true）。
   - **Dispatch budget**：`parallel.max_concurrency` 默认 **8**（`0`=不限）；可选 `wall_timeout`；全绿后自动 `integrate` dry-run handoff（`--integrate` 才真 merge）。
