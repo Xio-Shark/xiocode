@@ -168,4 +168,70 @@ describe("registerPlanCapability", () => {
     const text = await host.runCommand("plan");
     expect(String(text)).toMatch(/no plan/i);
   });
+
+  it("injects ultra parallel-plan addendum when Trellis is present", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-ultra-"));
+    tempDirs.push(root);
+    await mkdir(path.join(root, ".trellis", "scripts"), { recursive: true });
+    await writeFile(path.join(root, ".trellis", "scripts", "task.py"), "# stub\n");
+    const host = new ExtensionHost();
+    host.setThinkingLevel("ultra");
+    await registerPlanCapability(host, { workspaceRoot: root });
+    const results = await host.emit("before_agent_start", {
+      prompt: "big multi-file refactor",
+      systemPrompt: "You are XioCode.",
+    });
+    const last = results.at(-1) as { systemPrompt?: string } | undefined;
+    expect(last?.systemPrompt).toContain("## Ultra → Trellis parallel-plan.v1");
+    expect(last?.systemPrompt).toContain("parallel_draft");
+  });
+
+  it("emits explicit degrade notice on ultra without Trellis", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-degrade-"));
+    tempDirs.push(root);
+    const host = new ExtensionHost();
+    host.setThinkingLevel("ultra");
+    await registerPlanCapability(host, { workspaceRoot: root });
+    const results = await host.emit("before_agent_start", {
+      prompt: "refactor",
+      systemPrompt: "You are XioCode.",
+    });
+    const last = results.at(-1) as { systemPrompt?: string } | undefined;
+    expect(last?.systemPrompt).toMatch(/并行写码派发不可用/);
+    expect(last?.systemPrompt).not.toContain("## Ultra → Trellis parallel-plan.v1");
+  });
+});
+
+describe("parallel_draft", () => {
+  it("writes parallel-plan.v1 and returns Trellis handoff", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-pd-"));
+    tempDirs.push(root);
+    const tool = createPlanTool({ workspaceRoot: root });
+    const result = await tool.execute("pd1", {
+      action: "parallel_draft",
+      parent_dir: "07-22-parent",
+      parallel_plan_json: JSON.stringify({
+        version: "parallel-plan.v1",
+        children: [
+          {
+            slug: "a",
+            title: "A",
+            depends_on: [],
+            isolation: "worktree",
+            write_scope: ["src/a/**"],
+          },
+          {
+            slug: "b",
+            title: "B",
+            depends_on: ["a"],
+            isolation: "shared",
+          },
+        ],
+      }),
+    });
+    expect(result.content[0]?.text).toMatch(/parallel_draft ok/);
+    expect(result.content[0]?.text).toContain("plan-import");
+    const raw = await readFile(path.join(root, ".claude/plan/parallel-plan.json"), "utf8");
+    expect(JSON.parse(raw).version).toBe("parallel-plan.v1");
+  });
 });
