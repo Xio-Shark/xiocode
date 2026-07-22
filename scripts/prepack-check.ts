@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Fail pack/publish when installable entrypoints are missing.
- * Production installs prefer AOT bundles under dist/; TypeScript sources remain for dev fallback.
+ * Published payload is AOT-only: bin/ + dist/ (no src/ or extensions/).
  */
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -13,8 +13,6 @@ const required = [
   "bin/xio-improve",
   "dist/xio.js",
   "dist/xio-improve.js",
-  "src/cli/entry.ts",
-  "src/cli/improve-entry.ts",
   "package.json",
   "LICENSE",
 ];

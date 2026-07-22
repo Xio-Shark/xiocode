@@ -2,7 +2,7 @@
 
 > 产品终点的单一真相源。交付快照见 [STATUS.md](./STATUS.md)；近期待办见 [ROADMAP.md](../ROADMAP.md)。
 
-**更新日期**：2026-07-16
+**更新日期**：2026-07-22
 
 ---
 
@@ -47,9 +47,9 @@
 
 ### 身份–行为缺口（纠偏进度）
 
-北星已明确为 **快 + 不跑偏 + 零门槛 cwd**；自改进闭环是差异化，不是日常前置条件。2026-07 已交付：**性能套件 8/8**（early-boot first_frame P50~42ms、`--version` P50~25ms、Session WAL、provider 效率轴、eval 硬门禁 `default-gate.v1.2.0`）、**direct-cwd 默认**（`07-16-nongit-direct-cwd`；git/worktree 可选）、**模型对齐栈**（plan 模式、TodoEnforcer、ContextInjector、mid-turn steer、工具结果完整性、TUI scrollback + callId 配对）、**TUI 交互波**（markdown 定稿、`@` 文件引用、usage footer、`/model`、explore subagent 流式 UI）、**失败一键 capture 要约**（`07-16-failure-capture-hook`；仍须人确认）、**trusted eval 与交互 direct-cwd 解耦**、RuntimeEvent + stream-json、**H12 harness 设计标准**（事实源≠投影、turn snapshot/admission、写队列 + edit-before-read、follow-up、项目信任；`07-16-agent-harness-design-gaps` 6/6）、**Trellis 并行 A→B→C→Integrate**（`depends_on` / `dispatch-ready` / 默认 `xio` worker / `task.py integrate`）。仍未自动闭环：须用户显式 failure/verifier 与 MergeGate 同意。
+北星已明确为 **快 + 不跑偏 + 零门槛 cwd**；自改进闭环是差异化，不是日常前置条件。2026-07 已交付：**性能套件 8/8**（early-boot first_frame P50~42ms、`--version` P50~25ms、Session WAL、provider 效率轴、eval 硬门禁 `default-gate.v1.2.0`）、**direct-cwd 默认**（`07-16-nongit-direct-cwd`；git/worktree 可选）、**模型对齐栈**（plan 模式、TodoEnforcer、ContextInjector、mid-turn steer、工具结果完整性、TUI scrollback + callId 配对）、**TUI 交互波**（markdown 定稿、`@` 文件引用、usage footer、`/model`、explore subagent 流式 UI）、**失败一键 capture 要约**（`07-16-failure-capture-hook`；仍须人确认）、**trusted eval 与交互 direct-cwd 解耦**、RuntimeEvent + stream-json、**H12 harness 设计标准**（事实源≠投影、turn snapshot/admission、写队列 + edit-before-read、follow-up、项目信任；`07-16-agent-harness-design-gaps` 6/6）、**Trellis 并行 A→B→C→Integrate**（`depends_on` / `dispatch-ready` / 默认 `xio` worker / `task.py integrate`）、**Ultra parallel DAG bridge**（`parallel-plan.v1` + `plan-import` / `write_scope` / `max_concurrency` / ultra `parallel_draft` handoff；`07-21-ultra-parallel-dag-pipeline` **5/5 archived**）。仍未自动闭环：须用户显式 failure/verifier 与 MergeGate 同意；写码并行永不静默 auto-spawn。
 
-**纠偏优先级（已交付的不回退）**：**启动与 provider 延迟回归** → **模型上下文可信（工具正文、steer、compaction marker）** → **direct-cwd 零门槛（非 git 可跑）** → **harness 设计标准（H12，教程语义）** → 证据完整性 → opt-in worktree 下 dirty-main 显式策略 → bash/MCP 风险门禁 → 失败→regress → private FIXED × trusted PASS 联合门禁 → eval/improve 隔离不随交互默认漂移。任务树：`.trellis/tasks/07-15-performance-board/`（8/8 archived）、`.trellis/tasks/07-15-agent-runtime-event-board.md`（5/5 done）、`07-16-agent-harness-design-gaps`（P1，**6/6 archived**）、`.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/`（P2，A→B→C→Integrate **archived**）。
+**纠偏优先级（已交付的不回退）**：**启动与 provider 延迟回归** → **模型上下文可信（工具正文、steer、compaction marker）** → **direct-cwd 零门槛（非 git 可跑）** → **harness 设计标准（H12，教程语义）** → 证据完整性 → opt-in worktree 下 dirty-main 显式策略 → bash/MCP 风险门禁 → 失败→regress → private FIXED × trusted PASS 联合门禁 → eval/improve 隔离不随交互默认漂移。任务树：`.trellis/tasks/07-15-performance-board/`（8/8 archived）、`.trellis/tasks/07-15-agent-runtime-event-board.md`（5/5 done）、`07-16-agent-harness-design-gaps`（P1，**6/6 archived**）、`.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/`（P2，A→B→C→Integrate **archived**）、`.trellis/tasks/archive/2026-07/07-21-ultra-parallel-dag-pipeline/`（P1，plan→import→dispatch→integrate bridge **archived**）。
 
 Claude/Cursor 兼容（MCP / skills / hooks）仍是市场准入，**不是**北星；G10 日常化入口已交付（含失败要约），不得写成全自动专属 harness，**更不得**把 git/worktree 写成默认前提。
 
@@ -230,7 +230,7 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 | 不可审计的神秘 prompt 个性化 | 专属必须落在 case / gate / 轨迹，不落在说不清的隐式改写 |
 | 一上来做多人云协同专属 | 先个人（或单机小团队）本地闭环；共享仅限脱敏后的 family 级回归 |
 | 把资深多租户平台栈当作本仓交付终点 | K8s / 队列 / 多租户属于 JD 档位 C，不写入产品五条最终目标 |
-| 在 xiocode 内嵌任务 DAG 引擎 | 依赖边与 ready-set 调度属 **Trellis**；xiocode 最多当并行 worker（Phase C） |
+| 在 xiocode 内嵌任务 DAG 引擎 | 依赖边与 ready-set 调度属 **Trellis**；xiocode 最多产 `parallel-plan.v1` + 当并行 worker；永不静默 auto-spawn |
 | 同 cwd 裸多写并行 | Trellis `isolation=worktree` 强制独立 cwd；`shared` 仅文档/只读类 |
 | 把本机 AI 规范文件打进公开包 | 产品树与 npm payload 不携带 `AGENTS.md` / `CLAUDE.md` 等本机约定 |
 
@@ -248,16 +248,16 @@ Agent loop、内置工具、LLM provider 客户端全部落在本仓 `src/runtim
 | 5 诚实交付 | ✅ 以 STATUS 为准；stub = harness-only；公开树可安装且瘦身；身份–行为缺口写明；**性能套件 8/8 archived**；TUI 采用 scrollback 路线且不宣称未测的竞品全量对齐；交互 direct-cwd 与 trusted eval worktree 分合同 |
 | 专属 harness | 🟡 日常入口 + 失败要约已交付；case ≠ goal、无自动 capture/merge；回归库仍薄；见 STATUS known gaps |
 | Harness 设计标准（H12） | ✅ `07-16-agent-harness-design-gaps` **6/6 archived**（事实源/投影、turn snapshot、写队列、follow-up、项目信任 + integration gate）；SDK/RPC / JSONL 树 / 远程 Ops deferred |
-| Trellis 任务 DAG（dev workflow） | ✅ A→B→C→Integrate：`depends_on` + ready/drift；`dispatch-ready`；默认 `xio` worker；`task.py integrate` 父集成闸门（调度在 Trellis，xiocode 不内嵌 DAG） |
+| Trellis 任务 DAG（dev workflow） | ✅ A→B→C→Integrate + **ultra bridge**：`depends_on` / ready/drift / `dispatch-ready` / 默认 `xio` worker / `integrate`；`parallel-plan.v1`→`plan-import`、`write_scope` fail-closed、`max_concurrency`、ultra `parallel_draft` handoff（调度在 Trellis；xiocode 只产 artifact + worker，不内嵌 DAG） |
 | JD 对齐 A | ✅ G1–G5、G5b、G9–G11、H12 已交付；公开能力声明仍受 series 证据约束 |
 | JD 对齐 B（G6–G8） | 🟡 G7 ✅；H12 ✅；G6/G8 仍待；叙事不得掩盖 bash 宿主可达 |
 | JD 对齐 C | ❌ 产品非目标；仅面试升级路径 |
 
-近期待办 **P0 纠偏**（direct-cwd 默认、性能 8/8、steer、tool 完整性、TUI scrollback、eval 隔离解耦、TUI 交互四缺口、失败 capture 要约）与 **H12 harness 设计标准（6/6）** 已收尾。后续主线：
+近期待办 **P0 纠偏**、**H12（6/6）**、**Trellis A→B→C→Integrate** 与 **ultra parallel DAG bridge（5/5）** 已收尾。后续主线：
 
 1. **持续压启动与 provider 延迟**：bench 回归不退化；discovery/schema 缓存与 WAL 热路径保持 O(delta)。
 2. **模型对齐可观测**：tool 正文进上下文、steer、compaction marker 的可测 proxy；空树/并行 tool 串台类 bug 按 P0 处理。
-3. **Trellis 任务 DAG（P2）**：A→B→C→Integrate 已交付并归档（`depends_on` / `dispatch-ready` / 默认 `xio` worker / `task.py integrate`；`.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/`）。**产品非目标**：xiocode 内嵌多租户队列；同 cwd 多写并行。
+3. **Trellis 并行管线（已归档）**：调度引擎 + plan-import / write_scope / max_concurrency / ultra handoff 均已交付（`07-16-trellis-parallel-task-orchestration` + `07-21-ultra-parallel-dag-pipeline`）。**产品非目标**：xiocode 内嵌多租户队列；同 cwd 多写并行；静默 auto-spawn 写 worker。
 4. **Agent Runtime Event follow-up**：bus→TUI UI、`reportProgress()`。
 5. 真实 run/regress 语料、G6 隔离阶梯叙事（**默认 direct-cwd**）、G8 成本与 tracing、credentialed 系列的诚实展示。
 

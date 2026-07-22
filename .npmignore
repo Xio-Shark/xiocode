@@ -1,5 +1,9 @@
-# Installed package is runtime-only (Node strip-types runs .ts sources).
-# Keep user global installs free of tests, docs, tooling, and installer scripts.
+# Published payload is AOT-only (bin/ + dist/). Keep installs free of
+# sources, tests, docs, tooling, and local agent adapters.
+
+# Sources (bundled into dist/ by prepack build)
+src/
+extensions/
 
 # Tests / fixtures
 **/*.test.ts
@@ -13,14 +17,14 @@ tsconfig.json
 vitest.config.*
 .npmrc
 
-# Docs live on GitHub; not needed under node_modules
+# Docs live on GitHub
 docs/
 *.md
 !README.md
 !LICENSE
 
-# Extension package.json stubs are not imported at runtime
-extensions/**/package.json
+# Sourcemaps stay local; not needed under node_modules
+**/*.map
 
 # Local agent / IDE adapters (never ship)
 .trellis/
@@ -33,7 +37,6 @@ extensions/**/package.json
 .vscode/
 .idea/
 coverage/
-dist/
 node_modules/
 *.tgz
 archive/

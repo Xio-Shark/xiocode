@@ -83,7 +83,7 @@ describe("reduceScrollback", () => {
     expect(formatLiveLines(state.live, state.inFlightTools)).toEqual([]);
   });
 
-  it("retains full tool output while Static lines stay preview-sized", () => {
+  it("retains full tool output while Static stays collapsed", () => {
     let state = emptyScrollbackState();
     const long = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
     state = reduceScrollback(state, {
@@ -102,8 +102,8 @@ describe("reduceScrollback", () => {
     const tool = state.blocks.find((b) => b.kind === "tool");
     expect(tool?.output).toBe(long);
     expect(tool?.previewCollapsed).toBe(true);
-    expect(tool?.lines.join("\n")).toContain("truncated");
-    expect(tool?.lines.join("\n")).toContain("line0");
+    expect(tool?.lines.join("\n")).toContain("Ctrl+O");
+    expect(tool?.lines.join("\n")).not.toContain("line0");
     expect(tool?.lines.join("\n")).not.toContain("line11");
     expect(latestExpandableToolBlock(state)?.output).toBe(long);
     const toggled = toggleLatestScrollbackExpandable(state);
@@ -132,6 +132,8 @@ describe("reduceScrollback", () => {
     expect(tool).toBeDefined();
     expect(tool!.lines[0]).toMatch(/subagent done/);
     expect(tool!.lines.join("\n")).toContain("found X");
+    expect(tool!.lines.join("\n")).not.toContain("model: p/m");
+    expect(tool!.output).toContain("model: p/m");
   });
 
   it("streams nested subagent workers without touching primary live buffer", () => {
@@ -170,8 +172,11 @@ describe("reduceScrollback", () => {
     const block = state.blocks.find((b) => b.kind === "subagent");
     expect(block).toBeDefined();
     expect(block!.lines.join("\n")).toMatch(/subagent #1/);
-    expect(block!.lines.join("\n")).toContain("read");
     expect(block!.lines.join("\n")).toContain("found auth");
+    expect(block!.lines.join("\n")).toContain("Ctrl+O");
+    // Tool-call history collapsed out of Static; retained in output for Ctrl+O.
+    expect(block!.lines.join("\n")).not.toMatch(/\bread\b.*done/);
+    expect(block!.output).toMatch(/read/);
   });
 
   it("isolates parallel subagent workers by workerId", () => {
@@ -215,9 +220,9 @@ describe("reduceScrollback", () => {
     expect(state.live).toBeUndefined();
     const tool = state.blocks.find((b) => b.kind === "tool");
     expect(tool).toBeDefined();
-    const text = tool!.lines.join("\n");
-    expect(text).toContain("AGENTS.md");
-    expect(text).toContain("done");
+    expect(tool!.lines.join("\n")).toContain("done");
+    expect(tool!.lines.join("\n")).toContain("Ctrl+O");
+    expect(tool!.output).toContain("AGENTS.md");
   });
 
   it("appends user lines into immutable history blocks", () => {

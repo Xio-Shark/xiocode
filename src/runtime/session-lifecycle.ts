@@ -135,6 +135,19 @@ export function createPromptRunner(options: Readonly<{
    * Default true: rebuild snapshot before each provider request from live getters.
    */
   turnSnapshot?: boolean;
+  /**
+   * When true, start tools as soon as complete tool_calls arrive on the provider
+   * stream. Default false (post-completion batch).
+   */
+  streamingTools?: boolean;
+  getStreamingTools?: () => boolean;
+  /** Per tool_result spill budget (chars). */
+  toolResultMaxChars?: number;
+  getToolResultMaxChars?: () => number | undefined;
+  /** Microcompact keep-last-N tool rounds. */
+  toolResultKeepRounds?: number;
+  /** Spill directory resolver (run tool-results preferred). */
+  getToolResultSpillDir?: () => Promise<string | undefined> | string | undefined;
 }>): PreparedSession["runPrompt"] {
   const sink = options.sink ?? createStdoutSessionUiSink();
   const history = options.history ?? new SessionHistory({
@@ -242,6 +255,10 @@ export function createPromptRunner(options: Readonly<{
             steerMailbox: options.steerMailbox,
             getLiveConfig,
             turnSnapshot: options.turnSnapshot,
+            streamingTools: options.getStreamingTools?.() ?? options.streamingTools,
+            toolResultMaxChars: options.getToolResultMaxChars?.() ?? options.toolResultMaxChars,
+            toolResultKeepRounds: options.toolResultKeepRounds,
+            toolResultSpillDir: await options.getToolResultSpillDir?.(),
           });
           await history.replace(result.messages);
           totalTurns += result.turns;
