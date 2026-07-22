@@ -150,6 +150,34 @@ export type XioHarnessConfig = Readonly<{
 }>;
 
 /**
+ * Agent-loop execution knobs (tool scheduling, etc.).
+ * Optional section; defaults keep legacy post-completion tool batches.
+ */
+export type XioAgentConfig = Readonly<{
+  /**
+   * When true, start tool execution as soon as complete tool_calls arrive on the
+   * provider stream (overlap with remaining stream events). Default false.
+   */
+  streamingTools: boolean;
+}>;
+
+/**
+ * Context / history pressure knobs applied before provider requests.
+ */
+export type XioContextConfig = Readonly<{
+  /**
+   * Per tool_result character budget. Over-budget bodies spill to disk and are
+   * replaced with a stub + absolute path. Default 16_000. Integer >= 256.
+   */
+  toolResultMaxChars: number;
+  /**
+   * Microcompact: keep the newest N tool rounds intact; older tool bodies are
+   * truncated. Default 4. 0 disables microcompact.
+   */
+  keepToolRounds: number;
+}>;
+
+/**
  * Project trust gate — whether to load project-local hooks/skills/MCP and allow write/exec.
  * Persist decisions in ~/.xiocode/trust.json (see `src/runtime/project-trust.ts`).
  */
@@ -187,6 +215,14 @@ export type XioRetrospectiveConfig = Readonly<{
   enqueueImprove: boolean;
   /** Reserved for LLM polish; deterministic wash always runs. */
   useLlm: boolean;
+  /** Session-end LLM subagent for authoritative report. Default true. */
+  sessionEndSubagent: boolean;
+  /** Optional model id for session-end subagent. */
+  model?: string;
+  /** Session-end subagent timeout ms. Default 45000. */
+  sessionEndTimeoutMs: number;
+  /** Opt-in norms allowlist write after strong confirm. Default false. */
+  normsAutoWrite: boolean;
 }>;
 
 /**
@@ -247,6 +283,10 @@ export type XioConfig = Readonly<{
   tools?: XioToolsConfig;
   /** Optional; when omitted, defaults to snapshot = true. */
   harness?: XioHarnessConfig;
+  /** Optional; when omitted, defaults to streaming_tools = false. */
+  agent?: XioAgentConfig;
+  /** Optional; when omitted, defaults to tool_result_max_chars = 16000. */
+  context?: XioContextConfig;
   trust: XioTrustConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
@@ -268,6 +308,10 @@ export type XioRuntimeConfig = Readonly<{
   tools?: XioToolsConfig;
   /** Optional; when omitted, runtime treats harness.snapshot as true. */
   harness?: XioHarnessConfig;
+  /** Optional; when omitted, runtime treats agent.streaming_tools as false. */
+  agent?: XioAgentConfig;
+  /** Optional; when omitted, runtime treats context.tool_result_max_chars as 16000. */
+  context?: XioContextConfig;
   /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
   trust?: XioTrustConfig;
   explore: XioExploreConfig;
@@ -328,6 +372,15 @@ const DEFAULT_HARNESS: XioHarnessConfig = {
   snapshot: true,
 };
 
+const DEFAULT_AGENT: XioAgentConfig = {
+  streamingTools: false,
+};
+
+const DEFAULT_CONTEXT: XioContextConfig = {
+  toolResultMaxChars: 16_000,
+  keepToolRounds: 4,
+};
+
 const DEFAULT_TRUST: XioTrustConfig = {
   mode: "ask",
 };
@@ -347,6 +400,9 @@ const DEFAULT_RETROSPECTIVE: XioRetrospectiveConfig = {
   autoInject: true,
   enqueueImprove: true,
   useLlm: false,
+  sessionEndSubagent: true,
+  sessionEndTimeoutMs: 45_000,
+  normsAutoWrite: false,
 };
 
 const DEFAULT_EXPLORE: XioExploreConfig = {
@@ -380,6 +436,8 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const permissions = parsePermissions(getTable(data, "permissions"));
   const tools = parseTools(getTable(data, "tools"));
   const harness = parseHarness(getTable(data, "harness"));
+  const agent = parseAgent(getTable(data, "agent"));
+  const context = parseContext(getTable(data, "context"));
   const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
@@ -399,6 +457,8 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     permissions,
     tools,
     harness,
+    agent,
+    context,
     trust,
     improve,
     regress,
@@ -424,6 +484,8 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     permissions: config.permissions,
     tools: config.tools,
     harness: config.harness,
+    agent: config.agent,
+    context: config.context,
     trust: config.trust,
     explore: config.explore,
     retrospective: config.retrospective,
@@ -596,6 +658,31 @@ function parseHarness(table: Record<string, unknown> | undefined): XioHarnessCon
   };
 }
 
+function parseAgent(table: Record<string, unknown> | undefined): XioAgentConfig {
+  return {
+    streamingTools: getOptionalBoolean(table, "streaming_tools") ?? DEFAULT_AGENT.streamingTools,
+  };
+}
+
+function parseContext(table: Record<string, unknown> | undefined): XioContextConfig {
+  const toolResultMaxChars = getOptionalNumber(table, "tool_result_max_chars");
+  if (toolResultMaxChars !== undefined) {
+    if (!Number.isInteger(toolResultMaxChars) || toolResultMaxChars < 256) {
+      throw new Error("context.tool_result_max_chars must be an integer >= 256");
+    }
+  }
+  const keepToolRounds = getOptionalNumber(table, "keep_tool_rounds");
+  if (keepToolRounds !== undefined) {
+    if (!Number.isInteger(keepToolRounds) || keepToolRounds < 0 || keepToolRounds > 40) {
+      throw new Error("context.keep_tool_rounds must be an integer between 0 and 40");
+    }
+  }
+  return {
+    toolResultMaxChars: toolResultMaxChars ?? DEFAULT_CONTEXT.toolResultMaxChars,
+    keepToolRounds: keepToolRounds ?? DEFAULT_CONTEXT.keepToolRounds,
+  };
+}
+
 function parseTrust(table: Record<string, unknown> | undefined): XioTrustConfig {
   const raw = getOptionalString(table, "mode")?.trim().toLowerCase();
   if (raw === undefined) {
@@ -632,6 +719,12 @@ function parseRetrospective(table: Record<string, unknown> | undefined): XioRetr
   if (!Number.isInteger(minToolCalls) || minToolCalls < 0 || minToolCalls > 100) {
     throw new Error("retrospective.min_tool_calls must be an integer between 0 and 100");
   }
+  const sessionEndTimeoutMs = getOptionalNumber(table, "session_end_timeout_ms")
+    ?? DEFAULT_RETROSPECTIVE.sessionEndTimeoutMs;
+  if (!Number.isInteger(sessionEndTimeoutMs) || sessionEndTimeoutMs < 1_000 || sessionEndTimeoutMs > 600_000) {
+    throw new Error("retrospective.session_end_timeout_ms must be an integer between 1000 and 600000");
+  }
+  const model = getOptionalString(table, "model")?.trim();
   return {
     enabled: getOptionalBoolean(table, "enabled") ?? DEFAULT_RETROSPECTIVE.enabled,
     skipTrivial: getOptionalBoolean(table, "skip_trivial") ?? DEFAULT_RETROSPECTIVE.skipTrivial,
@@ -639,6 +732,11 @@ function parseRetrospective(table: Record<string, unknown> | undefined): XioRetr
     autoInject: getOptionalBoolean(table, "auto_inject") ?? DEFAULT_RETROSPECTIVE.autoInject,
     enqueueImprove: getOptionalBoolean(table, "enqueue_improve") ?? DEFAULT_RETROSPECTIVE.enqueueImprove,
     useLlm: getOptionalBoolean(table, "use_llm") ?? DEFAULT_RETROSPECTIVE.useLlm,
+    sessionEndSubagent:
+      getOptionalBoolean(table, "session_end_subagent") ?? DEFAULT_RETROSPECTIVE.sessionEndSubagent,
+    ...(model ? { model } : {}),
+    sessionEndTimeoutMs,
+    normsAutoWrite: getOptionalBoolean(table, "norms_auto_write") ?? DEFAULT_RETROSPECTIVE.normsAutoWrite,
   };
 }
 

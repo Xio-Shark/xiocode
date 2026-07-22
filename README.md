@@ -54,14 +54,21 @@ XioCode is a **local AI coding agent** with a self-owned TypeScript runtime. It 
 ## Quick Install
 
 ```bash
-# One line (recommended)
+# One line (recommended) — installs @xioshark/xiocode from npm
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
-Or with npm:
+Pin a version:
 
 ```bash
-npm install -g github:Xio-Shark/xiocode
+export XIO_INSTALL_VERSION=1.1.0
+curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
+```
+
+Or with npm directly:
+
+```bash
+npm install -g @xioshark/xiocode
 ```
 
 Done. You get `xio` and `xiocode`.

@@ -19,6 +19,8 @@ import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 import { getCachedProviderTools } from "./providers/tool-schema-cache.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
+import { isWriteSerialTool, StreamingToolScheduler } from "./streaming-tool-scheduler.ts";
+import { applyToolResultBudgetInPlace } from "./tool-result-budget.ts";
 
 import type { TokenUsage } from "./types.ts";
 import type { DoneContract, DoneContractResult } from "./verify/done-contract.ts";
@@ -33,9 +35,6 @@ import {
   type LiveConfigView,
   type TurnSnapshot,
 } from "./harness/turn-snapshot.ts";
-
-/** Tools that mutate workspace files and must not race each other by realpath. */
-const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
 const DEFAULT_MAX_SESSION_MESSAGES = 80;
 /** Per user-prompt agent↔model turns (provider requests). Configurable via general.max_turns. */
 export const DEFAULT_MAX_TURNS = 24;
@@ -115,6 +114,24 @@ export type AgentLoopOptions = Readonly<{
    * before every provider request. When false, freeze once at first request.
    */
   turnSnapshot?: boolean;
+  /**
+   * When true, start tool execution as soon as complete tool_calls arrive on the
+   * provider stream (overlap with remaining stream events). Default false —
+   * keep today's post-completion batch.
+   */
+  streamingTools?: boolean;
+  /**
+   * Per tool_result character budget before spill-to-disk. When unset, budget
+   * application is skipped (caller opts in via session/config).
+   */
+  toolResultMaxChars?: number;
+  /** Spill directory for oversized tool bodies (run `tool-results/` preferred). */
+  toolResultSpillDir?: string;
+  /**
+   * Microcompact: keep newest N tool rounds intact; truncate older tool bodies.
+   * Default 4 when toolResultMaxChars is set; 0 disables.
+   */
+  toolResultKeepRounds?: number;
   /** Test/telemetry hook: observe each frozen snapshot. */
   onTurnSnapshot?: (snapshot: TurnSnapshot) => void;
 }>;
@@ -449,11 +466,22 @@ async function runUntilIdle(
     }
     options.onTurnSnapshot?.(snapshot);
     let completion: ChatCompletionResponse;
+    let streamingScheduler: StreamingToolScheduler | undefined;
     try {
       await publishCheckpoint(options, { phase: "awaiting_provider", messages });
-      completion = await requestCompletion(messages, options, snapshot);
+      await maybeApplyToolResultBudget(messages, options);
+      const streamHooks: RequestCompletionHooks | undefined = options.streamingTools
+        ? {
+          onToolCallsReady: (calls) => {
+            if (streamingScheduler || calls.length === 0) return;
+            streamingScheduler = startStreamingToolScheduler(options, calls, guard);
+          },
+        }
+        : undefined;
+      completion = await requestCompletion(messages, options, snapshot, streamHooks);
     } catch (error) {
       if (isAbortError(error) || options.signal?.aborted) {
+        streamingScheduler?.abort("AbortSignal aborted");
         return {
           turns,
           finalText,
@@ -504,7 +532,15 @@ async function runUntilIdle(
       pendingTools: completion.toolCalls.map(({ id, name }) => ({ id, name })),
     });
 
-    const metrics = await appendToolResults(messages, options, completion.toolCalls, guard, toolCollector);
+    // Fallback: non-stream complete() or stream without tool_calls_done before done.
+    if (options.streamingTools && !streamingScheduler && completion.toolCalls.length > 0) {
+      streamingScheduler = startStreamingToolScheduler(options, completion.toolCalls, guard);
+    }
+
+    const metrics = streamingScheduler
+      ? await appendStreamingToolResults(messages, options, streamingScheduler, toolCollector)
+      : await appendToolResults(messages, options, completion.toolCalls, guard, toolCollector);
+    await maybeApplyToolResultBudget(messages, options);
     toolCalls += metrics.calls;
     toolErrors += metrics.errors;
     if (metrics.cancelled) {
@@ -602,6 +638,7 @@ async function requestCompletion(
   messages: ChatMessage[],
   options: AgentLoopOptions,
   snapshot: TurnSnapshot,
+  hooks?: RequestCompletionHooks,
 ): Promise<ChatCompletionResponse> {
   const { getGlobalTracer, classifyUnknownError } = await import("./perf/index.ts");
   const tracer = getGlobalTracer();
@@ -668,7 +705,13 @@ async function requestCompletion(
 
     let completion: ChatCompletionResponse;
     if (snapshot.client.completeStream) {
-      completion = await consumeStream(snapshot.client, completionRequest, options, requestSpan?.span_id);
+      completion = await consumeStream(
+        snapshot.client,
+        completionRequest,
+        options,
+        requestSpan?.span_id,
+        hooks,
+      );
     } else {
       const completionSpan = tracer?.start("provider.completion", { parentId: requestSpan?.span_id });
       try {
@@ -740,11 +783,33 @@ function resolveRegistration(options: AgentLoopOptions, snapshot?: TurnSnapshot)
   return options.host.getProvider(name);
 }
 
+type RequestCompletionHooks = Readonly<{
+  /**
+   * Fired when the provider stream yields a complete tool_calls set
+   * (`tool_calls_done`, or `done` as fallback). May fire while the stream is
+   * still open — callers can start execution immediately for overlap.
+   */
+  onToolCallsReady?: (calls: readonly ChatToolCall[]) => void;
+}>;
+
+async function maybeApplyToolResultBudget(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+): Promise<void> {
+  if (options.toolResultMaxChars === undefined) return;
+  await applyToolResultBudgetInPlace(messages, {
+    maxChars: options.toolResultMaxChars,
+    spillDir: options.toolResultSpillDir,
+    keepToolRounds: options.toolResultKeepRounds,
+  });
+}
+
 async function consumeStream(
   client: LlmClient,
   request: Parameters<LlmClient["complete"]>[0],
   options: AgentLoopOptions,
   parentSpanId?: string,
+  hooks?: RequestCompletionHooks,
 ): Promise<ChatCompletionResponse> {
   if (!client.completeStream) {
     return client.complete(request, { signal: options.signal });
@@ -763,6 +828,13 @@ async function consumeStream(
   let usage: TokenUsage = emptyTokenUsage();
   let raw: unknown;
   let sawDelta = false;
+  let toolCallsReadyEmitted = false;
+
+  const emitToolCallsReady = (calls: readonly ChatToolCall[]) => {
+    if (toolCallsReadyEmitted || calls.length === 0) return;
+    toolCallsReadyEmitted = true;
+    hooks?.onToolCallsReady?.(calls);
+  };
 
   const markFirstToken = (via?: string) => {
     if (firstTokenEmitted) return;
@@ -788,6 +860,7 @@ async function consumeStream(
       } else if (event.type === "tool_calls_done") {
         markFirstToken("tool_calls");
         toolCalls = [...event.toolCalls];
+        emitToolCallsReady(toolCalls);
       } else if (event.type === "usage") {
         usage = event.usage;
       } else if (event.type === "done") {
@@ -801,6 +874,8 @@ async function consumeStream(
         toolCalls = [...event.toolCalls];
         usage = event.usage;
         raw = event.raw;
+        // Fallback when provider never emitted tool_calls_done.
+        emitToolCallsReady(toolCalls);
         options.runtimeEvents?.emit("provider.done", { usage: event.usage });
       }
     }
@@ -820,6 +895,90 @@ async function consumeStream(
     tracer?.end(completionSpan, classified.outcome, { error_class: classified.error_class });
     throw error;
   }
+}
+
+function startStreamingToolScheduler(
+  options: AgentLoopOptions,
+  calls: readonly ChatToolCall[],
+  guard: RepeatToolGuard,
+): StreamingToolScheduler {
+  const blocked = new Map<string, string>();
+  for (const call of calls) {
+    const reason = guard.consume(call);
+    if (reason) blocked.set(call.id, reason);
+  }
+
+  const scheduler = new StreamingToolScheduler({
+    execute: async (call, signal) => {
+      const blockReason = blocked.get(call.id);
+      if (blockReason) return blockedToolCallResult(blockReason);
+      return executeToolCall(options.host, call, signal);
+    },
+    fileWriteQueue: options.fileWriteQueue,
+    parallelToolCalls: options.parallelToolCalls,
+    onToolStart: (call) => {
+      options.onToolStart?.(call);
+      options.runtimeEvents?.emit("tool.call", {
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.arguments,
+      });
+    },
+    onToolEnd: (call, result) => {
+      options.onToolEnd?.(call, result);
+    },
+    signal: options.signal,
+  });
+
+  for (const call of calls) {
+    scheduler.enqueue(call);
+  }
+  return scheduler;
+}
+
+async function appendStreamingToolResults(
+  messages: ChatMessage[],
+  options: AgentLoopOptions,
+  scheduler: StreamingToolScheduler,
+  toolCollector: TurnToolCollector,
+): Promise<{ calls: number; errors: number; cancelled?: boolean }> {
+  const { getGlobalTracer } = await import("./perf/index.ts");
+  const tracer = getGlobalTracer();
+  const batchSpan = tracer?.start("tool.batch", {
+    attrs: {
+      tools: scheduler.size,
+      parallel: options.parallelToolCalls !== false,
+      streaming: true,
+    },
+  });
+
+  const ordered = await scheduler.waitAllOrdered();
+  let errors = 0;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const { call, result } = ordered[index]!;
+    if (result.isError === true) errors += 1;
+    appendToolResult(messages, call, result);
+    recordTurnToolResult(toolCollector, call, result, options.runtimeEvents);
+    await publishCheckpoint(options, {
+      phase: "tool_batch_running",
+      messages,
+      pendingTools: ordered.slice(index + 1).map(({ call: pending }) => ({
+        id: pending.id,
+        name: pending.name,
+      })),
+    });
+  }
+
+  const cancelled = options.signal?.aborted === true || scheduler.aborted;
+  tracer?.end(batchSpan, cancelled ? "cancelled" : "success", {
+    attrs: { tools: ordered.length, errors, streaming: true },
+    ...(cancelled ? { error_class: "abort" } : {}),
+  });
+  return {
+    calls: ordered.length,
+    errors,
+    cancelled,
+  };
 }
 
 async function appendToolResults(
@@ -909,7 +1068,7 @@ async function appendToolResults(
         return result;
       };
 
-      if (WRITE_SERIAL_TOOLS.has(call.name)) {
+      if (isWriteSerialTool(call.name)) {
         const filePath = typeof call.arguments.path === "string" ? String(call.arguments.path) : "";
         const queueKey = filePath.length > 0 ? filePath : `__anon_write_${call.id}`;
         results[index] = await writeQueue.run(queueKey, run);

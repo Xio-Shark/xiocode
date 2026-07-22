@@ -30,7 +30,7 @@ describe("TuiSessionBridge", () => {
   it("buffers events emitted before the first subscriber and flushes once", () => {
     const bridge = new TuiSessionBridge();
     bridge.sink.notify?.("workspace: /repo (main tree)");
-    bridge.sink.setStatus?.("workspace", "DIRECT / NO MERGEGATE");
+    bridge.sink.setStatus?.("workspace", "direct");
     expect(bridge.preSubscriptionBufferLength).toBe(2);
 
     const events: TuiEvent[] = [];
@@ -39,7 +39,7 @@ describe("TuiSessionBridge", () => {
     expect(events).toContainEqual({
       kind: "status",
       key: "workspace",
-      text: "DIRECT / NO MERGEGATE",
+      text: "direct",
     });
     expect(bridge.preSubscriptionBufferLength).toBe(0);
 
