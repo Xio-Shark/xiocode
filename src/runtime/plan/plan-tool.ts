@@ -1,9 +1,16 @@
 import { defineTool } from "../define-tool.ts";
 import { Type } from "../schema.ts";
+import path from "node:path";
 
 import type { SessionUiSink } from "../session-ui.ts";
 import type { ToolDefinition } from "../types.ts";
 import { formatPlanAck, formatPlanListCompact, formatTasklistWidget } from "./format.ts";
+import {
+  formatParallelPlanHandoff,
+  validateParallelPlan,
+  writeParallelPlan,
+  type ParallelPlanV1,
+} from "./parallel-plan.ts";
 import {
   createEmptyBoard,
   defaultImplementMarkdown,
@@ -29,6 +36,7 @@ export const PLAN_PROMPT_ADDENDUM = [
   "4. Status updates: mark `in_progress` when starting a slice, `done` when that slice finishes.",
   "   Batch when possible (finish several items, then a few updates). Do **not** call plan after every read/grep/edit.",
   "5. Optional `export_csv`. Skip plan for trivial one-shot questions. Only this board.",
+  "6. Ultra + multi-deliverable + Trellis: prefer `parallel_draft` → `.claude/plan/parallel-plan.json` + Trellis handoff (never auto-dispatch).",
   "Tool replies are short acks; the TUI todo widget is the live board — avoid action=list unless you need ids.",
 ].join("\n");
 
@@ -55,7 +63,7 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
     promptSnippet: "PRD/implement docs + task board for multi-step work",
     parameters: Type.Object({
       action: Type.String({
-        description: "bootstrap | docs | set_tasks | update | list | export_csv",
+        description: "bootstrap | docs | set_tasks | update | list | export_csv | parallel_draft",
       }),
       title: Type.String({ description: "Plan title (bootstrap)." }),
       goal: Type.String({ description: "User need / goal in one short paragraph." }),
@@ -73,6 +81,14 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
       id: Type.String({ description: "Task id for update." }),
       status: Type.String({ description: "New status for update: pending|in_progress|done" }),
       note: Type.String({ description: "Optional note on update." }),
+      parallel_plan_json: Type.String({
+        description:
+          "JSON string of parallel-plan.v1 for action=parallel_draft "
+          + "(version + children with depends_on/isolation/write_scope).",
+      }),
+      parent_dir: Type.String({
+        description: "Trellis parent task dir hint for handoff command (parallel_draft).",
+      }),
     }, { required: ["action"] }),
     async execute(_toolCallId, params) {
       const action = String(params.action ?? "").trim().toLowerCase();
@@ -106,8 +122,11 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
           await publish(board);
           return textResult(formatPlanAck("export_csv", board, csvPath));
         }
+        if (action === "parallel_draft") {
+          return await runParallelDraft(options.workspaceRoot, params);
+        }
         return textResult(
-          `unknown plan action: ${action} (use bootstrap|docs|set_tasks|update|list|export_csv)`,
+          `unknown plan action: ${action} (use bootstrap|docs|set_tasks|update|list|export_csv|parallel_draft)`,
           true,
         );
       } catch (error) {
@@ -116,6 +135,42 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
       }
     },
   });
+}
+
+async function runParallelDraft(
+  workspaceRoot: string,
+  params: Record<string, unknown>,
+) {
+  let raw: unknown = params.parallel_plan;
+  if (raw === undefined && typeof params.parallel_plan_json === "string") {
+    try {
+      raw = JSON.parse(params.parallel_plan_json);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return textResult(`parallel_draft: invalid parallel_plan_json (${message})`, true);
+    }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return textResult(
+      "parallel_draft requires parallel_plan_json (parallel-plan.v1 JSON string)",
+      true,
+    );
+  }
+  const checked = validateParallelPlan(raw);
+  if (!checked.ok) {
+    return textResult(`parallel_draft invalid: ${checked.errors.join("; ")}`, true);
+  }
+  const out = await writeParallelPlan(workspaceRoot, checked.plan as ParallelPlanV1);
+  const parentHint = typeof params.parent_dir === "string" && params.parent_dir.trim()
+    ? params.parent_dir.trim()
+    : (checked.plan.parent?.slug ? `<MM-DD-${checked.plan.parent.slug}>` : "<parent-dir>");
+  return textResult(
+    [
+      `parallel_draft ok → ${path.relative(path.resolve(workspaceRoot), out) || out}`,
+      `children: ${checked.plan.children.length}`,
+      formatParallelPlanHandoff(parentHint),
+    ].join("\n"),
+  );
 }
 
 async function runBootstrap(
