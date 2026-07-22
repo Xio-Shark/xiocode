@@ -1,12 +1,15 @@
 /**
- * Terminal mouse-wheel support for Ink alternate-screen apps.
+ * Terminal mouse support for Ink alternate-screen apps.
  *
  * Inspired by pi-tui StdinBuffer (earendil-works/pi): mouse SGR sequences can
  * arrive in partial chunks; incomplete escapes must not be treated as keypresses.
- * Ink has no built-in wheel events — we enable SGR tracking and strip sequences
- * from the shared stdin stream so they never leak into the prompt editor.
+ * Ink has no built-in wheel/pointer events — we enable SGR tracking and strip
+ * sequences from the shared stdin stream so they never leak into the prompt.
  *
- * Button codes (SGR): 64 = wheel up, 65 = wheel down (68/69 with modifiers).
+ * Button codes (SGR 1006):
+ * - 0 + M = left press; 0 + m = left release
+ * - 32 + M = left drag (button-event tracking / 1002)
+ * - 64/65 = wheel up/down (68/69 with modifiers)
  */
 
 const ENABLE = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
@@ -21,6 +24,20 @@ const SGR_MOUSE_PARTIAL_TAIL_RE = /(?:\x1b)?\[<\d*(?:;\d*)*$/;
 export type MouseScrollDirection = "up" | "down";
 
 export type MouseScrollHandler = (direction: MouseScrollDirection, steps: number) => void;
+
+/** 1-based terminal cell coordinates (SGR). */
+export type MousePointerKind = "down" | "drag" | "up";
+
+export type MousePointerHandler = (
+  kind: MousePointerKind,
+  col: number,
+  row: number,
+) => void;
+
+export type MouseHandlers = Readonly<{
+  onScroll?: MouseScrollHandler;
+  onPointer?: MousePointerHandler;
+}>;
 
 export function enableTerminalMouseTracking(stdout: NodeJS.WriteStream = process.stdout): void {
   if (!stdout.isTTY) return;
@@ -58,31 +75,58 @@ export function isMouseLeakChunk(text: string): boolean {
 }
 
 /**
- * Parse one stdin chunk for wheel events.
+ * Parse one stdin chunk for wheel + left-button pointer events.
  * Returns whether any complete mouse sequence was found.
  */
 export function consumeMouseScrollChunk(
   chunk: string,
   onScroll: MouseScrollHandler,
 ): boolean {
+  return consumeMouseChunk(chunk, { onScroll });
+}
+
+/** Full SGR consumer: scroll + left pointer (press/drag/release). */
+export function consumeMouseChunk(
+  chunk: string,
+  handlers: MouseHandlers,
+): boolean {
   let matched = false;
-  const re = /(?:\x1b)?\[<(\d+);\d+;\d+[Mm]/g;
+  const re = /(?:\x1b)?\[<(\d+);(\d+);(\d+)([Mm])/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(chunk)) !== null) {
     matched = true;
     const button = Number(match[1]);
-    // 64/65 plain wheel; 68/69 with modifiers on some terminals
+    const col = Number(match[2]);
+    const row = Number(match[3]);
+    const release = match[4] === "m";
+
+    // Wheel (ignore modifier bit for 68/69).
     if (button === 64 || button === 68) {
-      onScroll("up", 3);
-    } else if (button === 65 || button === 69) {
-      onScroll("down", 3);
+      handlers.onScroll?.("up", 3);
+      continue;
+    }
+    if (button === 65 || button === 69) {
+      handlers.onScroll?.("down", 3);
+      continue;
+    }
+
+    if (!handlers.onPointer) continue;
+
+    // Left button: base 0, motion 32. Strip shift/meta/ctrl (4/8/16).
+    const base = button & ~0b11100;
+    if (base === 0 && !release) {
+      handlers.onPointer("down", col, row);
+    } else if (base === 32 && !release) {
+      handlers.onPointer("drag", col, row);
+    } else if ((base === 0 || base === 32) && release) {
+      handlers.onPointer("up", col, row);
     }
   }
   return matched;
 }
 
 /**
- * Attach wheel listener and filter mouse sequences out of stdin before Ink.
+ * Attach wheel + pointer listener and filter mouse sequences out of stdin before Ink.
  *
  * Pi's StdinBuffer completes CSI before key handling. We patch `stdin.emit('data')`
  * so residual `[<64;…M` never reaches useInput / the prompt.
@@ -90,8 +134,22 @@ export function consumeMouseScrollChunk(
 export function attachMouseScrollListener(
   stdin: NodeJS.ReadStream,
   onScroll: MouseScrollHandler,
+  stdout?: NodeJS.WriteStream,
+): () => void;
+export function attachMouseScrollListener(
+  stdin: NodeJS.ReadStream,
+  handlers: MouseHandlers,
+  stdout?: NodeJS.WriteStream,
+): () => void;
+export function attachMouseScrollListener(
+  stdin: NodeJS.ReadStream,
+  onScrollOrHandlers: MouseScrollHandler | MouseHandlers,
   stdout: NodeJS.WriteStream = process.stdout,
 ): () => void {
+  const handlers: MouseHandlers = typeof onScrollOrHandlers === "function"
+    ? { onScroll: onScrollOrHandlers }
+    : onScrollOrHandlers;
+
   enableTerminalMouseTracking(stdout);
 
   let pending = "";
@@ -117,7 +175,7 @@ export function attachMouseScrollListener(
     pending = hold;
 
     if (complete.length > 0) {
-      consumeMouseScrollChunk(complete, onScroll);
+      consumeMouseChunk(complete, handlers);
     }
 
     if (forward.length === 0) {
