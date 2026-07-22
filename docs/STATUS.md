@@ -1,15 +1,15 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-20** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**).
+> Single delivery snapshot. Updated **2026-07-22** (v1.1.0; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline integrate_ok**).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
-> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**).
+> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**) · [ultra-parallel-dag-pipeline](../.trellis/tasks/07-21-ultra-parallel-dag-pipeline/) (P1, **5/5 + integrate_ok**).
 
 ## Active Trellis (honest — not shipped)
 
 | Tree | Pri | Progress | What it closes |
 |------|-----|----------|----------------|
-| _(none)_ | | | Parallel task DAG parent + children archived 2026-07-20. |
+| _(none pending)_ | | | `07-21-ultra-parallel-dag-pipeline` integrate_ok; archive pending confirmation. |
 
 ## Agent harness ↔ tutorial alignment (2026-07-20)
 
@@ -129,7 +129,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - `max_concurrency` = absolute ceiling **1–16** (default **16**)
   - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler) with **nonzero product budgets** (`max_tokens` / `max_cost_usd` / `max_starts_per_minute`; `0`=unlimited; `provider_rate_budget` skip)
   - No recursive explore; plan mode allows explore
-  - **Subagent stream UI** shipped (see above); ultra enables explore tool — still does **not** auto-spawn workers
+  - **Subagent stream UI** shipped (see above); ultra enables explore tool — still does **not** auto-spawn write workers (parallel-plan handoff is human-confirm)
 - **Agent Runtime Event suite** (**5/5 done**):
   - RuntimeEvent.v1 bus (`src/runtime/events/`); product sinks: **stream-json stdout** + **evolve trajectory** (Text/TUI UI still callback-based).
   - `xio -p --output-format stream-json` — stdout NDJSON only; diagnostics on stderr (prepareSession E2E).
@@ -146,6 +146,12 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - **C 默认 `xio` worker**：`parallel.worker`（fallback channel）、Active task + 规划产物注入、worktree cwd。
   - **Full / L4**：`task.py integrate` merge + verify；冲突 → 串行 fix stub；worktree 子任务父 archive 需 `integrate_ok`。
   - **所有权**：DAG 调度在 **Trellis**；xiocode **不**内嵌 `depends_on` 引擎（最多当 worker）。
+- **Ultra parallel DAG pipeline**（parent `07-21-ultra-parallel-dag-pipeline`，**5/5 children done · integrate noop · ready to archive**）：
+  - **`parallel-plan.v1` + `task.py plan-import`**：一份 JSON → 批量 create/链边/双写/环 fail-closed；`isolation=worktree` 预建 `.trellis/worktrees/<dir>`（默认 dry-run，`--yes` 物化）。
+  - **`write_scope` guard**：无依赖边 sibling 写域相交 → plan-import / dispatch-ready fail-closed（保守近似；可漏报未入库文件）；`parallel.scope_fail_closed`（默认 true）。
+  - **Dispatch budget**：`parallel.max_concurrency` 默认 **8**（`0`=不限）；可选 `wall_timeout`；全绿后自动 `integrate` dry-run handoff（`--integrate` 才真 merge）。
+  - **xio ultra entry**：ultra + `.trellis` 时引导 `plan action=parallel_draft` → `.claude/plan/parallel-plan.json` + 一条 handoff；无 Trellis/git **显式降级**；**永不**静默 auto-spawn。
+  - 写域判定是近似、非精确 glob 相交；token/cost 预算不造假（worker 无可信 usage 通道）。
 
 ## Known gaps (honest — do not paper over)
 
