@@ -21,12 +21,12 @@ describe("startEarlyBoot", () => {
       captureInput: false,
     });
     await boot.firstFrameReady();
-    expect(chunks.join("")).toContain("XioCode v9.9.9");
-    expect(chunks.join("")).toMatch(/starting/i);
+    expect(chunks.join("")).toBe("");
     const frames = tracer.getSpans().filter((s) => s.name === "first_frame");
     expect(frames).toHaveLength(1);
     expect(frames[0]?.attrs?.ui).toBe("early_boot");
     expect(frames[0]?.attrs?.operable).toBe(true);
+    expect(frames[0]?.attrs?.silent).toBe(true);
     boot.unmount();
     setGlobalTracerForTests(undefined);
     resetProcessOriginForTests();

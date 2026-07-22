@@ -19,10 +19,10 @@ export type RunInkSessionOptions = SessionOptions & Readonly<{
 }>;
 
 /**
- * Interactive session using **append-to-scrollback** (route B):
- * 1. Early operable boot (entry) → first_frame
- * 2. Ink boot shell upgrade while prepareSession runs (input still buffered)
- * 3. Full App with drained draft
+ * Interactive session using **fullscreen alternate screen** (Claude-like):
+ * 1. Silent early boot buffers stdin (no shell scrollback paint)
+ * 2. Ink BootShell on alternate screen — logo + status under the mark
+ * 3. Full App on alternate screen with self-managed transcript scroll
  */
 export async function runInkSession(options: RunInkSessionOptions): Promise<number> {
   const env = options.env ?? process.env;
@@ -89,7 +89,9 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       session,
       bridge,
       cwd,
-      appendScrollback: true,
+      // Fullscreen alt-screen: self-managed scroll (Route A). Static scrollback
+      // cannot be scrolled inside alternate screen the way Claude needs.
+      appendScrollback: false,
       initialDraft: drained.text,
       autoSubmitInitial: drained.pendingSubmit,
       onExit: async (code) => {
@@ -98,7 +100,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
         exitCode = code;
       },
     }), {
-      alternateScreen: false,
+      alternateScreen: true,
       exitOnCtrlC: false,
       incrementalRendering: true,
     });

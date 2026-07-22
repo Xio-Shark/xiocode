@@ -2,13 +2,13 @@
  * Zero-dependency interactive boot chrome.
  * Mounts before Ink is imported so first_frame can stay under cold-start budgets.
  * Keystrokes buffer here and are drained into BootInputBuffer / App later.
+ *
+ * Visual chrome is intentionally silent: status lines used to append into the
+ * parent shell scrollback. Ink boot (alternate screen) owns the logo + status.
  */
 
-import { writeSync } from "node:fs";
-
 import { XIO_VERSION } from "../cli/version.ts";
-import { getGlobalTracer } from "../runtime/perf/index.ts";
-import { formatShortCwd } from "./theme.ts";
+import { getGlobalTracer } from "../runtime/perf/tracer.ts";
 import type { BootInputBuffer } from "./boot-shell.ts";
 
 export type EarlyBootHandle = Readonly<{
@@ -25,21 +25,21 @@ export type StartEarlyBootOptions = Readonly<{
   cwd: string;
   env?: NodeJS.ProcessEnv;
   version?: string;
+  /** @deprecated Ignored — early boot no longer paints into the shell buffer. */
   write?: (chunk: string) => void;
   /** Capture stdin raw data (default: when stdin is TTY or boot-exit measure). */
   captureInput?: boolean;
 }>;
 
 /**
- * Print operable boot chrome immediately and optionally buffer stdin.
- * Does not import Ink/React.
+ * Buffer stdin for first_frame without painting shell scrollback.
+ * Ink BootShell / App (alternate screen) show brand + status under the logo.
  */
 export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle {
   const env = options.env ?? process.env;
   const version = options.version ?? XIO_VERSION;
-  const write = options.write ?? ((chunk: string) => {
-    writeSync(process.stdout.fd, chunk);
-  });
+  void version;
+  void options.cwd;
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
   const captureInput = options.captureInput
     ?? (process.stdin.isTTY === true || bootExit);
@@ -48,20 +48,7 @@ export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle 
   let pendingSubmit = false;
   let unmounted = false;
   let status = "starting…";
-
-  const paintChrome = () => {
-    // Single compact frame; rewritten only on status change (no full clear).
-    write(
-      `◆ XioCode v${version}\n`
-      + `  ${formatShortCwd(options.cwd)} · ${status}\n`
-      + `› ${text}${pendingSubmit ? " ↵" : ""}\n`
-      + (pendingSubmit
-        ? `  Buffered · will send when session is ready\n`
-        : `  Starting… input is buffered until ready\n`),
-    );
-  };
-
-  paintChrome();
+  void status;
 
   const tracer = getGlobalTracer(env);
   const paint = tracer?.start("tui.paint", { attrs: { phase: "early_boot" } });
@@ -71,7 +58,7 @@ export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle 
     resolveFrame = resolve;
   });
 
-  // Mark first operable frame on next tick (stdout flush + listener attached).
+  // Mark first operable frame on next tick (listener attached; no shell paint).
   queueMicrotask(() => {
     if (unmounted) {
       resolveFrame?.();
@@ -84,6 +71,7 @@ export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle 
           ui: "early_boot",
           operable: true,
           interactive: true,
+          silent: true,
           ...(bootExit ? { boot_exit: true } : {}),
         },
       });
@@ -97,7 +85,6 @@ export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle 
     const raw = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     for (const ch of raw) {
       if (ch === "\u0003") {
-        // Ctrl+C — leave handling to later session; still record nothing.
         continue;
       }
       if (ch === "\u007f" || ch === "\b") {
@@ -135,19 +122,14 @@ export function startEarlyBoot(options: StartEarlyBootOptions): EarlyBootHandle 
         buffer.setText(text);
       }
       if (pendingSubmit && text.trim().length > 0) {
-        // Simulate Enter so buffer.pendingSubmit is set.
         buffer.applyKey("", { return: true });
       }
       text = "";
       pendingSubmit = false;
     },
     setStatus(next) {
+      // Status is shown by Ink BootShell under the logo — do not append to shell.
       status = next;
-      // Avoid flooding during prepare; only update if still mounted.
-      if (!unmounted) {
-        // Status line only (no full chrome rewrite flood) — one compact line.
-        write(`  … ${status}\n`);
-      }
     },
     unmount() {
       if (unmounted) return;

@@ -9,7 +9,8 @@ import {
   formatToolOutputForDisplay,
   isExploreToolName,
 } from "../runtime/session-ui.ts";
-import { isMouseLeakChunk, stripMouseLeak } from "./mouse-scroll.ts";
+import { copyTextToClipboard } from "./clipboard.ts";
+import { attachMouseScrollListener, isMouseLeakChunk, stripMouseLeak } from "./mouse-scroll.ts";
 import {
   atQuery,
   expandFileMentions,
@@ -17,6 +18,18 @@ import {
   insertFileMention,
   listWorkspaceFiles,
 } from "./file-mention.ts";
+import {
+  cellFromMouse,
+  estimateContentBottomRow,
+  estimateContentTopRow,
+  extractSelectedText,
+  flattenBlockLines,
+  highlightLineSegments,
+  selectionDragDistance,
+  selectionIsEmpty,
+  stripAnsi,
+  type TextSelectionRange,
+} from "./text-selection.ts";
 import { CONTEXT_SUMMARY_NAME, isContextCompactionError } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import type { PreparedSession } from "../runtime/session.ts";
@@ -132,41 +145,37 @@ export function App(props: AppProps): React.JSX.Element {
   const { rows } = useWindowSize();
   const appendScrollback = props.appendScrollback === true;
   const [view, setView] = useState<ViewState>(() =>
-    appendScrollback
-      ? { entries: [], statuses: {}, widgets: {}, bypass: false }
-      : createInitialView(props.session.getMessages()),
+    ({ entries: [], statuses: {}, widgets: {}, bypass: false }),
   );
-  // Route B: finalized blocks → <Static>; live stream + in-flight tools stay sticky above the prompt.
+  // Canonical transcript for Static (route B) and windowed fullscreen (route A).
   const [scrollback, setScrollback] = useState<ScrollbackState>(() =>
-    appendScrollback
-      ? blocksFromRestoredMessages(props.session.getMessages())
-      : emptyScrollbackState(),
+    blocksFromRestoredMessages(props.session.getMessages()),
   );
-  // Route A only: 0 = stick to latest; >0 = lines scrolled up in self-viewport.
+  // Fullscreen / Route A: 0 = stick to latest; >0 = lines scrolled up.
   const [scrollOffset, setScrollOffset] = useState(0);
 
   useEffect(() => {
     const applyBridgeEvent = (event: TuiEvent) => {
-      if (appendScrollback) {
-        // Chrome status/modals still via reduceEvent; transcript via scrollback state.
-        if (
-          event.kind === "status"
-          || event.kind === "widget"
-          || event.kind === "confirm-open"
-          || event.kind === "confirm-close"
-          || event.kind === "select-open"
-          || event.kind === "select-close"
-          || event.kind === "prompt-open"
-          || event.kind === "prompt-close"
-          || event.kind === "bypass"
-        ) {
-          setView((current) => reduceEvent(current, event));
-          return;
+      if (
+        event.kind === "status"
+        || event.kind === "widget"
+        || event.kind === "confirm-open"
+        || event.kind === "confirm-close"
+        || event.kind === "select-open"
+        || event.kind === "select-close"
+        || event.kind === "prompt-open"
+        || event.kind === "prompt-close"
+        || event.kind === "bypass"
+        || event.kind === "context-compaction"
+      ) {
+        setView((current) => reduceEvent(current, event));
+        // Compaction also projects a transcript notice (start/success/fail).
+        if (event.kind === "context-compaction") {
+          setScrollback((current) => reduceScrollback(current, event));
         }
-        setScrollback((current) => reduceScrollback(current, event));
         return;
       }
-      setView((current) => reduceEvent(current, event));
+      setScrollback((current) => reduceScrollback(current, event));
     };
 
     const coalescer = createDeltaCoalescer((events) => {
@@ -175,18 +184,69 @@ export function App(props: AppProps): React.JSX.Element {
     });
 
     const unsubscribe = props.bridge.subscribe((event) => {
-      if (appendScrollback) {
-        coalescer.push(event);
-        return;
-      }
-      // Route A (tests): apply immediately for deterministic reducers.
-      applyBridgeEvent(event);
+      coalescer.push(event);
     });
     return () => {
       coalescer.dispose();
       unsubscribe();
     };
-  }, [props.bridge, appendScrollback]);
+  }, [props.bridge]);
+
+  // In-app drag-select (fullscreen only). Line buffer / content-top updated after window calc.
+  const [textSelection, setTextSelection] = useState<TextSelectionRange | undefined>(undefined);
+  const textSelectionRef = useRef(textSelection);
+  textSelectionRef.current = textSelection;
+  const selectableLinesRef = useRef<string[]>([]);
+  const contentTopRowRef = useRef(1);
+  const contentBottomRowRef = useRef(1);
+  const dragActiveRef = useRef(false);
+  const selectionFlashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const selectionApiRef = useRef({
+    selectableLinesRef,
+    contentTopRowRef,
+    contentBottomRowRef,
+    textSelectionRef,
+    dragActiveRef,
+    selectionFlashTimer,
+    setTextSelection,
+    clearTextSelection: () => {},
+    finishTextSelectionCopy: (_range: TextSelectionRange) => {},
+  });
+
+  selectionApiRef.current.clearTextSelection = () => {
+    if (selectionFlashTimer.current) {
+      clearTimeout(selectionFlashTimer.current);
+      selectionFlashTimer.current = undefined;
+    }
+    dragActiveRef.current = false;
+    setTextSelection(undefined);
+  };
+
+  selectionApiRef.current.finishTextSelectionCopy = (range: TextSelectionRange) => {
+    const lines = selectableLinesRef.current;
+    const text = extractSelectedText(lines, range);
+    dragActiveRef.current = false;
+    if (text.length === 0 || selectionIsEmpty(range)) {
+      setTextSelection(undefined);
+      return;
+    }
+    const result = copyTextToClipboard(text);
+    setTextSelection(range);
+    if (selectionFlashTimer.current) clearTimeout(selectionFlashTimer.current);
+    selectionFlashTimer.current = setTimeout(() => {
+      setTextSelection(undefined);
+      selectionFlashTimer.current = undefined;
+    }, 800);
+    // Status only — never notify (notices push scrollback and break hit-testing).
+    props.bridge.sink.setStatus?.(
+      "clipboard",
+      result.ok ? `copied ${text.length}` : "copy failed",
+    );
+    setTimeout(() => {
+      props.bridge.sink.setStatus?.("clipboard", undefined);
+    }, 1200);
+  };
+  selectionApiRef.current.setTextSelection = setTextSelection;
 
   const {
     input,
@@ -206,6 +266,7 @@ export function App(props: AppProps): React.JSX.Element {
     appendScrollback,
     setScrollback,
     scrollback,
+    selectionApiRef,
   );
 
   const slashItems = useMemo(
@@ -220,16 +281,12 @@ export function App(props: AppProps): React.JSX.Element {
   const safeAtIndex = atOpen && atItems.length > 0 ? Math.min(atIndex, atItems.length - 1) : 0;
 
   const tasklist = view.widgets.tasklist;
-  const collapsedEntries = useMemo(
-    () => collapseNoticesForDisplay(view.entries),
-    [view.entries],
-  );
 
-  // --- Route A (tests / optional): self-managed line window ---
+  // --- Fullscreen / Route A: self-managed window over HistoryBlocks ---
   const window = useMemo(() => {
     if (appendScrollback) {
       return {
-        visible: [] as typeof collapsedEntries,
+        visible: [] as HistoryBlock[],
         offset: 0,
         maxOffset: 0,
         hiddenAbove: 0,
@@ -244,15 +301,34 @@ export function App(props: AppProps): React.JSX.Element {
       : atOpen
         ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 1
         : 0;
-    const baseChrome = 8 + menuRows + tasklistRows;
+    const liveExtra = formatLiveLines(
+      scrollback.live,
+      scrollback.inFlightTools,
+      scrollback.inFlightSubagents,
+    ).length;
+    // Brand (~3) + composer (~4) + footer (~2) + live sticky lines.
+    const baseChrome = 10 + menuRows + tasklistRows + liveExtra;
     const viewportLines = Math.max(4, rows - baseChrome);
     return sliceTranscriptWindow(
-      collapsedEntries,
+      scrollback.blocks,
       viewportLines,
       scrollOffset,
-      (entry) => estimateTranscriptEntryLines(entry, 80),
+      (block) => Math.max(1, block.lines.length),
     );
-  }, [appendScrollback, collapsedEntries, rows, scrollOffset, slashOpen, slashItems, atOpen, atItems, tasklist]);
+  }, [
+    appendScrollback,
+    scrollback.blocks,
+    scrollback.live,
+    scrollback.inFlightTools,
+    scrollback.inFlightSubagents,
+    rows,
+    scrollOffset,
+    slashOpen,
+    slashItems,
+    atOpen,
+    atItems,
+    tasklist,
+  ]);
 
   useEffect(() => {
     if (appendScrollback) return;
@@ -269,6 +345,10 @@ export function App(props: AppProps): React.JSX.Element {
     ?? view.statuses.isolation
     ?? undefined;
   const scrolled = !appendScrollback && window.offset > 0;
+
+  selectableLinesRef.current = appendScrollback ? [] : flattenBlockLines(window.visible);
+  contentTopRowRef.current = estimateContentTopRow({ scrolled });
+  contentBottomRowRef.current = estimateContentBottomRow(rows);
 
   // Scrollback mode: natural height (Static history + chrome). Do not pin to full screen.
   const rootProps = appendScrollback
@@ -309,21 +389,34 @@ export function App(props: AppProps): React.JSX.Element {
           ? h(SelectView, { select: view.select, rows })
           : view.prompt
             ? h(PromptView, { prompt: view.prompt })
-            : appendScrollback
-              ? h(LiveStreamRegion, {
+            : h(Box, { flexDirection: "column", flexGrow: 1 },
+              !appendScrollback && scrolled
+                ? h(Text, { dimColor: true },
+                  `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
+                : null,
+              ...(!appendScrollback
+                ? (() => {
+                  let lineBase = 0;
+                  return window.visible.map((block) => {
+                    const row = h(HistoryBlockRow, {
+                      key: block.id,
+                      block,
+                      lineBase,
+                      selection: textSelection,
+                    });
+                    lineBase += block.lines.length;
+                    return row;
+                  });
+                })()
+                : []),
+              !appendScrollback && window.hiddenBelow > 0
+                ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
+                : null,
+              h(LiveStreamRegion, {
                 live: scrollback.live,
                 inFlightTools: scrollback.inFlightTools,
                 inFlightSubagents: scrollback.inFlightSubagents,
-              })
-              : h(Box, { flexDirection: "column", flexGrow: 1 },
-                scrolled
-                  ? h(Text, { dimColor: true },
-                    `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
-                  : null,
-                ...window.visible.map((entry) => h(TranscriptRow, { key: entry.id, entry })),
-                window.hiddenBelow > 0
-                  ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
-                  : null),
+              })),
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
@@ -341,7 +434,7 @@ export function App(props: AppProps): React.JSX.Element {
       bypass: view.bypass || Boolean(view.statuses.bypass),
       permissionMode,
       cwd: props.cwd,
-      context: view.statuses.context,
+      context: view.statuses.clipboard ?? view.statuses.context,
       usage: view.statuses.usage,
       explore: view.statuses.explore,
       workspace: workspaceLabel,
@@ -413,7 +506,12 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
 });
 
 const HistoryBlockRow = memo(function HistoryBlockRow(
-  props: Readonly<{ block: HistoryBlock }>,
+  props: Readonly<{
+    block: HistoryBlock;
+    /** Flat selectable-line index of this block's first line (fullscreen select). */
+    lineBase?: number;
+    selection?: TextSelectionRange;
+  }>,
 ): React.JSX.Element {
   const explore = isExploreHistoryBlock(props.block);
   const color = props.block.error
@@ -430,15 +528,36 @@ const HistoryBlockRow = memo(function HistoryBlockRow(
     || props.block.kind === "thinking"
     || props.block.kind === "notice"
     || props.block.kind === "subagent";
+  const lineBase = props.lineBase ?? 0;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
-    ...props.block.lines.map((line, index) =>
-      h(Text, {
+    ...props.block.lines.map((rawLine, index) => {
+      // Selection math is on plain text; render plain when highlighting so cols match.
+      const plain = stripAnsi(rawLine);
+      const segments = highlightLineSegments(plain, lineBase + index, props.selection);
+      if (!segments) {
+        return h(Text, {
+          key: `${props.block.id}-${index}`,
+          color,
+          bold: bold && index === 0,
+          dimColor: dim,
+          wrap: "wrap",
+        }, rawLine);
+      }
+      return h(Text, {
         key: `${props.block.id}-${index}`,
         color,
         bold: bold && index === 0,
         dimColor: dim,
         wrap: "wrap",
-      }, line)));
+      },
+        ...segments.map((seg, segIndex) =>
+          h(Text, {
+            key: `seg-${segIndex}`,
+            inverse: seg.selected,
+            color: seg.selected ? undefined : color,
+            dimColor: seg.selected ? false : dim,
+          }, seg.text)));
+    }));
 });
 
 /**
@@ -578,6 +697,17 @@ function useSessionInteraction(
   appendScrollback: boolean,
   setScrollback: React.Dispatch<React.SetStateAction<ScrollbackState>>,
   scrollback: ScrollbackState,
+  selectionApiRef: React.MutableRefObject<Readonly<{
+    selectableLinesRef: React.MutableRefObject<string[]>;
+    contentTopRowRef: React.MutableRefObject<number>;
+    contentBottomRowRef: React.MutableRefObject<number>;
+    textSelectionRef: React.MutableRefObject<TextSelectionRange | undefined>;
+    dragActiveRef: React.MutableRefObject<boolean>;
+    selectionFlashTimer: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>;
+    setTextSelection: React.Dispatch<React.SetStateAction<TextSelectionRange | undefined>>;
+    clearTextSelection: () => void;
+    finishTextSelectionCopy: (range: TextSelectionRange) => void;
+  }>>,
 ): Readonly<{
   input: string;
   composer: ComposerState;
@@ -724,11 +854,7 @@ function useSessionInteraction(
         props.session.followUp(intent.text);
         setComposerState(rememberSubmission(composerRef.current, value));
         const notice = `Follow-up queued (after current task ends): ${intent.text.slice(0, 80)}`;
-        if (appendScrollback) {
-          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
-        } else {
-          setView((current) => appendEntry(current, "notice", notice));
-        }
+        setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
         setView((current) => reduceEvent(current, {
           kind: "status",
           key: "queue",
@@ -742,11 +868,7 @@ function useSessionInteraction(
         const notice = intent.kind === "hard"
           ? `Hard steer: ${intent.text.slice(0, 80)}`
           : `Soft steer queued (applies at tool/provider boundary): ${intent.text.slice(0, 80)}`;
-        if (appendScrollback) {
-          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
-        } else {
-          setView((current) => appendEntry(current, "notice", notice));
-        }
+        setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
         setView((current) => reduceEvent(current, {
           kind: "status",
           key: "queue",
@@ -757,11 +879,7 @@ function useSessionInteraction(
       // Fallback if session lacks steer (older bridges).
       setComposerState(queueWhileBusy(composerRef.current, value));
       const notice = `Queued for next turn: ${value.slice(0, 80)}`;
-      if (appendScrollback) {
-        setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
-      } else {
-        setView((current) => appendEntry(current, "notice", notice));
-      }
+      setScrollback((current) => reduceScrollback(current, { kind: "notice", text: notice }));
       setView((current) => reduceEvent(current, {
         kind: "status",
         key: "queue",
@@ -772,11 +890,7 @@ function useSessionInteraction(
     setComposerState(rememberSubmission(composerRef.current, value));
     setScrollOffset(0);
     const isCommand = value.startsWith("/");
-    if (appendScrollback) {
-      setScrollback((current) => appendUserBlock(current, value));
-    } else {
-      setView((current) => appendEntry(current, isCommand ? "command" : "user", value));
-    }
+    setScrollback((current) => appendUserBlock(current, value));
     if (value === "/exit" || value === "/quit") {
       await close(0);
       return;
@@ -793,11 +907,7 @@ function useSessionInteraction(
       if (isPrompt) {
         const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
         const done = `* Done in ${seconds}s`;
-        if (appendScrollback) {
-          setScrollback((current) => reduceScrollback(current, { kind: "notice", text: done }));
-        } else {
-          setView((current) => appendEntry(current, "notice", done));
-        }
+        setScrollback((current) => reduceScrollback(current, { kind: "notice", text: done }));
       }
       // Restore queued input into the draft so it can be inspected/edited/submitted.
       const queued = composerRef.current.queue;
@@ -807,6 +917,69 @@ function useSessionInteraction(
       }
     }
   };
+  // Fullscreen: mouse wheel scrolls; press-drag selects + copies on release (Grok-style).
+  // Bare click does not copy; move ≥1 cell then release to copy.
+  useEffect(() => {
+    if (appendScrollback) return;
+    return attachMouseScrollListener(process.stdin, {
+      onScroll: (direction) => {
+        if (transcriptViewerRef.current) {
+          scrollViewer(direction === "up" ? -3 : 3);
+          return;
+        }
+        scrollTranscript(direction === "up" ? 3 : -3);
+      },
+      onPointer: (kind, col, row) => {
+        if (transcriptViewerRef.current) return;
+        const api = selectionApiRef.current;
+        const lines = api.selectableLinesRef.current;
+        const hit = {
+          col,
+          row,
+          contentTopRow: api.contentTopRowRef.current,
+          contentBottomRow: api.contentBottomRowRef.current,
+          lines,
+          clampToBand: true as const,
+        };
+        const cell = cellFromMouse(hit);
+        if (kind === "down") {
+          if (!cell) {
+            api.clearTextSelection();
+            return;
+          }
+          if (api.selectionFlashTimer.current) {
+            clearTimeout(api.selectionFlashTimer.current);
+            api.selectionFlashTimer.current = undefined;
+          }
+          api.dragActiveRef.current = true;
+          api.setTextSelection({ anchor: cell, head: cell });
+          return;
+        }
+        if (kind === "drag") {
+          if (!api.dragActiveRef.current || !cell) return;
+          api.setTextSelection((current) =>
+            current ? { anchor: current.anchor, head: cell } : { anchor: cell, head: cell });
+          return;
+        }
+        // up — copy only when the pointer moved at least one cell (Grok threshold).
+        if (!api.dragActiveRef.current) return;
+        const current = api.textSelectionRef.current;
+        if (!current) {
+          api.dragActiveRef.current = false;
+          return;
+        }
+        const finalRange = cell
+          ? { anchor: current.anchor, head: cell }
+          : current;
+        api.dragActiveRef.current = false;
+        if (selectionDragDistance(finalRange) < 1) {
+          api.clearTextSelection();
+          return;
+        }
+        api.finishTextSelectionCopy(finalRange);
+      },
+    });
+  }, [appendScrollback, selectionApiRef]);
   // Drain from interactive boot shell: optional auto-submit after first paint.
   useEffect(() => {
     if (autoSubmitDone.current) return;
@@ -847,24 +1020,26 @@ function useSessionInteraction(
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
     toggleExpandable: () => {
-      if (appendScrollback) {
-        // Toggle overlay closed if already open.
-        if (transcriptViewerRef.current) {
-          setTranscriptViewer(undefined);
-          return;
-        }
-        const current = scrollbackRef.current;
-        const next = toggleLatestScrollbackExpandable(current);
-        const block = latestExpandableToolBlock(next);
-        setScrollback(next);
-        if (block?.output) setTranscriptViewer(block);
+      // Ctrl+O: overlay over retained full tool/subagent output (Static lines stay collapsed).
+      if (transcriptViewerRef.current) {
+        setTranscriptViewer(undefined);
         return;
       }
-      setView((current) => toggleLatestExpandable(current));
+      const current = scrollbackRef.current;
+      const next = toggleLatestScrollbackExpandable(current);
+      const block = latestExpandableToolBlock(next);
+      setScrollback(next);
+      if (block?.output) setTranscriptViewer(block);
     },
     closeTranscriptViewer: () => {
       if (!transcriptViewerRef.current) return false;
       setTranscriptViewer(undefined);
+      return true;
+    },
+    clearTextSelection: () => {
+      const api = selectionApiRef.current;
+      if (!api.textSelectionRef.current && !api.dragActiveRef.current) return false;
+      api.clearTextSelection();
       return true;
     },
     clearQueued: () => {
@@ -941,6 +1116,8 @@ function handleInput(options: Readonly<{
   toggleExpandable: () => void;
   /** Returns true when an open transcript overlay was closed. */
   closeTranscriptViewer?: () => boolean;
+  /** Returns true when an in-app text selection was cleared. */
+  clearTextSelection?: () => boolean;
   clearQueued: () => void;
 }>): void {
   if (options.interaction === "confirm") {
@@ -965,6 +1142,9 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.escape && options.closeTranscriptViewer?.()) {
+    return;
+  }
+  if (options.key.escape && options.clearTextSelection?.()) {
     return;
   }
 

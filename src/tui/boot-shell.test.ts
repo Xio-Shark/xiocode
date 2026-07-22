@@ -61,6 +61,6 @@ describe("BootShell", () => {
     expect(frame).toContain("XioCode v1.2.3");
     expect(frame).toMatch(/project|\/tmp/);
     expect(frame).toContain("starting");
-    expect(frame).toMatch(/buffered|Starting/i);
+    expect(frame).not.toMatch(/Starting… input is buffered/);
   });
 });
