@@ -16,6 +16,7 @@ import {
   type ComposerState,
 } from "./composer.ts";
 import { formatShortCwd, theme } from "./theme.ts";
+import { BrandHeader } from "./shark-logo.ts";
 
 const h = React.createElement;
 
@@ -150,11 +151,11 @@ export function BootShell(props: BootShellProps): React.JSX.Element {
 
   const statusLabel = readinessLabel(props.readiness, props.status);
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, null,
-      h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
-      h(Text, { bold: true }, `XioCode v${props.version}`)),
-    h(Text, { dimColor: true, wrap: "truncate-end" },
-      `${formatShortCwd(props.cwd)} · ${statusLabel}`),
+    h(BrandHeader, {
+      version: props.version,
+      meta: statusLabel,
+      path: formatShortCwd(props.cwd),
+    }),
     h(Box, { marginTop: 1 },
       h(Text, { dimColor: true }, theme.sym.prompt),
       h(Text, null, ` ${draft}${pending ? " ↵" : ""}`)),

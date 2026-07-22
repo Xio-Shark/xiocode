@@ -61,6 +61,7 @@ import {
   theme,
   truncateToolDetail,
 } from "./theme.ts";
+import { BrandHeader } from "./shark-logo.ts";
 
 const h = React.createElement;
 const require = createRequire(import.meta.url);
@@ -243,7 +244,7 @@ export function App(props: AppProps): React.JSX.Element {
       : atOpen
         ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 1
         : 0;
-    const baseChrome = 7 + menuRows + tasklistRows;
+    const baseChrome = 8 + menuRows + tasklistRows;
     const viewportLines = Math.max(4, rows - baseChrome);
     return sliceTranscriptWindow(
       collapsedEntries,
@@ -287,6 +288,7 @@ export function App(props: AppProps): React.JSX.Element {
       model: modelLabel,
       thinking: thinkingLabel,
       plan: planLabel,
+      cwd: props.cwd,
       busy,
       phase: busyPhaseLabel({
         busy,
@@ -1647,11 +1649,13 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   model: string;
   thinking: string;
   plan?: string;
+  cwd: string;
   busy?: boolean;
   /** Turn phase chrome: working… / streaming… / tools… */
   phase?: string;
 }>): React.JSX.Element {
-  // Path / permission / usage / workspace live in the Claude-style footer.
+  // Path / permission / usage / workspace live in the Claude-style footer;
+  // header mirrors CondensedLogo: mascot + title / meta / cwd.
   const parts = [
     props.model,
     props.thinking,
@@ -1659,13 +1663,11 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
     props.phase ?? (props.busy ? "working…" : undefined),
   ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
-  return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, null,
-      h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
-      h(Text, { bold: true }, `XioCode v${props.version}`)),
-    parts.length > 0
-      ? h(Text, { dimColor: true, wrap: "truncate-end" }, parts.join(` ${theme.sym.meta} `))
-      : null);
+  return h(BrandHeader, {
+    version: props.version,
+    meta: parts.length > 0 ? parts.join(` ${theme.sym.meta} `) : undefined,
+    path: formatShortCwd(props.cwd),
+  });
 });
 
 /** Route B Ctrl+O overlay: full retained tool output without mutating Static history. */
