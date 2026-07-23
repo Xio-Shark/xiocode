@@ -54,14 +54,15 @@ import {
   type ComposerState,
 } from "./composer.ts";
 import {
+  adjacentExpandableHistoryBlock,
   appendUserBlock,
   blocksFromRestoredMessages,
   emptyScrollbackState,
+  expandableHistoryBlocks,
   formatLiveLines,
   isExploreHistoryBlock,
   latestExpandableToolBlock,
   reduceScrollback,
-  toggleLatestScrollbackExpandable,
   type HistoryBlock,
   type ScrollbackState,
 } from "./transcript-log.ts";
@@ -151,8 +152,16 @@ export function App(props: AppProps): React.JSX.Element {
   const [scrollback, setScrollback] = useState<ScrollbackState>(() =>
     blocksFromRestoredMessages(props.session.getMessages()),
   );
+  const [subagentClock, setSubagentClock] = useState(() => Date.now());
   // Fullscreen / Route A: 0 = stick to latest; >0 = lines scrolled up.
   const [scrollOffset, setScrollOffset] = useState(0);
+
+  useEffect(() => {
+    if (scrollback.inFlightSubagents.length === 0) return;
+    setSubagentClock(Date.now());
+    const timer = setInterval(() => setSubagentClock(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [scrollback.inFlightSubagents.length]);
 
   useEffect(() => {
     const applyBridgeEvent = (event: TuiEvent) => {
@@ -281,6 +290,10 @@ export function App(props: AppProps): React.JSX.Element {
   const safeAtIndex = atOpen && atItems.length > 0 ? Math.min(atIndex, atItems.length - 1) : 0;
 
   const tasklist = view.widgets.tasklist;
+  const viewerHistory = transcriptViewer ? expandableHistoryBlocks(scrollback) : [];
+  const viewerIndex = transcriptViewer
+    ? viewerHistory.findIndex((block) => block.id === transcriptViewer.id)
+    : -1;
 
   // --- Fullscreen / Route A: self-managed window over HistoryBlocks ---
   const window = useMemo(() => {
@@ -373,6 +386,7 @@ export function App(props: AppProps): React.JSX.Element {
       phase: busyPhaseLabel({
         busy,
         inFlightToolCount: scrollback.inFlightTools.length,
+        inFlightSubagentCount: scrollback.inFlightSubagents.length,
         liveKind: scrollback.live?.kind,
       }),
     }),
@@ -381,6 +395,8 @@ export function App(props: AppProps): React.JSX.Element {
         block: transcriptViewer,
         rows,
         scrollOffset: viewerScrollOffset,
+        historyIndex: viewerIndex >= 0 ? viewerIndex + 1 : undefined,
+        historyTotal: viewerHistory.length,
         onClose: () => setTranscriptViewer(undefined),
       })
       : view.confirm
@@ -416,6 +432,7 @@ export function App(props: AppProps): React.JSX.Element {
                 live: scrollback.live,
                 inFlightTools: scrollback.inFlightTools,
                 inFlightSubagents: scrollback.inFlightSubagents,
+                now: subagentClock,
               })),
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
@@ -447,15 +464,19 @@ const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
   live: ScrollbackState["live"];
   inFlightTools: ScrollbackState["inFlightTools"];
   inFlightSubagents: ScrollbackState["inFlightSubagents"];
+  now: number;
 }>): React.JSX.Element | null {
-  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents);
+  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents, {
+    now: props.now,
+  });
   if (liveLines.length === 0) return null;
   return h(Box, { flexDirection: "column", marginY: 0 },
     ...liveLines.map((line, index) =>
       h(Text, {
         key: `live-${index}`,
         dimColor: true,
-        wrap: "wrap",
+        // Activity rows are deliberately one terminal row; only answer text wraps.
+        wrap: line.startsWith(`${theme.sym.answer} `) ? "wrap" : "truncate-end",
         color: line.includes(theme.sym.think)
           ? theme.think
           : line.includes(theme.sym.explore)
@@ -528,6 +549,9 @@ const HistoryBlockRow = memo(function HistoryBlockRow(
     || props.block.kind === "thinking"
     || props.block.kind === "notice"
     || props.block.kind === "subagent";
+  const compact = props.block.kind === "tool"
+    || props.block.kind === "thinking"
+    || props.block.kind === "subagent";
   const lineBase = props.lineBase ?? 0;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
     ...props.block.lines.map((rawLine, index) => {
@@ -540,7 +564,7 @@ const HistoryBlockRow = memo(function HistoryBlockRow(
           color,
           bold: bold && index === 0,
           dimColor: dim,
-          wrap: "wrap",
+          wrap: compact ? "truncate-end" : "wrap",
         }, rawLine);
       }
       return h(Text, {
@@ -548,7 +572,7 @@ const HistoryBlockRow = memo(function HistoryBlockRow(
         color,
         bold: bold && index === 0,
         dimColor: dim,
-        wrap: "wrap",
+        wrap: compact ? "truncate-end" : "wrap",
       },
         ...segments.map((seg, segIndex) =>
           h(Text, {
@@ -828,6 +852,12 @@ function useSessionInteraction(
   const scrollViewer = (delta: number) => {
     setViewerScrollOffset((current) => Math.max(0, current + delta));
   };
+  const cycleViewer = (delta: -1 | 1) => {
+    const current = transcriptViewerRef.current;
+    if (!current) return;
+    const next = adjacentExpandableHistoryBlock(scrollbackRef.current, current.id, delta);
+    if (next && next.id !== current.id) setTranscriptViewer(next);
+  };
   const scrollTranscript = (delta: number) => {
     if (appendScrollback) return; // terminal owns scroll
     setScrollOffset((current) => Math.max(0, current + delta));
@@ -1015,20 +1045,19 @@ function useSessionInteraction(
     scrollConfirm: (delta) => setView((current) => scrollConfirmation(current, delta)),
     scrollTranscript,
     scrollViewer,
+    cycleViewer,
     viewerOpen: () => transcriptViewerRef.current !== undefined,
     appendScrollback,
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
     toggleExpandable: () => {
-      // Ctrl+O: overlay over retained full tool/subagent output (Static lines stay collapsed).
+      // Ctrl+O: overlay over retained thinking/tool/subagent output.
       if (transcriptViewerRef.current) {
         setTranscriptViewer(undefined);
         return;
       }
       const current = scrollbackRef.current;
-      const next = toggleLatestScrollbackExpandable(current);
-      const block = latestExpandableToolBlock(next);
-      setScrollback(next);
+      const block = latestExpandableToolBlock(current);
       if (block?.output) setTranscriptViewer(block);
     },
     closeTranscriptViewer: () => {
@@ -1109,6 +1138,7 @@ function handleInput(options: Readonly<{
   scrollConfirm: (delta: number) => void;
   scrollTranscript: (delta: number) => void;
   scrollViewer?: (delta: number) => void;
+  cycleViewer?: (delta: -1 | 1) => void;
   viewerOpen?: () => boolean;
   appendScrollback?: boolean;
   moveSelect: (delta: number) => void;
@@ -1148,9 +1178,17 @@ function handleInput(options: Readonly<{
     return;
   }
 
-  // Transcript viewer (Route B Ctrl+O): scroll full retained output in-overlay.
+  // Transcript viewer: scroll full retained output in-overlay.
   if (options.viewerOpen?.()) {
     const step = options.key.pageUp || options.key.pageDown ? 12 : 1;
+    if (options.key.leftArrow) {
+      options.cycleViewer?.(-1);
+      return;
+    }
+    if (options.key.rightArrow) {
+      options.cycleViewer?.(1);
+      return;
+    }
     if (options.key.pageUp || options.key.upArrow) {
       options.scrollViewer?.(-step);
       return;
@@ -1816,9 +1854,11 @@ function indentBlock(text: string, prefix: string): string {
 export function busyPhaseLabel(input: Readonly<{
   busy: boolean;
   inFlightToolCount: number;
+  inFlightSubagentCount?: number;
   liveKind?: "thinking" | "assistant";
 }>): string | undefined {
   if (!input.busy) return undefined;
+  if ((input.inFlightSubagentCount ?? 0) > 0) return "agents…";
   if (input.inFlightToolCount > 0) return "tools…";
   if (input.liveKind === "assistant" || input.liveKind === "thinking") return "streaming…";
   return "working…";
@@ -1831,7 +1871,7 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   plan?: string;
   cwd: string;
   busy?: boolean;
-  /** Turn phase chrome: working… / streaming… / tools… */
+  /** Turn phase chrome: working… / streaming… / tools… / agents… */
   phase?: string;
 }>): React.JSX.Element {
   // Path / permission / usage / workspace live in the Claude-style footer;
@@ -1850,28 +1890,35 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   });
 });
 
-/** Route B Ctrl+O overlay: full retained tool output without mutating Static history. */
+/** Ctrl+O overlay: retained thinking/tool/subagent output without mutating history. */
 function TranscriptViewerOverlay(props: Readonly<{
   block: HistoryBlock;
   rows: number;
   scrollOffset: number;
+  historyIndex?: number;
+  historyTotal: number;
   onClose: () => void;
 }>): React.JSX.Element {
   const body = props.block.output ?? props.block.lines.join("\n");
   const lines = body.split("\n");
   const viewport = Math.max(6, props.rows - 10);
   const window = sliceViewerWindow(lines, viewport, props.scrollOffset);
-  const title = props.block.title
-    ? `${props.block.title}${props.block.detail ? ` ${props.block.detail}` : ""}`
-    : "tool output";
+  const title = props.block.kind === "thinking"
+    ? `Thinking${props.block.thoughtSeconds ? ` · ${props.block.thoughtSeconds}s` : ""}`
+    : props.block.title
+      ? `${props.block.title}${props.block.detail ? ` ${truncateToolDetail(props.block.detail, 64)}` : ""}`
+      : "transcript";
+  const position = props.historyIndex && props.historyTotal > 1
+    ? ` ${props.historyIndex}/${props.historyTotal}`
+    : "";
   return h(Box, {
     flexDirection: "column",
     borderStyle: "round",
     paddingX: 1,
     marginY: 1,
   },
-    h(Text, { bold: true }, `Transcript · ${title}`),
-    h(Text, { dimColor: true }, "↑↓/PgUp/PgDn scroll · Ctrl+O/Esc close · full retained output"),
+    h(Text, { bold: true }, `Transcript${position} · ${title}`),
+    h(Text, { dimColor: true }, "←/→ history · ↑↓/PgUp/PgDn scroll · Ctrl+O/Esc close"),
     window.indicator
       ? h(Text, { dimColor: true }, window.indicator)
       : null,
