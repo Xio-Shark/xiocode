@@ -226,8 +226,9 @@ export type XioRetrospectiveConfig = Readonly<{
 }>;
 
 /**
- * Primary→Flash multi-explore: main agent (e.g. Pro) spawns read-only Flash subagents.
- * Disabled by default; requires `enabled = true` and `model`.
+ * Primary→scout multi-explore: main agent spawns read-only workers on a dedicated model.
+ * Default `enabled = false`. Ultra thinking force-enables even when disabled.
+ * `enabled = true` requires `model`. Ultra-only scout pattern: `enabled = false` + explicit `model`.
  */
 export type XioExploreConfig = Readonly<{
   enabled: boolean;
@@ -238,7 +239,8 @@ export type XioExploreConfig = Readonly<{
   maxTurns: number;
   timeoutMs: number;
   /**
-   * Absolute parallel ceiling (1–16). Default 16.
+   * Worker-only parallel ceiling (1–16). Default 16. Does **not** include the primary process.
+   * Example: `6` ⇒ primary + 6 scouts ≈ 7 active processes.
    * Runtime policy still caps default sessions at 4, ultra at 8+, user-requested high fan-out up to this value.
    */
   maxConcurrency: number;
