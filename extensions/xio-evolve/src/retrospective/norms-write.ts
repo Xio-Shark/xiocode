@@ -2,6 +2,14 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  createRejectedWorkspaceMutationReceipt,
+  WorkspaceMutationError,
+  WorkspaceMutationService,
+  type WorkspaceMutationHooks,
+  type WorkspaceMutationReceipt,
+} from "../../../../src/runtime/workspace/mutation.ts";
+
 /** Paths allowed for norms auto-write under the workspace root. */
 export const NORMS_ALLOWLIST_ROOT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 export const NORMS_ALLOWLIST_SPEC_PREFIX = ".trellis/spec";
@@ -27,6 +35,7 @@ export type NormsWriteResult = Readonly<{
   written: readonly string[];
   backups: readonly string[];
   rejected: readonly string[];
+  transaction?: WorkspaceMutationReceipt;
 }>;
 
 export function defaultPendingNormsPath(): string {
@@ -130,8 +139,9 @@ export async function applyNormsWrites(input: Readonly<{
   workspaceRoot: string;
   files: readonly NormsProposedFile[];
   now?: () => number;
+  mutationHooks?: WorkspaceMutationHooks;
 }>): Promise<NormsWriteResult> {
-  const resolved: Array<{ absolutePath: string; relativePath: string; content: string }> = [];
+  const resolved: Array<{ relativePath: string; content: string }> = [];
   const rejected: string[] = [];
   for (const file of input.files) {
     const check = resolveNormsAllowlistPath(input.workspaceRoot, file.relativePath);
@@ -140,30 +150,49 @@ export async function applyNormsWrites(input: Readonly<{
       continue;
     }
     resolved.push({
-      absolutePath: check.absolutePath,
       relativePath: check.relativePath,
       content: file.content,
     });
   }
   if (rejected.length > 0) {
-    return { written: [], backups: [], rejected };
+    return {
+      written: [],
+      backups: [],
+      rejected,
+      transaction: createRejectedWorkspaceMutationReceipt({
+        workspaceRoot: input.workspaceRoot,
+        relativePaths: input.files.map((file) => file.relativePath),
+        reason: rejected.join("; "),
+        now: input.now,
+      }),
+    };
   }
 
-  const stamp = (input.now ?? Date.now)();
-  const written: string[] = [];
-  const backups: string[] = [];
-  for (const file of resolved) {
-    await mkdir(path.dirname(file.absolutePath), { recursive: true });
-    try {
-      await readFile(file.absolutePath, "utf8");
-      const bak = `${file.absolutePath}.bak-${stamp}`;
-      await rename(file.absolutePath, bak);
-      backups.push(bak);
-    } catch {
-      // new file
+  const service = new WorkspaceMutationService({
+    workspaceRoot: input.workspaceRoot,
+    now: input.now,
+    hooks: input.mutationHooks,
+  });
+  try {
+    const transaction = await service.writeBatch(resolved.map((file) => ({
+      relativePath: file.relativePath,
+      content: file.content.endsWith("\n") ? file.content : `${file.content}\n`,
+    })));
+    return {
+      written: transaction.files.map((file) => file.relative_path),
+      backups: transaction.files.flatMap((file) => file.backup_path ? [file.backup_path] : []),
+      rejected: [],
+      transaction,
+    };
+  } catch (error) {
+    if (error instanceof WorkspaceMutationError && error.receipt.status === "rejected") {
+      return {
+        written: [],
+        backups: [],
+        rejected: [error.message],
+        transaction: error.receipt,
+      };
     }
-    await writeFile(file.absolutePath, file.content.endsWith("\n") ? file.content : `${file.content}\n`, "utf8");
-    written.push(file.relativePath);
+    throw error;
   }
-  return { written, backups, rejected: [] };
 }
