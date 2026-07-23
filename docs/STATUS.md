@@ -138,6 +138,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - `max_concurrency` = **worker-only** ceiling **1–16** (default **16**); e.g. `6` ⇒ primary + 6 scouts ≈ 7 processes
   - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler) with **nonzero product budgets** (`max_tokens` / `max_cost_usd` / `max_starts_per_minute`; `0`=unlimited; `provider_rate_budget` skip)
   - Per-turn `beginWave()` on `before_agent_start`: wave-scoped wall/ownership/early-stop reset; session start-rate preserved
+  - Scout evidence contract: Facts + `file:line` + labeled Inference + Gaps (no default whole-file dump); raw stays in EvidenceStore / WorkspaceBrief ≤12KB
   - Tool params are `goal` / `focus_paths` / `max_turns` / `role` only — primary cannot override worker provider/model
   - No recursive explore; plan mode allows explore
   - **Subagent stream UI** shipped (see above); ultra enables explore tool — still does **not** auto-spawn write workers (parallel-plan handoff is human-confirm)
