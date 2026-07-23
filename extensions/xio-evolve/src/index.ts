@@ -10,6 +10,7 @@ import {
   formatNormsConfirmDetail,
   readPendingNormsOffer,
 } from "./retrospective/norms-write.ts";
+import { WorkspaceMutationError } from "../../../src/runtime/workspace/mutation.ts";
 import type { BlockerLog, RetrospectiveConfig } from "./retrospective/types.ts";
 import { collectRuntimeStatus, formatStatusWidget } from "./runtime-status.ts";
 import { RunStore } from "./run-store.ts";
@@ -101,7 +102,7 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
     }
     options.onRunStart?.(metadata);
     // Deferred norms confirm from a prior session_end that could not ask.
-    await maybeConfirmPendingNorms(ctx, options);
+    await maybeConfirmPendingNorms(ctx, options, runStore);
     return metadata;
   });
 
@@ -450,6 +451,7 @@ async function runStoreReadJson(
 async function maybeConfirmPendingNorms(
   _ctx: ExtensionContext,
   options: XioEvolveOptions,
+  runStore: RunStore,
 ): Promise<void> {
   if (options.retrospective?.normsAutoWrite !== true) return;
   const ask = options.retrospective.ask;
@@ -461,10 +463,21 @@ async function maybeConfirmPendingNorms(
     formatNormsConfirmDetail(pending.files),
   );
   if (!ok) return;
-  const result = await applyNormsWrites({
-    workspaceRoot: pending.workspace_root,
-    files: pending.files,
-  });
+  let result: Awaited<ReturnType<typeof applyNormsWrites>>;
+  try {
+    result = await applyNormsWrites({
+      workspaceRoot: pending.workspace_root,
+      files: pending.files,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceMutationError) {
+      await runStore.writeJson(pending.run_id, "norms-mutation.json", error.receipt);
+    }
+    throw error;
+  }
+  if (result.transaction) {
+    await runStore.writeJson(pending.run_id, "norms-mutation.json", result.transaction);
+  }
   if (result.rejected.length === 0 && result.written.length > 0) {
     await clearPendingNormsOffer();
   }
