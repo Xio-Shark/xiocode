@@ -190,8 +190,9 @@ describe("formatExploreResult / prompts", () => {
     expect(prompt).toContain("src/auth");
     expect(prompt).toContain("Read-only");
     expect(prompt).toContain("main agent");
-    expect(prompt).toContain("verbatim");
-    expect(prompt).toContain("absolute");
+    expect(prompt).toMatch(/### Facts|path:line/i);
+    expect(prompt).toMatch(/Gaps/i);
+    expect(prompt).not.toMatch(/verbatim.*main content/i);
   });
 
   it("primary addendum encodes default ≤4 policy and partition hint", () => {
@@ -211,7 +212,8 @@ describe("formatExploreResult / prompts", () => {
     expect(text).toContain("按接口划分");
     expect(text).toContain("small (~80");
     expect(text).toMatch(/prefer `explore`|Multi-file locate/i);
-    expect(text).toMatch(/verbatim|absolute paths/i);
+    expect(text).toMatch(/Facts|path:line|WorkspaceBrief/i);
+    expect(text).not.toMatch(/verbatim file content/i);
     expect(text).toMatch(/standard.*2–4|2–\*\*4\*\*/i);
     expect(PRIMARY_EXPLORE_PROMPT_ADDENDUM).toContain("## Multi-explore");
   });
@@ -1705,6 +1707,79 @@ describe("real adaptive dispatch path (not simulate-only)", () => {
     expect(report.claims.some((c) => c.citations.length > 0)).toBe(true);
     expect((report.gaps ?? []).some((g) => /tests not scanned/i.test(g))).toBe(true);
     expect(report.symbols).toContain("createAuth");
+  });
+
+  it("parseWorkerEvidenceReport separates facts, inference, file:line, and gaps", async () => {
+    const { parseWorkerEvidenceReport } = await import("./orchestrator.ts");
+    const { aggregateWorkspaceBrief } = await import("./brief.ts");
+    const compact = [
+      "### Facts",
+      "- createAuth exports the login entry at src/auth/index.ts:12-18",
+      "### Inference",
+      "- SessionStore likely depends on createAuth for resume",
+      "### Citations",
+      "- src/auth/index.ts:12-18",
+      "### Gaps",
+      "- tests not scanned",
+      "- src/payments not opened",
+    ].join("\n");
+    const report = parseWorkerEvidenceReport(compact, { role: "locator" });
+    expect(report.claims.some((c) => c.kind === "fact" && /createAuth/.test(c.text))).toBe(true);
+    expect(report.claims.some((c) => c.kind === "inference")).toBe(true);
+    expect(report.claims.some((c) => c.citations.some((cite) => cite.start_line === 12))).toBe(true);
+    expect(report.symbols).toContain("createAuth");
+    expect((report.gaps ?? []).some((g) => /tests not scanned/i.test(g))).toBe(true);
+    expect((report.gaps ?? []).some((g) => /payments/i.test(g))).toBe(true);
+
+    const dump = [
+      "Here is the whole file contents for your review:",
+      "```",
+      "export function createAuth() { return true }",
+      "```".repeat(40),
+      "src/auth/index.ts looks important but no line cites.",
+    ].join("\n");
+    const dumpReport = parseWorkerEvidenceReport(dump, { role: "locator" });
+    const compactBrief = aggregateWorkspaceBrief([report]);
+    const dumpBrief = aggregateWorkspaceBrief([dumpReport]);
+    // Compact file:line contract must not lose citation coverage vs an uncited dump.
+    expect(compactBrief.citation_coverage).toBeGreaterThanOrEqual(dumpBrief.citation_coverage);
+    expect(compactBrief.citation_coverage).toBeGreaterThan(0.5);
+  });
+
+  it("scout system prompt prefers facts/citations/gaps over whole-file dumps", async () => {
+    const { runExploreSubagent, formatExploreUserPrompt } = await import("./subagent.ts");
+    let seenRequest = "";
+    const user = formatExploreUserPrompt("locate createAuth", ["src/auth"]);
+    expect(user).toMatch(/### Facts/);
+    expect(user).not.toMatch(/verbatim.*main content/i);
+
+    await runExploreSubagent({
+      goal: "locate createAuth",
+      focusPaths: ["src/auth"],
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      registration: {
+        name: "stub",
+        api: "openai-completions",
+        models: [{ id: "flash", name: "flash", input: ["text"] }],
+      },
+      apiKey: "sk-test",
+      modelId: "flash",
+      maxTurns: 1,
+      allowBash: false,
+      createClient: () => ({
+        async complete(request) {
+          seenRequest = JSON.stringify(request);
+          return {
+            content: "### Facts\n- x at src/auth/index.ts:1\n### Gaps\n- none",
+            toolCalls: [],
+          };
+        },
+      }),
+    });
+    expect(seenRequest).toMatch(/compact evidence report|### Facts|file:line/i);
+    expect(seenRequest).not.toMatch(/verbatim.*main content/i);
+    expect(seenRequest).toMatch(/Do \*\*not\*\* dump entire files|whole-file/i);
   });
 });
 
