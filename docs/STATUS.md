@@ -1,6 +1,6 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-22** (v1.1.0; **07-22-tui-interaction-polish in progress** — P1–P4 streaming tools / spill / session-end retrospective; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
+> Single delivery snapshot. Updated **2026-07-23** (v1.1.0; **07-22-tui-interaction-polish S1–S9 landed** — streaming tools / spill / session-end retrospective + docs; **413 reactive compact (2b) deferred**; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md). Self-improve loop: [self-improve.md](./self-improve.md).
 > Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
 > Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**) · [ultra-parallel-dag-pipeline](../.trellis/tasks/archive/2026-07/07-21-ultra-parallel-dag-pipeline/) (P1, **5/5 archived**).
@@ -9,7 +9,7 @@
 
 | Tree | Pri | Progress | What it closes |
 |------|-----|----------|----------------|
-| [07-22-tui-interaction-polish](../.trellis/tasks/07-22-tui-interaction-polish/) | P1 | **S1–S8 code landed** (S9 docs); 2b overflow-retry **deferred** | Streaming tools flag; tool_result spill/microcompact; session-end retrospective + norms confirm |
+| [07-22-tui-interaction-polish](../.trellis/tasks/07-22-tui-interaction-polish/) | P1 | **S1–S9 done** (code + docs); 2b overflow-retry **deferred** — ready to finish/archive after human commit | Streaming tools flag; tool_result spill/microcompact; session-end retrospective + norms confirm |
 
 ## Agent harness ↔ tutorial alignment (2026-07-20)
 
@@ -34,7 +34,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 |----------|------------------|-------------|
 | **Extreme speed** | early-boot first_frame P50~42ms; `--version` P50~25ms; Session WAL journal P95 ~4.3ms; TUI projection P95≪25ms; AGENTS/skills `DiscoveryCache`; provider schema cache + stable-prefix; eval hard perf axes (`default-gate.v1.2.0`) | Bench regressions are P0; live TTFT on gateway may INFRA 503 — do not silently relax thresholds |
 | **Model on-task** | plan mode; TodoEnforcer; ContextInjector; steer soft/hard + **follow-up**; tool_result integrity; durable compaction facts; turn snapshot/admission; same-path write queue + edit-before-read; project trust gate; callId tool pairing; markdown scrollback + `@` mentions; ultra **parallel-plan.v1** draft + human Trellis handoff | bus→TUI UI; token-accurate `/context` |
-| **Zero-friction workspace** | **Default direct-cwd** — git **optional**, worktree **off** (`DIRECT / NO MERGEGATE` badge); non-git dirs start (`nogit`) — `07-16-nongit-direct-cwd` archived | Do not reintroduce git/worktree as startup gate; project trust must not kill zero-friction cwd |
+| **Zero-friction workspace** | **Default direct-cwd** — git **optional**, worktree **off** (footer dim `direct` / `worktree`); non-git dirs start (`nogit`) — `07-16-nongit-direct-cwd` archived | Do not reintroduce git/worktree as startup gate; project trust must not kill zero-friction cwd |
 | **Provable self-improve** (opt-in) | `xio improve` / trusted eval **always** use candidate worktree + MergeGate; **one-key failure capture** on turn-fail / hard steer / `/rollback` (`07-16-failure-capture-hook`) | Corpus under `~/.xiocode/runs/` still thin; capture still needs human verdict + verifier |
 
 ## Shipping
@@ -65,7 +65,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - Norms: drafts in `norms-recommendations.md`; `[retrospective] norms_auto_write=false` (default); when true still requires strong confirm; exit path may defer to `~/.xiocode/retrospective/pending-norms.json` (never silent write). Allowlist: workspace `AGENTS.md` / `CLAUDE.md` / `.trellis/spec/**` only
 - **Streaming tools** (`[agent] streaming_tools`, default **false**): when true, tools start on `tool_calls_done` while the provider stream is still open; write/edit/plan stay on `FileWriteQueue`; soft steer still not mid-stream HTTP inject
 - **tool_result spill / microcompact** (`[context] tool_result_max_chars=16000`, `keep_tool_rounds=4`): over-budget bodies spill under run `tool-results/` (else `~/.xiocode/spills`); older rounds truncated; pairing preserved. **Not** full CC four-layer compact; **413 reactive compact (2b) deferred**
-- **TUI chrome**: header phase `working…` → `streaming…` → `tools…`; early `tool.start` via existing callId sink; markdown still not on delta hot path
+- **TUI chrome**: header phase `working…` → `streaming…` → `tools…` / `agents…`; early `tool.start` via existing callId sink; markdown still not on delta hot path; compact thinking/tool/subagent rows truncate; Ctrl+O viewer `←/→` across retained history (`N/total`)
 - **Tool/contract Fix hints**: builtin write/edit/bash/grep/glob errors and done-contract failures append `Fix:` next-step guidance
 - **Architecture guards**: vitest locks extensions/runtime ↛ `src/tui` and default evolve/extension assembly not wiring StrategyLearner / PromptEvolver / SpeculativeExecutor
 - Trusted local capability baseline (`xio eval`) — versioned reports, 5 dev/holdout families, external hidden graders, preflight/smoke/compare
@@ -95,16 +95,15 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 - **Plan board**: `plan` tool → PRD + implement + `tasks.json` under **`.claude/plan/`** (Claude Code tree; legacy `.xiocode/plan` still readable); ultra + Trellis → `action=parallel_draft` → `.claude/plan/parallel-plan.json` + Trellis handoff（人确认，不 auto-dispatch）；TUI todo panel; `plan update`
 - **Agent config layout**: target-repo Claude Code paths — `CLAUDE.md` / `.claude/CLAUDE.md` / skills / hooks / MCP; `~/.xiocode` is runtime state only (config, runs, sessions, worktrees, evals, regress, improve)
 - **Ink TUI polish**（`07-15-fix-tui-interaction-regressions` + **`07-16-tui-interaction-parity` / `07-16-tui-pi-interaction` archived**）：
-  - 分层语义：`▸` thinking / `⚙` tool / `●` answer（tool 开始时折叠进行中 thought）
-  - **默认滚动路线 B — append-to-scrollback**（`src/tui/run-ink-session.ts` + `transcript-log.ts`）：
-    - `alternateScreen: false`（主 buffer，不占满屏自管视口）
-    - 定稿块经 Ink **`<Static>`** 只写一次进终端 scrollback → **触控板/滚轮/搜索由终端负责**
-    - live 流式（thinking/assistant + **callId-keyed in-flight tools**）+ header/input/modals sticky 重画
-    - 采用「聊天线性 + 原生滚动」产品路线；**不**宣称与 Pi/Claude/Codex 行为全量对齐；**不做** fullscreen 自实现滚轮手感
-  - **Canonical transcript projection**：`reduceScrollback` 为 Route B 唯一 tool 语义源
+  - 分层语义：`▸` thinking / `⚙` tool / `●` answer；raw thinking 默认折叠，正文可在 transcript viewer 回看
+  - **默认 fullscreen alternate-screen**（`src/tui/run-ink-session.ts` + `transcript-log.ts`）：
+    - `alternateScreen: true` + 行级 `sliceTranscriptWindow` 自管 scroll；滚轮 / PgUp/PgDn；拖选后复制
+    - live 区只显示 answer 或 compact activity（thinking / tool / subagent），避免内部日志挤压主回答
+    - header/input/modals sticky；不宣称与 Grok/Claude/Codex 行为全量对齐
+  - **Canonical transcript projection**：`reduceScrollback` 为 fullscreen 与可选 `<Static>` 路线的唯一 tool/subagent 语义源
     - 并行同名 tool 按 provider `callId` 配对；缺 id 时用 `synthetic-N`
-    - 定稿块保留**完整** `output`；Static 只渲染 8 行 preview
-    - **Ctrl+O** 打开 transcript viewer overlay（读保留全文，不改 `<Static>` 历史）
+    - 定稿 thinking/tool/subagent 保留**完整** `output`；主历史仅 compact header（普通 tool 单行）
+    - **Ctrl+O** 打开最近 retained transcript；`←/→` 切换历史，`↑/↓` / PgUp/PgDn 滚动
   - **Markdown scrollback**（定稿块）：标题/加粗/列表/围栏代码高亮；live 流式预览可保持纯文本（perf：不在 hot delta 路径渲染）
   - **`@` file mentions**：composer `@` 打开模糊文件选择；选中路径注入模型上下文（尊重 `.gitignore`）
   - **Usage footer**：会话累计 tokens + cost（cost 仍可为 `null`，直至 G8 price table）
@@ -112,11 +111,11 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - **Startup / resume**：`TuiSessionBridge` 预订阅缓冲，prepareSession 通知不丢不重；resume 渲染 compaction / `completion unknown`
   - **Composer**（`src/tui/composer.ts`）：光标、grapheme 删除、多行/bracketed paste、历史；busy Enter → **steer**（soft）；`!text` hard；`>>text` **follow-up**；composer UI `queue` 仍是草稿缓冲（与 follow-up 队列分离）
   - **Structured confirm**：`ask(question, detail?)` 显式 detail；MergeGate / high-risk 不再靠 last-notice 侧信道
-  - **隔离徽章**：header 持久 `DIRECT / NO MERGEGATE` 或 `WORKTREE`
-  - 测试 / 可选路线 A：`appendScrollback: false` 时仍可用行级 `sliceTranscriptWindow`（自管视口，供单测；pairing 仍在 `reduceEvent`）
-  - select/resume accent；confirm `lines a–b/n`；busy `working…`；`/help` from `collectSlashCommands`
+  - **隔离徽章**：footer 右侧 dim `direct` / `worktree`（不再红字砸 header）
+  - 可选 `<Static>` 路线仍由 `appendScrollback: true` 保留；旧 `reduceEvent` 只服务 legacy/test 投影
+  - select/resume accent；confirm `lines a–b/n`；busy `working… / streaming… / tools… / agents…`；`/help` from `collectSlashCommands`
   - 工具结果展示：剥 bash wrapper；与 tool_result 完整性配合
-- **Explore subagent UI**（`07-16-ultra-subagent-ui` archived）：explore worker 内部 thinking/assistant/tool 流式进 TUI/stdout，`theme.explore` + 缩进；不污染主 session messages 持久化
+- **Explore subagent UI**：父视图每 worker 一条 `Starting / Thinking / Running: <tool> / Responding` live row；完成后只留 status + assistant peek，nested thinking/tool 全文进 Ctrl+O transcript；不污染主 session messages 持久化
 - **Perf fixture guard**（`07-16-fix-perf-fixture-tui-import` archived）：`tui.replay_10k` 经 `RunFixtureOptions.tuiReplay` 注入，runtime↛tui 架构守卫恢复
 - **Trusted eval isolation**：`prepareCandidateSession` **强制** gradeable candidate worktree，**不继承**交互默认 `[worktree] enabled = false`；缺 worktree → `INFRA_ERROR`
 - **Context compaction G4**: one session-history owner; `/compact [focus]`; automatic `max_session_messages` trigger; same-provider continuation summary; complete-turn/tool-pair retention; atomic snapshot publish; persisted resume marker; **durable compaction WAL/state facts** before projection replace (half-batch cuts rejected)
@@ -189,6 +188,8 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 - Cross-repo replay
 - Full Claude hooks / MCP resources·prompts·OAuth marketplace
 - Product-root `AGENTS.md` / `CLAUDE.md` in the public GitHub/npm tree (by design)
+- buddy / remote / voice / vim surfaces (deliberate non-goals of `07-22-tui-interaction-polish`)
+- Full Claude Code four-layer compact stack; **413 reactive compact / overflow retry (2b)** (deferred; microcompact keep-last-N only)
 
 ## Verify
 
@@ -203,7 +204,7 @@ npm pack --dry-run   # prepack: typecheck then payload existence
 # Evidence: ./bin/xio -p "ok" && jq . ~/.xiocode/runs/<latest>/metadata.json
 # Dirty WIP in target repo (e.g. example_web_app): cd <repo> && xio --allow-dirty
 #   → worktree under ~/.xiocode/worktrees/<repoId>/… with HEAD + visible baseline tree (git-native)
-# Interactive TUI: append-to-scrollback + markdown/@/usage/model + callId pairing + Ctrl+O + composer steer + early-boot buffer
+# Interactive TUI: fullscreen transcript + markdown/@/usage/model + callId pairing + Ctrl+O history + composer steer + early-boot buffer
 # Runtime events + steer:
 #   npx vitest run src/runtime/events src/runtime/steer.test.ts src/runtime/providers/scripted
 # Perf + eval gate smoke:
@@ -217,7 +218,9 @@ npm pack --dry-run   # prepack: typecheck then payload existence
 # xio regress create/preflight requires an existing local run and user verifier
 # Failure offer: turn failed / hard steer / /rollback → one-key capture (kill-switch [regress] offer_on_failure)
 # Session cleanup: xio resume --delete <id>  # removes worktree/branch/checkpoint refs then metadata
-# Active Trellis: none (07-16 parallel DAG + 07-21 ultra bridge archived)
+# Active Trellis: 07-22-tui-interaction-polish S1–S9 landed (2b deferred); finish/archive after commit
+#   Specs: .trellis/spec/runtime/streaming-tools-tool-result-budget.md + session-end-retrospective.md
+#   Flags: [agent] streaming_tools=false; [context] tool_result_max_chars / keep_tool_rounds; [retrospective] norms_auto_write=false
 # Ultra parallel-plan entry (plan action=parallel_draft):
 #   npx vitest run src/runtime/plan/plan.test.ts
 # Harness design-gaps (closed 2026-07-20):
