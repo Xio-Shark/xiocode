@@ -90,12 +90,20 @@ const PATH_LINE_RE =
   /((?:\/|\.\/)?[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|md))\s*:(\d+)(?:-(\d+))?/gi;
 const SYMBOL_RE = /\b([A-Z][A-Za-z0-9]{2,}|(?:[a-z]+[A-Z][A-Za-z0-9]+))\b/g;
 
+export type BeginWaveResult =
+  | Readonly<{ ok: true; waveId: number }>
+  | Readonly<{ ok: false; reason: "active_workers"; activeCount: number }>;
+
 /**
  * Session-scoped orchestrator shared by all concurrent `explore` tool calls.
+ *
+ * Wave-scoped: wall clock, ownership, coverage, early-stop, wave token/cost.
+ * Session-scoped: rolling provider start-rate (`#startTimestamps`).
  */
 export class ExploreOrchestrator {
   readonly #budgets: ExploreGlobalBudgets;
   #nextId = 0;
+  #waveId = 0;
   #waveStartedAt: number | undefined;
   #tokensUsed = 0;
   #costUsd = 0;
@@ -105,7 +113,7 @@ export class ExploreOrchestrator {
   #coverageHistory: number[] = [];
   #earlyStopped = false;
   #stragglerReason: string | undefined;
-  /** Timestamps of worker starts for provider-rate sliding window. */
+  /** Timestamps of worker starts for provider-rate sliding window (session-scoped). */
   #startTimestamps: number[] = [];
   readonly #active = new Map<number, {
     controller: AbortController;
@@ -133,6 +141,10 @@ export class ExploreOrchestrator {
 
   get earlyStopped(): boolean {
     return this.#earlyStopped;
+  }
+
+  get waveId(): number {
+    return this.#waveId;
   }
 
   get reportCount(): number {
@@ -293,11 +305,34 @@ export class ExploreOrchestrator {
     return n;
   }
 
-  /** Release ownership leases (tests / wave reset). */
+  /**
+   * Open a new explore wave for the next primary turn.
+   * Clears wave-scoped state only; preserves session start-rate.
+   * Refuses while workers are still active (caller must wait / settle first).
+   */
+  beginWave(): BeginWaveResult {
+    if (this.#active.size > 0) {
+      return { ok: false, reason: "active_workers", activeCount: this.#active.size };
+    }
+    this.#clearWaveState();
+    this.#waveId += 1;
+    return { ok: true, waveId: this.#waveId };
+  }
+
+  /**
+   * Force-clear wave + session start-rate (tests / emergency).
+   * Production turns should call {@link beginWave} instead.
+   */
   resetWave(): void {
     this.cancelStragglers("reset");
     this.#active.clear();
     this.#onParentAbort.clear();
+    this.#clearWaveState();
+    this.#startTimestamps = [];
+    this.#waveId += 1;
+  }
+
+  #clearWaveState(): void {
     this.#claimedPaths.clear();
     this.#reports = [];
     this.#coverageHistory = [];
@@ -307,7 +342,6 @@ export class ExploreOrchestrator {
     this.#tokensUsed = 0;
     this.#costUsd = 0;
     this.#roleCursor = 0;
-    this.#startTimestamps = [];
   }
 
   #budgetCode(): SkipCode | undefined {
@@ -408,7 +442,7 @@ export class ExploreOrchestrator {
 
 /**
  * Parse worker final text into a structured evidence report for brief aggregation.
- * Heuristic: path:line citations, path mentions, symbols, gap phrases.
+ * Prefers ### Facts / ### Inference / ### Gaps sections; falls back to heuristics.
  */
 export function parseWorkerEvidenceReport(
   text: string,
@@ -420,11 +454,15 @@ export function parseWorkerEvidenceReport(
   }> = {},
 ): WorkerEvidenceReport {
   const body = text.trim();
+  const sections = splitEvidenceSections(body);
   const citations = extractCitations(body);
   const pathMentions = extractPathsFromText(body);
   const symbols = extractSymbols(body).slice(0, 24);
-  const gaps = extractGaps(body, options.error);
-  const claims = buildClaims(body, citations, pathMentions, options.role);
+  const gaps = [
+    ...extractGaps(sections.gaps.length > 0 ? sections.gaps.join("\n") : body, options.error),
+    ...sections.gaps.filter((line) => line.length > 0 && line.length < 240),
+  ];
+  const claims = buildClaimsFromSections(sections, citations, pathMentions, options.role);
 
   // Ownership paths without body citations still surface as low-confidence gaps if empty.
   if (claims.length === 0 && (options.ownershipPaths?.length ?? 0) > 0 && body.length === 0) {
@@ -436,7 +474,7 @@ export function parseWorkerEvidenceReport(
     claims,
     symbols,
     tests: pathMentions.filter((pathValue) => /test/i.test(pathValue)),
-    gaps,
+    gaps: [...new Set(gaps)].slice(0, 12),
     raw_chars: body.length,
   };
 }
@@ -496,6 +534,101 @@ export function formatOrchestratedExploreResult(input: Readonly<{
   return lines.join("\n");
 }
 
+function buildClaimsFromSections(
+  sections: EvidenceSections,
+  citations: readonly BriefCitation[],
+  pathMentions: readonly string[],
+  role?: string,
+): BriefClaim[] {
+  const factClaims = claimsFromLines(sections.facts, citations, pathMentions, role, "fact", 0.85);
+  const inferenceClaims = claimsFromLines(
+    sections.inference,
+    citations,
+    pathMentions,
+    role,
+    "inference",
+    0.45,
+  );
+  if (factClaims.length > 0 || inferenceClaims.length > 0) {
+    return [...factClaims, ...inferenceClaims].slice(0, 12);
+  }
+  return buildClaims(sections.body, citations, pathMentions, role);
+}
+
+function claimsFromLines(
+  lines: readonly string[],
+  citations: readonly BriefCitation[],
+  pathMentions: readonly string[],
+  role: string | undefined,
+  kind: "fact" | "inference",
+  baseConfidence: number,
+): BriefClaim[] {
+  const cleaned = lines
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .filter((line) => line.length > 8 && line.length < 400)
+    .slice(0, 8);
+  return cleaned.map((sentence, index) => {
+    const linked = citations.filter((citation) =>
+      sentence.toLowerCase().includes(citation.path.toLowerCase().split("/").pop() ?? "")
+      || sentence.includes(citation.path)
+    );
+    const fallback = linked.length > 0
+      ? linked
+      : citations.length > 0 && index === 0
+        ? citations.slice(0, 2)
+        : pathMentions.slice(0, 1).map((pathValue) => ({ path: pathValue }));
+    return {
+      text: sentence.replace(/\s+/g, " ").slice(0, 320),
+      confidence: fallback.length > 0 ? baseConfidence : Math.max(0.3, baseConfidence - 0.2),
+      citations: fallback,
+      source_role: role,
+      kind,
+    };
+  });
+}
+
+type EvidenceSections = Readonly<{
+  body: string;
+  facts: readonly string[];
+  inference: readonly string[];
+  gaps: readonly string[];
+}>;
+
+function splitEvidenceSections(body: string): EvidenceSections {
+  if (!/\b(facts?|inference|gaps?|citations?)\b/i.test(body)) {
+    return { body, facts: [], inference: [], gaps: [] };
+  }
+  const facts: string[] = [];
+  const inference: string[] = [];
+  const gaps: string[] = [];
+  let current: "facts" | "inference" | "gaps" | "other" = "other";
+  for (const raw of body.split("\n")) {
+    const heading = raw.trim().replace(/^#+\s*/, "").replace(/:$/, "").trim().toLowerCase();
+    if (/^facts?\b/.test(heading)) {
+      current = "facts";
+      continue;
+    }
+    if (/^inference\b|^likely\b|^guess/.test(heading)) {
+      current = "inference";
+      continue;
+    }
+    if (/^gaps?\b|^not found\b|^missing\b/.test(heading)) {
+      current = "gaps";
+      continue;
+    }
+    if (/^citations?\b|^files?\b/.test(heading)) {
+      current = "other";
+      continue;
+    }
+    const line = raw.trim();
+    if (!line) continue;
+    if (current === "facts") facts.push(line);
+    else if (current === "inference") inference.push(line);
+    else if (current === "gaps") gaps.push(line);
+  }
+  return { body, facts, inference, gaps };
+}
+
 function buildClaims(
   body: string,
   citations: readonly BriefCitation[],
@@ -515,6 +648,7 @@ function buildClaims(
       confidence: citations.length > 0 ? 0.7 : 0.4,
       citations: citations.slice(0, 4),
       source_role: role,
+      kind: "fact",
     }];
   }
 
@@ -533,6 +667,7 @@ function buildClaims(
       confidence: fallback.length > 0 ? 0.75 : 0.45,
       citations: fallback,
       source_role: role,
+      kind: "fact" as const,
     };
   });
 }
