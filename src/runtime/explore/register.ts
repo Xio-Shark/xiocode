@@ -78,6 +78,7 @@ export async function registerExploreCapability(
   let scale: ExploreScaleEstimate | undefined;
   let scaleNote: string | undefined;
   let scaleProbed = false;
+  let orchestrator: ExploreOrchestrator | undefined;
 
   const probeScale = async (): Promise<void> => {
     if (scaleProbed) return;
@@ -135,7 +136,7 @@ export async function registerExploreCapability(
 
     if (!registered) {
       // One orchestrator per session tool install: ownership + budgets + brief across parallel explores.
-      const orchestrator = new ExploreOrchestrator({
+      orchestrator = new ExploreOrchestrator({
         wallMs: next.timeoutMs,
         maxTokens: next.maxTokens,
         maxCostUsd: next.maxCostUsd,
@@ -163,6 +164,15 @@ export async function registerExploreCapability(
           : undefined;
         if (typeof record?.prompt === "string") {
           lastUserPrompt = record.prompt;
+        }
+
+        // Each primary turn opens a fresh wave (wall/ownership/early-stop).
+        // Session start-rate is preserved across waves. Active workers refuse reset.
+        const wave = orchestrator?.beginWave();
+        if (wave && !wave.ok) {
+          options.onNotify?.(
+            `explore wave deferred: ${wave.activeCount} worker(s) still active`,
+          );
         }
 
         const userRequest = detectUserExploreFanoutRequest(lastUserPrompt);
