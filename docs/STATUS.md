@@ -133,11 +133,15 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 - **Thinking levels**: `/effort` + Tab 全档 (`off`…`ultra`)；UI 档与 wire 分离
   - DeepSeek：产品 `max`/`ultra` 均映射 wire `reasoning_effort=max`（API 无 ultra 字面量）+ `thinking: { type: "enabled" }` 开关
   - 其他 OpenAI-compat：顶档 `max`/`ultra` → `xhigh`（可被 `[providers.*.thinking_level_map]` 覆盖）
-- **Multi-explore**: opt-in `[explore]` registers `explore` tool; read-only parallel workers on `explore.model`
-  - `max_concurrency` = absolute ceiling **1–16** (default **16**)
+- **Multi-explore**: `[explore]` registers read-only `explore` workers; Ultra force-enables even when `enabled=false`
+  - Ultra-only dedicated scout example: `enabled=false` + verified `model` / `provider/<id>` (Runtime does not invent model aliases)
+  - `max_concurrency` = **worker-only** ceiling **1–16** (default **16**); e.g. `6` ⇒ primary + 6 scouts ≈ 7 processes
   - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler) with **nonzero product budgets** (`max_tokens` / `max_cost_usd` / `max_starts_per_minute`; `0`=unlimited; `provider_rate_budget` skip)
+  - Per-turn `beginWave()` on `before_agent_start`: wave-scoped wall/ownership/early-stop reset; session start-rate preserved
+  - Tool params are `goal` / `focus_paths` / `max_turns` / `role` only — primary cannot override worker provider/model
   - No recursive explore; plan mode allows explore
   - **Subagent stream UI** shipped (see above); ultra enables explore tool — still does **not** auto-spawn write workers (parallel-plan handoff is human-confirm)
+  - **ADR 0003 gate**: private regression library **10/10 BASE_RED** (`~/.xiocode/regressions`) → wave lifecycle unblocked (`07-23-ultra-explore-scout-lifecycle`)
 - **Agent Runtime Event suite** (**5/5 done**):
   - RuntimeEvent.v1 bus (`src/runtime/events/`); product sinks: **stream-json stdout** + **evolve trajectory** (Text/TUI UI still callback-based).
   - `xio -p --output-format stream-json` — stdout NDJSON only; diagnostics on stderr (prepareSession E2E).

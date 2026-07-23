@@ -384,6 +384,27 @@ tool_result_max_chars = 4096
       .toThrow(/explore\.model is required/);
   });
 
+  it("allows enabled=false with dedicated scout model (Ultra-only pattern)", () => {
+    const parsed = parseXioConfig(
+      `
+[explore]
+enabled = false
+model = "opencode-go/deepseek-v4-flash"
+max_concurrency = 6
+timeout_ms = 120000
+allow_bash = false
+`,
+      { cwd: "/repo" },
+    );
+    expect(parsed.runtimeConfig.explore).toMatchObject({
+      enabled: false,
+      model: "opencode-go/deepseek-v4-flash",
+      maxConcurrency: 6,
+      timeoutMs: 120_000,
+      allowBash: false,
+    });
+  });
+
   it("parses agents_md kill-switch and limits", () => {
     const parsed = parseXioConfig(
       `

@@ -658,6 +658,436 @@ describe("registerExploreCapability", () => {
     expect(handle.getResolved()?.model).toBe("deepseek-v4-pro");
     expect(host.getTool("explore")).toBeDefined();
   });
+
+  it("enabled=false + model + ultra force-enables dedicated scout; non-ultra does not install", async () => {
+    const cfg = runtimeWithExplore(false);
+    expect(cfg.explore.enabled).toBe(false);
+    expect(cfg.explore.model).toBe("deepseek-v4-flash");
+
+    const cold = new ExtensionHost({
+      initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
+    });
+    cold.registerProvider("opencode-go", {
+      name: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      apiKey: "$OPENCODE_API_KEY",
+      models: [{ id: "deepseek-v4-pro", name: "deepseek-v4-pro", input: ["text"] }],
+    });
+    const coldHandle = await registerExploreCapability(cold, {
+      runtimeConfig: cfg,
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    });
+    expect(coldHandle.isRegistered()).toBe(false);
+    expect(cold.getTool("explore")).toBeUndefined();
+
+    const ultra = new ExtensionHost({
+      initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
+      initialThinkingLevel: "ultra",
+    });
+    ultra.registerProvider("opencode-go", {
+      name: "opencode-go",
+      api: "openai-completions",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      apiKey: "$OPENCODE_API_KEY",
+      models: [
+        { id: "deepseek-v4-pro", name: "deepseek-v4-pro", input: ["text"] },
+        { id: "deepseek-v4-flash", name: "deepseek-v4-flash", input: ["text"] },
+      ],
+    });
+    const ultraHandle = await registerExploreCapability(ultra, {
+      runtimeConfig: cfg,
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+    });
+    expect(ultraHandle.isRegistered()).toBe(true);
+    expect(ultraHandle.getResolved()).toMatchObject({
+      provider: "opencode-go",
+      model: "deepseek-v4-flash",
+    });
+    expect(ultra.getTool("explore")).toBeDefined();
+  });
+});
+
+describe("Phase 0 characterization (ADR 0003 gate — no behavior change)", () => {
+  it("explore tool schema omits provider/model/reasoning overrides", () => {
+    const tool = createExploreTool({
+      config: {
+        provider: "stub",
+        model: "flash",
+        maxTurns: 4,
+        timeoutMs: 5_000,
+        maxConcurrency: 2,
+        maxOutputChars: 8_000,
+        allowBash: false,
+        ...PRODUCT_WAVE_BUDGETS,
+      },
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      getProvider: () => undefined,
+    });
+    const keys = Object.keys(tool.parameters.properties ?? {}).sort();
+    expect(keys).toEqual(["focus_paths", "goal", "max_turns", "role"]);
+    expect(keys).not.toContain("provider");
+    expect(keys).not.toContain("model");
+    expect(keys).not.toContain("reasoning");
+    expect(keys).not.toContain("thinking_level");
+    expect(keys).not.toContain("allow_bash");
+  });
+
+  it("prefer explore.model over session primary under forceEnable fallback chain", () => {
+    expect(resolveExploreConfig(
+      {
+        enabled: false,
+        model: "opencode-go/deepseek-v4-flash",
+        maxTurns: 12,
+        timeoutMs: 180_000,
+        maxConcurrency: 6,
+        maxOutputChars: 16_000,
+        allowBash: false,
+        ...PRODUCT_WAVE_BUDGETS,
+      },
+      { runRoot: "~/.xiocode/runs", defaultProvider: "opencode-go", defaultModel: "deepseek-v4-pro" },
+      { forceEnable: true, fallbackModel: "opencode-go/deepseek-v4-pro" },
+    )).toMatchObject({
+      provider: "opencode-go",
+      model: "deepseek-v4-flash",
+      maxConcurrency: 6,
+    });
+  });
+
+  it("worker host allowlist is read-only (no write/edit/explore; bash opt-in)", async () => {
+    const { runExploreSubagent } = await import("./subagent.ts");
+    const offered: string[] = [];
+    const stubClient: LlmClient = {
+      async complete(request) {
+        offered.push(...(request.tools ?? []).map((tool) => tool.function.name));
+        return { content: "ok", toolCalls: [] };
+      },
+    };
+    const registration: ProviderRegistration = {
+      name: "stub",
+      api: "openai-completions",
+      models: [{ id: "flash", name: "flash", input: ["text"] }],
+    };
+    await runExploreSubagent({
+      goal: "list tools",
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      registration,
+      apiKey: "sk-test",
+      modelId: "flash",
+      maxTurns: 1,
+      allowBash: false,
+      createClient: () => stubClient,
+    });
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered).toEqual(expect.arrayContaining(["read", "grep", "glob"]));
+    expect(offered).not.toContain("write");
+    expect(offered).not.toContain("edit");
+    expect(offered).not.toContain("bash");
+    expect(offered).not.toContain("explore");
+    expect(offered).not.toContain("plan");
+
+    const withBash: string[] = [];
+    await runExploreSubagent({
+      goal: "list tools with bash",
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      registration,
+      apiKey: "sk-test",
+      modelId: "flash",
+      maxTurns: 1,
+      allowBash: true,
+      createClient: () => ({
+        async complete(request) {
+          withBash.push(...(request.tools ?? []).map((tool) => tool.function.name));
+          return { content: "ok", toolCalls: [] };
+        },
+      }),
+    });
+    expect(withBash).toContain("bash");
+    expect(withBash).not.toContain("write");
+    expect(withBash).not.toContain("explore");
+  });
+
+  it("primary explore result injects WorkspaceBrief, not raw worker body dump", async () => {
+    const { ExploreOrchestrator } = await import("./orchestrator.ts");
+    const orchestrator = new ExploreOrchestrator({
+      wallMs: 60_000,
+      maxTokens: 0,
+      maxCostUsd: 0,
+    });
+    const rawBody = [
+      "RAW_WORKER_DUMP_MARKER",
+      "```ts",
+      "export function huge() { return 1 }",
+      "```",
+      "createAuth in src/auth/index.ts:10",
+    ].join("\n");
+    const tool = createExploreTool({
+      config: {
+        provider: "stub",
+        model: "flash",
+        maxTurns: 4,
+        timeoutMs: 30_000,
+        maxConcurrency: 4,
+        maxOutputChars: 8_000,
+        allowBash: false,
+        ...PRODUCT_WAVE_BUDGETS,
+      },
+      cwd: process.cwd(),
+      workspaceRoot: process.cwd(),
+      getProvider: () => ({
+        name: "stub",
+        api: "openai-completions",
+        apiKey: "sk-test",
+        models: [{ id: "flash", name: "flash", input: ["text"] }],
+      }),
+      env: { STUB_KEY: "sk-test" },
+      getUserPrompt: () => "map auth across packages",
+      getThinkingLevel: () => "ultra",
+      orchestrator,
+      runWorker: async () => ({
+        provider: "stub",
+        model: "flash",
+        success: true,
+        text: rawBody,
+        turns: 1,
+        toolCalls: 1,
+        toolErrors: 0,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 20,
+          cacheTokens: null,
+          reasoningTokens: null,
+        },
+      }),
+    });
+    const result = await tool.execute("brief-1", {
+      goal: "locate createAuth",
+      focus_paths: ["src/auth/index.ts"],
+      role: "locator",
+    });
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("### WorkspaceBrief");
+    expect(text).toContain("### Worker note (truncated; raw evidence in EvidenceStore)");
+    // Current product still peeks a capped worker note; full raw body is not the primary layer.
+    const briefIdx = text.indexOf("### WorkspaceBrief");
+    const noteIdx = text.indexOf("### Worker note");
+    expect(briefIdx).toBeGreaterThanOrEqual(0);
+    expect(noteIdx).toBeGreaterThan(briefIdx);
+    expect(result.details).toMatchObject({
+      brief: expect.objectContaining({
+        citation_coverage: expect.any(Number),
+      }),
+    });
+    // Cap characterization: note path is truncated at ~1200 chars of body.
+    expect(text.length).toBeLessThan(rawBody.length + 4_000);
+  });
+
+  it("beginWave clears early-stop so a later turn can explore again", async () => {
+    const { ExploreOrchestrator } = await import("./orchestrator.ts");
+    const orchestrator = new ExploreOrchestrator({
+      wallMs: 60_000,
+      maxTokens: 0,
+      maxCostUsd: 0,
+      earlyStopMinSamples: 2,
+      earlyStopEpsilon: 0.5,
+    });
+
+    const completeQuick = (goal: string, focus: string, role: "locator" | "flow_analyst") => {
+      const begin = orchestrator.beginWorker({
+        goal,
+        focusPaths: [focus],
+        role,
+        lane: "deep",
+      });
+      expect(begin.skip).toBeUndefined();
+      return orchestrator.completeWorker({
+        workerId: begin.workerId,
+        role,
+        result: {
+          provider: "stub",
+          model: "flash",
+          success: true,
+          text: "createAuth in src/auth/index.ts:1-10 and SessionStore in src/runtime/session-store.ts:1-10",
+          turns: 1,
+          toolCalls: 1,
+          toolErrors: 0,
+          usage: {
+            inputTokens: 10,
+            outputTokens: 10,
+            cacheTokens: null,
+            reasoningTokens: null,
+          },
+        },
+      });
+    };
+
+    completeQuick("locate auth", "src/auth/index.ts", "locator");
+    completeQuick("locate session", "src/runtime/session-store.ts", "flow_analyst");
+    expect(orchestrator.earlyStopped).toBe(true);
+
+    // Without beginWave, the next worker would still see coverage_plateau.
+    const poisoned = orchestrator.beginWorker({
+      goal: "fresh turn: survey payments",
+      focusPaths: ["src/payments/index.ts"],
+      role: "locator",
+      lane: "deep",
+    });
+    expect(poisoned.skip?.code).toBe("coverage_plateau");
+
+    const wave = orchestrator.beginWave();
+    expect(wave).toEqual({ ok: true, waveId: 1 });
+    expect(orchestrator.earlyStopped).toBe(false);
+    const recovered = orchestrator.beginWorker({
+      goal: "after beginWave: survey payments",
+      focusPaths: ["src/payments/index.ts"],
+      role: "locator",
+      lane: "deep",
+    });
+    expect(recovered.skip).toBeUndefined();
+    orchestrator.completeWorker({
+      workerId: recovered.workerId,
+      role: "locator",
+      result: {
+        provider: "stub",
+        model: "flash",
+        success: true,
+        text: "ok src/payments/index.ts:1",
+        turns: 1,
+        toolCalls: 0,
+        toolErrors: 0,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheTokens: null,
+          reasoningTokens: null,
+        },
+      },
+    });
+  });
+
+  it("beginWave refreshes wall clock; refuses while workers are active; keeps start-rate", async () => {
+    const { ExploreOrchestrator } = await import("./orchestrator.ts");
+    const orchestrator = new ExploreOrchestrator({
+      wallMs: 1,
+      maxTokens: 0,
+      maxCostUsd: 0,
+      maxStartsPerMinute: 100,
+    });
+    const seed = orchestrator.beginWorker({
+      goal: "seed wave",
+      focusPaths: ["src/a.ts"],
+      role: "locator",
+      lane: "standard",
+    });
+    expect(seed.skip).toBeUndefined();
+
+    // Active worker → beginWave refused / deferred.
+    expect(orchestrator.beginWave()).toEqual({
+      ok: false,
+      reason: "active_workers",
+      activeCount: 1,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const sameWave = orchestrator.beginWorker({
+      goal: "still wave 1",
+      focusPaths: ["src/b.ts"],
+      role: "locator",
+      lane: "standard",
+    });
+    expect(sameWave.skip?.code).toBe("wall_budget");
+
+    orchestrator.completeWorker({
+      workerId: seed.workerId,
+      role: "locator",
+      result: {
+        provider: "stub",
+        model: "flash",
+        success: true,
+        text: "done src/a.ts:1",
+        turns: 1,
+        toolCalls: 0,
+        toolErrors: 0,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheTokens: null,
+          reasoningTokens: null,
+        },
+      },
+    });
+
+    // Without beginWave, a "new turn" still sees the same wall start.
+    const stillPoisoned = orchestrator.beginWorker({
+      goal: "pretend turn 2 without beginWave",
+      focusPaths: ["src/c.ts"],
+      role: "locator",
+      lane: "standard",
+    });
+    expect(stillPoisoned.skip?.code).toBe("wall_budget");
+
+    expect(orchestrator.beginWave()).toEqual({ ok: true, waveId: 1 });
+    const nextTurn = orchestrator.beginWorker({
+      goal: "turn 2 after beginWave",
+      focusPaths: ["src/c.ts"],
+      role: "locator",
+      lane: "standard",
+    });
+    expect(nextTurn.skip).toBeUndefined();
+    // Session start-rate still counts the earlier successful start + this one.
+    expect(orchestrator.activeCount).toBe(1);
+  });
+
+  it("beginWave preserves session start-rate across waves", async () => {
+    const { ExploreOrchestrator } = await import("./orchestrator.ts");
+    const orchestrator = new ExploreOrchestrator({
+      wallMs: 60_000,
+      maxTokens: 0,
+      maxCostUsd: 0,
+      maxStartsPerMinute: 2,
+    });
+    for (const focus of ["src/a.ts", "src/b.ts"] as const) {
+      const begin = orchestrator.beginWorker({
+        goal: `wave1 ${focus}`,
+        focusPaths: [focus],
+        role: "locator",
+        lane: "standard",
+      });
+      expect(begin.skip).toBeUndefined();
+      orchestrator.completeWorker({
+        workerId: begin.workerId,
+        role: "locator",
+        result: {
+          provider: "stub",
+          model: "flash",
+          success: true,
+          text: `ok ${focus}:1`,
+          turns: 1,
+          toolCalls: 0,
+          toolErrors: 0,
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheTokens: null,
+            reasoningTokens: null,
+          },
+        },
+      });
+    }
+    expect(orchestrator.beginWave()).toEqual({ ok: true, waveId: 1 });
+    const rateLimited = orchestrator.beginWorker({
+      goal: "wave2 should still see session start-rate",
+      focusPaths: ["src/c.ts"],
+      role: "locator",
+      lane: "standard",
+    });
+    expect(rateLimited.skip?.code).toBe("provider_rate_budget");
+  });
 });
 
 describe("createExploreTool execute", () => {
