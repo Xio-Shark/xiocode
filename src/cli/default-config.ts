@@ -108,12 +108,15 @@ retain_on_reject = false
 
 # Context / tool_result pressure before each provider request.
 # Oversized tool bodies spill under the run dir (or ~/.xiocode/spills) and become stubs.
+# keep_tool_rounds microcompacts older tool rounds; 413 reactive compact (2b) is NOT implemented.
 # [context]
 # tool_result_max_chars = 16000
 # keep_tool_rounds = 4          # microcompact: keep newest N tool rounds; 0 = off
 
-# Post-task retrospective: after each full agent task, extract blockers → log → washed report.
-# Report injects into the next turn for the primary agent; optional improve-queue goals for xio improve.
+# Post-task retrospective: agent_end = preflight only; session_end = authoritative report.
+# Norms: drafts always; norms_auto_write=true still requires strong confirm (exit may defer to
+# ~/.xiocode/retrospective/pending-norms.json — never silent write). Allowlist: AGENTS.md,
+# CLAUDE.md, .trellis/spec/** under the workspace root only.
 # [retrospective]
 # enabled = true
 # skip_trivial = true
