@@ -6,6 +6,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { FileWriteQueue, resolveWriteQueueKey } from "./file-write-queue.ts";
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("FileWriteQueue", () => {
   let root = "";
 
@@ -40,16 +54,78 @@ describe("FileWriteQueue", () => {
       }),
     ]);
 
-    expect(order[0]).toMatch(/^[ab]-start$/);
-    expect(order).toEqual([
-      order[0],
-      order[0]!.replace("-start", "-end"),
-      order[0]!.startsWith("a") ? "b-start" : "a-start",
-      order[0]!.startsWith("a") ? "b-end" : "a-end",
-    ]);
-    // Whichever ran second appended last; both mutations applied without interleaving.
-    const final = await readFile(target, "utf8");
-    expect(final === "v0+A+B\n" || final === "v0+B+A\n").toBe(true);
+    expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+    expect(await readFile(target, "utf8")).toBe("v0+A+B\n");
+  });
+
+  it("preserves call order when canonical key resolution completes out of order", async () => {
+    const firstKey = deferred<string>();
+    const secondKey = deferred<string>();
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const keys = [firstKey, secondKey];
+    let keyIndex = 0;
+    const queue = new FileWriteQueue(() => keys[keyIndex++]!.promise);
+    const order: string[] = [];
+
+    const first = queue.run("alias-a.ts", async () => {
+      order.push("a-start");
+      firstStarted.resolve(undefined);
+      await releaseFirst.promise;
+      order.push("a-end");
+    });
+    const second = queue.run("alias-b.ts", async () => {
+      order.push("b-start");
+      order.push("b-end");
+    });
+
+    secondKey.resolve("/canonical/shared.ts");
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    firstKey.resolve("/canonical/shared.ts");
+    await firstStarted.promise;
+    expect(order).toEqual(["a-start"]);
+
+    releaseFirst.resolve(undefined);
+    await Promise.all([first, second]);
+    expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+  });
+
+  it("preserves enqueue order under reverse key-resolution pressure", async () => {
+    const count = 64;
+    const keys = Array.from({ length: count }, () => deferred<string>());
+    let keyIndex = 0;
+    const queue = new FileWriteQueue(() => keys[keyIndex++]!.promise);
+    const order: number[] = [];
+    const runs = Array.from({ length: count }, (_, index) =>
+      queue.run(`alias-${index}.ts`, async () => {
+        order.push(index);
+      }),
+    );
+
+    for (let index = count - 1; index >= 0; index -= 1) {
+      keys[index]!.resolve("/canonical/shared.ts");
+    }
+
+    await Promise.all(runs);
+    expect(order).toEqual(Array.from({ length: count }, (_, index) => index));
+  });
+
+  it("continues admission after key resolution rejects", async () => {
+    let keyCalls = 0;
+    const queue = new FileWriteQueue(() => {
+      keyCalls += 1;
+      if (keyCalls === 1) {
+        throw new Error("canonicalization failed");
+      }
+      return Promise.resolve("/canonical/next.ts");
+    });
+    const first = queue.run("bad.ts", async () => "unexpected");
+    const second = queue.run("next.ts", async () => "ok");
+
+    await expect(first).rejects.toThrow("canonicalization failed");
+    await expect(second).resolves.toBe("ok");
   });
 
   it("aliases symlink and realpath onto the same queue key", async () => {
