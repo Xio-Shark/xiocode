@@ -494,6 +494,11 @@ export async function runCommandHook(options: Readonly<{
       finish(1);
     });
 
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      // A hook may exit without reading stdin; the resulting EPIPE is already
+      // surfaced through the write callback and must not crash the host.
+      stderr = stderr.length > 0 ? stderr : error.message;
+    });
     child.stdin.write(payload, (error) => {
       if (error) {
         stderr = stderr.length > 0 ? stderr : error.message;
