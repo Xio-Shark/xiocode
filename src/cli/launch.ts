@@ -65,6 +65,16 @@ export async function prepareLaunch(
   // mainRoot: git toplevel when available; otherwise the launch cwd.
   const mainRoot = gitRoot ?? workspacePath;
   const sourceProvenance = await collectSourceProvenance(mainRoot, workspacePath, Boolean(gitRoot));
+  if (worktreeEnabled && sourceProvenance.base_commit === "unborn") {
+    throw new Error(
+      [
+        "XioCode worktree mode requires at least one commit.",
+        `Repository: ${mainRoot}`,
+        "Create an initial commit (e.g. `git commit --allow-empty -m init`),",
+        "or set `[worktree] enabled = false` to run directly in the current directory.",
+      ].join("\n"),
+    );
+  }
   const allowDirty = options.allowDirty === true || parsed.runtimeConfig.worktree.allowDirty;
   assertDirtyMainPolicy({
     worktreeEnabled,
@@ -199,11 +209,23 @@ async function collectSourceProvenance(
     };
   }
 
-  const [baseCommit, status, branch] = await Promise.all([
-    gitOk(mainRoot, ["rev-parse", "HEAD"]),
+  const [head, status, branch] = await Promise.all([
+    git(mainRoot, ["rev-parse", "HEAD"]),
     gitOk(mainRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
     git(mainRoot, ["symbolic-ref", "--short", "HEAD"]),
   ]);
+  // A freshly `git init`-ed repo has no commits yet (unborn HEAD); it is still a
+  // valid direct-cwd workspace, so record a sentinel instead of failing launch.
+  // Only classify as unborn when the branch ref resolves — any other rev-parse
+  // failure (corrupt repo, permissions) must stay observable.
+  let baseCommit: string;
+  if (head.code === 0 && head.stdout.length > 0) {
+    baseCommit = head.stdout;
+  } else if (branch.code === 0) {
+    baseCommit = "unborn";
+  } else {
+    throw new Error(head.stderr || `git rev-parse HEAD failed in ${mainRoot}`);
+  }
   return {
     schema_version: "xio-run-provenance.v1",
     workspace_root: workspacePath,

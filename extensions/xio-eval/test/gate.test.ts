@@ -455,7 +455,7 @@ describe("multi-axis evaluation gate", () => {
 
   it("default manifest includes provider group and required hard thresholds", async () => {
     const manifest = await loadGateManifest();
-    expect(manifest.version).toBe("1.2.0");
+    expect(manifest.version).toBe("1.3.0");
     expect(manifest.performance.groups.provider).toContain("provider.overhead");
     const required = (metric: string) =>
       manifest.performance.thresholds.find((row) => row.metric === metric)?.required;
@@ -470,6 +470,18 @@ describe("multi-axis evaluation gate", () => {
     expect(required("resource.rss_bytes")).toBe(true);
     expect(manifest.performance.thresholds.some((row) => row.metric === "resource.rss_bytes")).toBe(true);
     expect(manifest.performance.thresholds.some((row) => row.metric === "usage.cost_usd")).toBe(true);
+  });
+
+  it("guards the real-Ink rendering axis without requiring it of older baselines", async () => {
+    const manifest = await loadGateManifest();
+    expect(manifest.performance.groups.rendering).toContain("tui.ink_render");
+    const ink = manifest.performance.thresholds.find(
+      (row) => row.metric === "fixture.tui.ink_render.wall",
+    );
+    // required=false only covers "metric absent from the baseline"; a present
+    // metric that regresses past the budget still hard-fails.
+    expect(ink?.required).toBe(false);
+    expect(ink?.hard_p95_regression_ms).toBe(600);
   });
 
   it("exercises default hard perf axes on independent before/candidate reports", async () => {

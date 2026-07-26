@@ -1,8 +1,8 @@
 /**
- * Canonical transcript projection for fullscreen windowing, optional Static, and tests.
+ * Canonical transcript projection for append-to-scrollback (route B) and tests.
  *
- * Finalized blocks are immutable and safe for either Ink `<Static>` or windowed history.
- * Full thinking/tool/subagent output is retained for the Ctrl+O transcript viewer.
+ * Finalized blocks are immutable and safe for Ink `<Static>` (preview lines only).
+ * Full tool output is retained on each block for the Ctrl+O transcript viewer.
  * In-flight tools are keyed by callId so parallel same-name calls pair correctly.
  */
 
@@ -27,13 +27,13 @@ export type HistoryBlock = Readonly<{
   lines: readonly string[];
   kind: "user" | "assistant" | "tool" | "notice" | "thinking" | "command" | "subagent";
   error?: boolean;
-  /** Full thinking / tool / subagent transcript retained for Ctrl+O. */
+  /** Full tool / subagent transcript retained for Ctrl+O (Static stays collapsed). */
   output?: string;
   title?: string;
   detail?: string;
   callId?: string;
   /**
-   * When true (default for thinking/tools/subagents with body), Static shows compact chrome only.
+   * When true (default for tools/subagents with body), Static shows header + expand hint only.
    * Full body is never written into immutable Static lines — open Ctrl+O.
    */
   previewCollapsed?: boolean;
@@ -114,13 +114,17 @@ export type LiveBlock = Readonly<{
   /** Chunked stream body (preferred). */
   buffer: LiveTextBuffer;
   startedAt?: number;
-  /** Thinking is folded when committed, but its full buffer stays retained. */
-  collapsed?: boolean;
-  thoughtSeconds?: number;
 }>;
 
 /** Max characters of live stream shown in the sticky region (full buffer retained). */
 export const LIVE_PREVIEW_CHAR_BUDGET = 4_000;
+
+/**
+ * Max rows in the sticky live region. Ink repaint cost per frame is linear in
+ * live rows, so long thinking streams must show only a tail window; the full
+ * buffer is committed to scrollback at finalize.
+ */
+export const LIVE_MAX_LINES = 14;
 
 /** One in-flight tool call keyed by provider callId (or a synthetic id). */
 export type InFlightTool = Readonly<{
@@ -130,14 +134,6 @@ export type InFlightTool = Readonly<{
   startedAt?: number;
 }>;
 
-export type SubagentActivity = Readonly<
-  | { kind: "starting" }
-  | { kind: "thinking"; startedAt: number }
-  | { kind: "responding" }
-  | { kind: "tool"; name: string; detail: string; startedAt: number }
-  | { kind: "working" }
->;
-
 /** One in-flight explore subagent worker (nested loop UI). */
 export type InFlightSubagent = Readonly<{
   workerId: number;
@@ -146,10 +142,9 @@ export type InFlightSubagent = Readonly<{
   goal: string;
   live?: LiveBlock;
   inFlightTools: readonly InFlightTool[];
-  /** Full nested transcript retained for the completed Ctrl+O viewer. */
+  /** Inner lines committed during flight (tools, collapsed thinking). */
   lines: readonly string[];
   startedAt: number;
-  activity: SubagentActivity;
 }>;
 
 export type ScrollbackState = Readonly<{
@@ -361,7 +356,6 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
           inFlightTools: [],
           lines: [],
           startedAt: Date.now(),
-          activity: { kind: "starting" },
         },
       ],
     };
@@ -369,23 +363,19 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
 
   if (event.kind === "subagent-thinking-delta") {
     const workers = updateInFlightSubagent(state.inFlightSubagents, event.workerId, (worker) => {
-      let next = worker;
-      if (next.live?.kind === "assistant") {
-        next = commitSubagentAssistant(next);
+      let live = worker.live;
+      if (live && live.kind !== "thinking") {
+        live = undefined;
       }
-      const live = next.live;
       if (!live || live.kind !== "thinking") {
-        const startedAt = Date.now();
         return {
-          ...next,
-          live: { kind: "thinking", buffer: liveTextFromString(event.text), startedAt },
-          activity: { kind: "thinking", startedAt },
+          ...worker,
+          live: { kind: "thinking", buffer: liveTextFromString(event.text), startedAt: Date.now() },
         };
       }
       return {
-        ...next,
+        ...worker,
         live: { ...live, buffer: appendLiveText(live.buffer, event.text) },
-        activity: { kind: "thinking", startedAt: live.startedAt ?? next.startedAt },
       };
     });
     return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
@@ -401,13 +391,11 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
         return {
           ...next,
           live: { kind: "assistant", buffer: liveTextFromString(event.text) },
-          activity: { kind: "responding" },
         };
       }
       return {
         ...next,
         live: { ...next.live, buffer: appendLiveText(next.live.buffer, event.text) },
-        activity: { kind: "responding" },
       };
     });
     return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
@@ -420,16 +408,15 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
         next = commitSubagentThinking(next);
       }
       if (next.live?.kind === "assistant") {
-        return { ...commitSubagentAssistant(next), activity: { kind: "responding" } };
+        return { ...next, live: undefined };
       }
       if (event.text.length === 0) {
-        return { ...next, live: undefined, activity: { kind: "responding" } };
+        return { ...next, live: undefined };
       }
       return {
         ...next,
         live: undefined,
-        lines: [...next.lines, ...formatSubagentAssistantLines(event.text)],
-        activity: { kind: "responding" },
+        lines: [...next.lines, formatSubagentAssistantLine(event.text)],
       };
     });
     return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
@@ -449,7 +436,6 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
         callId = `sub-synthetic-${nextSyntheticId}`;
         nextSyntheticId += 1;
       }
-      const startedAt = Date.now();
       return {
         ...next,
         live: undefined,
@@ -459,15 +445,9 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
             callId,
             name: event.name,
             detail: event.detail,
-            startedAt,
+            startedAt: Date.now(),
           },
         ],
-        activity: {
-          kind: "tool",
-          name: event.name,
-          detail: event.detail,
-          startedAt,
-        },
       };
     });
     if (workers === state.inFlightSubagents) return state;
@@ -488,19 +468,10 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
         error: event.error,
         output: event.output,
       });
-      const nextRunning = remaining.at(-1);
       return {
         ...worker,
         inFlightTools: remaining,
         lines: [...worker.lines, ...toolLines],
-        activity: nextRunning
-          ? {
-              kind: "tool",
-              name: nextRunning.name,
-              detail: nextRunning.detail,
-              startedAt: nextRunning.startedAt ?? Date.now(),
-            }
-          : { kind: "working" },
       };
     });
     return workers === state.inFlightSubagents ? state : { ...state, inFlightSubagents: workers };
@@ -514,19 +485,6 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
       finalized = commitSubagentThinking(finalized);
     } else if (finalized.live?.kind === "assistant") {
       finalized = commitSubagentAssistant(finalized);
-    }
-    if (finalized.inFlightTools.length > 0) {
-      finalized = {
-        ...finalized,
-        lines: [
-          ...finalized.lines,
-          ...finalized.inFlightTools.map((tool) => {
-            const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";
-            return `  ${theme.sym.tool} ${tool.name}${detail} interrupted`;
-          }),
-        ],
-        inFlightTools: [],
-      };
     }
     const block = buildSubagentHistoryBlock({
       id: state.nextId,
@@ -585,11 +543,9 @@ export function buildToolHistoryBlock(input: Readonly<{
   const mark = explore ? theme.sym.explore : theme.sym.tool;
   const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
   const statusPart = explore ? "" : (input.error ? " failed" : " done");
+  const lines: string[] = [`${mark} ${title}${detailPart}${statusPart}`];
   const lineCount = display.length === 0 ? 0 : display.split("\n").length;
-  const lines: string[] = [
-    `${mark} ${title}${detailPart}${statusPart} ${theme.sym.meta} ${formatToolExpandHint(lineCount)}`,
-  ];
-  // Main history stays one line per ordinary tool. Explore keeps one factual peek.
+  // Claude-quiet: Static keeps header (+ optional one-line peek) + expand hint.
   // Metadata dumps and tool bodies stay in Ctrl+O so scrollback can reach session start.
   if (explore) {
     const peek = exploreReportBody(display)?.split("\n").find((row) => row.trim().length > 0);
@@ -597,6 +553,7 @@ export function buildToolHistoryBlock(input: Readonly<{
       lines.push(`  ${theme.sym.nest} ${truncateToolDetail(peek.trim(), 96)}`);
     }
   }
+  lines.push(`  ${theme.sym.nest} … (${formatToolExpandHint(lineCount)})`);
   return {
     id: input.id,
     kind: "tool",
@@ -666,31 +623,35 @@ export function blocksFromRestoredMessages(
   return state;
 }
 
-/** Every folded block with retained full output, in transcript order. */
-export function expandableHistoryBlocks(state: ScrollbackState): readonly HistoryBlock[] {
-  return state.blocks.filter((block) =>
-    (block.kind === "thinking" || block.kind === "tool" || block.kind === "subagent")
-    && (block.output?.length ?? 0) > 0
-  );
+/**
+ * Toggle expand metadata on the latest long tool / subagent block.
+ * Does not mutate Static history lines; the overlay viewer reads retained fields.
+ */
+export function toggleLatestScrollbackExpandable(state: ScrollbackState): ScrollbackState {
+  for (let index = state.blocks.length - 1; index >= 0; index -= 1) {
+    const block = state.blocks[index]!;
+    if (block.kind === "thinking" && (block.thoughtSeconds !== undefined || block.lines.length > 0)) {
+      // Thinking is already collapsed to a duration label in route B; nothing to expand in Static.
+      continue;
+    }
+    if ((block.kind === "tool" || block.kind === "subagent") && (block.output?.length ?? 0) > 0) {
+      const next = [...state.blocks];
+      next[index] = { ...block, previewCollapsed: !block.previewCollapsed };
+      return { ...state, blocks: next };
+    }
+  }
+  return state;
 }
 
-/** Latest thinking/tool/subagent block with retained full output for Ctrl+O. */
+/** Latest tool/subagent block with retained full output for Ctrl+O. */
 export function latestExpandableToolBlock(state: ScrollbackState): HistoryBlock | undefined {
-  return expandableHistoryBlocks(state).at(-1);
-}
-
-/** Previous/next retained transcript block for the Ctrl+O viewer. */
-export function adjacentExpandableHistoryBlock(
-  state: ScrollbackState,
-  currentId: number,
-  delta: -1 | 1,
-): HistoryBlock | undefined {
-  const blocks = expandableHistoryBlocks(state);
-  if (blocks.length === 0) return undefined;
-  const index = blocks.findIndex((block) => block.id === currentId);
-  if (index < 0) return delta < 0 ? blocks.at(-1) : blocks[0];
-  const next = Math.max(0, Math.min(blocks.length - 1, index + delta));
-  return blocks[next];
+  for (let index = state.blocks.length - 1; index >= 0; index -= 1) {
+    const block = state.blocks[index]!;
+    if (block.kind !== "tool" && block.kind !== "subagent") continue;
+    if (!block.output || block.output.length === 0) continue;
+    return block;
+  }
+  return undefined;
 }
 
 function collapseThinking(state: ScrollbackState): ScrollbackState {
@@ -701,8 +662,7 @@ function collapseThinking(state: ScrollbackState): ScrollbackState {
     ...state,
     live: {
       ...state.live,
-      collapsed: true,
-      thoughtSeconds: seconds,
+      buffer: liveTextFromString(`${theme.sym.think} think ${seconds}s`),
     },
   };
 }
@@ -710,19 +670,13 @@ function collapseThinking(state: ScrollbackState): ScrollbackState {
 function liveStreamToBlock(live: LiveBlock, id: number): HistoryBlock {
   if (live.kind === "thinking") {
     const text = liveTextString(live.buffer);
-    const startedAt = live.startedAt ?? Date.now();
-    const seconds = live.thoughtSeconds
-      ?? Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-    const lineCount = text.length === 0 ? 0 : text.split("\n").length;
+    const line = text.startsWith(theme.sym.think) ? text : `${theme.sym.think} think`;
+    const secondsMatch = /think (\d+)s/.exec(line);
     return {
       id,
       kind: "thinking",
-      lines: [`${theme.sym.think} think ${seconds}s ${theme.sym.meta} ${formatToolExpandHint(lineCount)}`],
-      output: text,
-      title: "thinking",
-      detail: `${seconds}s`,
-      previewCollapsed: true,
-      thoughtSeconds: seconds,
+      lines: [line],
+      thoughtSeconds: secondsMatch ? Number(secondsMatch[1]) : undefined,
     };
   }
   return { id, kind: "assistant", lines: assistantBlockLines(liveTextString(live.buffer)) };
@@ -733,13 +687,14 @@ export function formatLiveLines(
   live: LiveBlock | undefined,
   inFlightTools: readonly InFlightTool[] = [],
   inFlightSubagents: readonly InFlightSubagent[] = [],
-  options: Readonly<{ charBudget?: number; now?: number }> = {},
+  options: Readonly<{ charBudget?: number; maxLines?: number }> = {},
 ): readonly string[] {
   const budget = options.charBudget ?? LIVE_PREVIEW_CHAR_BUDGET;
-  const now = options.now ?? Date.now();
+  const maxLines = options.maxLines ?? LIVE_MAX_LINES;
   const lines: string[] = [];
   if (live?.kind === "thinking") {
-    lines.push(`${theme.sym.think} thinking…`);
+    const preview = boundLivePreviewFromBuffer(live.buffer, budget);
+    lines.push(`${theme.sym.think} thinking…`, ...indentLines(preview, "  "));
   } else if (live?.kind === "assistant") {
     const preview = boundLivePreviewFromBuffer(live.buffer, budget);
     lines.push(`${theme.sym.answer} ${preview}`);
@@ -752,9 +707,24 @@ export function formatLiveLines(
     lines.push(`${mark} ${title}${detail}`);
   }
   for (const worker of inFlightSubagents) {
-    lines.push(...formatInFlightSubagentLines(worker, budget, now));
+    lines.push(...formatInFlightSubagentLines(worker, budget));
   }
-  return lines;
+  return capLiveLines(lines, maxLines);
+}
+
+/** Tail window over live rows; embedded newlines count as rows. Tools/subagents sit at the tail and survive. */
+function capLiveLines(lines: readonly string[], maxLines: number): readonly string[] {
+  if (lines.length <= maxLines && !lines.some((line) => line.includes("\n"))) {
+    return lines;
+  }
+  const rows: string[] = [];
+  for (const line of lines) {
+    if (line.includes("\n")) rows.push(...line.split("\n"));
+    else rows.push(line);
+  }
+  if (rows.length <= maxLines) return rows;
+  const hidden = rows.length - (maxLines - 1);
+  return [`… +${hidden} lines`, ...rows.slice(rows.length - (maxLines - 1))];
 }
 
 /** Keep the tail of a long live stream for sticky display; full buffer is retained separately. */
@@ -792,12 +762,10 @@ function commitSubagentThinking(worker: InFlightSubagent): InFlightSubagent {
   if (!worker.live || worker.live.kind !== "thinking") return worker;
   const startedAt = worker.live.startedAt ?? worker.startedAt;
   const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-  const text = liveTextString(worker.live.buffer);
-  const body = text.length > 0 ? indentLines(text, "    ") : [];
   return {
     ...worker,
     live: undefined,
-    lines: [...worker.lines, `  ${theme.sym.think} think ${seconds}s`, ...body],
+    lines: [...worker.lines, `  ${theme.sym.explore} think ${seconds}s`],
   };
 }
 
@@ -810,53 +778,35 @@ function commitSubagentAssistant(worker: InFlightSubagent): InFlightSubagent {
   return {
     ...worker,
     live: undefined,
-    lines: [...worker.lines, ...formatSubagentAssistantLines(text)],
+    lines: [...worker.lines, formatSubagentAssistantLine(text)],
   };
 }
 
-function formatSubagentAssistantLines(text: string): string[] {
-  if (text.length === 0) return [];
-  const rows = text.split("\n");
-  const firstContent = rows.findIndex((row) => row.trim().length > 0);
-  if (firstContent < 0) return rows.map(() => "    ");
-  return rows.map((row, index) =>
-    index === firstContent ? `  ${theme.sym.answer} ${row}` : `    ${row}`);
+function formatSubagentAssistantLine(text: string): string {
+  const preview = boundLivePreview(text.trim(), LIVE_PREVIEW_CHAR_BUDGET);
+  return `  ${theme.sym.explore} ${preview}`;
 }
 
 function formatInFlightSubagentLines(
   worker: InFlightSubagent,
   charBudget: number,
-  now: number,
 ): string[] {
   const role = worker.role ? ` [${worker.role}]` : "";
   const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
-  const activity = formatSubagentActivity(worker, charBudget, now);
-  return [
-    `${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal} ${theme.sym.meta} ${activity}`,
-  ];
-}
-
-function formatSubagentActivity(worker: InFlightSubagent, charBudget: number, now: number): string {
-  const elapsed = Math.max(1, Math.round((now - worker.startedAt) / 1000));
-  if (worker.activity.kind === "thinking") {
-    const active = Math.max(1, Math.round((now - worker.activity.startedAt) / 1000));
-    return `Thinking ${active}s`;
+  const lines = [`${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal}`];
+  lines.push(...worker.lines);
+  if (worker.live?.kind === "thinking") {
+    const preview = boundLivePreviewFromBuffer(worker.live.buffer, charBudget);
+    lines.push(`  ${theme.sym.explore} thinking…`, ...indentLines(preview, "    "));
+  } else if (worker.live?.kind === "assistant") {
+    const preview = boundLivePreviewFromBuffer(worker.live.buffer, charBudget);
+    lines.push(`  ${theme.sym.explore} ${preview}`);
   }
-  if (worker.activity.kind === "responding") {
-    return `Responding ${elapsed}s`;
+  for (const tool of worker.inFlightTools) {
+    const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";
+    lines.push(`  ${theme.sym.explore} ${tool.name}${detail}`);
   }
-  if (worker.activity.kind === "tool") {
-    const active = Math.max(1, Math.round((now - worker.activity.startedAt) / 1000));
-    const detail = worker.activity.detail.trim().length > 0
-      ? ` ${truncateToolDetail(worker.activity.detail, Math.min(48, charBudget))}`
-      : "";
-    const more = Math.max(0, worker.inFlightTools.length - 1);
-    return `Running: ${worker.activity.name}${detail}${more > 0 ? ` +${more}` : ""} ${theme.sym.meta} ${active}s`;
-  }
-  if (worker.activity.kind === "starting") {
-    return `Starting ${theme.sym.meta} ${elapsed}s`;
-  }
-  return `Working ${theme.sym.meta} ${elapsed}s`;
+  return lines;
 }
 
 function buildSubagentInnerToolLines(input: Readonly<{
@@ -867,14 +817,8 @@ function buildSubagentInnerToolLines(input: Readonly<{
 }>): string[] {
   const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
   const status = input.error ? "failed" : "done";
-  const display = formatToolOutputForDisplay(input.output) || input.output;
-  const body = display.length > 0
-    ? indentLines(display, `    ${theme.sym.nest} `)
-    : [];
-  return [
-    `  ${theme.sym.tool} ${input.name}${detailPart} ${status}`,
-    ...body,
-  ];
+  // In-flight / committed worker lines: title only — body stays on the tool-end event for Ctrl+O.
+  return [`  ${theme.sym.explore} ${input.name}${detailPart} ${status}`];
 }
 
 function buildSubagentHistoryBlock(input: Readonly<{
@@ -887,28 +831,28 @@ function buildSubagentHistoryBlock(input: Readonly<{
   const role = worker.role ? ` [${worker.role}]` : "";
   const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
   const statusLabel = input.status ?? (input.success ? "done" : "failed");
-  const seconds = Math.max(1, Math.round((Date.now() - worker.startedAt) / 1000));
+  const header = `${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal} (${statusLabel})`;
   // Collapse tool-call history into Ctrl+O. Keep one assistant peek if present.
   const assistantPeek = [...worker.lines].reverse().find((line) => {
     const trimmed = line.trimStart();
-    return trimmed.startsWith(theme.sym.answer);
+    if (!trimmed.startsWith(theme.sym.explore)) return false;
+    if (/\bthink \d+s$/.test(trimmed)) return false;
+    if (/\b(done|failed)$/.test(trimmed)) return false;
+    return true;
   });
   const fullOutput = worker.lines.join("\n");
   const lineCount = fullOutput.length === 0 ? 0 : fullOutput.split("\n").length;
-  const header = `${theme.sym.explore} subagent #${worker.workerId} · ${worker.model}${role}${goal}`
-    + ` (${statusLabel} ${theme.sym.meta} ${seconds}s)`
-    + ` ${theme.sym.meta} ${formatToolExpandHint(lineCount)}`;
   const lines = [header];
   if (assistantPeek) {
-    lines.push(`  ${theme.sym.nest} ${truncateToolDetail(assistantPeek.trimStart().slice(theme.sym.answer.length).trim(), 96)}`);
+    lines.push(assistantPeek);
   }
+  lines.push(`  ${theme.sym.nest} … (${formatToolExpandHint(lineCount)})`);
   return {
     id: input.id,
     kind: "subagent",
     lines,
     error: !input.success,
     output: fullOutput,
-    title: `subagent #${worker.workerId}`,
     workerId: worker.workerId,
     model: worker.model,
     detail: worker.goal,

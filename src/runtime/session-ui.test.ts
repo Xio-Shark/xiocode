@@ -144,9 +144,22 @@ describe("tool transcript helpers", () => {
 });
 
 describe("formatUsageStatus", () => {
-  it("scales token counts and marks cost as an estimate", () => {
-    expect(formatUsageStatus(950)).toBe("tok:950 ~$0.00");
-    expect(formatUsageStatus(12_345)).toBe("tok:12.3k ~$0.01");
-    expect(formatUsageStatus(2_500_000)).toBe("tok:2.5M ~$2.50");
+  it("scales token counts and shows the priced dollar figure", () => {
+    expect(formatUsageStatus({ totalTokens: 950, costUsd: 0.0042, hasUnpriced: false }))
+      .toBe("tok:950 $0.0042");
+    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: 0.013, hasUnpriced: false }))
+      .toBe("tok:12.3k $0.013");
+    expect(formatUsageStatus({ totalTokens: 2_500_000, costUsd: 2.5, hasUnpriced: false }))
+      .toBe("tok:2.5M $2.50");
+  });
+
+  it("never renders an unpriced model as $0", () => {
+    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: null, hasUnpriced: true }))
+      .toBe("tok:12.3k ~unknown");
+  });
+
+  it("marks a partially priced session with a trailing +", () => {
+    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: 0.02, hasUnpriced: true }))
+      .toBe("tok:12.3k $0.020+");
   });
 });

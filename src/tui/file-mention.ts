@@ -27,6 +27,29 @@ export function atQuery(text: string, cursor: number): string | undefined {
   return match ? match[2] : undefined;
 }
 
+type IndexedFile = Readonly<{ file: string; lower: string; base: string }>;
+
+/**
+ * Lowercased form of each path, derived once per file list.
+ *
+ * This runs on the keystroke path: a large workspace re-lowercasing every path
+ * on every character typed is the difference between an instant menu and a
+ * laggy one. Keyed on the array identity — `listWorkspaceFiles` hands back one
+ * stable array per session, and a new array simply builds a new index.
+ */
+const FILE_INDEX_CACHE = new WeakMap<readonly string[], readonly IndexedFile[]>();
+
+function indexFiles(files: readonly string[]): readonly IndexedFile[] {
+  const cached = FILE_INDEX_CACHE.get(files);
+  if (cached) return cached;
+  const index = files.map((file) => {
+    const lower = file.toLowerCase();
+    return { file, lower, base: lower.slice(lower.lastIndexOf("/") + 1) };
+  });
+  FILE_INDEX_CACHE.set(files, index);
+  return index;
+}
+
 /**
  * Rank workspace paths against the query: substring beats subsequence,
  * basename hits beat directory hits, shorter paths win ties.
@@ -39,16 +62,14 @@ export function filterFiles(
   if (query.length === 0) return files.slice(0, limit);
   const needle = query.toLowerCase();
   const scored: Array<{ file: string; score: number }> = [];
-  for (const file of files) {
-    const lower = file.toLowerCase();
-    const base = lower.slice(lower.lastIndexOf("/") + 1);
+  for (const entry of indexFiles(files)) {
     let score: number;
-    if (base.startsWith(needle)) score = 0;
-    else if (base.includes(needle)) score = 1;
-    else if (lower.includes(needle)) score = 2;
-    else if (isSubsequence(needle, lower)) score = 3;
+    if (entry.base.startsWith(needle)) score = 0;
+    else if (entry.base.includes(needle)) score = 1;
+    else if (entry.lower.includes(needle)) score = 2;
+    else if (isSubsequence(needle, entry.lower)) score = 3;
     else continue;
-    scored.push({ file, score });
+    scored.push({ file: entry.file, score });
   }
   scored.sort((a, b) => a.score - b.score || a.file.length - b.file.length || (a.file < b.file ? -1 : 1));
   return scored.slice(0, limit).map((entry) => entry.file);

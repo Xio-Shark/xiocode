@@ -58,26 +58,48 @@ export function insertAtCursor(state: ComposerState, chunk: string): ComposerSta
   };
 }
 
+/**
+ * Real grapheme clusters, not code points. Spreading a string splits ZWJ
+ * emoji (`👨‍👩‍👧‍👦`), skin-tone modifiers (`👍🏽`) and combining marks (`é`)
+ * mid-cluster, so one backspace would leave visible garbage behind.
+ */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Byte length of the last grapheme cluster in `text`, or 0 when empty. */
+function lastGraphemeLength(text: string): number {
+  let length = 0;
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    length = segment.length;
+  }
+  return length;
+}
+
+/** Byte length of the first grapheme cluster in `text`, or 0 when empty. */
+function firstGraphemeLength(text: string): number {
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    return segment.length;
+  }
+  return 0;
+}
+
 /** Delete one grapheme cluster left of the cursor. */
 export function deleteBackward(state: ComposerState): ComposerState {
   if (state.cursor <= 0) return state;
   const before = state.text.slice(0, state.cursor);
-  const graphemes = [...before];
-  if (graphemes.length === 0) return state;
-  graphemes.pop();
-  const nextBefore = graphemes.join("");
-  const text = nextBefore + state.text.slice(state.cursor);
-  return { ...state, text, cursor: nextBefore.length, historyIndex: -1 };
+  const width = lastGraphemeLength(before);
+  if (width === 0) return state;
+  const cursor = state.cursor - width;
+  const text = state.text.slice(0, cursor) + state.text.slice(state.cursor);
+  return { ...state, text, cursor, historyIndex: -1 };
 }
 
 /** Delete one grapheme cluster right of the cursor. */
 export function deleteForward(state: ComposerState): ComposerState {
   if (state.cursor >= state.text.length) return state;
   const after = state.text.slice(state.cursor);
-  const graphemes = [...after];
-  if (graphemes.length === 0) return state;
-  graphemes.shift();
-  const text = state.text.slice(0, state.cursor) + graphemes.join("");
+  const width = firstGraphemeLength(after);
+  if (width === 0) return state;
+  const text = state.text.slice(0, state.cursor) + after.slice(width);
   return { ...state, text, cursor: state.cursor, historyIndex: -1 };
 }
 

@@ -19,14 +19,19 @@ export type RunInkSessionOptions = SessionOptions & Readonly<{
 }>;
 
 /**
- * Interactive session using **fullscreen alternate screen** (Claude-like):
+ * Interactive session on the **main screen buffer** (Route B, pi-like):
  * 1. Silent early boot buffers stdin (no shell scrollback paint)
  * 2. Ink BootShell on alternate screen — logo + status under the mark
- * 3. Full App on alternate screen with self-managed transcript scroll
+ * 3. Full App appends finalized blocks to native scrollback (`<Static>`);
+ *    wheel/search stay terminal-native, per-frame cost is O(live region)
+ *
+ * Escape hatch: `XIO_TUI_FULLSCREEN=1` restores the legacy alt-screen
+ * self-managed viewport (Route A).
  */
 export async function runInkSession(options: RunInkSessionOptions): Promise<number> {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
+  const fullscreen = env.XIO_TUI_FULLSCREEN === "1";
   const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
@@ -89,9 +94,9 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       session,
       bridge,
       cwd,
-      // Fullscreen alt-screen: self-managed scroll (Route A). Static scrollback
-      // cannot be scrolled inside alternate screen the way Claude needs.
-      appendScrollback: false,
+      // Route B default: finalized blocks append to the terminal's own
+      // scrollback; only the live tail re-renders. Route A opt-in via env.
+      appendScrollback: !fullscreen,
       initialDraft: drained.text,
       autoSubmitInitial: drained.pendingSubmit,
       onExit: async (code) => {
@@ -100,7 +105,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
         exitCode = code;
       },
     }), {
-      alternateScreen: true,
+      alternateScreen: fullscreen,
       exitOnCtrlC: false,
       incrementalRendering: true,
     });

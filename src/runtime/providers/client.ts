@@ -17,6 +17,7 @@ import {
   openAiReasoningEffort,
 } from "../thinking.ts";
 import { resolveRequestControls } from "./request-controls.ts";
+import { withProviderGuidance } from "./error-guidance.ts";
 
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
@@ -696,7 +697,10 @@ function parseSseBlock(block: string): { event?: string; data: string } | undefi
 /** Status-only failure — response bodies can echo API keys. */
 async function httpStatusError(response: Response): Promise<Error> {
   await response.text().catch(() => undefined);
-  return new Error(`LLM request failed (${response.status})`);
+  return new Error(withProviderGuidance(
+    `LLM request failed (${response.status})`,
+    { status: response.status },
+  ));
 }
 
 export function resolveApiKey(registration: ProviderRegistration, env: NodeJS.ProcessEnv = process.env): string {
@@ -705,14 +709,20 @@ export function resolveApiKey(registration: ProviderRegistration, env: NodeJS.Pr
     const envName = raw.slice(1);
     const value = env[envName];
     if (!value) {
-      throw new Error(`missing API key env: ${envName}`);
+      // Env names are case-sensitive; a case-only mismatch between the
+      // config's api_key_env and the shell export is otherwise invisible.
+      const nearMiss = Object.keys(env).find(
+        (name) => name !== envName && name.toUpperCase() === envName.toUpperCase() && env[name],
+      );
+      const detail = nearMiss ? ` — env has ${nearMiss}, which differs only by case` : "";
+      throw new Error(withProviderGuidance(`missing API key env: ${envName}${detail}`));
     }
     return value;
   }
   if (raw.length > 0) {
     return raw;
   }
-  throw new Error(`provider ${registration.name} has no apiKey configured`);
+  throw new Error(withProviderGuidance(`provider ${registration.name} has no apiKey configured`));
 }
 
 export type { ChatCompletionRequest, ChatCompletionResponse };

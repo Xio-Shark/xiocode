@@ -37,6 +37,18 @@ async function main(): Promise<void> {
     process.exitCode = 0;
     return;
   }
+  if (head === "doctor") {
+    const { runDoctorCli } = await import("./doctor-cli.ts");
+    process.exitCode = await runDoctorCli({
+      offline: rawArgs.includes("--offline"),
+    });
+    return;
+  }
+  if (head === "feedback") {
+    const { runFeedbackCli } = await import("./feedback-cli.ts");
+    process.exitCode = await runFeedbackCli(rawArgs.slice(1));
+    return;
+  }
   if (head === "improve") {
     const { runImproveCli } = await import("./improve-cli.ts");
     process.exitCode = await runImproveCli(rawArgs.slice(1));

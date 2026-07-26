@@ -1,10 +1,11 @@
 /**
- * Header lettermark — “XIO” in block glyphs (Claude CondensedLogo slot).
- * X + O in brand magenta; I spine in accent cyan so the trio reads as one mark.
+ * Header lettermark — “XIO” in block glyphs plus a shark fin (Claude
+ * CondensedLogo slot). X + O in brand magenta; the I spine and the fin in
+ * accent cyan, so the mark reads as one animal: letters up front, fin behind.
  *
- *   █ █ ▄█▄ ▄▀▄
- *   ▀█▀  █  █ █
- *   █ █ ▀█▀ ▀▄▀
+ *   █ █ ▄█▄ ▄▀▀▄   ▄
+ *    █   █  █  █  ▄█
+ *   █ █ ▀█▀ ▀▄▄▀ ▄██
  */
 
 import React from "react";
@@ -14,33 +15,38 @@ import { theme } from "./theme.ts";
 
 const h = React.createElement;
 
-/** Three-row XIO pixel wordmark (~11 cols). */
+/** Three-row XIO wordmark with trailing fin (~16 cols). */
 export function XioMark(): React.JSX.Element {
-  const x = theme.shark;
-  const eye = theme.accent;
-  const o = theme.shark;
+  const letters = theme.shark;
+  const accent = theme.accent;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
     h(Text, null,
-      h(Text, { color: x }, "█ █"),
+      h(Text, { color: letters }, "█ █"),
       h(Text, null, " "),
-      h(Text, { color: eye }, "▄█▄"),
+      h(Text, { color: accent }, "▄█▄"),
       h(Text, null, " "),
-      h(Text, { color: o }, "▄▀▄")),
+      h(Text, { color: letters }, "▄▀▀▄"),
+      h(Text, null, " "),
+      h(Text, { color: accent }, "  ▄")),
     h(Text, null,
-      h(Text, { color: x }, "▀█▀"),
+      h(Text, { color: letters }, " █ "),
       h(Text, null, " "),
-      h(Text, { color: eye }, " █ "),
+      h(Text, { color: accent }, " █ "),
       h(Text, null, " "),
-      h(Text, { color: o }, "█ █")),
+      h(Text, { color: letters }, "█  █"),
+      h(Text, null, " "),
+      h(Text, { color: accent }, " ▄█")),
     h(Text, null,
-      h(Text, { color: x }, "█ █"),
+      h(Text, { color: letters }, "█ █"),
       h(Text, null, " "),
-      h(Text, { color: eye }, "▀█▀"),
+      h(Text, { color: accent }, "▀█▀"),
       h(Text, null, " "),
-      h(Text, { color: o }, "▀▄▀")));
+      h(Text, { color: letters }, "▀▄▄▀"),
+      h(Text, null, " "),
+      h(Text, { color: accent }, "▄██")));
 }
 
-/** @deprecated Alias — header mark is XIO letters, not a mascot. */
+/** @deprecated Alias — kept for older imports; the mark carries the fin now. */
 export const SharkLogo = XioMark;
 
 /** Condensed Claude-style brand row: lettermark + title column. */

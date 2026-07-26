@@ -1,5 +1,8 @@
 import { stdout as output } from "node:process";
 
+import { formatSessionCost } from "./pricing.ts";
+
+import type { SessionCostSummary } from "./pricing.ts";
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
 import type { ExploreRoleId } from "./explore/roles.ts";
 import type { ChatToolCall, CommandUi, ContextCompactionUiEvent, ToolExecuteResult } from "./types.ts";
@@ -133,17 +136,17 @@ export function formatToolExpandHint(lineCount: number): string {
 
 /**
  * Cumulative session usage for the status row. Tokens are provider-reported;
- * cost is the same blended ~$1/M estimate the explore budgets use (no real
- * per-model price table in the runtime yet) — the `~` marks it an estimate.
+ * cost comes from the versioned price table (built-ins + `[pricing]` overrides),
+ * so it is a real dollar figure — `~unknown` when the model has no known rate.
  */
-export function formatUsageStatus(totalTokens: number): string {
-  const tokens = totalTokens >= 1_000_000
-    ? `${(totalTokens / 1_000_000).toFixed(1)}M`
-    : totalTokens >= 1_000
-      ? `${(totalTokens / 1_000).toFixed(1)}k`
-      : String(totalTokens);
-  const estimatedUsd = totalTokens * 1e-6;
-  return `tok:${tokens} ~$${estimatedUsd.toFixed(2)}`;
+export function formatUsageStatus(summary: SessionCostSummary): string {
+  const total = summary.totalTokens;
+  const tokens = total >= 1_000_000
+    ? `${(total / 1_000_000).toFixed(1)}M`
+    : total >= 1_000
+      ? `${(total / 1_000).toFixed(1)}k`
+      : String(total);
+  return `tok:${tokens} ${formatSessionCost(summary)}`;
 }
 
 export function createStdoutSessionUiSink(write: (chunk: string) => void = (chunk) => output.write(chunk)): SessionUiSink {

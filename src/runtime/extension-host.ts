@@ -30,6 +30,7 @@ export class ExtensionHost implements XioExtensionAPI {
   readonly #handlers: HandlerEntry[] = [];
   readonly #tools = new Map<string, ToolDefinition>();
   readonly #commands = new Map<string, CommandOptions>();
+  #commandsRevision = 0;
   readonly #providers = new Map<string, ProviderRegistration>();
   #activeTools: string[];
   #model: ModelInfo | undefined;
@@ -79,6 +80,16 @@ export class ExtensionHost implements XioExtensionAPI {
 
   registerCommand(name: string, options: CommandOptions): void {
     this.#commands.set(name, options);
+    this.#commandsRevision += 1;
+  }
+
+  /**
+   * Bumps whenever a command is registered. UIs that build a sorted command
+   * list on every keystroke cache on this instead of rebuilding — extensions
+   * and MCP servers register late, so a static snapshot would go stale.
+   */
+  get commandsRevision(): number {
+    return this.#commandsRevision;
   }
 
   registerProvider(name: string, config: ProviderRegistration): void {

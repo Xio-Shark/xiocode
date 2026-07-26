@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createLlmClient } from "./client.ts";
+import { createLlmClient, resolveApiKey } from "./client.ts";
 
 import type { ProviderRegistration } from "../types.ts";
 
@@ -15,9 +15,16 @@ describe("provider usage normalization", () => {
           headers: { "content-type": "application/json" },
         }),
     });
-    await expect(client.complete({ model: "test", messages: [] })).rejects.toThrow(
-      /^LLM request failed \(401\)$/,
-    );
+    const error = await client.complete({ model: "test", messages: [] })
+      .then(() => undefined, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    // Status line, then actionable guidance — and never the response body,
+    // which can echo the API key back.
+    expect(message.split("\n")[0]).toBe("LLM request failed (401)");
+    expect(message).not.toContain("sk-live-secret");
+    expect(message).not.toContain("bad key");
+    expect(message).toContain("/connect");
   });
 
   it("normalizes OpenAI-compatible usage once at the client boundary", async () => {
@@ -443,6 +450,39 @@ describe("provider usage normalization", () => {
     });
     await client.complete({ model: "test", messages: [] });
     expect(body?.tool_choice).toBeUndefined();
+  });
+});
+
+describe("resolveApiKey", () => {
+  it("resolves a $NAME reference from the environment", () => {
+    const reg = { ...registration("openai-completions"), apiKey: "$OPENCODE_API_KEY" };
+    expect(resolveApiKey(reg, { OPENCODE_API_KEY: "sk-test" })).toBe("sk-test");
+  });
+
+  it("names the missing env var when it is not set at all", () => {
+    const reg = { ...registration("openai-completions"), apiKey: "$OPENCODE_API_KEY" };
+    expect(() => resolveApiKey(reg, {}))
+      .toThrow(/missing API key env: OPENCODE_API_KEY/);
+  });
+
+  it("points out an env var that differs only by case", () => {
+    // The failure this guards: config.toml says OPENCODE_API_KEY but the shell
+    // exported OPEnCODE_API_KEY (or vice versa) — without the hint the two
+    // names look identical at a glance.
+    const reg = { ...registration("openai-completions"), apiKey: "$OPENCODE_API_KEY" };
+    const error = (() => {
+      try {
+        resolveApiKey(reg, { OPEnCODE_API_KEY: "sk-test" });
+        return undefined;
+      } catch (caught) {
+        return caught as Error;
+      }
+    })();
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain("missing API key env: OPENCODE_API_KEY");
+    expect(error?.message).toContain("env has OPEnCODE_API_KEY, which differs only by case");
+    // The key value itself must never appear in the error.
+    expect(error?.message).not.toContain("sk-test");
   });
 });
 

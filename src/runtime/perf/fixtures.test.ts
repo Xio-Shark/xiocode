@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runFixture } from "./fixtures.ts";
 import { runTuiReplayFixture } from "../../tui/perf-replay.ts";
+import { runInkRenderFixture } from "../../tui/perf-ink-render.ts";
 import { PerfStore, createBenchId, probeOverhead } from "./store.ts";
 import { resetProcessOriginForTests, setGlobalTracerForTests } from "./tracer.ts";
 
@@ -33,6 +34,23 @@ describe("trusted perf fixtures", () => {
     expect(start?.attrs?.trusted).toBe(true);
     expect(Number(start?.attrs?.paints ?? 0)).toBe(paints.length);
   }, 30_000);
+
+  it("tui.ink_render paints through real Ink, not the headless projection", async () => {
+    const sample = await runFixture("tui.ink_render", { iteration: 0, inkRender: runInkRenderFixture });
+    expect(sample.outcome).toBe("success");
+    const paints = sample.spans.filter((span) => span.name === "tui.paint");
+    expect(paints.length).toBeGreaterThan(10);
+    expect(paints.every((span) => span.attrs?.path === "ink")).toBe(true);
+    const start = sample.spans.find((span) => span.name === "process_start");
+    expect(start?.attrs?.trusted).toBe(true);
+    expect(Number(start?.attrs?.frames ?? 0)).toBe(paints.length);
+    expect(Number(start?.attrs?.final_blocks ?? 0)).toBeGreaterThan(0);
+  }, 60_000);
+
+  it("tui.ink_render fails closed when its implementation is not injected", async () => {
+    await expect(runFixture("tui.ink_render", { iteration: 0 }))
+      .rejects.toThrow(/requires an injected inkRender/);
+  });
 
   it("session.tool_heavy records tool.batch and checkpoint.persist via SessionStore", async () => {
     const sample = await runFixture("session.tool_heavy", { iteration: 0 });

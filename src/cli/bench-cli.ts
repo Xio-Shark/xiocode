@@ -17,6 +17,7 @@ import {
 } from "../runtime/perf/index.ts";
 import type { PerfReport, PerfSample } from "../runtime/perf/index.ts";
 import { runTuiReplayFixture } from "../tui/perf-replay.ts";
+import { runInkRenderFixture } from "../tui/perf-ink-render.ts";
 
 export type BenchCliArgs = Readonly<{
   command: "run" | "list" | "help";
@@ -87,6 +88,7 @@ export async function runBenchCli(
         const sample = await runFixture(fixture, {
           iteration,
           tuiReplay: runTuiReplayFixture,
+          inkRender: runInkRenderFixture,
           env: {
             ...env,
             ...(tempHome

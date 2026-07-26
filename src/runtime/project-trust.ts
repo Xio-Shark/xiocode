@@ -5,6 +5,7 @@
  * Persistence: ~/.xiocode/trust.json (normalized absolute paths).
  * Config: [trust] mode = ask | trust | off
  */
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
@@ -58,6 +59,41 @@ export function normalizeTrustPath(cwd: string): string {
   }
 }
 
+export type WorktreeLink = Readonly<{
+  /** Working directory of the main repository that owns the shared .git. */
+  mainPath: string;
+  /** Top-level directory of the linked worktree containing cwd. */
+  worktreeRoot: string;
+}>;
+
+/**
+ * Detect whether cwd lives inside a linked git worktree and resolve the main
+ * repository's working directory. Returns undefined for the main repository
+ * itself, non-git paths, bare main repos, and when git is unavailable.
+ */
+export function resolveLinkedWorktree(cwd: string): WorktreeLink | undefined {
+  const result = spawnSync(
+    "git",
+    ["-C", cwd, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+  if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+  const [gitDirRaw, commonDirRaw, toplevelRaw] = result.stdout
+    .split("\n")
+    .map((line) => line.trim());
+  if (!gitDirRaw || !commonDirRaw || !toplevelRaw) return undefined;
+  const gitDir = normalizeTrustPath(path.resolve(cwd, gitDirRaw));
+  const commonDir = normalizeTrustPath(path.resolve(cwd, commonDirRaw));
+  // Same git dir → main repository (or plain repo, or submodule): nothing to inherit.
+  if (gitDir === commonDir) return undefined;
+  // A bare main repo has no working directory that could hold a trust grant.
+  if (path.basename(commonDir) !== ".git") return undefined;
+  return {
+    mainPath: path.dirname(commonDir),
+    worktreeRoot: normalizeTrustPath(path.resolve(cwd, toplevelRaw)),
+  };
+}
+
 export function parseTrustMode(raw: unknown): TrustMode | undefined {
   if (typeof raw !== "string") return undefined;
   const value = raw.trim().toLowerCase();
@@ -73,6 +109,9 @@ export function allowsProjectResources(decision: TrustDecision): boolean {
  * Sync lookup against an in-memory store (no I/O).
  * mode=off|trust → trusted without consulting entries.
  * mode=ask → trusted/denied from store; unknown → untrusted.
+ * With `worktree` set (pre-resolved via resolveLinkedWorktree), an unknown
+ * path inherits trust from an explicitly trusted main repository; explicit
+ * store entries for the worktree path itself still win.
  */
 export function decideTrust(input: Readonly<{
   cwd: string;
@@ -80,6 +119,8 @@ export function decideTrust(input: Readonly<{
   store?: TrustStoreFile;
   /** In-memory session grant (not persisted). */
   sessionGranted?: boolean;
+  /** Linked-worktree info for cwd; enables trust inheritance from the main repo. */
+  worktree?: WorktreeLink;
 }>): ProjectTrustState {
   const normalizedPath = normalizeTrustPath(input.cwd);
   if (input.mode === "off" || input.mode === "trust") {
@@ -118,6 +159,24 @@ export function decideTrust(input: Readonly<{
       decision: "untrusted",
       persisted: true,
     };
+  }
+  if (input.worktree) {
+    const mainEntry = lookupTrustEntry(input.store, normalizeTrustPath(input.worktree.mainPath));
+    // Inherit only explicit "trusted" grants; the worktree root mirrors the main
+    // path, and subdirectories inherit only when the grant covers children.
+    if (
+      mainEntry?.level === "trusted" &&
+      (normalizedPath === normalizeTrustPath(input.worktree.worktreeRoot) ||
+        mainEntry.coverChildren === true)
+    ) {
+      return {
+        cwd: input.cwd,
+        normalizedPath,
+        mode: input.mode,
+        decision: "trusted",
+        persisted: true,
+      };
+    }
   }
   return {
     cwd: input.cwd,
@@ -240,6 +299,7 @@ export async function revokeTrust(input: Readonly<{
  * Resolve trust for session bootstrap.
  * - mode off/trust → trusted (no prompt)
  * - mode ask + store hit → use store
+ * - mode ask + unknown linked worktree of a trusted main repo → inherit trust
  * - mode ask + unknown + interactive → ask once (y = persist trust, n = untrusted)
  * - mode ask + unknown + non-interactive → untrusted (degraded; still launches)
  */
@@ -256,6 +316,19 @@ export async function ensureProjectTrust(input: Readonly<{
   const storePath = input.storePath ?? defaultTrustStorePath(home);
   const store = await loadTrustStore(storePath);
   const initial = decideTrust({ cwd: input.cwd, mode: input.mode, store });
+  if (input.mode === "ask" && !initial.persisted && initial.decision === "untrusted") {
+    // Unknown path: check for a linked worktree of an explicitly trusted main repo.
+    const worktree = resolveLinkedWorktree(input.cwd);
+    if (worktree) {
+      const inherited = decideTrust({ cwd: input.cwd, mode: input.mode, store, worktree });
+      if (inherited.decision === "trusted") {
+        input.notify?.(
+          `Project trust: inherited from main repository ${normalizeTrustPath(worktree.mainPath)} (linked worktree).`,
+        );
+        return inherited;
+      }
+    }
+  }
   if (input.mode !== "ask" || initial.persisted || initial.decision === "trusted") {
     if (initial.decision === "untrusted" && input.mode === "ask") {
       input.notify?.(

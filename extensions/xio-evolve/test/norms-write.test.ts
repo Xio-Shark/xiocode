@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir, readdir, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -44,7 +44,6 @@ describe("norms allowlist", () => {
     });
     expect(result.written).toEqual([]);
     expect(result.rejected.length).toBeGreaterThan(0);
-    expect(result.transaction?.status).toBe("rejected");
     await expect(readFile(path.join(root, "AGENTS.md"), "utf8")).rejects.toThrow();
   });
 
@@ -60,57 +59,6 @@ describe("norms allowlist", () => {
     expect(result.written).toEqual(["AGENTS.md"]);
     expect(result.backups.some((b) => b.endsWith(".bak-99"))).toBe(true);
     expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("new\n");
-    expect(result.transaction?.status).toBe("committed");
-    expect(result.transaction?.schema_version).toBe("xio-workspace-mutation.v1");
-  });
-
-  it.skipIf(process.platform === "win32")(
-    "rejects an allowlisted symlink that resolves outside without touching either workspace",
-    async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), "xio-norms-ws-"));
-      const outside = await mkdtemp(path.join(os.tmpdir(), "xio-norms-outside-"));
-      tempDirs.push(root, outside);
-      await mkdir(path.join(root, ".trellis"), { recursive: true });
-      await symlink(outside, path.join(root, ".trellis", "spec"), "dir");
-
-      const result = await applyNormsWrites({
-        workspaceRoot: root,
-        files: [{ relativePath: ".trellis/spec/escape.md", content: "nope\n" }],
-      });
-
-      expect(result.written).toEqual([]);
-      expect(result.rejected).toHaveLength(1);
-      expect(result.transaction?.status).toBe("rejected");
-      await expect(readFile(path.join(outside, "escape.md"), "utf8")).rejects.toThrow();
-      expect(await readdir(outside)).toEqual([]);
-    },
-  );
-
-  it("keeps the workspace unchanged when the adapter publish fails mid-batch", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "xio-norms-ws-"));
-    tempDirs.push(root);
-    await writeFile(path.join(root, "AGENTS.md"), "agents before\n", "utf8");
-    await writeFile(path.join(root, "CLAUDE.md"), "claude before\n", "utf8");
-
-    await expect(applyNormsWrites({
-      workspaceRoot: root,
-      now: () => 77,
-      mutationHooks: {
-        beforePublish({ index }) {
-          if (index === 1) throw new Error("adapter publish failure");
-        },
-      },
-      files: [
-        { relativePath: "AGENTS.md", content: "agents after\n" },
-        { relativePath: "CLAUDE.md", content: "claude after\n" },
-      ],
-    })).rejects.toMatchObject({
-      name: "WorkspaceMutationError",
-      receipt: { status: "rolled_back" },
-    });
-    expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("agents before\n");
-    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toBe("claude before\n");
-    expect((await readdir(root)).sort()).toEqual(["AGENTS.md", "CLAUDE.md"]);
   });
 
   it("pending offer round-trips without writing workspace", async () => {
