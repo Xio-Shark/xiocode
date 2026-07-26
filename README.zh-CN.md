@@ -6,7 +6,7 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.1.1-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
 
@@ -206,21 +206,11 @@ xio
 
 ## 许可证
 
-**双授权：AGPL-3.0 OR Commercial License**
+**[MIT](./LICENSE)** —— 想怎么用就怎么用。
 
-XioCode 的免费范围比多数人以为的大得多——在公司用、在闭源代码库上用，都算：
+公司内部用、在闭源代码库上用、fork、改、打包进闭源产品分发、拿去做付费服务，全都可以。没有 copyleft，没有开源义务，也没有商业授权需要买。唯一的条件是：分发源码的实质副本时带上版权声明。
 
-| 使用场景 | 许可 |
-|----------|------|
-| 个人项目、学习、研究 | ✅ [AGPL-3.0](./LICENSE)（免费） |
-| 开源项目 | ✅ [AGPL-3.0](./LICENSE)（免费） |
-| 在公司把未修改的 CLI 当开发工具用，任何代码库 | ✅ [AGPL-3.0](./LICENSE)（免费） |
-| 把 XioCode 打包进闭源产品分发 | [商业授权](./COMMERCIAL.md) |
-| 基于修改版对外提供服务 | [商业授权](./COMMERCIAL.md)，或开源你的修改 |
-
-你**用** XioCode 写出来的代码永远是你的。商业授权管的只有一件事：把 XioCode 本身装进闭源的东西里再卖出去。
-
-商业授权请联系：**xioshark.0127@gmail.com**
+你**用** XioCode 写出来的代码永远是你的。
 
 ---
 
