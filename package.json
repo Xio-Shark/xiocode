@@ -43,7 +43,7 @@
     "xiocode"
   ],
   "author": "Xio-Shark",
-  "license": "AGPL-3.0-or-later",
+  "license": "MIT",
   "preferGlobal": true,
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

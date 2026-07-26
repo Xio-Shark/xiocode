@@ -6,7 +6,7 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.1.1-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
 
@@ -207,21 +207,11 @@ Everything stays on **your machine**. No uploads, no cloud.
 
 ## License
 
-**Dual-licensed: AGPL-3.0 OR Commercial License**
+**[MIT](./LICENSE)** — use it however you want.
 
-Using XioCode is free in far more cases than most people assume — including at work, on proprietary code:
+At work, on proprietary code, forked, modified, bundled inside a closed-source product, or as the base of a paid service. No copyleft, no source-disclosure requirement, and no commercial license to buy. The one condition is that the copyright notice travels with substantial copies of the source.
 
-| Use case | License |
-|----------|---------|
-| Personal projects, study, research | ✅ [AGPL-3.0](./LICENSE) (free) |
-| Open-source work | ✅ [AGPL-3.0](./LICENSE) (free) |
-| Using the unmodified CLI at your company, on any codebase | ✅ [AGPL-3.0](./LICENSE) (free) |
-| Shipping XioCode inside a closed-source product | [Commercial license](./COMMERCIAL.md) |
-| Offering a service built on a modified XioCode | [Commercial license](./COMMERCIAL.md), or open-source your changes |
-
-The code you write *with* XioCode is yours, always. The commercial license is only for shipping XioCode itself inside something closed.
-
-For commercial licenses, contact: **xioshark.0127@gmail.com**
+The code you write *with* XioCode is yours, always.
 
 ---
 
