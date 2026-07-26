@@ -1,0 +1,48 @@
+name: Feature request
+description: Something that would make XioCode usable for work you actually do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        XioCode's roadmap is driven by what real users hit, not by a feature
+        checklist. The most useful requests describe the work you were doing
+        when you wanted this — that is what gets it prioritized.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What were you trying to do
+      description: The task, not the feature. What blocked you or slowed you down?
+      placeholder: |
+        I work in a monorepo where the agent should only touch one package,
+        but I have to remind it in every prompt.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: Your idea for a fix. Rough is fine.
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: What do you do today instead? How painful is it?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: blocking
+    attributes:
+      label: How much does this matter to you
+      options:
+        - Blocks me from using XioCode
+        - Annoying, I work around it
+        - Nice to have
+    validations:
+      required: true

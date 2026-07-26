@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or general feedback
+    url: https://github.com/Xio-Shark/xiocode/discussions
+    about: Not sure it's a bug? Ask here. `xio feedback` opens this from the terminal.
+  - name: Security issue
+    url: mailto:xioshark.0127@gmail.com
+    about: Please email instead of opening a public issue.
+  - name: Commercial license
+    url: mailto:xioshark.0127@gmail.com
+    about: Using XioCode in a proprietary product or SaaS.
