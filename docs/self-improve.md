@@ -4,7 +4,7 @@
 > **Not** the default daily coding path — interactive `xio` runs **direct-cwd** with **no git/worktree requirement**.
 > Serves final-goal item 4 (self-improvable under merge-ask): [GOAL.md](./GOAL.md).
 > Product north stars (all paths): **extreme speed** + **model stays on-task** — see GOAL §北星优先级.
-> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-23** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**; **one-key failure capture offer** on turn-fail / hard steer / `/rollback` — still human verdict; **H12 harness design-gaps 6/6 archived**; Trellis parallel A→B→C→Integrate + ultra `parallel-plan.v1` bridge **archived**; **07-22 session-end retrospective + norms strong-confirm shipped** — **not** this loop's MergeGate ACs).
+> Delivery snapshot: [STATUS.md](./STATUS.md). Updated **2026-07-22** (performance suite **8/8 archived**; eval gate `default-gate.v1.2.0`; RuntimeEvent bus + steer; dirty baseline + real improve agent + MCP/session cleanup + **trusted eval worktree forced independent of interactive direct-cwd**; **one-key failure capture offer** on turn-fail / hard steer / `/rollback` — still human verdict; **H12 harness design-gaps 6/6 archived**; Trellis parallel A→B→C→Integrate + ultra `parallel-plan.v1` bridge **archived** — **not** this loop's ACs).
 
 ## Daily path vs improve path
 
@@ -92,7 +92,7 @@ xio improve --private-case <id|last> --capability-gate  # FIXED × PASS joint ga
 | `xio-eval` | trusted local fixtures, external hidden grader, versioned before/after report |
 | `MergeGate` | reused from `xio-sandbox` — never bypassed; dirty baseline uses delta-apply (preserve main index) |
 | `xio-regress` | private case + compare; joint with capability via `--private-case` |
-| Post-task retrospective (`xio-evolve`) | `agent_end` preflight + `session_end` authoritative report → next-turn inject + optional ImproveGoal drafts (norms never silent-write) |
+| Post-task retrospective (`xio-evolve`) | blockers + wash report → next-turn inject + optional ImproveGoal drafts |
 | RuntimeEvent → trajectory (`xio-evolve`) | when session exposes bus, `pipeRuntimeEventsToTrajectory` feeds TrajectoryRecorder (stream-json + evolve share one bus); host `tool_result` still runs denoise / context invalidate |
 | ResultDenoiser (`xio-evolve`) | optional truncate/outline of tool bodies; **must not wipe** non-empty results |
 
@@ -123,7 +123,7 @@ Commands: `/retrospect` (prefer `session-retrospective.md`, fallback legacy), `/
 
 Config (`[retrospective]`): `enabled`, `skip_trivial`, `min_tool_calls`, `auto_inject`, `enqueue_improve`, `use_llm` (reserved), `session_end_subagent`, `model`, `session_end_timeout_ms`, `norms_auto_write`.
 
-Related harness flags from the same task: `[agent] streaming_tools` (default **false** until green), `[context] tool_result_max_chars` / `keep_tool_rounds` (microcompact; **413 reactive retry deferred**). Spec: `.trellis/spec/runtime/session-end-retrospective.md`.
+Related harness flags from the same task: `[agent] streaming_tools` (default false), `[context] tool_result_max_chars` / `keep_tool_rounds`.
 
 ## Model alignment (daily path — not improve-only)
 

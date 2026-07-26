@@ -13,7 +13,14 @@ import {
   ContextCompactionController,
   SessionHistory,
 } from "./context-compaction.ts";
-import { createPromptRunner, formatRegressCaptureHint, registerRollbackCommand } from "./session-lifecycle.ts";
+import {
+  createPromptRunner,
+  formatRegressCaptureHint,
+  registerMergeCommand,
+  registerRollbackCommand,
+  registerSandboxFallbackCommand,
+} from "./session-lifecycle.ts";
+import { formatReplHelp } from "./session.ts";
 
 import type { ChatMessage, LlmClient, ModelInfo } from "./types.ts";
 
@@ -37,11 +44,42 @@ async function createWorktree() {
   return WorktreeSandbox.create({ mainRoot, baseDir, sessionId: "history" });
 }
 
+describe("registerMergeCommand", () => {
+  it("explains how to enable worktree mode when no sandbox is active", async () => {
+    const host = new ExtensionHost();
+    registerMergeCommand(host, undefined, async () => true);
+    await expect(host.runCommand("merge")).resolves.toMatch(/\[worktree\] enabled = true/);
+  });
+});
+
+describe("registerSandboxFallbackCommand", () => {
+  it("explains how to enable worktree mode when no sandbox is active", async () => {
+    const host = new ExtensionHost();
+    registerSandboxFallbackCommand(host);
+    await expect(host.runCommand("sandbox")).resolves.toMatch(/\[worktree\] enabled = true/);
+  });
+});
+
+describe("formatReplHelp", () => {
+  it("lists registered commands plus REPL built-ins, without hardcoded entries", () => {
+    const host = new ExtensionHost();
+    registerMergeCommand(host, undefined, async () => true);
+    registerSandboxFallbackCommand(host);
+    const help = formatReplHelp(host.listCommandEntries());
+    expect(help).toContain("/merge");
+    expect(help).toContain("/sandbox");
+    expect(help).toContain("/help");
+    expect(help).toContain("/exit");
+    // Dynamic only: commands not registered on this host must not appear.
+    expect(help).not.toContain("/model");
+  });
+});
+
 describe("registerRollbackCommand", () => {
-  it("fails explicitly without an active worktree sandbox", async () => {
+  it("explains how to enable worktree mode when no sandbox is active", async () => {
     const host = new ExtensionHost();
     registerRollbackCommand(host, undefined, async () => true);
-    await expect(host.runCommand("rollback")).rejects.toThrow(/requires an active git worktree sandbox/i);
+    await expect(host.runCommand("rollback")).resolves.toMatch(/\[worktree\] enabled = true/);
   });
 
   it("restores initial messages and reports the updated session snapshot", async () => {

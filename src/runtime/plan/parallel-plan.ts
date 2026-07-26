@@ -93,7 +93,9 @@ export function validateParallelPlan(raw: unknown): { ok: true; plan: ParallelPl
     const write_scope = Array.isArray(row.write_scope)
       ? row.write_scope.filter((d): d is string => typeof d === "string" && d.trim().length > 0)
       : undefined;
-    if (isolation === "worktree" && (!write_scope || write_scope.length === 0)) {
+    // Missing isolation dispatches as worktree, so it must not dodge the
+    // write_scope requirement (that would bypass integrate's scope gate).
+    if ((isolation ?? "worktree") === "worktree" && (!write_scope || write_scope.length === 0)) {
       errors.push(`children[${i}] (${slug}): isolation=worktree requires write_scope`);
     }
     children.push({
@@ -114,6 +116,25 @@ export function validateParallelPlan(raw: unknown): { ok: true; plan: ParallelPl
     }
   }
   if (errors.length) return { ok: false, errors };
+  // Cycle detection (Kahn): mutually dependent children would validate, import,
+  // and then never become ready — fail at draft time instead.
+  const remaining = new Map(children.map((c) => [c.slug, [...c.depends_on]]));
+  const resolved = new Set<string>();
+  let progressed = true;
+  while (remaining.size > 0 && progressed) {
+    progressed = false;
+    for (const [slug, deps] of [...remaining]) {
+      if (deps.every((dep) => resolved.has(dep))) {
+        resolved.add(slug);
+        remaining.delete(slug);
+        progressed = true;
+      }
+    }
+  }
+  if (remaining.size > 0) {
+    errors.push(`dependency cycle: ${[...remaining.keys()].sort().join(", ")}`);
+    return { ok: false, errors };
+  }
   return {
     ok: true,
     plan: {
@@ -165,7 +186,9 @@ export const ULTRA_PARALLEL_PLAN_ADDENDUM = [
   "1. Decompose into independently verifiable children with `depends_on`, `isolation`, and `write_scope`.",
   "2. Write-domain overlap between edge-free siblings → add a depends_on edge or merge tasks.",
   "3. Persist the draft via `plan` action=`parallel_draft` (or write `.claude/plan/parallel-plan.json`).",
-  "4. Show the user the one-command Trellis handoff (`task.py plan-import …`); **never** auto-spawn workers.",
+  "4. Then call `plan` action=`parallel_dispatch` — it shows the user the task groups and asks for",
+  "   confirmation itself, runs Trellis plan-import + dispatch-ready, and gates the final merge on a",
+  "   second confirmation. **Never** spawn workers or run task.py yourself via bash.",
   "5. Schema version must be `parallel-plan.v1`. XioCode does not own ready/depends_on/dispatch — Trellis does.",
   "If `.trellis/` or git is missing, say so explicitly and stay serial / explore-only.",
 ].join("\n");

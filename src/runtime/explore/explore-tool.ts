@@ -148,9 +148,9 @@ export function formatPrimaryExploreAddendum(
     "Pass a narrow research `goal` plus optional `focus_paths` for that slice only.",
     "",
     "Trust rules for explore returns:",
-    "- Workers return **Facts** with `path:line` citations, optional labeled **Inference**, and explicit **Gaps**.",
-    "- Prefer compact citations over whole-file dumps; raw tool output stays in EvidenceStore.",
-    "- If a report is truncated or incomplete, re-explore a narrower path or `read` that path yourself — never invent missing text.",
+    "- Workers must return **absolute paths** and **verbatim file content** for what they read.",
+    "- Treat code blocks as source evidence; do not assume they rewrote or \"cleaned\" code.",
+    "- If a report is truncated or incomplete, re-explore a narrower path or `read` that absolute path yourself — never invent missing text.",
   );
   if (options.scaleNote?.trim()) {
     lines.push(`Workspace scale: ${options.scaleNote.trim()}`);

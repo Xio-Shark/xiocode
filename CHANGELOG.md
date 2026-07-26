@@ -1,31 +1,68 @@
 # Changelog
 
-All notable changes to XioCode will be documented in this file.
+What changed in XioCode, written for the people using it. Entries describe what
+you can now do differently, not which internal module moved.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) ·
+Versioning: [SemVer](https://semver.org/spec/v2.0.0.html) ·
+Release cadence: **every 1–2 weeks** while the project is young.
+
+> Entries before 1.1.1 were written for contributors and name internal
+> components. They are kept as a record rather than rewritten.
 
 ---
 
 ## [Unreleased]
 
 ### Added
-- `docs/GOAL.md` — product north star (final goal, non-goals, JD alignment G1–G11, status mapping)
-- Trusted `xio eval` preflight/smoke/compare pipeline with 5-family dev/holdout fixtures, out-of-workspace hidden graders, versioned evidence reports, nullable provider usage, and opt-in self-improve capability gating
-- `xio regress` — user-confirmed private regression capture with evidence hashes and pinned-base red preflight
-- `xio-hygiene` extension:
-  - AGENTS.md / CLAUDE.md system-prompt injection (bounded `@` imports; `[agents_md]`)
-  - Local skills discovery + `skill` tool (`list` / `load`; `[skills]`)
-  - User hooks MVP from Claude settings (SessionStart / PreToolUse / PostToolUse / Stop; `[hooks]`)
-  - Tools-first MCP client (`.mcp.json` + Claude/Cursor configs; stdio / SSE / HTTP; `mcp__*`; `[mcp]`)
-- Harness throughput H1–H5: provider `completeStream`, parallel tool scheduling, REPL multi-turn history + trim notice, ContextInjector → messages, AbortSignal / Ctrl+C cancel turn
+- **Real cost in dollars.** The usage footer and `xio -p` now show what a session
+  actually cost (`tok:12.3k $0.0042`) using a built-in price table for common
+  provider models. A model with no known rate shows `~unknown` — never a fake
+  `$0`. Add your own rates under `[pricing."<model>"]` in `~/.xiocode/config.toml`
+  for private gateways or negotiated pricing.
+- **Dangerous commands ask before running.** `rm -rf`, `curl … | sh`,
+  `git push --force`, `git reset --hard`, raw disk writes and reads of secret
+  files now trigger a confirm showing the exact command — every time, even after
+  you have approved the `bash` tool for the session. `full` permission mode and
+  `/bypass` still auto-approve, but announce the match.
+- **`xio doctor`.** One command that checks Node version, config, provider keys
+  and connectivity, and prints a paste-ready report with no secrets in it. Node
+  version is checked first, since that is the most common install failure.
+- **`xio feedback`.** Opens the right issue form from the terminal. XioCode still
+  ships no telemetry — this command sends nothing, it just removes the friction
+  from telling us something broke.
+- **First run no longer dead-ends.** Starting `xio` with no API key configured
+  now opens a working session with guidance to `/connect` and a suggested first
+  task, instead of failing before you type anything.
+- **Actionable provider errors.** Auth failures, rate limits, empty balance,
+  missing models, network problems and context overflow each come with the next
+  step to take (`/connect`, `xio models`, `/compact`, …) instead of a bare
+  status code.
+- **Platform support is stated up front.** macOS and Linux are supported;
+  Windows is untested and points at WSL. Shown in the README and in
+  `xio doctor`.
+- Issue templates for bug reports (which ask for `xio doctor` output) and
+  feature requests.
 
 ### Changed
-- Active docs (README, CONTEXT, ROADMAP, STATUS, AGENTS, GOAL, CONTRIBUTING, archive INDEX) reflect hygiene MVP + throughput; G1–G3 marked delivered with honest MVP boundaries
-- Default evolve path framing: record / denoise / inject only — no StrategyLearner / PromptEvolver on default path
+- **`install.sh` handles Node itself.** It detects a too-old or missing Node and
+  prints the one-line install command for your platform; `XIO_INSTALL_NODE=1`
+  installs Node 22 via fnm for you.
+- **The terminal owns scrolling again.** Interactive sessions now append
+  finished output to your terminal's native scrollback by default, so your
+  mouse wheel, scrollbar and terminal search all work normally, and long
+  sessions no longer get slower to redraw. The old full-screen viewport is
+  still available with `XIO_TUI_FULLSCREEN=1`.
+- **Smoother streaming.** The live region is capped to a tail window, so long
+  thinking streams no longer cause flicker or stutter.
+- README rewritten around what XioCode does for you: crash-proof long sessions,
+  local-first and bring-your-own-key, and never auto-merging your code.
+  `xio eval` / `xio regress` / `xio improve` are now marked experimental and are
+  not part of the supported surface.
 
 ### Fixed
-- Nothing yet
+- `npm ci` failed for anyone outside one private network: nine lockfile entries
+  pointed at an internal npm mirror. They now resolve from the public registry.
 
 ---
 
@@ -184,15 +221,15 @@ Migrated from Go+Python (agent-exec-engine v1) to TypeScript (pi-agent v2). See 
 
 ---
 
-## Upcoming in 1.2.0 (Q3 2026)
+## What's next
 
-Planned features (see ROADMAP.md for details):
+There is no fixed feature list. What ships next comes from what people using
+XioCode report, ranked by "stops me using it" > "makes me distrust it" >
+"improves something I already like". If something is in your way, run
+`xio feedback` — that is the roadmap.
 
-- **Self-iteration MVP**: Complete /evolve flow with validated StrategyLearner + PromptEvolver
-- **Extended language support**: Go, C++, C# tree-sitter grammars for outline generation
-- **Smart outline summaries**: LLM-generated functional summaries for 5000+ line files
-- **Interactive replay**: Pause/step/jump controls for trajectory visualization
-- **SpeculativeExecutor**: 48% task completion speedup (PASTE paper implementation)
+Current focus and honest gaps: [docs/ROUTE-B-PRODUCT-PLAN.md](./docs/ROUTE-B-PRODUCT-PLAN.md)
+· [docs/STATUS.md](./docs/STATUS.md)
 
 ---
 

@@ -37,19 +37,50 @@ export function createSessionHost(
   });
 }
 
+/** Shared guidance for worktree-only commands invoked in direct mode (no sandbox). */
+function directModeHint(command: string, directAlternative: string): string {
+  return [
+    `${command} needs the worktree sandbox, which is off in this session (files are edited in place).`,
+    "Enable it: set `[worktree] enabled = true` in ~/.xiocode/config.toml, then restart xio.",
+    directAlternative,
+  ].join("\n");
+}
+
 export function registerMergeCommand(
   host: ExtensionHost,
-  mergeGate: MergeGate,
+  mergeGate: MergeGate | undefined,
   ask: (question: string) => Promise<boolean>,
   sink: SessionUiSink = createStdoutSessionUiSink(),
 ): void {
   host.registerCommand("merge", {
-    description: "Show worktree diff and merge into the main tree after confirmation.",
+    description: "Show worktree diff and merge into the main tree after confirmation (worktree mode).",
     handler: async () => {
+      if (!mergeGate) {
+        return directModeHint(
+          "merge",
+          "In direct mode, edits already land in the main tree — review and commit with git (e.g. `git diff`, `git commit`).",
+        );
+      }
       const result = await mergeGate.promptMerge(ask, (message) => sink.notify?.(message));
       if ("skipped" in result) return "merge skipped";
       return result.ok ? result.summary : result.error;
     },
+  });
+}
+
+/**
+ * Direct-mode stand-in for xio-sandbox's /sandbox, which is only registered
+ * when a worktree session exists. Answers with guidance instead of letting the
+ * host throw "unknown command: sandbox".
+ */
+export function registerSandboxFallbackCommand(host: ExtensionHost): void {
+  host.registerCommand("sandbox", {
+    description: "Show XioCode worktree sandbox status (worktree mode).",
+    handler: async () =>
+      directModeHint(
+        "sandbox",
+        "In direct mode there is no sandbox worktree — inspect state with git (e.g. `git status`).",
+      ),
   });
 }
 
@@ -61,10 +92,13 @@ export function registerRollbackCommand(
   onRollbackSuccess?: (input: Readonly<{ kind: "session" | "turn"; summary: string }>) => Promise<void> | void,
 ): void {
   host.registerCommand("rollback", {
-    description: "Discard session worktree changes and restore its starting commit.",
+    description: "Discard session worktree changes and restore its starting commit (worktree mode).",
     handler: async (args) => {
       if (!mergeGate) {
-        throw new Error("rollback requires an active git worktree sandbox");
+        return directModeHint(
+          "rollback",
+          "In direct mode, review or revert with git (e.g. `git diff`, `git checkout -- <file>`).",
+        );
       }
       if (String(args ?? "").trim() === "turn") {
         const result = await mergeGate.promptRollbackTurn(ask, (message) => sink.notify?.(message));

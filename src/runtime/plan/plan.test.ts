@@ -234,4 +234,140 @@ describe("parallel_draft", () => {
     const raw = await readFile(path.join(root, ".claude/plan/parallel-plan.json"), "utf8");
     expect(JSON.parse(raw).version).toBe("parallel-plan.v1");
   });
+
+  it("rejects dependency cycles at draft time", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-cycle-"));
+    tempDirs.push(root);
+    const tool = createPlanTool({ workspaceRoot: root });
+    const result = await tool.execute("pd2", {
+      action: "parallel_draft",
+      parallel_plan_json: JSON.stringify({
+        version: "parallel-plan.v1",
+        children: [
+          { slug: "x", title: "X", depends_on: ["y"], isolation: "worktree", write_scope: ["src/x/**"] },
+          { slug: "y", title: "Y", depends_on: ["x"], isolation: "worktree", write_scope: ["src/y/**"] },
+        ],
+      }),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/dependency cycle: x, y/);
+  });
+});
+
+describe("parallel_dispatch", () => {
+  const PLAN = {
+    version: "parallel-plan.v1",
+    parent: { slug: "feat", title: "Feat" },
+    children: [
+      { slug: "a", title: "A", depends_on: [], isolation: "worktree", write_scope: ["src/a/**"] },
+    ],
+  };
+
+  async function makeTrellisFixture(logCommands: boolean): Promise<string> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-dispatch-"));
+    tempDirs.push(root);
+    await mkdir(path.join(root, ".git"), { recursive: true });
+    await mkdir(path.join(root, ".claude", "plan"), { recursive: true });
+    await writeFile(
+      path.join(root, ".claude", "plan", "parallel-plan.json"),
+      JSON.stringify(PLAN),
+      "utf8",
+    );
+    const scripts = path.join(root, ".trellis", "scripts");
+    await mkdir(scripts, { recursive: true });
+    if (logCommands) {
+      // Stub task.py: append argv to calls.log; plan-import prints the parent
+      // dir on stdout (the chaining contract the real script follows).
+      await writeFile(
+        path.join(scripts, "task.py"),
+        [
+          "import sys, pathlib",
+          "root = pathlib.Path(__file__).resolve().parents[2]",
+          "with (root / 'calls.log').open('a') as f:",
+          "    f.write(' '.join(sys.argv[1:]) + '\\n')",
+          "if sys.argv[1] == 'plan-import':",
+          "    print('.trellis/tasks/07-26-feat')",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+    } else {
+      await writeFile(path.join(scripts, "task.py"), "raise SystemExit(1)\n", "utf8");
+    }
+    return root;
+  }
+
+  it("runs import -> dispatch -> integrate -> merge after both confirmations", async () => {
+    const root = await makeTrellisFixture(true);
+    const questions: string[] = [];
+    const tool = createPlanTool({
+      workspaceRoot: root,
+      ask: async (question) => {
+        questions.push(question);
+        return true;
+      },
+    });
+    const result = await tool.execute("dp1", { action: "parallel_dispatch" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]?.text).toMatch(/parallel dispatch complete/);
+    expect(questions).toHaveLength(2);
+    const calls = (await readFile(path.join(root, "calls.log"), "utf8")).trim().split("\n");
+    expect(calls).toEqual([
+      "plan-import feat .claude/plan/parallel-plan.json --yes",
+      "dispatch-ready .trellis/tasks/07-26-feat --yes",
+      "integrate .trellis/tasks/07-26-feat",
+      "integrate .trellis/tasks/07-26-feat --yes",
+    ]);
+  });
+
+  it("declining the first gate runs nothing and returns the manual handoff", async () => {
+    const root = await makeTrellisFixture(true);
+    const tool = createPlanTool({
+      workspaceRoot: root,
+      ask: async () => false,
+    });
+    const result = await tool.execute("dp2", { action: "parallel_dispatch" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/declined/);
+    expect(result.content[0]?.text).toContain("plan-import");
+    await expect(readFile(path.join(root, "calls.log"), "utf8")).rejects.toThrow();
+  });
+
+  it("declining the merge gate keeps the integration branch and stops", async () => {
+    const root = await makeTrellisFixture(true);
+    let asked = 0;
+    const tool = createPlanTool({
+      workspaceRoot: root,
+      ask: async () => {
+        asked += 1;
+        return asked === 1;
+      },
+    });
+    const result = await tool.execute("dp3", { action: "parallel_dispatch" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]?.text).toMatch(/final merge skipped/);
+    const calls = (await readFile(path.join(root, "calls.log"), "utf8")).trim().split("\n");
+    expect(calls).toHaveLength(3);
+    expect(calls.at(-1)).toBe("integrate .trellis/tasks/07-26-feat");
+  });
+
+  it("errors without an ask channel instead of dispatching silently", async () => {
+    const root = await makeTrellisFixture(true);
+    const tool = createPlanTool({ workspaceRoot: root });
+    const result = await tool.execute("dp4", { action: "parallel_dispatch" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/no interactive confirm channel/);
+    await expect(readFile(path.join(root, "calls.log"), "utf8")).rejects.toThrow();
+  });
+
+  it("surfaces a failing task.py as an error with output tail", async () => {
+    const root = await makeTrellisFixture(false);
+    const tool = createPlanTool({
+      workspaceRoot: root,
+      ask: async () => true,
+    });
+    const result = await tool.execute("dp5", { action: "parallel_dispatch" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/plan-import failed/);
+  });
 });

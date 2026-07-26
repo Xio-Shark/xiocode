@@ -11,26 +11,12 @@ import path from "node:path";
  */
 export class FileWriteQueue {
   readonly #tails = new Map<string, Promise<void>>();
-  readonly #resolveKey: (filePath: string) => Promise<string>;
-  #admissionTail: Promise<void> = Promise.resolve();
 
-  constructor(resolveKey: (filePath: string) => Promise<string> = resolveWriteQueueKey) {
-    this.#resolveKey = resolveKey;
-  }
-
-  run<T>(filePath: string, task: () => Promise<T>): Promise<T> {
-    const keyPromise = Promise.resolve().then(() => this.#resolveKey(filePath));
-    // Reserve admission synchronously, but only serialize key registration.
-    // The per-key tail below still lets mutations for different files overlap.
-    const admission = this.#admissionTail.then(async () => {
-      const key = await keyPromise;
-      return { result: this.#enqueue(key, task) };
-    });
-    this.#admissionTail = admission.then(
-      () => undefined,
-      () => undefined,
-    );
-    return admission.then(({ result }) => result);
+  async run<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+    const key = await resolveWriteQueueKey(filePath);
+    // Enqueue synchronously after key resolution so two concurrent run() calls
+    // cannot both observe an empty tail for the same key.
+    return this.#enqueue(key, task);
   }
 
   #enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {

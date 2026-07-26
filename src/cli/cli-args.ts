@@ -27,6 +27,7 @@ export function parseXioArgs(args: readonly string[]): XioArgs {
   let promptOnce: string | undefined;
   let outputFormat: OutputFormat = "text";
   const passthrough: string[] = [];
+  const positionals: string[] = [];
   for (let index = 0; index < remaining.length; index += 1) {
     const arg = remaining[index];
     if (arg === undefined) continue;
@@ -48,7 +49,28 @@ export function parseXioArgs(args: readonly string[]): XioArgs {
       outputFormat = parseOutputFormat(arg.slice("--output-format=".length), "--output-format");
       continue;
     }
+    if (!arg.startsWith("-")) {
+      positionals.push(arg);
+      continue;
+    }
     passthrough.push(arg);
+  }
+  // `xio "do something"` is a one-shot task, same as -p (documented in README/help).
+  const positionalPrompt = positionals.join(" ").trim();
+  if (positionalPrompt.length > 0) {
+    if (promptOnce !== undefined) {
+      throw new Error(
+        `cannot combine a positional prompt with -p/--prompt (got "${positionalPrompt}" and "${promptOnce}")`,
+      );
+    }
+    // Leftover flags next to a positional prompt are either --help/--version
+    // (ambiguous mix) or a typo — fail loudly instead of dropping either side.
+    if (passthrough.length > 0) {
+      throw new Error(
+        `unexpected flag(s) alongside a positional prompt: ${passthrough.join(" ")} (see xio --help)`,
+      );
+    }
+    promptOnce = positionalPrompt;
   }
   return {
     passthrough,

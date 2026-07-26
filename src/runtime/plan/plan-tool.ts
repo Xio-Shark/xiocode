@@ -5,6 +5,7 @@ import path from "node:path";
 import type { SessionUiSink } from "../session-ui.ts";
 import type { ToolDefinition } from "../types.ts";
 import { formatPlanAck, formatPlanListCompact, formatTasklistWidget } from "./format.ts";
+import { runParallelDispatch, type PlanAskFn } from "./parallel-dispatch.ts";
 import {
   formatParallelPlanHandoff,
   validateParallelPlan,
@@ -36,13 +37,15 @@ export const PLAN_PROMPT_ADDENDUM = [
   "4. Status updates: mark `in_progress` when starting a slice, `done` when that slice finishes.",
   "   Batch when possible (finish several items, then a few updates). Do **not** call plan after every read/grep/edit.",
   "5. Optional `export_csv`. Skip plan for trivial one-shot questions. Only this board.",
-  "6. Ultra + multi-deliverable + Trellis: prefer `parallel_draft` → `.claude/plan/parallel-plan.json` + Trellis handoff (never auto-dispatch).",
+  "6. Ultra + multi-deliverable + Trellis: `parallel_draft` → `.claude/plan/parallel-plan.json`, then `parallel_dispatch` (it confirms with the user itself; never run task.py via bash).",
   "Tool replies are short acks; the TUI todo widget is the live board — avoid action=list unless you need ids.",
 ].join("\n");
 
 export type CreatePlanToolOptions = Readonly<{
   workspaceRoot: string;
   sink?: SessionUiSink;
+  /** Structured confirm channel; parallel_dispatch is unavailable without it. */
+  ask?: PlanAskFn;
 }>;
 
 export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
@@ -63,7 +66,7 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
     promptSnippet: "PRD/implement docs + task board for multi-step work",
     parameters: Type.Object({
       action: Type.String({
-        description: "bootstrap | docs | set_tasks | update | list | export_csv | parallel_draft",
+        description: "bootstrap | docs | set_tasks | update | list | export_csv | parallel_draft | parallel_dispatch",
       }),
       title: Type.String({ description: "Plan title (bootstrap)." }),
       goal: Type.String({ description: "User need / goal in one short paragraph." }),
@@ -90,7 +93,7 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
         description: "Trellis parent task dir hint for handoff command (parallel_draft).",
       }),
     }, { required: ["action"] }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, ctx) {
       const action = String(params.action ?? "").trim().toLowerCase();
       try {
         if (action === "bootstrap") {
@@ -125,8 +128,25 @@ export function createPlanTool(options: CreatePlanToolOptions): ToolDefinition {
         if (action === "parallel_draft") {
           return await runParallelDraft(options.workspaceRoot, params);
         }
+        if (action === "parallel_dispatch") {
+          if (!options.ask) {
+            return textResult(
+              "parallel_dispatch unavailable: no interactive confirm channel in this session. "
+              + "Show the user the manual handoff from parallel_draft instead.",
+              true,
+            );
+          }
+          const result = await runParallelDispatch({
+            workspaceRoot: options.workspaceRoot,
+            ask: options.ask,
+            notify: (message, level) => options.sink?.notify?.(message, level),
+            signal: ctx?.signal,
+            parentHint: typeof params.parent_dir === "string" ? params.parent_dir : undefined,
+          });
+          return textResult(result.message, !result.ok);
+        }
         return textResult(
-          `unknown plan action: ${action} (use bootstrap|docs|set_tasks|update|list|export_csv|parallel_draft)`,
+          `unknown plan action: ${action} (use bootstrap|docs|set_tasks|update|list|export_csv|parallel_draft|parallel_dispatch)`,
           true,
         );
       } catch (error) {

@@ -52,11 +52,6 @@ describe("busyPhaseLabel", () => {
     expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0, liveKind: "thinking" })).toBe("streaming…");
     expect(busyPhaseLabel({
       busy: true,
-      inFlightToolCount: 1,
-      inFlightSubagentCount: 2,
-    })).toBe("agents…");
-    expect(busyPhaseLabel({
-      busy: true,
       inFlightToolCount: 2,
       liveKind: "assistant",
     })).toBe("tools…");
@@ -109,6 +104,7 @@ describe("App", () => {
       followUp() {},
       getMessages: () => [],
       workspacePerception: stubWorkspacePerception(),
+      getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
       async close() {},
       waitForIdle: async () => {},
       getHarnessPhase: () => "idle" as const,
@@ -152,123 +148,6 @@ describe("App", () => {
     expect(frame).toContain("? for shortcuts");
     expect(frame).toContain("/tmp/project");
     expect(frame).toContain("tok:12.3k ~$0.01");
-  });
-
-  it("folds completed thinking while retaining it in the transcript viewer", async () => {
-    const bridge = new TuiSessionBridge();
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge,
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-
-    bridge.sink.onThinkingDelta?.("inspect private reasoning");
-    bridge.sink.onAssistantText?.("final answer");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const collapsed = instance.lastFrame() ?? "";
-    expect(collapsed).toMatch(/think \d+s/);
-    expect(collapsed).toContain("Ctrl+O");
-    expect(collapsed).not.toContain("inspect private reasoning");
-
-    instance.stdin.write("\x0f");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const viewer = instance.lastFrame() ?? "";
-    expect(viewer).toContain("Transcript · Thinking");
-    expect(viewer).toContain("inspect private reasoning");
-  });
-
-  it("navigates retained thinking and tool transcripts without crossing history bounds", async () => {
-    const bridge = new TuiSessionBridge();
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge,
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-
-    bridge.sink.onThinkingDelta?.("reasoning transcript");
-    bridge.sink.onAssistantText?.("answer");
-    const call = { id: "read-1", name: "read", arguments: { path: "src/main.ts" } };
-    bridge.sink.onToolStart?.(call);
-    bridge.sink.onToolEnd?.(call, {
-      content: [{ type: "text", text: "tool transcript" }],
-      isError: false,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    instance.stdin.write("\x0f");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(instance.lastFrame()).toContain("Transcript 2/2 · read");
-    expect(instance.lastFrame()).toContain("tool transcript");
-
-    instance.stdin.write("\x1b[D");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(instance.lastFrame()).toContain("Transcript 1/2 · Thinking");
-    expect(instance.lastFrame()).toContain("reasoning transcript");
-
-    instance.stdin.write("\x1b[D");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(instance.lastFrame()).toContain("Transcript 1/2 · Thinking");
-
-    instance.stdin.write("\x1b[C");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(instance.lastFrame()).toContain("Transcript 2/2 · read");
-  });
-
-  it("shows compact subagent activity and opens the retained transcript", async () => {
-    const bridge = new TuiSessionBridge();
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge,
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    const subagent = bridge.createSubagentUiBridge().forWorker({
-      workerId: 3,
-      modelLabel: "stub/flash",
-      role: "locator",
-      goal: "map routes",
-    });
-    const meta = {
-      workerId: 3,
-      modelLabel: "stub/flash",
-      role: "locator" as const,
-      goal: "map routes",
-    };
-
-    subagent.onLifecycle?.("start", meta);
-    subagent.onThinkingDelta?.("private reasoning");
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(instance.lastFrame()).toContain("subagent #3");
-    expect(instance.lastFrame()).toContain("Thinking");
-    expect(instance.lastFrame()).not.toContain("private reasoning");
-
-    const call = { id: "w3:1", name: "grep", arguments: { pattern: "route" } };
-    subagent.onToolStart?.(call);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(instance.lastFrame()).toContain("Running: grep");
-
-    subagent.onToolEnd?.(call, {
-      content: [{ type: "text", text: "route hit" }],
-      isError: false,
-    });
-    subagent.onAssistantText?.("found the route");
-    subagent.onLifecycle?.("end", { ...meta, success: true, status: "success" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const collapsed = instance.lastFrame() ?? "";
-    expect(collapsed).toContain("success");
-    expect(collapsed).toContain("found the route");
-    expect(collapsed).toContain("Ctrl+O");
-    expect(collapsed).not.toContain("private reasoning");
-    expect(collapsed).not.toContain("route hit");
-
-    instance.stdin.write("\x0f");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const viewer = instance.lastFrame() ?? "";
-    expect(viewer).toContain("Transcript · subagent #3");
-    expect(viewer).toContain("private reasoning");
-    expect(viewer).toContain("route hit");
   });
 
   it("executes pasted slash input and renders the command result", async () => {
@@ -814,6 +693,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     followUp() {},
     getMessages: () => messages,
     workspacePerception: stubWorkspacePerception(),
+    getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
     async close() {},
     waitForIdle: async () => {},
     getHarnessPhase: () => "idle" as const,

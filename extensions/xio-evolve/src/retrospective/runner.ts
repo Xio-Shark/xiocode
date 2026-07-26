@@ -12,7 +12,6 @@ import {
   type NormsProposedFile,
   writePendingNormsOffer,
 } from "./norms-write.ts";
-import { WorkspaceMutationError } from "../../../../src/runtime/workspace/mutation.ts";
 import {
   runSessionRetrospectiveSubagent,
   sessionReportFromDeterministic,
@@ -356,24 +355,10 @@ export class RetrospectiveRunner {
       this.#notify?.("norms writes rejected — drafts kept");
       return undefined;
     }
-    let result: Awaited<ReturnType<typeof applyNormsWrites>>;
-    try {
-      result = await applyNormsWrites({ workspaceRoot, files: proposals });
-    } catch (error) {
-      if (error instanceof WorkspaceMutationError) {
-        await this.#store.writeJson(runId, "norms-mutation.json", error.receipt);
-      }
-      throw error;
-    }
+    const result = await applyNormsWrites({ workspaceRoot, files: proposals });
     if (result.rejected.length > 0) {
       this.#notify?.(`norms write rejected: ${result.rejected.join("; ")}`);
-      if (result.transaction) {
-        await this.#store.writeJson(runId, "norms-mutation.json", result.transaction);
-      }
       return undefined;
-    }
-    if (result.transaction) {
-      await this.#store.writeJson(runId, "norms-mutation.json", result.transaction);
     }
     this.#notify?.(`norms written: ${result.written.join(", ")}`);
     return undefined;

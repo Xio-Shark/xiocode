@@ -31,12 +31,16 @@ import {
   createSessionHost,
   registerMergeCommand,
   registerRollbackCommand,
+  registerSandboxFallbackCommand,
 } from "./session-lifecycle.ts";
 import { FileReadSet } from "./file-read-set.ts";
 import { FileWriteQueue } from "./file-write-queue.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatUsageStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
+import { createSessionCostMeter } from "./pricing.ts";
+
+import type { SessionCostSummary } from "./pricing.ts";
 import {
   exploreFallbackModelRef,
   registerExploreCapability,
@@ -169,6 +173,8 @@ export type PreparedSession = Readonly<{
   getMessages: () => readonly ChatMessage[];
   /** Local workspace perception map + evidence store (non-blocking warm). */
   workspacePerception: WorkspacePerceptionService;
+  /** Cumulative priced session usage (price table + `[pricing]` overrides). */
+  getCostSummary: () => SessionCostSummary;
   close: () => Promise<void>;
   /** Wait until harness phase is idle and tracked settle work has finished. */
   waitForIdle: () => Promise<void>;
@@ -236,6 +242,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     model,
     sink,
     ask,
+    interactiveSession,
     cwd,
     workspaceRoot,
     workspacePerception,
@@ -247,7 +254,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   });
 
   let currentModel = model;
-  let { client, registration } = options.llmClient
+  const startupClient = options.llmClient
     ? {
       client: options.llmClient,
       registration: host.getProvider(currentModel.provider) ?? {
@@ -255,8 +262,11 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         api: "openai-completions" as const,
         models: [{ id: currentModel.id, name: currentModel.id }],
       },
+      connectHint: undefined,
     }
-    : createSessionClient({ host, model: currentModel, env });
+    : createStartupSessionClient({ host, model: currentModel, env });
+  let { client, registration } = startupClient;
+  const connectHint = startupClient.connectHint;
   let parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
   let turnAbort: AbortController | undefined;
   let currentExecution: SessionExecution = options.initialExecution ?? { phase: "idle" };
@@ -292,14 +302,15 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     }
   });
   // Cumulative session usage → status row. Tokens are provider-reported per
-  // provider_response; the cost figure is a labeled blended estimate (see
-  // formatUsageStatus). Decode failures surface as a warn notice, never silently.
-  let sessionTokens = 0;
+  // provider_response; cost comes from the price table, priced with the model
+  // that produced each response (so `/model` switches bill correctly).
+  // Decode failures surface as a warn notice, never silently.
+  const costMeter = createSessionCostMeter(options.runtimeConfig.pricing);
   host.on("provider_response", async (payload) => {
     try {
       const usage = decodeProviderUsageEvent(payload);
-      sessionTokens += Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
-      sink.setStatus?.("usage", formatUsageStatus(sessionTokens));
+      costMeter.add(usage, currentModel.id, currentModel.provider);
+      sink.setStatus?.("usage", formatUsageStatus(costMeter.summary()));
     } catch (error) {
       sink.notify?.(
         `usage status update failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -557,6 +568,11 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   await history.persist();
   sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
   sink.setStatus?.("thinking", thinkingStatusLabel(host.getThinkingLevel()));
+  if (connectHint) {
+    // First run with no key: guide instead of crashing before the first prompt.
+    sink.setStatus?.("model", "not connected — /connect");
+    sink.notify?.(onboardingNotice(connectHint), "warn");
+  }
 
   const session: PreparedSession = {
     host,
@@ -571,6 +587,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     cyclePermissionMode: () => permission.cycleMode(),
     compact: (focus) => compact("manual", focus),
     workspacePerception,
+    getCostSummary: () => costMeter.summary(),
     waitForIdle: () => harness.waitForIdle(),
     getHarnessPhase: () => harness.phase,
     runPrompt: createPromptRunner({
@@ -734,6 +751,8 @@ async function createConfiguredHost(input: Readonly<{
   model: ModelInfo;
   sink: SessionUiSink;
   ask: AskFn;
+  /** False on -p runs: confirm-gated capabilities must not block on stdin. */
+  interactiveSession: boolean;
   cwd: string;
   workspaceRoot: string;
   workspacePerception: WorkspacePerceptionService;
@@ -785,13 +804,71 @@ async function createConfiguredHost(input: Readonly<{
   await registerPlanCapability(host, {
     workspaceRoot: input.workspaceRoot,
     sink: input.sink,
+    // Non-interactive (-p) runs have no human to answer the confirm gates;
+    // withholding ask makes parallel_dispatch fail loudly instead of hanging
+    // on a readline prompt nobody will see.
+    ask: input.interactiveSession ? input.ask : undefined,
   });
-  if (mergeGate) {
-    registerMergeCommand(host, mergeGate, input.ask, input.sink);
+  // Worktree-only commands stay registered in direct mode so they answer with
+  // enable-worktree guidance instead of "unknown command". /sandbox is owned by
+  // the xio-sandbox extension when a worktree session exists.
+  registerMergeCommand(host, mergeGate, input.ask, input.sink);
+  if (!mergeGate && !host.getCommand("sandbox")) {
+    registerSandboxFallbackCommand(host);
   }
   // Rollback is registered in prepareSession after failure-capture offer is wired.
   // session_start is emitted from prepareSession after /agent filter is installed.
   return { host, mergeGate, ensureExploreForUltra: () => explore.ensure("ultra") };
+}
+
+/**
+ * First-run tolerance: a session with no usable API key still starts, so
+ * `/connect` can fix it in place instead of the user hitting a stack trace
+ * before they have typed anything. The placeholder client fails loudly on the
+ * first prompt — it never fabricates a response.
+ */
+function createStartupSessionClient(input: Readonly<{
+  host: ExtensionHost;
+  model: ModelInfo;
+  env: NodeJS.ProcessEnv;
+}>): { client: LlmClient; registration: ProviderRegistration; connectHint?: string } {
+  try {
+    return createSessionClient(input);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      client: createUnconnectedLlmClient(reason),
+      registration: input.host.getProvider(input.model.provider) ?? {
+        name: input.model.provider,
+        api: "openai-completions" as const,
+        models: [{ id: input.model.id, name: input.model.id }],
+      },
+      connectHint: reason,
+    };
+  }
+}
+
+function createUnconnectedLlmClient(reason: string): LlmClient {
+  const fail = (): never => {
+    throw new Error(`no provider connected: ${reason}\n  → Type /connect to add an API key, then retry.`);
+  };
+  return {
+    complete: async () => fail(),
+    completeStream: () => fail(),
+  };
+}
+
+/** First-run guidance: what to type, and a first task worth typing it for. */
+export function onboardingNotice(reason: string): string {
+  // The reason may already carry its own `→` next step; keep only the headline
+  // so the notice reads as one list rather than nested advice.
+  const headline = reason.split("\n")[0]?.trim() ?? reason;
+  return [
+    `No model provider is connected yet (${headline}).`,
+    "  → Type /connect to add an API key — DeepSeek, OpenAI, Anthropic and OpenAI-compatible gateways are all supported.",
+    "  → Then try a first task, e.g. \"explain what this project does\" or \"add a test for <file>\".",
+    "  → `xio doctor` checks Node, config, keys and provider connectivity if anything looks wrong.",
+  ].join("\n");
 }
 
 function createSessionClient(input: Readonly<{
@@ -847,6 +924,8 @@ export async function runSession(options: SessionOptions): Promise<number> {
   try {
     if (options.promptOnce !== undefined) {
       const result = await session.runPrompt(options.promptOnce);
+      // Usage summary on stderr: stdout stays pipe-clean (text and stream-json).
+      writeUsageSummary(session, options.streamJsonStderr);
       return result.success ? 0 : 1;
     }
     if (!tracer?.getSpans().some((span) => span.name === "first_frame")) {
@@ -856,6 +935,47 @@ export async function runSession(options: SessionOptions): Promise<number> {
   } finally {
     await session.close();
   }
+}
+
+/**
+ * One-shot (`xio -p`) usage footer. Always stderr so piping stdout keeps
+ * working; unpriced models print `~unknown` rather than a fake $0.
+ */
+export function writeUsageSummary(
+  session: Pick<PreparedSession, "getCostSummary" | "getModel">,
+  write: ((chunk: string) => void) = (chunk) => process.stderr.write(chunk),
+): void {
+  const summary = session.getCostSummary();
+  if (summary.totalTokens === 0) return;
+  const model = session.getModel();
+  write(`\n${formatUsageStatus(summary)} · ${model.provider}/${model.id}\n`);
+  if (summary.costUsd === null || summary.hasUnpriced) {
+    write("  → no price for this model; add [pricing.\"<model>\"] to ~/.xiocode/config.toml\n");
+  }
+}
+
+/**
+ * REPL /help is built from the live command registry — extensions and MCP
+ * servers register commands late, so a static list would go stale. /help,
+ * /exit and /quit are REPL loop built-ins that never reach the registry.
+ */
+export function formatReplHelp(entries: readonly Readonly<{ name: string; description: string }>[]): string {
+  const merged = new Map<string, string>([
+    ["help", "Show this list."],
+    ["exit", "Quit the REPL (alias: /quit)."],
+  ]);
+  for (const entry of entries) {
+    merged.set(entry.name, entry.description);
+  }
+  const lines = [...merged.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, description]) => (description ? `  /${name} — ${description}` : `  /${name}`));
+  return [
+    "Commands:",
+    ...lines,
+    "Shift+Tab cycles permission (auto|full|strict) in the Ink TUI.",
+    "",
+  ].join("\n");
 }
 
 async function runRepl(session: PreparedSession): Promise<number> {
@@ -884,7 +1004,7 @@ async function runRepl(session: PreparedSession): Promise<number> {
         return 0;
       }
       if (line === "/help") {
-        output.write("Commands: /help /compact /connect /model /thinking /permission /plan /regress /status /merge /rollback /sandbox /exit\nSlash commands map to registered extension commands when available.\nShift+Tab cycles permission (auto|full|strict) in the Ink TUI.\n");
+        output.write(formatReplHelp(session.host.listCommandEntries()));
         continue;
       }
       if (line.startsWith("/")) {

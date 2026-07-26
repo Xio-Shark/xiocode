@@ -28,6 +28,7 @@ need_cmd() {
 }
 
 node_ok() {
+  command -v node >/dev/null 2>&1 || return 1
   local version major minor
   version="$(node -v 2>/dev/null | sed 's/^v//')"
   major="${version%%.*}"
@@ -36,6 +37,55 @@ node_ok() {
   if (( major > MIN_NODE_MAJOR )); then return 0; fi
   if (( major == MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR )); then return 0; fi
   return 1
+}
+
+# Print the one-line Node install command for this platform.
+node_hint() {
+  local os
+  os="$(uname -s 2>/dev/null || echo unknown)"
+  case "$os" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        say "  brew install node@22 && brew link --overwrite node@22"
+      else
+        say "  curl -fsSL https://fnm.vercel.app/install | bash   # then: fnm install 22 && fnm use 22"
+      fi
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        say "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs"
+      elif command -v dnf >/dev/null 2>&1; then
+        say "  sudo dnf module install -y nodejs:22"
+      elif command -v pacman >/dev/null 2>&1; then
+        say "  sudo pacman -S nodejs npm"
+      elif command -v apk >/dev/null 2>&1; then
+        say "  sudo apk add nodejs npm"
+      else
+        say "  curl -fsSL https://fnm.vercel.app/install | bash   # then: fnm install 22 && fnm use 22"
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      say "  Windows is untested — please use WSL: https://learn.microsoft.com/windows/wsl/install"
+      ;;
+    *)
+      say "  Install Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ from https://nodejs.org"
+      ;;
+  esac
+}
+
+# Opt-in automated Node install via fnm (XIO_INSTALL_NODE=1).
+install_node_via_fnm() {
+  say "Installing Node.js ${MIN_NODE_MAJOR} via fnm…"
+  if ! command -v fnm >/dev/null 2>&1; then
+    curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell
+    export PATH="${HOME}/.local/share/fnm:${HOME}/.fnm:${PATH}"
+  fi
+  command -v fnm >/dev/null 2>&1 || fail "fnm bootstrap failed; install Node manually (see hint above)"
+  fnm install "${MIN_NODE_MAJOR}"
+  eval "$(fnm env)"
+  fnm use "${MIN_NODE_MAJOR}"
+  node_ok || fail "fnm installed Node but the active version is still too old; open a new shell and retry"
+  say "Note: add 'eval \"\$(fnm env --use-on-cd)\"' to your shell rc so this Node persists."
 }
 
 resolve_spec() {
@@ -58,12 +108,23 @@ resolve_spec() {
 
 say "XioCode installer"
 need_cmd curl
-need_cmd npm
-need_cmd node
 
 if ! node_ok; then
-  fail "Node.js >= ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} required (found $(node -v 2>/dev/null || echo none)). Install from https://nodejs.org and retry."
+  if [[ "${XIO_INSTALL_NODE:-}" == "1" ]]; then
+    install_node_via_fnm
+  else
+    say ""
+    say "Node.js >= ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} required (found: $(node -v 2>/dev/null || echo none))."
+    say "Install it with:"
+    node_hint
+    say ""
+    say "Or let this installer handle it via fnm:"
+    say "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | XIO_INSTALL_NODE=1 bash"
+    fail "Node.js too old or missing"
+  fi
 fi
+
+need_cmd npm
 
 SPEC="$(resolve_spec)"
 say "Source: ${FROM} → ${SPEC}"

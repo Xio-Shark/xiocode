@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git, gitOk } from "../../xio-sandbox/src/git.ts";
@@ -15,24 +15,14 @@ export type RunEvidence = Readonly<{
 export async function candidateRevision(candidateRoot: string): Promise<string> {
   const head = await gitOk(candidateRoot, ["rev-parse", "HEAD"]);
   const [diff, status, untracked] = await Promise.all([
-    gitOk(candidateRoot, ["-c", "core.quotePath=false", "diff", "--binary", "HEAD"]),
-    gitOk(candidateRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
-    gitOk(candidateRoot, ["ls-files", "--others", "--exclude-standard", "-z"]),
+    gitOk(candidateRoot, ["diff", "--binary", "HEAD"]),
+    gitOk(candidateRoot, ["status", "--porcelain"]),
+    gitOk(candidateRoot, ["ls-files", "--others", "--exclude-standard"]),
   ]);
   const hash = createHash("sha256").update(head).update(diff).update(status);
-  for (const relativePath of untracked.split("\0").filter(Boolean).sort()) {
-    const entryPath = path.join(candidateRoot, relativePath);
-    const entry = await lstat(entryPath);
-    hash.update(relativePath).update("\0");
-    if (entry.isDirectory()) {
-      hash.update("directory\0");
-    } else if (entry.isSymbolicLink()) {
-      hash.update("symlink\0").update(await readlink(entryPath)).update("\0");
-    } else if (entry.isFile()) {
-      hash.update("file\0").update(await readFile(entryPath));
-    } else {
-      throw new Error(`unsupported untracked entry type: ${relativePath}`);
-    }
+  for (const relativePath of untracked.split("\n").filter(Boolean).sort()) {
+    hash.update(relativePath);
+    hash.update(await readFile(path.join(candidateRoot, relativePath)));
   }
   return `${head.slice(0, 12)}-${hash.digest("hex").slice(0, 12)}`;
 }

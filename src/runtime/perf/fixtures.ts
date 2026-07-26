@@ -23,6 +23,7 @@ export const ALL_FIXTURES = [
   "cli.help",
   "startup.interactive",
   "tui.replay_10k",
+  "tui.ink_render",
   "session.tool_heavy",
   "provider.overhead",
   "explore.workers_2",
@@ -48,6 +49,11 @@ export type RunFixtureOptions = Readonly<{
    * Callers (bench-cli, tests) wire it explicitly; missing injection fails closed.
    */
   tuiReplay?: (options: RunFixtureOptions) => Promise<PerfSample>;
+  /**
+   * Injected tui.ink_render implementation. Same architecture-guard reason as
+   * tuiReplay, and additionally lazy-loads the ink-testing-library devDependency.
+   */
+  inkRender?: (options: RunFixtureOptions) => Promise<PerfSample>;
 }>;
 
 export async function runFixture(id: FixtureId, options: RunFixtureOptions): Promise<PerfSample> {
@@ -66,6 +72,15 @@ export async function runFixture(id: FixtureId, options: RunFixtureOptions): Pro
         );
       }
       return options.tuiReplay(options);
+    }
+    case "tui.ink_render": {
+      if (!options.inkRender) {
+        throw new Error(
+          "tui.ink_render requires an injected inkRender implementation "
+            + "(import runInkRenderFixture from src/tui/perf-ink-render.ts and pass it via RunFixtureOptions)",
+        );
+      }
+      return options.inkRender(options);
     }
     case "session.tool_heavy":
       return runToolHeavyFixture(options);

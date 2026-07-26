@@ -10,7 +10,6 @@ import { washRetrospectiveReport, formatInjectionContext } from "../src/retrospe
 import { RunStore } from "../src/run-store.ts";
 
 import type { RunSummary } from "../src/types.ts";
-import type { LlmClient } from "../../../src/runtime/types.ts";
 
 const tempDirs: string[] = [];
 
@@ -180,59 +179,5 @@ describe("RetrospectiveRunner", () => {
     expect(session.sessionReport?.schema_version).toBe("xio-session-retrospective.v1");
     const md = await readFile(store.filePath(record.run_id, "session-retrospective.md"), "utf8");
     expect(md).toContain("xio-session-retrospective.v1");
-  });
-
-  it("persists a committed norms mutation receipt after strong confirmation", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "xio-retro-norms-"));
-    tempDirs.push(root);
-    const workspace = path.join(root, "workspace");
-    await mkdir(workspace, { recursive: true });
-    const store = new RunStore({ root: path.join(root, "runs") });
-    const record = await store.createRun({ run_id: "run-norms" });
-    const client: LlmClient = {
-      async complete() {
-        return {
-          content: JSON.stringify({
-            title: "Norms update",
-            content_summary: "Captured a durable rule.",
-            executive_summary: "Write the approved workspace norm.",
-            actions: [],
-            norms_proposals: [{
-              relativePath: "AGENTS.md",
-              content: "# Approved rule",
-              summary: "Add approved rule",
-            }],
-          }),
-          toolCalls: [],
-        };
-      },
-    };
-    const runner = new RetrospectiveRunner({
-      runStore: store,
-      config: {
-        sessionEndSubagent: true,
-        normsAutoWrite: true,
-        skipTrivial: false,
-        enqueueImprove: false,
-      },
-      getSessionClient: () => ({ client, model: "stub" }),
-      ask: async () => true,
-      getWorkspaceRoot: () => workspace,
-    });
-
-    await runner.runSessionEnd({
-      runId: record.run_id,
-      summary: summary({ run_id: record.run_id }),
-    });
-
-    expect(await readFile(path.join(workspace, "AGENTS.md"), "utf8")).toBe("# Approved rule\n");
-    const audit = JSON.parse(
-      await readFile(store.filePath(record.run_id, "norms-mutation.json"), "utf8"),
-    ) as { schema_version: string; status: string; files: Array<{ relative_path: string }> };
-    expect(audit).toMatchObject({
-      schema_version: "xio-workspace-mutation.v1",
-      status: "committed",
-      files: [{ relative_path: "AGENTS.md" }],
-    });
   });
 });

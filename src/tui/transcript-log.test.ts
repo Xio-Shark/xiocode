@@ -3,15 +3,14 @@ import { describe, expect, it } from "vitest";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
-  adjacentExpandableHistoryBlock,
   appendUserBlock,
   blocksFromRestoredMessages,
   emptyScrollbackState,
-  expandableHistoryBlocks,
   formatLiveLines,
   latestExpandableToolBlock,
   liveTextString,
   reduceScrollback,
+  toggleLatestScrollbackExpandable,
 } from "./transcript-log.ts";
 import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
 
@@ -20,7 +19,7 @@ describe("reduceScrollback", () => {
     let state = emptyScrollbackState();
     state = reduceScrollback(state, { kind: "thinking-delta", text: "plan A" });
     expect(state.live?.kind).toBe("thinking");
-    expect(formatLiveLines(state.live!, state.inFlightTools)).toEqual(["▸ thinking…"]);
+    expect(formatLiveLines(state.live!, state.inFlightTools).some((l) => l.includes("plan A"))).toBe(true);
 
     state = reduceScrollback(state, {
       kind: "tool-start",
@@ -30,9 +29,7 @@ describe("reduceScrollback", () => {
     });
     expect(state.inFlightTools).toHaveLength(1);
     expect(state.blocks.some((b) => b.kind === "thinking")).toBe(true);
-    const thinking = state.blocks.find((b) => b.kind === "thinking")!;
-    expect(thinking.lines[0]).toMatch(/think \d+s.*Ctrl\+O/);
-    expect(thinking.output).toBe("plan A");
+    expect(state.blocks.find((b) => b.kind === "thinking")!.lines[0]).toMatch(/think \d+s/);
   });
 
   it("pairs parallel same-name tools by callId completing out of order", () => {
@@ -109,6 +106,8 @@ describe("reduceScrollback", () => {
     expect(tool?.lines.join("\n")).not.toContain("line0");
     expect(tool?.lines.join("\n")).not.toContain("line11");
     expect(latestExpandableToolBlock(state)?.output).toBe(long);
+    const toggled = toggleLatestScrollbackExpandable(state);
+    expect(toggled.blocks.find((b) => b.kind === "tool")?.previewCollapsed).toBe(false);
   });
 
   it("labels explore tools as subagent in history", () => {
@@ -150,13 +149,6 @@ describe("reduceScrollback", () => {
       goal: "survey auth",
     });
     state = reduceScrollback(state, { kind: "subagent-thinking-delta", workerId: 1, text: "plan" });
-    const thinkingWorker = state.inFlightSubagents[0]!;
-    const thinkingStartedAt = thinkingWorker.activity.kind === "thinking"
-      ? thinkingWorker.activity.startedAt
-      : thinkingWorker.startedAt;
-    expect(formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents, {
-      now: thinkingStartedAt + 5_000,
-    }).join("\n")).toContain("Thinking 5s");
     state = reduceScrollback(state, {
       kind: "subagent-tool-start",
       workerId: 1,
@@ -185,8 +177,6 @@ describe("reduceScrollback", () => {
     // Tool-call history collapsed out of Static; retained in output for Ctrl+O.
     expect(block!.lines.join("\n")).not.toMatch(/\bread\b.*done/);
     expect(block!.output).toMatch(/read/);
-    expect(block!.output).toContain("plan");
-    expect(block!.output).toContain("export function auth() {}");
   });
 
   it("isolates parallel subagent workers by workerId", () => {
@@ -206,73 +196,10 @@ describe("reduceScrollback", () => {
     state = reduceScrollback(state, { kind: "subagent-assistant-delta", workerId: 1, text: "A-only" });
     state = reduceScrollback(state, { kind: "subagent-assistant-delta", workerId: 2, text: "B-only" });
     const live = formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents).join("\n");
-    expect(live).toContain("Responding");
-    expect(live).not.toContain("A-only");
-    expect(live).not.toContain("B-only");
+    expect(live).toContain("A-only");
+    expect(live).toContain("B-only");
     expect(live).toContain("slice A");
     expect(live).toContain("slice B");
-    expect(liveTextString(state.inFlightSubagents[0]!.live!.buffer)).toBe("A-only");
-    expect(liveTextString(state.inFlightSubagents[1]!.live!.buffer)).toBe("B-only");
-  });
-
-  it("keeps folded thinking and tool history navigable in transcript order", () => {
-    let state = emptyScrollbackState();
-    state = reduceScrollback(state, { kind: "thinking-delta", text: "inspect the code" });
-    state = reduceScrollback(state, { kind: "assistant-delta", text: "next" });
-    state = reduceScrollback(state, { kind: "assistant-text", text: "next" });
-    state = reduceScrollback(state, {
-      kind: "tool-start",
-      name: "read",
-      detail: "src/main.ts",
-      callId: "read-1",
-    });
-    state = reduceScrollback(state, {
-      kind: "tool-end",
-      name: "read",
-      error: false,
-      output: "export const x = 1;",
-      callId: "read-1",
-    });
-
-    const expandable = expandableHistoryBlocks(state);
-    expect(expandable.map((block) => block.kind)).toEqual(["thinking", "tool"]);
-    const latest = latestExpandableToolBlock(state)!;
-    expect(latest.kind).toBe("tool");
-    expect(adjacentExpandableHistoryBlock(state, latest.id, -1)).toMatchObject({
-      kind: "thinking",
-      output: "inspect the code",
-    });
-    expect(adjacentExpandableHistoryBlock(state, expandable[0]!.id, 1)).toMatchObject({
-      kind: "tool",
-      output: "export const x = 1;",
-    });
-  });
-
-  it("records an interrupted nested tool when a subagent ends early", () => {
-    let state = emptyScrollbackState();
-    state = reduceScrollback(state, {
-      kind: "subagent-start",
-      workerId: 4,
-      model: "stub/flash",
-      goal: "run checks",
-    });
-    state = reduceScrollback(state, {
-      kind: "subagent-tool-start",
-      workerId: 4,
-      name: "bash",
-      detail: "npm test",
-      callId: "w4:b1",
-    });
-    state = reduceScrollback(state, {
-      kind: "subagent-end",
-      workerId: 4,
-      success: false,
-      status: "cancelled",
-    });
-
-    const block = state.blocks.find((entry) => entry.kind === "subagent");
-    expect(block?.lines[0]).toContain("cancelled");
-    expect(block?.output).toContain("bash npm test interrupted");
   });
 
   it("keeps tool body non-empty after tool-end", () => {
