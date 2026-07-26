@@ -13,9 +13,9 @@
 |------|--------|-------|
 | Self-owned runtime | ✅ | `src/runtime` — no `@earendil-works/pi-*` |
 | Builtin tools | ✅ | read/write/edit/bash/grep/glob |
-| Multi-explore subagents | 🟡 | Live `ExploreOrchestrator` + nonzero product budgets; **trellis-check passed** — archive pending — [board](./.trellis/tasks/07-15-performance-board.md) |
-| Performance suite (07-15) | 🟡 | **6/8 archived**; task 7 budgets closed (awaiting archive); task 8 hard eval gate still open — [board](./.trellis/tasks/07-15-performance-board.md) · [audit](./.trellis/tasks/07-15-performance-audit-2026-07-15.md) |
-| Agent Runtime Event suite | ✅ | **5/5 done** (turn_end, RuntimeEvent multi-sink, scripted tape, stream-json E2E, hard/soft steer) — [board](./.trellis/tasks/07-15-agent-runtime-event-board.md) |
+| Multi-explore subagents | 🟡 | Live `ExploreOrchestrator` + nonzero product budgets; **trellis-check passed** — archive pending |
+| Performance suite (07-15) | 🟡 | **6/8 archived**; task 7 budgets closed (awaiting archive); task 8 hard eval gate still open |
+| Agent Runtime Event suite | ✅ | **5/5 done** (turn_end, RuntimeEvent multi-sink, scripted tape, stream-json E2E, hard/soft steer) |
 | WorktreeSandbox + MergeGate | ✅ | Outer isolation; merge-ask |
 | TrajectoryRecorder + RunStore | ✅ | Default evolve path |
 | ResultDenoiser + ContextInjector | ✅ | Default evolve path; `turn_start` → provider messages |
