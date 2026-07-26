@@ -11,6 +11,7 @@ import {
   loadQueueIntoDraft,
   moveCursor,
   moveCursorLine,
+  moveCursorTo,
   parseBusySubmitIntent,
   queueWhileBusy,
   rememberSubmission,
@@ -34,6 +35,34 @@ describe("composer", () => {
     expect(state.text).toBe("hi👍");
     state = deleteBackward(state);
     expect(state.text).toBe("hi");
+  });
+
+  it("removes a ZWJ emoji sequence in one backspace, not one code point", () => {
+    let state = setComposerText(emptyComposer(), "hi👨‍👩‍👧‍👦");
+    state = deleteBackward(state);
+    expect(state.text).toBe("hi");
+    expect(state.cursor).toBe(2);
+  });
+
+  it("removes a skin-tone modifier and its base together", () => {
+    let state = setComposerText(emptyComposer(), "ok👍🏽");
+    state = deleteBackward(state);
+    expect(state.text).toBe("ok");
+  });
+
+  it("removes a combining mark with its base character", () => {
+    // "e" + U+0301 combining acute — one cluster, one backspace.
+    let state = setComposerText(emptyComposer(), "café");
+    state = deleteBackward(state);
+    expect(state.text).toBe("caf");
+  });
+
+  it("deletes forward by whole grapheme clusters too", () => {
+    let state = setComposerText(emptyComposer(), "👨‍👩‍👧‍👦ok");
+    state = moveCursorTo(state, 0);
+    state = deleteForward(state);
+    expect(state.text).toBe("ok");
+    expect(state.cursor).toBe(0);
   });
 
   it("inserts multiline/bracketed paste without submitting on the first newline", () => {

@@ -15,8 +15,6 @@ export type BriefClaim = Readonly<{
   citations: readonly BriefCitation[];
   confidence: number;
   source_role?: string;
-  /** Grounded observation vs labeled guess. Default treated as fact when omitted. */
-  kind?: "fact" | "inference";
 }>;
 
 export type WorkerEvidenceReport = Readonly<{
@@ -170,8 +168,7 @@ function serializeBrief(input: Readonly<{
     lines.push("claims:");
     for (const claim of input.claims) {
       const cites = claim.citations.map(formatCitation).join("; ") || "uncited";
-      const kind = claim.kind === "inference" ? "inference" : "fact";
-      lines.push(`- [${kind}] (${claim.confidence.toFixed(2)}) ${claim.text} [${cites}]`);
+      lines.push(`- (${claim.confidence.toFixed(2)}) ${claim.text} [${cites}]`);
     }
   }
   if (input.symbols.length > 0) {

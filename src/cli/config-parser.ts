@@ -6,6 +6,7 @@ import { parse } from "smol-toml";
 import { assertMaxSessionMessages } from "../runtime/context-compaction.ts";
 import { DEFAULT_WORKTREE_CONFIG } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
+import type { ModelPrice, PricingOverrides } from "../runtime/pricing.ts";
 import type { WorktreeConfig, WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 export type ProviderKind = "openai" | "anthropic" | "mistral" | "google" | "google-vertex" | "bedrock" | string;
@@ -178,6 +179,20 @@ export type XioContextConfig = Readonly<{
 }>;
 
 /**
+ * Per-model price overrides for the cost footer, keyed by `model` or
+ * `provider/model`. Built-in rows cover the presets; this table extends or
+ * corrects them (custom gateways, negotiated rates, new models).
+ *
+ * ```toml
+ * [pricing."deepseek-chat"]
+ * input_per_mtok = 0.27
+ * output_per_mtok = 1.1
+ * cache_per_mtok = 0.07
+ * ```
+ */
+export type XioPricingConfig = PricingOverrides;
+
+/**
  * Project trust gate — whether to load project-local hooks/skills/MCP and allow write/exec.
  * Persist decisions in ~/.xiocode/trust.json (see `src/runtime/project-trust.ts`).
  */
@@ -226,9 +241,8 @@ export type XioRetrospectiveConfig = Readonly<{
 }>;
 
 /**
- * Primary→scout multi-explore: main agent spawns read-only workers on a dedicated model.
- * Default `enabled = false`. Ultra thinking force-enables even when disabled.
- * `enabled = true` requires `model`. Ultra-only scout pattern: `enabled = false` + explicit `model`.
+ * Primary→Flash multi-explore: main agent (e.g. Pro) spawns read-only Flash subagents.
+ * Disabled by default; requires `enabled = true` and `model`.
  */
 export type XioExploreConfig = Readonly<{
   enabled: boolean;
@@ -239,8 +253,7 @@ export type XioExploreConfig = Readonly<{
   maxTurns: number;
   timeoutMs: number;
   /**
-   * Worker-only parallel ceiling (1–16). Default 16. Does **not** include the primary process.
-   * Example: `6` ⇒ primary + 6 scouts ≈ 7 active processes.
+   * Absolute parallel ceiling (1–16). Default 16.
    * Runtime policy still caps default sessions at 4, ultra at 8+, user-requested high fan-out up to this value.
    */
   maxConcurrency: number;
@@ -289,6 +302,8 @@ export type XioConfig = Readonly<{
   agent?: XioAgentConfig;
   /** Optional; when omitted, defaults to tool_result_max_chars = 16000. */
   context?: XioContextConfig;
+  /** Per-model price overrides; empty when `[pricing]` is absent. */
+  pricing: XioPricingConfig;
   trust: XioTrustConfig;
   improve: XioImproveConfig;
   regress: XioRegressConfig;
@@ -314,6 +329,8 @@ export type XioRuntimeConfig = Readonly<{
   agent?: XioAgentConfig;
   /** Optional; when omitted, runtime treats context.tool_result_max_chars as 16000. */
   context?: XioContextConfig;
+  /** Optional on hand-built fixtures; parseXioConfig always sets `{}` when absent. */
+  pricing?: XioPricingConfig;
   /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
   trust?: XioTrustConfig;
   explore: XioExploreConfig;
@@ -440,6 +457,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const harness = parseHarness(getTable(data, "harness"));
   const agent = parseAgent(getTable(data, "agent"));
   const context = parseContext(getTable(data, "context"));
+  const pricing = parsePricing(getTable(data, "pricing"));
   const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
   const regress = parseRegress(getTable(data, "regress"));
@@ -461,6 +479,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     harness,
     agent,
     context,
+    pricing,
     trust,
     improve,
     regress,
@@ -488,6 +507,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     harness: config.harness,
     agent: config.agent,
     context: config.context,
+    pricing: config.pricing,
     trust: config.trust,
     explore: config.explore,
     retrospective: config.retrospective,
@@ -683,6 +703,53 @@ function parseContext(table: Record<string, unknown> | undefined): XioContextCon
     toolResultMaxChars: toolResultMaxChars ?? DEFAULT_CONTEXT.toolResultMaxChars,
     keepToolRounds: keepToolRounds ?? DEFAULT_CONTEXT.keepToolRounds,
   };
+}
+
+/**
+ * `[pricing."<model>"]` / `[pricing."<provider>/<model>"]` — USD per 1M tokens.
+ * A malformed row is a hard error: a silently dropped rate would show a wrong
+ * dollar figure, which is worse than refusing to start.
+ */
+function parsePricing(table: Record<string, unknown> | undefined): XioPricingConfig {
+  if (!table) {
+    return {};
+  }
+  const entries: Record<string, ModelPrice> = {};
+  for (const [key, value] of Object.entries(table)) {
+    const row = value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined;
+    if (!row) {
+      throw new Error(`pricing.${key} must be a table of per-1M-token rates`);
+    }
+    const inputPerMTok = requirePriceRate(row, key, "input_per_mtok");
+    const outputPerMTok = requirePriceRate(row, key, "output_per_mtok");
+    const cachePerMTok = getOptionalNumber(row, "cache_per_mtok");
+    if (cachePerMTok !== undefined && (!Number.isFinite(cachePerMTok) || cachePerMTok < 0)) {
+      throw new Error(`pricing.${key}.cache_per_mtok must be a number >= 0`);
+    }
+    entries[key] = {
+      inputPerMTok,
+      outputPerMTok,
+      ...(cachePerMTok === undefined ? {} : { cachePerMTok }),
+    };
+  }
+  return entries;
+}
+
+function requirePriceRate(
+  row: Record<string, unknown>,
+  key: string,
+  field: string,
+): number {
+  const value = getOptionalNumber(row, field);
+  if (value === undefined) {
+    throw new Error(`pricing.${key}.${field} is required (USD per 1M tokens)`);
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`pricing.${key}.${field} must be a number >= 0`);
+  }
+  return value;
 }
 
 function parseTrust(table: Record<string, unknown> | undefined): XioTrustConfig {

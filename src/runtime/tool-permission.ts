@@ -4,6 +4,11 @@ import {
 } from "./permission-mode.ts";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
 import {
+  classifyCommandRisk,
+  commandFromToolArgs,
+  describeCommandRisk,
+} from "./command-risk.ts";
+import {
   allowsProjectResources,
   type TrustDecision,
 } from "./project-trust.ts";
@@ -98,6 +103,17 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
       });
       if (trustBlock) return trustBlock;
     }
+
+    // Command-level layer: session tool approval does not carry over to the
+    // commands that destroy data or run remote code. Re-asked every time.
+    const commandBlock = await enforceCommandRisk({
+      name,
+      args: toolArgsFromEvent(record),
+      policy: resolvePolicy(),
+      interactive: options.interactive,
+      sink: options.sink,
+    });
+    if (commandBlock) return commandBlock;
 
     if (!toolNeedsHighRiskGate(name)) {
       return;
@@ -226,6 +242,65 @@ async function enforceUntrustedTool(input: Readonly<{
     "warning",
   );
   return undefined;
+}
+
+/**
+ * Strong confirm for known-catastrophic shell commands. Runs beneath the tool
+ * risk classes: an already-approved `bash` still stops here, because approving
+ * "the agent may run commands" is not approving `rm -rf ~`.
+ *
+ * `full` / `/bypass` still auto-allow — the user opted into that explicitly —
+ * but the match is announced so the action is never silent.
+ */
+async function enforceCommandRisk(input: Readonly<{
+  name: string;
+  args: unknown;
+  policy: HighRiskPolicy;
+  interactive: InteractiveIO;
+  sink: SessionUiSink;
+}>): Promise<{ block: true; reason: string } | undefined> {
+  if (input.name !== "bash") return undefined;
+  const command = commandFromToolArgs(input.args);
+  if (!command) return undefined;
+  const risk = classifyCommandRisk(command);
+  if (!risk) return undefined;
+
+  if (input.policy === "allow") {
+    input.sink.notify?.(
+      `Dangerous command auto-allowed (${risk.severity}): ${risk.match} — ${risk.reason}`,
+      "warning",
+    );
+    return undefined;
+  }
+
+  if (input.policy === "deny") {
+    return {
+      block: true,
+      reason:
+        `dangerous command blocked (${risk.severity}/${risk.id}): ${risk.match}. ${risk.reason} `
+        + "Run it yourself, or re-run with --allow-high-risk / full permission mode if you meant it.",
+    };
+  }
+
+  const ok = await input.interactive.ask(
+    `Run this ${risk.severity} command? [y/N] `,
+    describeCommandRisk(risk, command),
+  );
+  if (!ok) {
+    return {
+      block: true,
+      reason: `user denied dangerous command (${risk.id}): ${risk.match}`,
+    };
+  }
+  input.sink.notify?.(`Approved once: ${risk.match} (${risk.severity}).`, "warning");
+  return undefined;
+}
+
+function toolArgsFromEvent(record: Record<string, unknown> | undefined): unknown {
+  if (!record) return undefined;
+  const call = asRecord(record.call);
+  if (call && call.args !== undefined) return call.args;
+  return record.args;
 }
 
 function toolNameFromEvent(record: Record<string, unknown> | undefined): string | undefined {

@@ -131,6 +131,28 @@ ${WORKTREE_ON}
     await WorktreeSandbox.remove(launch.worktree!, { force: true });
   });
 
+  it("starts in a git repo with no commits yet (unborn HEAD) in main mode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-unborn-"));
+    tempDirs.push(root);
+    await execFileAsync("git", ["init"], { cwd: root });
+    const configPath = path.join(root, "config.toml");
+    await writeFile(configPath, "", "utf8");
+    const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: path.join(root, ".xiocode") };
+    const launch = await prepareLaunch(root, env);
+    expect(launch.worktree).toBeUndefined();
+    expect(launch.sessionStart.provenance).toMatchObject({ base_commit: "unborn" });
+  });
+
+  it("rejects a no-commit repo when worktree is enabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-unborn-wt-"));
+    tempDirs.push(root);
+    await execFileAsync("git", ["init"], { cwd: root });
+    const configPath = path.join(root, "config.toml");
+    await writeFile(configPath, "[worktree]\nenabled = true\n", "utf8");
+    const env: NodeJS.ProcessEnv = { XIO_CONFIG: configPath, XIO_HOME: path.join(root, ".xiocode") };
+    await expect(prepareLaunch(root, env)).rejects.toThrow(/at least one commit/i);
+  });
+
   it("allows non-git directories in default main mode", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-cli-nongit-"));
     tempDirs.push(root);
@@ -269,6 +291,27 @@ describe("parseXioArgs", () => {
 
   it("rejects unknown output formats", () => {
     expect(() => parseXioArgs(["-p", "hi", "--output-format", "yaml"])).toThrow(/stream-json/);
+  });
+
+  it("treats a bare positional argument as a one-shot prompt", () => {
+    const parsed = parseXioArgs(["add a login page"]);
+    expect(parsed.promptOnce).toBe("add a login page");
+    expect(parsed.passthrough).toEqual([]);
+  });
+
+  it("joins unquoted positionals into one prompt", () => {
+    const parsed = parseXioArgs(["add", "a", "login", "page"]);
+    expect(parsed.promptOnce).toBe("add a login page");
+    expect(parsed.passthrough).toEqual([]);
+  });
+
+  it("rejects combining a positional prompt with -p", () => {
+    expect(() => parseXioArgs(["fix bug", "-p", "hello"])).toThrow(/positional prompt/);
+  });
+
+  it("rejects leftover flags alongside a positional prompt instead of dropping either side", () => {
+    expect(() => parseXioArgs(["explain", "--help"])).toThrow(/unexpected flag/);
+    expect(() => parseXioArgs(["--model", "deepseek"])).toThrow(/unexpected flag/);
   });
 });
 

@@ -1,12 +1,12 @@
 {
   "schema_version": "xio-eval-gate-manifest.v1",
   "id": "default-gate",
-  "version": "1.2.0",
-  "description": "Frozen multi-axis gate: safety/capability hard-fail, performance budgets (latency + resource/cache/cost), awareness, private join (never auto-merge).",
+  "version": "1.3.0",
+  "description": "Frozen multi-axis gate: safety/capability hard-fail, performance budgets (latency + resource/cache/cost), awareness, private join (never auto-merge). 1.3.0 adds the real-Ink rendering axis (tui.ink_render); not required, since baselines predating it have no such metric.",
   "performance": {
     "groups": {
       "startup": ["cli.version", "cli.help", "startup.interactive"],
-      "rendering": ["tui.replay_10k"],
+      "rendering": ["tui.replay_10k", "tui.ink_render"],
       "persistence": ["session.tool_heavy"],
       "provider": ["provider.request", "provider.first_token", "provider.completion", "provider.overhead"],
       "subagent": ["explore.workers_2", "explore.workers_4", "explore.workers_8"]
@@ -36,6 +36,12 @@
         "metric": "fixture.tui.replay_10k.wall",
         "required": false,
         "hard_p95_regression_ms": 800,
+        "soft_p95_regression_ms": 200
+      },
+      {
+        "metric": "fixture.tui.ink_render.wall",
+        "required": false,
+        "hard_p95_regression_ms": 600,
         "soft_p95_regression_ms": 200
       },
       {

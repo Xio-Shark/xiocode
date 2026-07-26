@@ -41,16 +41,29 @@ const CODE_KEYWORDS =
   + "def|lambda|pass|raise|with|as|in|not|and|or|is|"
   + "null|undefined|true|false|None|True|False|void|this|self|static|readonly|enum";
 
-/** One shared alternation so strings/comments/numbers/keywords never nest styles. */
+/**
+ * One shared alternation so strings/comments/numbers/keywords never nest styles.
+ *
+ * Cached per comment style: this runs once per line of every finalized code
+ * block, and compiling the alternation each time showed up in the commit spike.
+ * Reusing a `g` regex across calls is safe — `String.replace` resets
+ * `lastIndex` itself.
+ */
+const CODE_TOKEN_PATTERNS = new Map<string, RegExp>();
+
 function codeTokenPattern(lang: string): RegExp {
   const comment = HASH_COMMENT_LANGS.has(lang) ? "#.*$" : "\\/\\/.*$";
-  return new RegExp(
+  const cached = CODE_TOKEN_PATTERNS.get(comment);
+  if (cached) return cached;
+  const pattern = new RegExp(
     `(${comment})`
     + `|("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`)`
     + `|\\b(\\d+(?:\\.\\d+)?)\\b`
     + `|\\b(${CODE_KEYWORDS})\\b`,
     "g",
   );
+  CODE_TOKEN_PATTERNS.set(comment, pattern);
+  return pattern;
 }
 
 export function highlightCodeLine(line: string, lang: string): string {

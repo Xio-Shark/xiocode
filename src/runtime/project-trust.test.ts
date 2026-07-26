@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,8 +12,10 @@ import {
   loadTrustStore,
   normalizeTrustPath,
   parseTrustMode,
+  resolveLinkedWorktree,
   revokeTrust,
   allowsProjectResources,
+  type TrustStoreFile,
 } from "./project-trust.ts";
 import { ExtensionHost } from "./extension-host.ts";
 import { registerToolPermissionGate, toolNeedsTrustGate } from "./tool-permission.ts";
@@ -160,6 +163,114 @@ describe("TrustStore", () => {
       interactiveSession: false,
     });
     expect(state.decision).toBe("untrusted");
+  });
+});
+
+describe("worktree trust inheritance", () => {
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
+  }
+
+  async function makeRepoWithWorktree(): Promise<{ main: string; worktree: string }> {
+    const main = await tempRoot("xio-trust-wt-main-");
+    const link = await tempRoot("xio-trust-wt-link-");
+    const worktree = path.join(link, "branch-a");
+    git(main, "init");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init");
+    git(main, "worktree", "add", worktree);
+    return { main, worktree };
+  }
+
+  it("worktree of a trusted main repo inherits trust (non-interactive)", async () => {
+    const home = await tempRoot("xio-trust-wt-home-");
+    const storePath = defaultTrustStorePath(home);
+    const { main, worktree } = await makeRepoWithWorktree();
+    await grantTrust({ cwd: main, storePath, home });
+
+    const link = resolveLinkedWorktree(worktree);
+    expect(link?.mainPath).toBe(normalizeTrustPath(main));
+
+    const state = await ensureProjectTrust({
+      cwd: worktree,
+      mode: "ask",
+      home,
+      storePath,
+      interactiveSession: false,
+    });
+    expect(state.decision).toBe("trusted");
+    expect(state.persisted).toBe(true);
+  });
+
+  it("worktree of an untrusted main repo stays untrusted", async () => {
+    const home = await tempRoot("xio-trust-wt-home-");
+    const { worktree } = await makeRepoWithWorktree();
+    const state = await ensureProjectTrust({
+      cwd: worktree,
+      mode: "ask",
+      home,
+      storePath: defaultTrustStorePath(home),
+      interactiveSession: false,
+    });
+    expect(state.decision).toBe("untrusted");
+  });
+
+  it("unknown non-worktree paths stay untrusted", async () => {
+    const home = await tempRoot("xio-trust-wt-home-");
+    const repo = await tempRoot("xio-trust-wt-plain-");
+    git(repo, "init");
+    // A main repo is not a linked worktree of anything.
+    expect(resolveLinkedWorktree(repo)).toBeUndefined();
+    const state = await ensureProjectTrust({
+      cwd: repo,
+      mode: "ask",
+      home,
+      storePath: defaultTrustStorePath(home),
+      interactiveSession: false,
+    });
+    expect(state.decision).toBe("untrusted");
+  });
+
+  it("decideTrust inherits only explicit trusted grants for the worktree root", () => {
+    const updatedAt = new Date(0).toISOString();
+    const store: TrustStoreFile = {
+      version: 1,
+      entries: {
+        "/trusted-main": { level: "trusted", updatedAt },
+        "/denied-main": { level: "denied", updatedAt },
+      },
+    };
+    const worktree = { mainPath: "/trusted-main", worktreeRoot: "/wt" };
+    expect(decideTrust({ cwd: "/wt", mode: "ask", store, worktree }).decision).toBe("trusted");
+    // Subdirectories inherit only when the main grant covers children.
+    expect(decideTrust({ cwd: "/wt/sub", mode: "ask", store, worktree }).decision).toBe("untrusted");
+    // Denied main repos grant nothing.
+    expect(
+      decideTrust({
+        cwd: "/wt",
+        mode: "ask",
+        store,
+        worktree: { mainPath: "/denied-main", worktreeRoot: "/wt" },
+      }).decision,
+    ).toBe("untrusted");
+    // An explicit denial of the worktree path itself wins over inheritance.
+    const denyWorktree: TrustStoreFile = {
+      version: 1,
+      entries: {
+        "/trusted-main": { level: "trusted", updatedAt },
+        "/wt": { level: "denied", updatedAt },
+      },
+    };
+    expect(decideTrust({ cwd: "/wt", mode: "ask", store: denyWorktree, worktree }).decision)
+      .toBe("untrusted");
+    // coverChildren on the main grant extends to worktree subdirectories.
+    const coverStore: TrustStoreFile = {
+      version: 1,
+      entries: {
+        "/trusted-main": { level: "trusted", coverChildren: true, updatedAt },
+      },
+    };
+    expect(decideTrust({ cwd: "/wt/sub", mode: "ask", store: coverStore, worktree }).decision)
+      .toBe("trusted");
   });
 });
 

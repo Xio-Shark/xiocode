@@ -13,6 +13,8 @@ import { TASKLIST_WIDGET } from "./types.ts";
 export type RegisterPlanOptions = Readonly<{
   workspaceRoot: string;
   sink?: SessionUiSink;
+  /** Structured confirm channel for parallel_dispatch's two human gates. */
+  ask?: import("./parallel-dispatch.ts").PlanAskFn;
 }>;
 
 /** Register `plan` tool, prompt addendum, /plan command; restore widget if board exists. */
@@ -23,6 +25,7 @@ export async function registerPlanCapability(
   host.registerTool(createPlanTool({
     workspaceRoot: options.workspaceRoot,
     sink: options.sink,
+    ask: options.ask,
   }));
 
   const presence = await detectTrellis(options.workspaceRoot);

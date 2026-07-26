@@ -384,27 +384,6 @@ tool_result_max_chars = 4096
       .toThrow(/explore\.model is required/);
   });
 
-  it("allows enabled=false with dedicated scout model (Ultra-only pattern)", () => {
-    const parsed = parseXioConfig(
-      `
-[explore]
-enabled = false
-model = "opencode-go/deepseek-v4-flash"
-max_concurrency = 6
-timeout_ms = 120000
-allow_bash = false
-`,
-      { cwd: "/repo" },
-    );
-    expect(parsed.runtimeConfig.explore).toMatchObject({
-      enabled: false,
-      model: "opencode-go/deepseek-v4-flash",
-      maxConcurrency: 6,
-      timeoutMs: 120_000,
-      allowBash: false,
-    });
-  });
-
   it("parses agents_md kill-switch and limits", () => {
     const parsed = parseXioConfig(
       `
@@ -654,6 +633,54 @@ argv = ["npm", "run", "test:unit"]
         { name: "unit", argv: ["npm", "run", "test:unit"] },
       ],
     });
+  });
+
+  it("defaults pricing to an empty override table", () => {
+    const parsed = parseXioConfig(SAMPLE_CONFIG, { cwd: "/repo" });
+    expect(parsed.xio.pricing).toEqual({});
+    expect(parsed.runtimeConfig.pricing).toEqual({});
+  });
+
+  it("parses [pricing] rows keyed by model and provider/model", () => {
+    const parsed = parseXioConfig(
+      `${SAMPLE_CONFIG}
+[pricing."deepseek-chat"]
+input_per_mtok = 0.27
+output_per_mtok = 1.1
+cache_per_mtok = 0.07
+
+[pricing."acme/private-model"]
+input_per_mtok = 3
+output_per_mtok = 6
+`,
+      { cwd: "/repo" },
+    );
+
+    expect(parsed.runtimeConfig.pricing).toEqual({
+      "deepseek-chat": { inputPerMTok: 0.27, outputPerMTok: 1.1, cachePerMTok: 0.07 },
+      "acme/private-model": { inputPerMTok: 3, outputPerMTok: 6 },
+    });
+  });
+
+  it("rejects a pricing row missing a required rate", () => {
+    expect(() => parseXioConfig(
+      `${SAMPLE_CONFIG}
+[pricing."deepseek-chat"]
+input_per_mtok = 0.27
+`,
+      { cwd: "/repo" },
+    )).toThrow(/pricing\."?deepseek-chat"?\.output_per_mtok is required/);
+  });
+
+  it("rejects a negative pricing rate", () => {
+    expect(() => parseXioConfig(
+      `${SAMPLE_CONFIG}
+[pricing."deepseek-chat"]
+input_per_mtok = -1
+output_per_mtok = 1.1
+`,
+      { cwd: "/repo" },
+    )).toThrow(/input_per_mtok must be a number >= 0/);
   });
 });
 

@@ -53,39 +53,26 @@ enabled = false
 retain_on_reject = false
 # allow_dirty = true   # only matters when enabled = true
 
-# Multi-explore scouts: primary keeps the session; workers survey tiny read-only slices.
-# thinking=ultra FORCE-ENABLES explore even when enabled=false (uses explore.model, else session primary).
-# Non-ultra sessions: set enabled=true + model to opt in (enabled=false alone never installs explore).
-# max_concurrency counts WORKERS only (1–16, product default 16) — not the primary process.
-#   Example: max_concurrency = 6 → primary + 6 scouts ≈ 7 active processes (not “7 workers”).
-# Adaptive lanes (live):
+# Multi-explore: primary model keeps the session; cheaper workers survey tiny slices.
+# thinking=ultra AUTO-ENABLES explore even when enabled=false (uses explore.model or the session model).
+# For non-ultra sessions, set enabled=true + model to opt in.
+# max_concurrency is the absolute ceiling 1–16 (default 16). Adaptive lanes (live):
 #   - fast (0): simple/single-file — do not spawn unless user asks or uncertainty remains
 #   - standard (2–4): default multi-file exploration when enabled
 #   - deep (4–8): ultra / high uncertainty raises the ceiling (does not force spawn on trivial tasks)
 #   - explicit_high (≤16): only when the user clearly requests high fan-out
 # Wave budgets (soft; 0 = unlimited): max_tokens / max_cost_usd / max_starts_per_minute.
 # Optional partition_hint tells the primary how you want slices chosen (API / feature / package / …).
-#
-# Ultra-only dedicated low-cost scout (recommended). Model id MUST be verified on your provider —
-# Runtime does not invent aliases (e.g. gpt-5.6-luna / deepseek-v4-flash may not exist everywhere):
 # [explore]
-# enabled = false
-# model = "provider/<verified-low-cost-model>"
-# max_concurrency = 6              # worker-only; primary + 6 scouts ≈ 7 processes
-# timeout_ms = 120000
-# allow_bash = false
-#
-# Always-on explore (any thinking level) — requires model when enabled=true:
-# [explore]
-# enabled = true
-# model = "provider/<verified-low-cost-model>"
+# enabled = false                  # ultra still auto-enables; set true for explore at any effort
+# model = "deepseek-v4-flash"       # or "opencode-go/deepseek-v4-flash"; fallback = session primary
 # # provider = "opencode-go"        # optional when model has no provider prefix
 # max_turns = 12
 # max_concurrency = 16
-# max_output_chars = 64000          # worker report char cap toward EvidenceStore/brief path
+# max_output_chars = 64000          # verbatim file excerpts back to primary; raise if reports truncate
 # max_tokens = 250000               # soft wave token budget; 0 = unlimited
 # max_cost_usd = 1                  # soft USD estimate across workers; 0 = unlimited
-# max_starts_per_minute = 24        # session start-rate: worker starts / rolling minute; 0 = unlimited
+# max_starts_per_minute = 24        # provider-rate: worker starts / rolling minute; 0 = unlimited
 # # partition_hint = "按 API 边界拆成小片；用户另有说明时以用户为准"
 # timeout_ms = 180000
 # allow_bash = false                # keep false: workers stay read/grep/glob only
@@ -121,15 +108,21 @@ retain_on_reject = false
 
 # Context / tool_result pressure before each provider request.
 # Oversized tool bodies spill under the run dir (or ~/.xiocode/spills) and become stubs.
-# keep_tool_rounds microcompacts older tool rounds; 413 reactive compact (2b) is NOT implemented.
 # [context]
 # tool_result_max_chars = 16000
 # keep_tool_rounds = 4          # microcompact: keep newest N tool rounds; 0 = off
 
-# Post-task retrospective: agent_end = preflight only; session_end = authoritative report.
-# Norms: drafts always; norms_auto_write=true still requires strong confirm (exit may defer to
-# ~/.xiocode/retrospective/pending-norms.json — never silent write). Allowlist: AGENTS.md,
-# CLAUDE.md, .trellis/spec/** under the workspace root only.
+# Cost footer prices. Common provider models are priced in the box; add rows here
+# for private gateways, negotiated rates, or models newer than your XioCode build.
+# Rates are USD per 1M tokens. Key by "model" or "provider/model" (the latter wins).
+# Unpriced models show ~unknown in the footer — never a fake $0.
+# [pricing."deepseek-chat"]
+# input_per_mtok = 0.27
+# output_per_mtok = 1.1
+# cache_per_mtok = 0.07         # optional; defaults to input_per_mtok
+
+# Post-task retrospective: after each full agent task, extract blockers → log → washed report.
+# Report injects into the next turn for the primary agent; optional improve-queue goals for xio improve.
 # [retrospective]
 # enabled = true
 # skip_trivial = true
