@@ -10,6 +10,7 @@ import {
   loadHooks,
   matcherMatches,
   registerHooksBridge,
+  runCommandHook,
   type HooksConfig,
 } from "../src/hooks.ts";
 import { registerXioHygiene } from "../src/index.ts";
@@ -461,5 +462,22 @@ exit 2
       call: { id: "1", name: "bash", args: { command: "true" } },
     });
     expect(results.every((item) => item === undefined)).toBe(true);
+  });
+});
+
+describe("runCommandHook", () => {
+  it("survives a hook that exits without reading stdin", async () => {
+    const cwd = await tempRoot("xio-hooks-epipe-");
+    // 1MB payload exceeds the pipe buffer, so the write hits EPIPE once the
+    // child exits without draining stdin; the host must resolve, not crash.
+    const result = await runCommandHook({
+      command: "exec true",
+      cwd,
+      stdin: { filler: "x".repeat(1_000_000) },
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
   });
 });
