@@ -2,14 +2,14 @@
 
 > Single delivery snapshot. Updated **2026-07-23** (v1.1.0; **07-22-tui-interaction-polish S1–S9 landed** — streaming tools / spill / session-end retrospective + docs; **413 reactive compact (2b) deferred**; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md). Self-improve loop: [self-improve.md](./self-improve.md).
-> Boards: [performance](../.trellis/tasks/07-15-performance-board.md) · [audit](../.trellis/tasks/07-15-performance-audit-2026-07-15.md) · [runtime events](../.trellis/tasks/07-15-agent-runtime-event-board.md).
-> Recently completed: [trellis-parallel-task-orchestration](../.trellis/tasks/archive/2026-07/07-16-trellis-parallel-task-orchestration/) (P2, A→B→C→Integrate **archived**) · [agent-harness-design-gaps](../.trellis/tasks/archive/2026-07/07-16-agent-harness-design-gaps/) (P1, **6/6**) · [ultra-parallel-dag-pipeline](../.trellis/tasks/archive/2026-07/07-21-ultra-parallel-dag-pipeline/) (P1, **5/5 archived**).
+> Boards (internal Trellis workflow; not part of the published tree): performance · audit · runtime events.
+> Recently completed: trellis-parallel-task-orchestration (P2, A→B→C→Integrate **archived**) · agent-harness-design-gaps (P1, **6/6**) · ultra-parallel-dag-pipeline (P1, **5/5 archived**).
 
 ## Active Trellis (honest — not shipped)
 
 | Tree | Pri | Progress | What it closes |
 |------|-----|----------|----------------|
-| [07-22-tui-interaction-polish](../.trellis/tasks/07-22-tui-interaction-polish/) | P1 | **S1–S9 done** (code + docs); 2b overflow-retry **deferred** — ready to finish/archive after human commit | Streaming tools flag; tool_result spill/microcompact; session-end retrospective + norms confirm |
+| 07-22-tui-interaction-polish | P1 | **S1–S9 done** (code + docs); 2b overflow-retry **deferred** — ready to finish/archive after human commit | Streaming tools flag; tool_result spill/microcompact; session-end retrospective + norms confirm |
 
 ## Agent harness ↔ tutorial alignment (2026-07-20)
 
@@ -148,7 +148,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
   - Scripted LLM tape (`xio-agent-tape.v1` + goldens via `src/runtime/providers/scripted/`); turn_end trajectory contract (`xio-evolve` prefers RuntimeEvent bus → `pipeRuntimeEventsToTrajectory` when session exposes bus).
   - Mid-turn **steer** (`SteerMailbox`): soft at tool/provider boundaries; hard aborts in-flight provider/tools (incl. open-tool cancel); TUI busy Enter / `!text` / `>>text` (follow-up) wired; **never** inject into in-flight provider HTTP body.
   - **Follow-up queue**: drains only at natural end (no tool calls + soft empty); abort clears with visible `follow_up.discarded` (hard-steer hops keep queue).
-  - Board: [agent-runtime-event-board](../.trellis/tasks/07-15-agent-runtime-event-board.md). Does **not** merge Session WAL with Run evidence storage.
+  - Board: agent-runtime-event-board (internal Trellis). Does **not** merge Session WAL with Run evidence storage.
 - **Trellis task DAG — A→B→C→Integrate** (archived parent `07-16-trellis-parallel-task-orchestration` + children):
   - **Tree ≠ DAG**：`parent` / `children` 只表达归属；**依赖边是 sibling `depends_on`**（任务目录名列表），与树正交。
   - **权威落点**：`task.json.depends_on` + `isolation`（`"worktree"` \| `"shared"`）；`prd.md` / `implement.md` 双写为投影；`task.py drift` 警告不一致（B 可升 fail-closed）。
