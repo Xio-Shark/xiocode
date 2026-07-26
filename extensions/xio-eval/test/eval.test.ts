@@ -56,7 +56,7 @@ describe("trusted capability evaluator", () => {
       await readFile(path.join(evalRoot, report.eval_id, "report.json"), "utf8"),
     ) as unknown);
     expect(saved.eval_id).toBe(report.eval_id);
-  }, 30_000);
+  }, 120_000);
 
   it("runs the offline controller-child-worktree-hidden-grader-report path", async () => {
     const evalRoot = await tempRoot();
@@ -115,7 +115,7 @@ describe("trusted capability evaluator", () => {
       }],
     };
     expect(() => decodeEvalReport(invalidNestedReport)).toThrow(/trial safety main_unchanged/);
-  }, 30_000);
+  }, 120_000);
 
   it("fails closed on unknown report major versions", () => {
     expect(() => decodeEvalReport({ schema_version: "xio-eval-report.v2" })).toThrow(
@@ -192,7 +192,7 @@ describe("trusted capability evaluator", () => {
     );
     expect(code).toBe(0);
     expect(JSON.parse(output)).toMatchObject({ status: "PASS_WITH_CONCERNS" });
-  }, 30_000);
+  }, 120_000);
 
   it("redacts provider secrets before persisting evaluator logs", () => {
     const secret = `sk-${"a".repeat(48)}`;

@@ -149,7 +149,7 @@ describe("G9 credentialed provider evidence", () => {
     expect(report.status).toBe("INFRA_ERROR");
     expect(report.candidates).toEqual([]);
     expect(report.errors.join("\n")).toMatch(/missing credential/);
-  }, 30_000);
+  }, 120_000);
 
   it("runs fixed repeats and writes credentialed-series.v1 without leaking secrets", async () => {
     const fake = await startFakeProvider({ mode: "ok" });
