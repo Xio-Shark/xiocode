@@ -16,7 +16,7 @@
 
 ```
   ┌─────────────────────────────────────────────┐
-  │            Your Terminal                     │
+  │            Your Terminal                    │
   │                                             │
   │  $ xio "add a login page"                   │
   │                                             │
