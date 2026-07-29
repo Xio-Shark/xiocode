@@ -170,9 +170,11 @@ Inside the TUI:
 | `/merge` | Review and merge (worktree mode) |
 | `/rollback` | Undo session or turn file changes (worktree mode) |
 | `/compact` | Compress conversation context |
-| `/help` | Show all commands |
+| `/help` | Open the shortcut sheet (or press `?`) |
 
-While a turn is running: press Enter or type `!text` to steer the agent mid-task; `>>text` queues a follow-up for when the current turn finishes. Type `@path` to bring a file into the conversation.
+Type `/` to browse every command, `@path` to bring a file into the conversation, and `?` on an empty prompt for the full key map.
+
+While a turn is running: press Enter or type `!text` to steer the agent mid-task; `>>text` queues a follow-up for when the current turn finishes. `Esc` cancels the turn and keeps whatever you were typing. When idle, `Ctrl+C` clears the draft, and a second `Ctrl+C` on an empty prompt exits.
 
 ---
 

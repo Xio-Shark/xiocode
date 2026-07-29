@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { highlightCodeLine, md, renderInline, renderMarkdownLines } from "./markdown.ts";
+import {
+  alignTableBlock,
+  highlightCodeLine,
+  isRenderedTableRow,
+  md,
+  renderInline,
+  renderMarkdownLines,
+} from "./markdown.ts";
 
 const ANSI = /\u001B\[[0-9;]*m/g;
 const strip = (line: string): string => line.replace(ANSI, "");
@@ -57,6 +64,89 @@ describe("renderMarkdownLines", () => {
     const lines = renderMarkdownLines("```\n# not a heading\n- not a bullet\n```");
     expect(strip(lines[1]!)).toBe("# not a heading");
     expect(strip(lines[2]!)).toBe("- not a bullet");
+  });
+
+  it("keeps heading depth visible instead of flattening h1..h6", () => {
+    const [h1] = renderMarkdownLines("# Top");
+    const [h4] = renderMarkdownLines("#### Deep");
+    expect(h1).toContain(md.accent("Top"));
+    expect(h4).not.toContain("[36m");
+    expect(h4).toContain("[1m");
+    expect(strip(h4!)).toBe("Deep");
+  });
+});
+
+describe("pipe tables", () => {
+  it("pads ragged columns while staying valid markdown", () => {
+    const lines = renderMarkdownLines([
+      "| Command | What it does |",
+      "|---|---|",
+      "| /connect | Set up an API key |",
+      "| /model | Switch model |",
+    ].join("\n")).map(strip);
+
+    expect(lines).toEqual([
+      "| Command  | What it does      |",
+      "| -------- | ----------------- |",
+      "| /connect | Set up an API key |",
+      "| /model   | Switch model      |",
+    ]);
+    // Every rendered row is the same width — that is the whole point.
+    expect(new Set(lines.map((line) => line.length)).size).toBe(1);
+  });
+
+  it("honours :--- / :---: / ---: alignment per column", () => {
+    const lines = renderMarkdownLines([
+      "| left | mid | right |",
+      "| :--- | :---: | ---: |",
+      "| a | b | c |",
+    ].join("\n")).map(strip);
+
+    // Widths come from the content: left=4, mid=3, right=5.
+    expect(lines[1]).toBe("| ---- | :-: | ----: |");
+    expect(lines[2]).toBe("| a    |  b  |     c |");
+  });
+
+  it("measures the visible width, not the markup width", () => {
+    // `**bold**` occupies four columns once rendered, and 命令 occupies four.
+    const lines = renderMarkdownLines([
+      "| key | value |",
+      "| --- | --- |",
+      "| **bold** | x |",
+      "| 命令 | y |",
+    ].join("\n")).map(strip);
+
+    expect(lines[2]).toBe("| bold | x     |");
+    expect(lines[3]).toBe("| 命令 | y     |");
+  });
+
+  it("leaves pipe-looking prose alone without a delimiter row", () => {
+    const source = "| just | pipes |\n| more | pipes |";
+    expect(renderMarkdownLines(source)).toEqual(source.split("\n"));
+  });
+
+  it("skips tables inside fences and tables too wide to pad", () => {
+    const fenced = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
+    expect(renderMarkdownLines(fenced).map(strip).slice(1, 4))
+      .toEqual(["| a | b |", "|---|---|", "| 1 | 2 |"]);
+
+    const wide = ["| a | b |", "|---|---|", `| ${"x".repeat(200)} | y |`];
+    expect(alignTableBlock(wide)).toBeUndefined();
+  });
+
+  it("flags padded rows so callers do not prefix one of them", () => {
+    const lines = renderMarkdownLines("| a | b |\n|---|---|\n| 1 | 2 |");
+    expect(lines.every((line) => isRenderedTableRow(line))).toBe(true);
+    expect(isRenderedTableRow("plain answer text")).toBe(false);
+    // Unpadded prose that merely starts with a pipe must not be mistaken for one.
+    expect(isRenderedTableRow("|not a table")).toBe(false);
+  });
+
+  it("refuses malformed tables rather than guessing", () => {
+    expect(alignTableBlock(["| a | b |"])).toBeUndefined();
+    // Delimiter cell count must match the header.
+    expect(alignTableBlock(["| a | b |", "|---|"])).toBeUndefined();
+    expect(alignTableBlock(["| a |", "|---|"])).toBeUndefined();
   });
 });
 

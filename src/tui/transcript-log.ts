@@ -16,7 +16,7 @@ import {
 } from "../runtime/session-ui.ts";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
-import { renderMarkdownLines } from "./markdown.ts";
+import { isRenderedTableRow, renderMarkdownLines } from "./markdown.ts";
 import { theme, truncateToolDetail } from "./theme.ts";
 
 import type { TuiEvent } from "./session-bridge.ts";
@@ -191,6 +191,11 @@ export function commitLive(state: ScrollbackState): ScrollbackState {
 function assistantBlockLines(text: string): readonly string[] {
   const rendered = renderMarkdownLines(text);
   if (rendered.length === 0) return [`${theme.sym.answer} ${text}`];
+  // An answer that opens with a table would have its header row — and only that
+  // row — pushed two columns right by the mark, undoing the alignment.
+  if (isRenderedTableRow(rendered[0]!)) {
+    return [theme.sym.answer, ...rendered];
+  }
   return [`${theme.sym.answer} ${rendered[0]!}`, ...rendered.slice(1)];
 }
 

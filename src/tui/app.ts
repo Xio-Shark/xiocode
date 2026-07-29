@@ -16,6 +16,7 @@ import {
   expandFileMentions,
   filterFiles,
   insertFileMention,
+  isSubsequence,
   listWorkspaceFiles,
 } from "./file-mention.ts";
 import {
@@ -75,6 +76,7 @@ import {
   truncateToolDetail,
 } from "./theme.ts";
 import { BrandHeader } from "./shark-logo.ts";
+import { ShortcutsOverlay, composerHint, shortcutGroups } from "./shortcuts.ts";
 
 const h = React.createElement;
 const require = createRequire(import.meta.url);
@@ -133,13 +135,22 @@ export type AppProps = Readonly<{
 export type SlashCommand = Readonly<{ name: string; description: string }>;
 
 const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "help", description: "Show available commands." },
+  { name: "help", description: "Show the shortcut sheet (or press ?)." },
   { name: "bypass", description: "Toggle merge/rollback auto-approve for this session." },
   { name: "exit", description: "End the session." },
   { name: "quit", description: "Alias for /exit." },
 ];
 
 const SLASH_MENU_VISIBLE = 8;
+
+/**
+ * Window for a two-step keystroke confirmation (Esc-Esc clears the draft,
+ * Ctrl+C-Ctrl+C exits). One press arms, the next within this window commits.
+ */
+export const CONFIRM_WINDOW_MS = 1_000;
+
+/** Keystrokes that ask once before doing something the user cannot undo. */
+export type ArmedAction = "clear-draft" | "exit";
 
 export function App(props: AppProps): React.JSX.Element {
   const { rows } = useWindowSize();
@@ -259,6 +270,9 @@ export function App(props: AppProps): React.JSX.Element {
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
+    shortcutsOpen,
+    shortcutsScroll,
+    armed,
   } = useSessionInteraction(
     props,
     setView,
@@ -290,6 +304,14 @@ export function App(props: AppProps): React.JSX.Element {
 
   const tasklist = view.widgets.tasklist;
 
+  // One contextual line under the composer: what this state actually accepts.
+  const hint = composerHint({
+    busy,
+    armed,
+    queued: composer.queue !== undefined,
+    canSteer: typeof props.session.steer === "function",
+  });
+
   // --- Fullscreen / Route A: self-managed window over HistoryBlocks ---
   const window = useMemo(() => {
     if (appendScrollback) {
@@ -314,8 +336,8 @@ export function App(props: AppProps): React.JSX.Element {
       scrollback.inFlightTools,
       scrollback.inFlightSubagents,
     ).length;
-    // Brand (~3) + composer (~4) + footer (~2) + live sticky lines.
-    const baseChrome = 10 + menuRows + tasklistRows + liveExtra;
+    // Brand (~3) + composer (~4) + footer (~2) + hint + live sticky lines.
+    const baseChrome = 10 + menuRows + tasklistRows + liveExtra + (hint ? 1 : 0);
     const viewportLines = Math.max(4, rows - baseChrome);
     return sliceTranscriptWindow(
       scrollback.blocks,
@@ -336,6 +358,7 @@ export function App(props: AppProps): React.JSX.Element {
     atOpen,
     atItems,
     tasklist,
+    hint,
   ]);
 
   useEffect(() => {
@@ -384,7 +407,14 @@ export function App(props: AppProps): React.JSX.Element {
         liveKind: scrollback.live?.kind,
       }),
     }),
-    transcriptViewer
+    shortcutsOpen
+      ? h(ShortcutsOverlay, {
+        groups: shortcutGroups({ fullscreen: !appendScrollback }),
+        rows,
+        scrollOffset: shortcutsScroll,
+        commandCount: slashCommands.length,
+      })
+      : transcriptViewer
       ? h(TranscriptViewerOverlay, {
         block: transcriptViewer,
         rows,
@@ -430,6 +460,7 @@ export function App(props: AppProps): React.JSX.Element {
       : null,
     h(ComposerChrome, {
       busy,
+      hint,
       composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
     }),
     slashOpen
@@ -478,6 +509,8 @@ export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
 const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
   busy: boolean;
   composer: ComposerState;
+  /** Contextual affordance line (cancel / steer / queued), hidden when empty. */
+  hint?: string;
 }>): React.JSX.Element {
   const { text, cursor } = props.composer;
   const lines = text.length === 0 ? [""] : text.split("\n");
@@ -510,7 +543,10 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
     paddingX: 1,
   },
     h(Text, { dimColor: props.busy }, props.busy ? theme.sym.busy : theme.sym.prompt),
-    ...rows);
+    ...rows,
+    props.hint
+      ? h(Text, { dimColor: true, wrap: "truncate-end" }, props.hint)
+      : null);
 });
 
 export const HistoryBlockRow = memo(function HistoryBlockRow(
@@ -727,6 +763,10 @@ function useSessionInteraction(
   transcriptViewer: HistoryBlock | undefined;
   viewerScrollOffset: number;
   setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
+  shortcutsOpen: boolean;
+  shortcutsScroll: number;
+  /** Keystroke waiting on its second press, or undefined when nothing is armed. */
+  armed: ArmedAction | undefined;
 }> {
   const { exit } = useApp();
   const [composer, setComposer] = useState<ComposerState>(() =>
@@ -752,6 +792,40 @@ function useSessionInteraction(
   scrollbackRef.current = scrollback;
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const shortcutsOpenRef = useRef(shortcutsOpen);
+  shortcutsOpenRef.current = shortcutsOpen;
+  const [shortcutsScroll, setShortcutsScroll] = useState(0);
+  const openShortcuts = (open: boolean) => {
+    shortcutsOpenRef.current = open;
+    setShortcutsOpen(open);
+    if (open) setShortcutsScroll(0);
+  };
+  // Two-step confirmation: one press arms and hints, the next commits. A lone
+  // press must stay harmless — idle Ctrl+C used to end the session outright.
+  const [armed, setArmed] = useState<ArmedAction | undefined>(undefined);
+  const armedRef = useRef<Readonly<{ action: ArmedAction; at: number }> | undefined>(undefined);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const disarm = () => {
+    if (armTimer.current) {
+      clearTimeout(armTimer.current);
+      armTimer.current = undefined;
+    }
+    armedRef.current = undefined;
+    setArmed(undefined);
+  };
+  // The hint promises a window, so it has to disappear when the window closes.
+  const arm = (action: ArmedAction) => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armedRef.current = { action, at: Date.now() };
+    setArmed(action);
+    armTimer.current = setTimeout(disarm, CONFIRM_WINDOW_MS);
+  };
+  const isArmed = (action: ArmedAction) =>
+    armedRef.current?.action === action && Date.now() - armedRef.current.at <= CONFIRM_WINDOW_MS;
+  useEffect(() => () => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+  }, []);
   const [slashIndex, setSlashIndex] = useState(0);
   const slashIndexRef = useRef(0);
   // `@` file picker: list loaded lazily on first trigger, Esc dismisses per query.
@@ -801,6 +875,7 @@ function useSessionInteraction(
       : { ...next, text: cleanedText, cursor: Math.min(next.cursor, cleanedText.length) };
     composerRef.current = cleaned;
     setComposer(cleaned);
+    if (armedRef.current) disarm();
     setSlashIndex(0);
     slashIndexRef.current = 0;
     setAtIndex(0);
@@ -924,6 +999,11 @@ function useSessionInteraction(
     setScrollback((current) => appendUserBlock(current, value));
     if (value === "/exit" || value === "/quit") {
       await close(0);
+      return;
+    }
+    // `/help` and `?` land on the same sheet — one key map, not two.
+    if (value === "/help") {
+      openShortcuts(true);
       return;
     }
     const startedAt = Date.now();
@@ -1077,6 +1157,12 @@ function useSessionInteraction(
       setComposerState(clearQueue(composerRef.current));
       setView((current) => reduceEvent(current, { kind: "status", key: "queue", text: undefined }));
     },
+    shortcutsOpen: () => shortcutsOpenRef.current,
+    setShortcutsOpen: openShortcuts,
+    scrollShortcuts: (delta) => setShortcutsScroll((current) => Math.max(0, current + delta)),
+    isArmed,
+    arm,
+    disarm,
   }));
   const inputDisplay = composer.queue
     ? `${composer.text}${composer.text ? " " : ""}[queued: ${composer.queue.slice(0, 40)}${composer.queue.length > 40 ? "…" : ""}]`
@@ -1092,6 +1178,9 @@ function useSessionInteraction(
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
+    shortcutsOpen,
+    shortcutsScroll,
+    armed,
   };
 }
 
@@ -1150,6 +1239,13 @@ function handleInput(options: Readonly<{
   /** Returns true when an in-app text selection was cleared. */
   clearTextSelection?: () => boolean;
   clearQueued: () => void;
+  shortcutsOpen?: () => boolean;
+  setShortcutsOpen?: (open: boolean) => void;
+  scrollShortcuts?: (delta: number) => void;
+  /** True while a second press within `CONFIRM_WINDOW_MS` would commit `action`. */
+  isArmed?: (action: ArmedAction) => boolean;
+  arm?: (action: ArmedAction) => void;
+  disarm?: () => void;
 }>): void {
   if (options.interaction === "confirm") {
     handleConfirmInput(options);
@@ -1164,9 +1260,41 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.ctrl && options.character === "c") {
-    if (options.busy) options.session.abortTurn();
-    else void options.close(0);
+    // Cancelling is recoverable, so it happens on the first press.
+    if (options.busy) {
+      options.session.abortTurn();
+      return;
+    }
+    // Shell muscle memory: clear the line before considering the exit.
+    if (options.composer.text.length > 0) {
+      options.setInputValue("");
+      return;
+    }
+    if (options.isArmed?.("exit") ?? true) {
+      options.disarm?.();
+      void options.close(0);
+      return;
+    }
+    options.arm?.("exit");
     return;
+  }
+  // The shortcut sheet is modal: it owns this keystroke. Esc/?/q/Enter dismiss it;
+  // anything else dismisses and still lands in the composer, so it never traps.
+  if (options.shortcutsOpen?.()) {
+    if (options.key.upArrow || options.key.downArrow || options.key.pageUp || options.key.pageDown) {
+      const step = options.key.pageUp || options.key.pageDown ? 10 : 1;
+      options.scrollShortcuts?.(options.key.upArrow || options.key.pageUp ? -step : step);
+      return;
+    }
+    options.setShortcutsOpen?.(false);
+    if (
+      options.key.escape
+      || options.key.return
+      || options.character === "?"
+      || options.character === "q"
+    ) {
+      return;
+    }
   }
   if (options.key.ctrl && options.character === "o") {
     options.toggleExpandable();
@@ -1176,6 +1304,11 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.escape && options.clearTextSelection?.()) {
+    return;
+  }
+  // Esc while a task runs cancels it and keeps the draft (Ctrl+C stays the alias).
+  if (options.key.escape && options.busy) {
+    options.session.abortTurn();
     return;
   }
 
@@ -1209,6 +1342,18 @@ function handleInput(options: Readonly<{
   // Shift+Tab: permission mode (auto → full → strict), even while slash menu is open.
   if (options.key.tab && options.key.shift && !options.busy) {
     options.session.cyclePermissionMode();
+    return;
+  }
+
+  // `?` on an empty prompt opens the sheet the footer advertises. Guarded on an
+  // empty draft so "what?" still types a question mark.
+  if (
+    options.character === "?"
+    && !options.key.ctrl
+    && !options.key.meta
+    && options.composer.text.length === 0
+  ) {
+    options.setShortcutsOpen?.(true);
     return;
   }
 
@@ -1254,6 +1399,21 @@ function handleInput(options: Readonly<{
         return;
       }
     }
+  }
+
+  // Idle Esc: harmless alone, clears the draft when tapped twice in a row.
+  if (options.key.escape) {
+    if (options.composer.text.length === 0) {
+      options.disarm?.();
+      return;
+    }
+    if (options.isArmed?.("clear-draft")) {
+      options.disarm?.();
+      options.setComposerState(rememberSubmission(options.composer, options.composer.text));
+      return;
+    }
+    options.arm?.("clear-draft");
+    return;
   }
 
   // Route A only: self-managed transcript scroll. Route B: composer history + cursor.
@@ -1361,14 +1521,6 @@ function handleInput(options: Readonly<{
 
 async function runInput(session: PreparedSession, value: string, bridge: TuiSessionBridge): Promise<void> {
   try {
-    if (value === "/help") {
-      const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
-      bridge.sink.notify?.(
-        `Commands: ${names} · Shift+Tab permissions · Tab thinking · Ctrl+O transcript · ? /help`,
-        "info",
-      );
-      return;
-    }
     if (value === "/bypass") {
       bridge.toggleBypass();
       return;
@@ -2094,14 +2246,35 @@ export function collectSlashCommands(host: { listCommandEntries(): readonly Slas
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Exported for unit tests. Returns undefined when slash menu should be hidden. */
+/**
+ * Exported for unit tests. Returns undefined when slash menu should be hidden.
+ *
+ * Ranks like the `@` picker so one UI does not hold two matching rules: prefix
+ * beats substring beats subsequence, shorter names win ties. Subsequence needs
+ * two characters — one letter would otherwise drag in most of the list.
+ */
 export function filterSlashCommands(
   commands: readonly SlashCommand[],
   query: string | undefined,
 ): readonly SlashCommand[] | undefined {
   if (query === undefined) return undefined;
   const needle = query.toLowerCase();
-  return commands.filter((command) => command.name.toLowerCase().startsWith(needle));
+  if (needle.length === 0) return commands;
+  const scored: Array<{ command: SlashCommand; score: number }> = [];
+  for (const command of commands) {
+    const name = command.name.toLowerCase();
+    let score: number;
+    if (name.startsWith(needle)) score = 0;
+    else if (name.includes(needle)) score = 1;
+    else if (needle.length >= 2 && isSubsequence(needle, name)) score = 2;
+    else continue;
+    scored.push({ command, score });
+  }
+  scored.sort((a, b) =>
+    a.score - b.score
+    || a.command.name.length - b.command.name.length
+    || a.command.name.localeCompare(b.command.name));
+  return scored.map((entry) => entry.command);
 }
 
 function ConfirmView(props: Readonly<{
