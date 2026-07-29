@@ -100,6 +100,13 @@ const stateV2Schema = metadataV2Schema.extend({
   messages: z.array(messageSchema),
   /** Auditable compaction facts; optional for forward/back compat with older v2 files. */
   compaction_log: z.array(compactionFactSchema).optional(),
+  /**
+   * Highest journal seq folded into this snapshot. Journal records with
+   * seq <= this value are stale leftovers from a crash between the state
+   * rename and the journal truncate — replaying them would duplicate
+   * messages. Absent on files written before this watermark existed (0).
+   */
+  journal_applied_seq: z.number().int().nonnegative().optional(),
 });
 
 export type SessionWorkspace = z.infer<typeof workspaceSchema>;
@@ -117,6 +124,8 @@ export type StoredSession = Readonly<{
   workspace?: SessionWorkspace;
   execution?: SessionExecution;
   compactionLog?: readonly WalCompactionFact[];
+  /** Journal watermark from state.json; see `journal_applied_seq`. */
+  journalAppliedSeq?: number;
 }>;
 
 export type SaveSessionInput = Readonly<{
@@ -145,13 +154,19 @@ export type SaveSessionInput = Readonly<{
 
 export function decodeSessionState(value: unknown): StoredSession {
   const state = stateV2Schema.parse(value);
-  const { messages, compaction_log: compactionLog, ...metadata } = state;
+  const {
+    messages,
+    compaction_log: compactionLog,
+    journal_applied_seq: journalAppliedSeq,
+    ...metadata
+  } = state;
   return {
     metadata,
     messages: messages as ChatMessage[],
     workspace: state.workspace,
     execution: state.execution,
     ...(compactionLog && compactionLog.length > 0 ? { compactionLog } : {}),
+    ...(journalAppliedSeq !== undefined ? { journalAppliedSeq } : {}),
   };
 }
 
@@ -175,6 +190,7 @@ export function toWalCompactionFact(
 export class SessionStore {
   readonly #root: string;
   readonly #now: () => Date;
+  readonly #onWarning: (message: string) => void;
   /** Next journal seq per session id (1-based next write). */
   readonly #nextSeq = new Map<string, number>();
   /**
@@ -183,9 +199,15 @@ export class SessionStore {
    */
   readonly #live = new Map<string, StoredSession>();
 
-  constructor(options: Readonly<{ root: string; now?: () => Date }>) {
+  constructor(options: Readonly<{
+    root: string;
+    now?: () => Date;
+    /** Surface non-fatal degradations (skipped damaged sessions, WAL repairs). */
+    onWarning?: (message: string) => void;
+  }>) {
     this.#root = path.resolve(options.root);
     this.#now = options.now ?? (() => new Date());
+    this.#onWarning = options.onWarning ?? (() => undefined);
   }
 
   createId(): string {
@@ -246,7 +268,15 @@ export class SessionStore {
     const sessions: SessionMetadata[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory() || !SESSION_ID.test(entry.name)) continue;
-      sessions.push((await this.#loadVersioned(entry.name)).metadata);
+      // One damaged session must not take down resume/list/picker for all
+      // others: skip it with a visible warning instead of throwing the table.
+      try {
+        sessions.push((await this.#loadVersioned(entry.name)).metadata);
+      } catch (error) {
+        this.#onWarning(
+          `session ${entry.name} is damaged and was skipped: ${errorMessage(error)}`,
+        );
+      }
     }
     return sessions.sort((left, right) => right.updated_at.localeCompare(left.updated_at));
   }
@@ -276,12 +306,15 @@ export class SessionStore {
     // Crash-safe order: append durable compaction fact (+ projection) to the
     // journal before rewriting state. Resume can rebuild from journal alone if
     // the process dies between append and snapshot truncate.
+    // Seq stays monotonic across snapshot truncations so the applied-seq
+    // watermark below can tell stale journal leftovers from fresh records.
+    let nextSeq = this.#nextSeq.get(input.id);
+    if (nextSeq === undefined) {
+      const journal = await readJournal(directory);
+      for (const warning of journal.warnings) this.#onWarning(`session ${input.id}: ${warning}`);
+      nextSeq = Math.max(journal.nextSeq, (existing?.journalAppliedSeq ?? 0) + 1);
+    }
     if (input.compaction) {
-      let nextSeq = this.#nextSeq.get(input.id);
-      if (nextSeq === undefined) {
-        const journal = await readJournal(directory);
-        nextSeq = journal.nextSeq;
-      }
       nextSeq = await appendJournal({
         directory,
         nextSeq,
@@ -291,8 +324,8 @@ export class SessionStore {
           messages: input.messages,
         },
       });
-      this.#nextSeq.set(input.id, nextSeq);
     }
+    const appliedSeq = nextSeq - 1;
 
     const priorLog = existing?.compactionLog ?? [];
     const compactionLog = input.compaction
@@ -313,11 +346,12 @@ export class SessionStore {
       execution,
       messages: input.messages,
       ...(compactionLog.length > 0 ? { compaction_log: compactionLog } : {}),
+      ...(appliedSeq > 0 ? { journal_applied_seq: appliedSeq } : {}),
     });
     await writeJsonAtomicDurable(path.join(directory, STATE_FILE), state);
     await truncateJournal(directory);
     const stored = decodeSessionState(state);
-    this.#remember(input.id, stored, 1);
+    this.#remember(input.id, stored, nextSeq);
     return stored;
   }
 
@@ -375,7 +409,8 @@ export class SessionStore {
     let nextSeq = this.#nextSeq.get(input.id);
     if (nextSeq === undefined) {
       const journal = await readJournal(directory);
-      nextSeq = journal.nextSeq;
+      for (const warning of journal.warnings) this.#onWarning(`session ${input.id}: ${warning}`);
+      nextSeq = Math.max(journal.nextSeq, (existing.journalAppliedSeq ?? 0) + 1);
     }
 
     nextSeq = await appendJournal({
@@ -404,6 +439,9 @@ export class SessionStore {
       workspace: metadata.workspace,
       execution: metadata.execution,
       ...(existing.compactionLog ? { compactionLog: existing.compactionLog } : {}),
+      ...(existing.journalAppliedSeq !== undefined
+        ? { journalAppliedSeq: existing.journalAppliedSeq }
+        : {}),
     };
     this.#remember(input.id, stored, nextSeq);
     return stored;
@@ -425,8 +463,21 @@ export class SessionStore {
       const text = await readFile(path.join(directory, STATE_FILE), "utf8");
       const base = decodeSessionState(JSON.parse(text));
       const journal = await readJournal(directory);
-      if (journal.records.length === 0) {
-        this.#remember(id, base, journal.nextSeq);
+      for (const warning of journal.warnings) this.#onWarning(`session ${id}: ${warning}`);
+      // Records at or below the snapshot watermark were already folded into
+      // state.json; replaying them (crash between rename and truncate) would
+      // duplicate messages and permanently poison the session on next persist.
+      const appliedSeq = base.journalAppliedSeq ?? 0;
+      const staleCount = journal.records.filter((record) => record.seq <= appliedSeq).length;
+      if (staleCount > 0) {
+        this.#onWarning(
+          `session ${id}: skipped ${staleCount} stale journal record(s) already folded into the snapshot`,
+        );
+      }
+      const records = journal.records.filter((record) => record.seq > appliedSeq);
+      const nextSeq = Math.max(journal.nextSeq, appliedSeq + 1);
+      if (records.length === 0) {
+        this.#remember(id, base, nextSeq);
         return base;
       }
       const applied = applyJournal({
@@ -435,11 +486,11 @@ export class SessionStore {
         workspace: base.workspace,
         execution: base.execution,
         compactionLog: base.compactionLog,
-      }, journal.records);
+      }, records);
       if (base.metadata.schema_version !== "xio-session.v2") {
         throw new Error("journal present without xio-session.v2 snapshot");
       }
-      const lastJournalTime = journal.records[journal.records.length - 1]?.t;
+      const lastJournalTime = records[records.length - 1]?.t;
       const metadata: SessionMetadataV2 = {
         ...base.metadata,
         model: applied.model ?? base.metadata.model,
@@ -454,8 +505,11 @@ export class SessionStore {
         workspace: metadata.workspace,
         execution: metadata.execution,
         ...(applied.compactionLog.length > 0 ? { compactionLog: applied.compactionLog } : {}),
+        ...(base.journalAppliedSeq !== undefined
+          ? { journalAppliedSeq: base.journalAppliedSeq }
+          : {}),
       };
-      this.#remember(id, stored, journal.nextSeq);
+      this.#remember(id, stored, nextSeq);
       return stored;
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;

@@ -216,7 +216,20 @@ function restoredModel(stored: StoredSession | undefined): SessionOptions["model
  * and checkpoint refs; identity mismatch fails closed without deleting metadata.
  */
 export async function deleteStoredSession(store: SessionStore, id: string): Promise<void> {
-  const stored = await store.load(id);
+  // A damaged session must stay deletable: load() failing (corrupt journal,
+  // half-written directory) cannot block the only cleanup exit. Fall back to
+  // removing the directory; worktree/checkpoint cleanup is skipped with a note.
+  let stored;
+  try {
+    stored = await store.load(id);
+  } catch (error) {
+    process.stderr.write(
+      `[warn] session ${id} is damaged (${error instanceof Error ? error.message : String(error)}); `
+      + "removing its directory without worktree/checkpoint cleanup\n",
+    );
+    await store.remove(id);
+    return;
+  }
   const workspace = stored.workspace;
 
   if (workspace?.mode === "worktree" && workspace.session_id && workspace.main_root) {

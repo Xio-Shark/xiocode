@@ -135,10 +135,62 @@ describe("appendJournal / readJournal", () => {
 
   it("returns an empty journal for a missing or blank file", async () => {
     const directory = await tempDir();
-    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1 });
+    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1, warnings: [] });
 
     await writeFile(journalPath(directory), "\n\n", "utf8");
-    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1 });
+    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1, warnings: [] });
+  });
+
+  it("drops a torn newline-less tail and heals the file for the next append", async () => {
+    const directory = await tempDir();
+    await appendJournal({ directory, nextSeq: 1, now: NOW, appendMessages: [userMessage("a")] });
+    const intact = await readFile(journalPath(directory), "utf8");
+    // Crash mid-append: half a JSON record, no trailing newline.
+    await writeFile(journalPath(directory), `${intact}{"schema_version":"${WAL_SCHEMA}","seq":2,"t":"20`, "utf8");
+
+    const first = await readJournal(directory);
+    expect(first.records.map((record) => record.seq)).toEqual([1]);
+    expect(first.nextSeq).toBe(2);
+    expect(first.warnings).toEqual([
+      "session journal: dropped torn tail record (crash mid-append)",
+    ]);
+    // File healed: the torn bytes are gone and a follow-up append round-trips.
+    expect(await readFile(journalPath(directory), "utf8")).toBe(intact);
+    await appendJournal({ directory, nextSeq: first.nextSeq, now: NOW, appendMessages: [userMessage("b")] });
+    const second = await readJournal(directory);
+    expect(second.records.map((record) => record.seq)).toEqual([1, 2]);
+    expect(second.warnings).toEqual([]);
+  });
+
+  it("restores the missing newline when the tail record is complete JSON", async () => {
+    const directory = await tempDir();
+    await appendJournal({ directory, nextSeq: 1, now: NOW, appendMessages: [userMessage("a")] });
+    const intact = await readFile(journalPath(directory), "utf8");
+    // Crash after the record bytes but before the newline.
+    await writeFile(journalPath(directory), intact.slice(0, -1), "utf8");
+
+    const result = await readJournal(directory);
+    expect(result.records.map((record) => record.seq)).toEqual([1]);
+    expect(result.warnings).toEqual([
+      "session journal: restored missing newline after last record",
+    ]);
+    // Boundary restored so the next append cannot concatenate onto the line.
+    expect(await readFile(journalPath(directory), "utf8")).toBe(intact);
+  });
+
+  it("accepts a journal whose first seq is above 1 (post-truncate monotonic seq)", async () => {
+    const directory = await tempDir();
+    const next = await appendJournal({
+      directory,
+      nextSeq: 7,
+      now: NOW,
+      appendMessages: [userMessage("after-snapshot")],
+    });
+    expect(next).toBe(8);
+
+    const { records, nextSeq } = await readJournal(directory);
+    expect(records.map((record) => record.seq)).toEqual([7]);
+    expect(nextSeq).toBe(8);
   });
 
   it("rejects invalid JSON and seq gaps with the line number", async () => {
@@ -261,7 +313,7 @@ describe("truncateJournal", () => {
     await truncateJournal(directory);
 
     expect(await readFile(journalPath(directory), "utf8")).toBe("");
-    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1 });
+    expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1, warnings: [] });
   });
 });
 
