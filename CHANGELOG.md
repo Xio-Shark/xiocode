@@ -43,8 +43,34 @@ Release cadence: **every 1–2 weeks** while the project is young.
   `xio doctor`.
 - Issue templates for bug reports (which ask for `xio doctor` output) and
   feature requests.
+- **A key map you can actually find.** Pressing `?` on an empty prompt — or
+  running `/help` — opens a scrollable shortcut sheet grouped by what you are
+  doing: writing a prompt, steering a running task, reading tool output, running
+  the session. The footer had advertised `?` for a while without it doing
+  anything; it works now, and it is the one place the `!text` / `>>text` steer
+  prefixes and the `Ctrl+O` output viewer are written down.
+- **A hint line under the prompt.** While a task runs it shows how to cancel and
+  how to steer; when a keystroke is waiting on a second press it says so.
 
 ### Changed
+- **`Esc` cancels the running task** and keeps whatever you had typed. On an idle
+  prompt, `Esc` twice in a row clears the draft — and the cleared text stays
+  recallable with `↑`.
+- **`Ctrl+C` asks before it ends the session.** It still cancels a running task
+  on the first press. When idle it clears a half-typed draft, and only exits
+  after a second `Ctrl+C` on an already-empty prompt, so one stray keystroke no
+  longer drops you out of a session.
+- **The slash menu searches like the file picker.** `/pact` now finds
+  `/compact` and `/rlb` finds `/rollback`, ranked prefix first, instead of only
+  matching what a command starts with.
+- **Tables in answers line up.** Markdown tables are padded to even columns
+  before they hit the screen — measured by what the terminal actually shows, so
+  CJK text and inline `code` or **bold** stay aligned. The `|` and `---` are
+  kept, so a table you copy out of the transcript is still valid markdown, and
+  anything too wide to pad is left exactly as the model wrote it.
+- **Heading depth is visible again.** `#` and `######` used to render
+  identically; the top two levels now carry the accent colour and deeper ones
+  are bold only, so a long answer keeps its outline.
 - **`install.sh` handles Node itself.** It detects a too-old or missing Node and
   prints the one-line install command for your platform; `XIO_INSTALL_NODE=1`
   installs Node 22 via fnm for you.

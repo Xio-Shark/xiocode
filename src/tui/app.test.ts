@@ -8,6 +8,7 @@ import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
   App,
+  CONFIRM_WINDOW_MS,
   busyPhaseLabel,
   collectSlashCommands,
   filterSlashCommands,
@@ -569,6 +570,26 @@ describe("App", () => {
     expect(all.filter((item) => item.name === "compact")).toHaveLength(1);
     expect(filterSlashCommands(all, "ef")?.map((item) => item.name)).toEqual(["effort"]);
     expect(filterSlashCommands(all, undefined)).toBeUndefined();
+    expect(filterSlashCommands(all, "")).toEqual(all);
+  });
+
+  it("ranks slash commands prefix → substring → subsequence, like the @ picker", () => {
+    const host = new ExtensionHost();
+    host.registerCommand("compact", { description: "Compact context.", handler: async () => {} });
+    host.registerCommand("connect", { description: "Set up a key.", handler: async () => {} });
+    host.registerCommand("rollback", { description: "Undo changes.", handler: async () => {} });
+    const all = collectSlashCommands(host);
+
+    // Substring: typing the middle of a name now finds it.
+    expect(filterSlashCommands(all, "pact")?.map((item) => item.name)).toEqual(["compact"]);
+    // Subsequence: scattered letters still resolve.
+    expect(filterSlashCommands(all, "rlb")?.map((item) => item.name)).toEqual(["rollback"]);
+    // Prefix outranks the rest, and case never matters.
+    expect(filterSlashCommands(all, "CO")?.map((item) => item.name).slice(0, 2))
+      .toEqual(["compact", "connect"]);
+    // One letter stays tight — no subsequence blowout.
+    expect(filterSlashCommands(all, "k")?.map((item) => item.name)).toEqual(["rollback"]);
+    expect(filterSlashCommands(all, "zz")).toEqual([]);
   });
 
   it("shows slash command menu when typing /", async () => {
@@ -654,7 +675,305 @@ describe("App", () => {
     releasePrompt();
     await new Promise((resolve) => setTimeout(resolve, 40));
   });
+
+  it("? on an empty prompt opens the shortcut sheet the footer advertises", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    expect(instance.lastFrame() ?? "").toContain("? for shortcuts");
+
+    instance.stdin.write("?");
+    await settle();
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("Shortcuts");
+    expect(frame).toContain("Prompt");
+    expect(frame).toContain("Send the prompt");
+
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").not.toContain("Send the prompt");
+  });
+
+  it("scrolls the shortcut sheet when it does not fit the terminal", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("?");
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("Send the prompt");
+
+    // Paging down must reveal the later groups, not dismiss the sheet.
+    instance.stdin.write(PAGE_DOWN);
+    await settle();
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain(">>text");
+    expect(frame).not.toContain("Send the prompt");
+  });
+
+  it("? inside a draft types a question mark instead of opening the sheet", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("what");
+    instance.stdin.write("?");
+    await settle();
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("what?");
+    expect(frame).not.toContain(">>text");
+  });
+
+  it("/help lands on the same sheet as ?", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("/help\r");
+    await settle();
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("Shortcuts");
+    expect(frame).toContain("Send the prompt");
+    // The old one-line notify dump is gone — one key map, not two.
+    expect(frame).not.toContain("Commands: /");
+  });
+
+  it("Esc cancels a running turn and keeps the draft", async () => {
+    const host = new ExtensionHost();
+    let aborts = 0;
+    let releasePrompt!: () => void;
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+    const session: PreparedSession = {
+      ...createSession(host),
+      abortTurn() {
+        aborts += 1;
+        releasePrompt();
+      },
+      runPrompt: async () => {
+        await promptGate;
+        return {
+          text: "done",
+          success: true,
+          turns: 1,
+          toolCalls: 0,
+          toolErrors: 0,
+          usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
+        };
+      },
+    };
+    const instance = render(React.createElement(App, {
+      session,
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    instance.stdin.write("long task\r");
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("esc cancel");
+
+    instance.stdin.write("keep me");
+    await settle();
+    instance.stdin.write(ESC);
+    await settle();
+
+    expect(aborts).toBe(1);
+    expect(instance.lastFrame() ?? "").toContain("keep me");
+  });
+
+  it("idle Esc is harmless alone and clears the draft when tapped twice", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("draft text");
+    await settle();
+
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("draft text");
+    expect(instance.lastFrame() ?? "").toContain("esc again to clear the draft");
+
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").not.toContain("draft text");
+  });
+
+  it("keeps a cleared draft recallable from prompt history", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      // Route B: arrows walk prompt history instead of scrolling the transcript.
+      appendScrollback: true,
+      async onExit() {},
+    }));
+    instance.stdin.write("draft text");
+    instance.stdin.write(ESC);
+    await settle();
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").not.toContain("draft text");
+
+    instance.stdin.write(ARROW_UP);
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("draft text");
+  });
+
+  it("asks before an idle Ctrl+C ends the session", async () => {
+    const exits: number[] = [];
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit(code) {
+        exits.push(code);
+      },
+    }));
+
+    instance.stdin.write(CTRL_C);
+    await settle();
+    expect(exits).toEqual([]);
+    expect(instance.lastFrame() ?? "").toContain("ctrl+c again to exit");
+
+    instance.stdin.write(CTRL_C);
+    await settle();
+    expect(exits).toEqual([0]);
+  });
+
+  it("lets an idle Ctrl+C clear the draft before it arms the exit", async () => {
+    const exits: number[] = [];
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit(code) {
+        exits.push(code);
+      },
+    }));
+
+    instance.stdin.write("half-written thought");
+    await settle();
+    instance.stdin.write(CTRL_C);
+    await settle();
+    let frame = instance.lastFrame() ?? "";
+    expect(frame).not.toContain("half-written thought");
+    expect(frame).not.toContain("ctrl+c again to exit");
+    expect(exits).toEqual([]);
+
+    // Only now, on an empty prompt, does Ctrl+C start asking about the exit.
+    instance.stdin.write(CTRL_C);
+    await settle();
+    frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("ctrl+c again to exit");
+    expect(exits).toEqual([]);
+  });
+
+  it("keeps Ctrl+C a one-press cancel while a turn is running", async () => {
+    const host = new ExtensionHost();
+    const exits: number[] = [];
+    let aborts = 0;
+    let releasePrompt!: () => void;
+    const promptGate = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+    const session: PreparedSession = {
+      ...createSession(host),
+      abortTurn() {
+        aborts += 1;
+        releasePrompt();
+      },
+      runPrompt: async () => {
+        await promptGate;
+        return {
+          text: "done",
+          success: true,
+          turns: 1,
+          toolCalls: 0,
+          toolErrors: 0,
+          usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
+        };
+      },
+    };
+    const instance = render(React.createElement(App, {
+      session,
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit(code) {
+        exits.push(code);
+      },
+    }));
+
+    instance.stdin.write("long task\r");
+    await settle();
+    instance.stdin.write(CTRL_C);
+    await settle();
+
+    expect(aborts).toBe(1);
+    expect(exits).toEqual([]);
+  });
+
+  it("lets the armed draft clear expire instead of leaving a stale hint", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("slow hands");
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("esc again to clear the draft");
+
+    await settle(CONFIRM_WINDOW_MS + 150);
+    expect(instance.lastFrame() ?? "").not.toContain("esc again to clear");
+
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("slow hands");
+  });
+
+  it("typing between two Escs disarms the draft clear", async () => {
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    instance.stdin.write("keep this");
+    instance.stdin.write(ESC);
+    await settle();
+    instance.stdin.write("!");
+    await settle();
+    expect(instance.lastFrame() ?? "").not.toContain("esc again to clear");
+
+    instance.stdin.write(ESC);
+    await settle();
+    expect(instance.lastFrame() ?? "").toContain("keep this!");
+  });
 });
+
+const ESC = "\u001B";
+const ARROW_UP = "\u001B[A";
+const PAGE_DOWN = "\u001B[6~";
+const CTRL_C = "\u0003";
+
+function settle(ms = 40): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function emptyView(): ViewState {
   return { entries: [] as ViewState["entries"], statuses: {}, widgets: {}, bypass: false };
