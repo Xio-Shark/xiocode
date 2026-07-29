@@ -52,6 +52,28 @@ describe("FileWriteQueue", () => {
     expect(final === "v0+A+B\n" || final === "v0+B+A\n").toBe(true);
   });
 
+  it("preserves call order (FIFO) for same-path writes across many rounds", async () => {
+    // Regression: key resolution awaited realpath before enqueueing, so two
+    // back-to-back run() calls could enqueue reversed (~16% over 300 rounds).
+    root = await mkdtemp(path.join(os.tmpdir(), "xio-write-queue-fifo-"));
+    const target = path.join(root, "fifo.ts");
+    await writeFile(target, "", "utf8");
+    const queue = new FileWriteQueue();
+
+    for (let round = 0; round < 300; round += 1) {
+      const order: string[] = [];
+      await Promise.all([
+        queue.run(target, async () => {
+          order.push("write");
+        }),
+        queue.run(target, async () => {
+          order.push("edit");
+        }),
+      ]);
+      expect(order).toEqual(["write", "edit"]);
+    }
+  });
+
   it("aliases symlink and realpath onto the same queue key", async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "xio-write-queue-link-"));
     const real = path.join(root, "real.ts");

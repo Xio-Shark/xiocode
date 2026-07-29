@@ -8,15 +8,40 @@ import path from "node:path";
  *
  * Different real paths may run concurrently. Abort does not clear the queue —
  * pending tasks still settle so callers get tool results instead of hanging.
+ *
+ * FIFO guarantee: run() claims its queue slot synchronously via an admission
+ * chain, so enqueue order always equals call order. Resolving the key first
+ * (realpath goes through the libuv thread pool) used to let a later caller
+ * enqueue before an earlier one — measured ~16% reversal on same-path pairs.
  */
 export class FileWriteQueue {
   readonly #tails = new Map<string, Promise<void>>();
+  #admissionTail: Promise<void> = Promise.resolve();
 
-  async run<T>(filePath: string, task: () => Promise<T>): Promise<T> {
-    const key = await resolveWriteQueueKey(filePath);
-    // Enqueue synchronously after key resolution so two concurrent run() calls
-    // cannot both observe an empty tail for the same key.
-    return this.#enqueue(key, task);
+  run<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+    // Key resolution starts immediately (parallel with any admission wait);
+    // only the enqueue step is ordered by the admission chain.
+    const keyPromise = resolveWriteQueueKey(filePath);
+    const previousAdmission = this.#admissionTail;
+    let admit!: () => void;
+    this.#admissionTail = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    return previousAdmission
+      .then(() => keyPromise)
+      .then(
+        (key) => {
+          const result = this.#enqueue(key, task);
+          // Slot claimed — release the next caller before this task settles so
+          // different real paths still run concurrently.
+          admit();
+          return result;
+        },
+        (error: unknown) => {
+          admit();
+          throw error;
+        },
+      );
   }
 
   #enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {

@@ -26,7 +26,11 @@ export function parseResumeRequest(args: readonly string[]): Readonly<{
 
 export function createSessionStore(env: NodeJS.ProcessEnv): SessionStore {
   const root = env.XIO_HOME ? expandHome(env.XIO_HOME) : path.join(os.homedir(), ".xiocode");
-  return new SessionStore({ root: path.join(root, "sessions") });
+  return new SessionStore({
+    root: path.join(root, "sessions"),
+    // Damaged sessions degrade with a visible reason instead of failing silently.
+    onWarning: (message) => process.stderr.write(`[warn] ${message}\n`),
+  });
 }
 
 export async function resolveResume(input: Readonly<{
