@@ -396,6 +396,111 @@ describe("SessionStore", () => {
     await expect(store.load("badj")).rejects.toThrow(/corrupt session journal|failed to load session badj/i);
   });
 
+  it("does not duplicate messages when a crash lands between snapshot rename and journal truncate", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const base = {
+      id: "snapcrash",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+    };
+    const messages = [{ role: "user" as const, content: "q" }];
+    await store.save({ ...base, messages });
+    const withReply = [
+      ...messages,
+      {
+        role: "assistant" as const,
+        content: "",
+        toolCalls: [{ id: "c1", name: "read", arguments: { path: "a.ts" } }],
+      },
+      { role: "tool" as const, toolCallId: "c1", name: "read", content: "body" },
+    ];
+    await store.save({ ...base, messages: withReply, durability: "journal" });
+    const journalFile = path.join(root, "snapcrash", JOURNAL_FILE);
+    const journalBeforeSnapshot = await readFile(journalFile, "utf8");
+
+    // Turn-boundary snapshot folds the journal into state.json and truncates.
+    await store.save({ ...base, messages: withReply, durability: "snapshot" });
+    // Simulate the crash window: state.json renamed, truncate never ran.
+    await writeFile(journalFile, journalBeforeSnapshot, "utf8");
+
+    const warnings: string[] = [];
+    const reloaded = new SessionStore({ root, onWarning: (message) => warnings.push(message) });
+    const loaded = await reloaded.load("snapcrash");
+    expect(loaded.messages).toHaveLength(withReply.length);
+    expect(loaded.messages.filter((m) => m.role === "tool")).toHaveLength(1);
+    expect(warnings.some((w) => w.includes("stale journal record"))).toBe(true);
+
+    // Follow-up persists must not fossilize duplicates either.
+    const next = [...withReply, { role: "user" as const, content: "again" }];
+    await reloaded.save({ ...base, messages: next, durability: "journal" });
+    const cold = new SessionStore({ root });
+    expect((await cold.load("snapcrash")).messages).toHaveLength(next.length);
+  });
+
+  it("loads a session with a torn journal tail by dropping only the torn record", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const base = {
+      id: "torn",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+    };
+    const messages = [{ role: "user" as const, content: "q" }];
+    await store.save({ ...base, messages });
+    await store.save({
+      ...base,
+      messages: [...messages, { role: "assistant" as const, content: "partial" }],
+      durability: "journal",
+    });
+    const journalFile = path.join(root, "torn", JOURNAL_FILE);
+    const intact = await readFile(journalFile, "utf8");
+    await writeFile(journalFile, `${intact}{"schema_version":"xio-session-wal.v1","seq":3`, "utf8");
+
+    const warnings: string[] = [];
+    const reloaded = new SessionStore({ root, onWarning: (message) => warnings.push(message) });
+    const loaded = await reloaded.load("torn");
+    expect(loaded.messages).toHaveLength(2);
+    expect(warnings.some((w) => w.includes("torn tail"))).toBe(true);
+  });
+
+  it("list() skips damaged sessions instead of failing the whole table", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    await store.save({
+      id: "healthy",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [{ role: "user", content: "ok" }],
+    });
+    await store.save({
+      id: "poisoned",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp",
+      mainRoot: "/tmp",
+      messages: [{ role: "user", content: "bad" }],
+    });
+    // Newline-terminated garbage stays fail-closed for this session only.
+    await writeFile(path.join(root, "poisoned", JOURNAL_FILE), "{not-json\n", "utf8");
+    // Empty directory: crash during the very first save leaves this behind.
+    await mkdir(path.join(root, "emptydir"), { recursive: true });
+
+    const warnings: string[] = [];
+    const reloaded = new SessionStore({ root, onWarning: (message) => warnings.push(message) });
+    const sessions = await reloaded.list();
+    expect(sessions.map((session) => session.id)).toEqual(["healthy"]);
+    expect(warnings.filter((w) => w.includes("damaged and was skipped"))).toHaveLength(2);
+    // The healthy session and delete path stay reachable.
+    expect((await reloaded.load("healthy")).messages[0]?.content).toBe("ok");
+    await expect(reloaded.load("poisoned")).rejects.toThrow(/failed to load session/i);
+  });
+
   it("keeps legacy v2 without journal readable", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
     roots.push(root);

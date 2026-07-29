@@ -230,18 +230,42 @@ export async function readJournal(directory: string): Promise<Readonly<{
   records: readonly WalRecord[];
   /** Next seq to write (1 when empty). Accounts for skipped unknown ops. */
   nextSeq: number;
+  /** Non-fatal self-repairs (torn tail from a crash mid-append). */
+  warnings: readonly string[];
 }>> {
   const file = journalPath(directory);
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return { records: [], nextSeq: 1 };
+    if (errorCode(error) === "ENOENT") return { records: [], nextSeq: 1, warnings: [] };
     throw error;
   }
-  if (text.trim().length === 0) return { records: [], nextSeq: 1 };
+  const warnings: string[] = [];
+  // A crash mid-append leaves a torn, newline-less tail — the one failure mode
+  // an append-only journal exists to absorb. Heal it here instead of poisoning
+  // every load: a complete record that only lost its newline gets the boundary
+  // restored (so the next append cannot concatenate onto it); a partial record
+  // is truncated away with a warning. Corruption inside newline-terminated
+  // lines stays fail-closed below.
+  if (text.length > 0 && !text.endsWith("\n")) {
+    const cut = text.lastIndexOf("\n") + 1;
+    const tail = text.slice(cut);
+    if (isCompleteJson(tail)) {
+      text = `${text}\n`;
+      await appendRaw(file, "\n");
+      warnings.push("session journal: restored missing newline after last record");
+    } else {
+      text = text.slice(0, cut);
+      await truncateToBytes(file, Buffer.byteLength(text, "utf8"));
+      warnings.push("session journal: dropped torn tail record (crash mid-append)");
+    }
+  }
+  if (text.trim().length === 0) return { records: [], nextSeq: 1, warnings };
   const records: WalRecord[] = [];
-  let expectedSeq = 1;
+  // First record sets the seq baseline: after a snapshot truncate the journal
+  // restarts at applied_seq + 1, not 1. Later records must stay contiguous.
+  let expectedSeq: number | undefined;
   const lines = text.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
@@ -256,7 +280,7 @@ export async function readJournal(directory: string): Promise<Readonly<{
     if (!header.success) {
       throw new Error(`corrupt session journal at line ${index + 1}: ${header.error.message}`);
     }
-    if (header.data.seq !== expectedSeq) {
+    if (expectedSeq !== undefined && header.data.seq !== expectedSeq) {
       throw new Error(
         `corrupt session journal at line ${index + 1}: expected seq ${expectedSeq}, got ${header.data.seq}`,
       );
@@ -272,7 +296,36 @@ export async function readJournal(directory: string): Promise<Readonly<{
     }
     records.push(record.data);
   }
-  return { records, nextSeq: expectedSeq };
+  return { records, nextSeq: expectedSeq ?? 1, warnings };
+}
+
+function isCompleteJson(line: string): boolean {
+  try {
+    JSON.parse(line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function appendRaw(file: string, chunk: string): Promise<void> {
+  const handle = await open(file, "a");
+  try {
+    await handle.writeFile(chunk, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function truncateToBytes(file: string, bytes: number): Promise<void> {
+  const handle = await open(file, "r+");
+  try {
+    await handle.truncate(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 export function applyJournal(
