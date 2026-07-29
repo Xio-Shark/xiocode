@@ -12,6 +12,8 @@
  * code copied; this is an independent line-based implementation.
  */
 
+import { displayWidth, stripAnsi } from "./text-selection.ts";
+
 const ESC = "\u001B[";
 
 function style(open: string, close: string): (text: string) => string {
@@ -107,7 +109,12 @@ const FENCE = /^\s*(```+|~~~+)\s*(\S*)\s*$/;
 
 function renderBlockLine(line: string): string {
   const heading = HEADING.exec(line);
-  if (heading) return md.bold(md.accent(renderInline(heading[2]!)));
+  if (heading) {
+    // Depth has to be visible: `#` and `######` reading identically loses the
+    // outline of any long answer. Accent carries the top two, bold the rest.
+    const body = renderInline(heading[2]!);
+    return heading[1]!.length <= 2 ? md.bold(md.accent(body)) : md.bold(body);
+  }
   if (HRULE.test(line)) return md.muted("─".repeat(24));
   const bullet = BULLET.exec(line);
   if (bullet) return `${bullet[1]}${md.accent("•")} ${renderInline(bullet[2]!)}`;
@@ -118,24 +125,125 @@ function renderBlockLine(line: string): string {
   return renderInline(line);
 }
 
+type CellAlign = "left" | "right" | "center";
+
+/** GFM delimiter row: `|---|:--:|` and friends. Needs at least one dash cell. */
+const TABLE_DELIMITER = /^\s*\|?(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/;
+
 /**
- * Render markdown source to terminal lines (one entry per source line; no
- * hard wrapping — Ink wraps). Fence markers stay visible so copied code
- * blocks remain valid markdown.
+ * A padded table can only get wider than the source, so past this it would turn
+ * a table that merely wraps into one that wraps worse. Leave those untouched.
+ */
+const TABLE_MAX_WIDTH = 160;
+
+function isTableRow(line: string): boolean {
+  return line.includes("|") && line.trim().length > 0;
+}
+
+/** Split a pipe row into trimmed cells, tolerating optional outer pipes. */
+function splitTableRow(line: string): string[] {
+  let body = line.trim();
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|") && !body.endsWith("\\|")) body = body.slice(0, -1);
+  return body.split(/(?<!\\)\|/).map((cell) => cell.trim());
+}
+
+function cellAlignments(delimiter: string): CellAlign[] {
+  return splitTableRow(delimiter).map((cell) => {
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    if (left && right) return "center";
+    return right ? "right" : "left";
+  });
+}
+
+function padCell(styled: string, width: number, align: CellAlign): string {
+  // Pad against the *visible* width: `**bold**` renders four columns, not eight.
+  const slack = Math.max(0, width - displayWidth(stripAnsi(styled)));
+  if (slack === 0) return styled;
+  if (align === "right") return " ".repeat(slack) + styled;
+  if (align === "center") {
+    const left = Math.floor(slack / 2);
+    return `${" ".repeat(left)}${styled}${" ".repeat(slack - left)}`;
+  }
+  return styled + " ".repeat(slack);
+}
+
+/**
+ * Pad a pipe table so its columns line up, keeping `|` and `---` so the block
+ * a user copies out is still valid markdown. Returns undefined when the table
+ * is malformed or too wide to be worth padding — caller then leaves it alone.
+ */
+export function alignTableBlock(rows: readonly string[]): readonly string[] | undefined {
+  if (rows.length < 2) return undefined;
+  const header = splitTableRow(rows[0]!);
+  const aligns = cellAlignments(rows[1]!);
+  if (header.length < 2 || aligns.length !== header.length) return undefined;
+
+  const body = rows.slice(2).map((row) => splitTableRow(row));
+  const styled = [header, ...body].map((row) =>
+    Array.from({ length: header.length }, (_, index) => renderInline(row[index] ?? "")));
+  const widths = Array.from({ length: header.length }, (_, index) =>
+    Math.max(3, ...styled.map((row) => displayWidth(stripAnsi(row[index]!)))));
+  if (widths.reduce((sum, width) => sum + width + 3, 1) > TABLE_MAX_WIDTH) return undefined;
+
+  const bar = md.muted("|");
+  const line = (cells: readonly string[]): string =>
+    `${bar} ${cells.map((cell, index) => padCell(cell, widths[index]!, aligns[index]!)).join(` ${bar} `)} ${bar}`;
+  // Only center/right need a colon; bare dashes already mean left in GFM.
+  const rule = widths.map((width, index) => {
+    const align = aligns[index]!;
+    const head = align === "center" ? ":" : "-";
+    const tail = align === "center" || align === "right" ? ":" : "-";
+    return md.muted(`${head}${"-".repeat(width - 2)}${tail}`);
+  });
+  return [line(styled[0]!), line(rule), ...styled.slice(1).map((row) => line(row))];
+}
+
+/**
+ * True when a rendered line is a padded table row. Callers that prefix the
+ * first line of a block need this: prefixing one row of a table breaks the
+ * column alignment the padding just established.
+ */
+export function isRenderedTableRow(line: string): boolean {
+  return stripAnsi(line).startsWith("| ");
+}
+
+/**
+ * Render markdown source to terminal lines (one entry per source line, except
+ * tables which stay row-per-line; no hard wrapping — Ink wraps). Fence markers
+ * stay visible so copied code blocks remain valid markdown.
  */
 export function renderMarkdownLines(text: string): readonly string[] {
   if (text.length === 0) return [];
   const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const out: string[] = [];
   let fenceLang: string | undefined;
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
     const fence = FENCE.exec(line);
     if (fence) {
       fenceLang = fenceLang === undefined ? (fence[2] ?? "").toLowerCase() : undefined;
       out.push(md.muted(line));
       continue;
     }
-    out.push(fenceLang !== undefined ? highlightCodeLine(line, fenceLang) : renderBlockLine(line));
+    if (fenceLang !== undefined) {
+      out.push(highlightCodeLine(line, fenceLang));
+      continue;
+    }
+    // Header + delimiter starts a table; consume rows until the block ends.
+    const next = lines[index + 1];
+    if (isTableRow(line) && next !== undefined && next.includes("|") && TABLE_DELIMITER.test(next)) {
+      let end = index + 2;
+      while (end < lines.length && isTableRow(lines[end]!) && !FENCE.test(lines[end]!)) end += 1;
+      const aligned = alignTableBlock(lines.slice(index, end));
+      if (aligned) {
+        out.push(...aligned);
+        index = end - 1;
+        continue;
+      }
+    }
+    out.push(renderBlockLine(line));
   }
   return out;
 }

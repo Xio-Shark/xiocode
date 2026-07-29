@@ -13,6 +13,7 @@ import {
   toggleLatestScrollbackExpandable,
 } from "./transcript-log.ts";
 import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
+import { theme } from "./theme.ts";
 
 describe("reduceScrollback", () => {
   it("streams thinking then commits collapsed think on tool-start", () => {
@@ -292,6 +293,23 @@ describe("reduceScrollback", () => {
     expect(state.live).toBeUndefined();
     const block = state.blocks.find((b) => b.kind === "assistant");
     expect(block?.lines.join("\n")).toContain(expected);
+  });
+
+  it("keeps the answer mark off a table so its columns stay aligned", () => {
+    const strip = (line: string) => line.replace(/\[[0-9;]*m/g, "");
+    let state = emptyScrollbackState();
+    const table = "| a | bbbb |\n|---|---|\n| 1 | 2 |";
+    state = reduceScrollback(state, { kind: "assistant-text", text: table });
+    const lines = state.blocks.find((block) => block.kind === "assistant")!.lines.map(strip);
+
+    expect(lines[0]).toBe(theme.sym.answer);
+    expect(new Set(lines.slice(1).map((line) => line.length)).size).toBe(1);
+
+    // Prose answers keep the mark inline, as before.
+    let prose = emptyScrollbackState();
+    prose = reduceScrollback(prose, { kind: "assistant-text", text: "plain answer" });
+    expect(strip(prose.blocks.find((block) => block.kind === "assistant")!.lines[0]!))
+      .toBe(`${theme.sym.answer} plain answer`);
   });
 
   it("keeps finalized Static blocks immutable across later deltas", () => {

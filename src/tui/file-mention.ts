@@ -75,7 +75,8 @@ export function filterFiles(
   return scored.slice(0, limit).map((entry) => entry.file);
 }
 
-function isSubsequence(needle: string, haystack: string): boolean {
+/** Shared with the slash menu so both pickers rank by the same rules. */
+export function isSubsequence(needle: string, haystack: string): boolean {
   let at = 0;
   for (const char of needle) {
     at = haystack.indexOf(char, at);
