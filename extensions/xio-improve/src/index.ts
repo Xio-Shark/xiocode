@@ -7,6 +7,30 @@ export type { ApplyGoalFn, SelfImproveRunnerOptions } from "./self-improve-runne
 export { createPrivateRegressionGate } from "./private-gate.ts";
 export type { CreatePrivateRegressionGateOptions } from "./private-gate.ts";
 export { BUILTIN_SEEDS } from "./seeds.ts";
+export {
+  failureSignature,
+  goalFingerprint,
+  ImprovementRunService,
+  LedgerClaimError,
+  RepeatedFailureStop,
+} from "./run-ledger/service.ts";
+export { RunLedgerStore, LedgerLockError, LedgerStoreError } from "./run-ledger/store.ts";
+export { reduceTransition, replayPendingEvents, InvalidTransitionError } from "./run-ledger/reducer.ts";
+export {
+  FAILURE_SIGNATURE_STOP_AT,
+  FAILURE_SIGNATURE_WARN_AT,
+  LedgerDecodeError,
+} from "./run-ledger/types.ts";
+export type {
+  ImprovementRunState,
+  ImprovementRunEvent,
+  RunContinuation,
+  RunOutcome,
+  RunPhase,
+  TransitionInput,
+  VerifierReceipt,
+  MergeReceipt,
+} from "./run-ledger/types.ts";
 export type {
   CapabilityGate,
   CapabilityGateResult,

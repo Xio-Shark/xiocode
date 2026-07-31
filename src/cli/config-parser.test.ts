@@ -346,6 +346,30 @@ streaming_tools = true
       .toThrow(/streaming_tools|boolean/i);
   });
 
+  it("parses provider.cache_cold_secs (default 300)", () => {
+    const defaults = parseXioConfig(``, { cwd: "/repo" });
+    expect(defaults.runtimeConfig.providerRuntime?.cacheColdSecs).toBe(300);
+
+    const custom = parseXioConfig(
+      `
+[provider]
+cache_cold_secs = 120
+`,
+      { cwd: "/repo" },
+    );
+    expect(custom.runtimeConfig.providerRuntime?.cacheColdSecs).toBe(120);
+
+    const disabled = parseXioConfig(`[provider]\ncache_cold_secs = 0\n`, { cwd: "/repo" });
+    expect(disabled.runtimeConfig.providerRuntime?.cacheColdSecs).toBe(0);
+  });
+
+  it("rejects negative or non-integer provider.cache_cold_secs", () => {
+    expect(() => parseXioConfig(`[provider]\ncache_cold_secs = -5\n`, { cwd: "/repo" }))
+      .toThrow(/cache_cold_secs/i);
+    expect(() => parseXioConfig(`[provider]\ncache_cold_secs = 1.5\n`, { cwd: "/repo" }))
+      .toThrow(/cache_cold_secs/i);
+  });
+
   it("parses context.tool_result_max_chars (default 16000)", () => {
     const defaults = parseXioConfig(``, { cwd: "/repo" });
     expect(defaults.runtimeConfig.context?.toolResultMaxChars).toBe(16_000);
@@ -603,6 +627,18 @@ private_case = "${caseId}"
 
     expect(() => parseXioConfig(`[improve]\nprivate_case = "not-a-case"\n`, { cwd: "/repo" }))
       .toThrow(/improve\.private_case/);
+  });
+
+  it("parses improve eval_repeat within eval bounds", () => {
+    const parsed = parseXioConfig(`[improve]\neval_repeat = 3\n`, { cwd: "/repo" });
+    expect(parsed.xio.improve).toEqual({ capabilityGate: false, evalRepeat: 3 });
+
+    expect(() => parseXioConfig(`[improve]\neval_repeat = 0\n`, { cwd: "/repo" }))
+      .toThrow(/improve\.eval_repeat/);
+    expect(() => parseXioConfig(`[improve]\neval_repeat = 11\n`, { cwd: "/repo" }))
+      .toThrow(/improve\.eval_repeat/);
+    expect(() => parseXioConfig(`[improve]\neval_repeat = 1.5\n`, { cwd: "/repo" }))
+      .toThrow(/improve\.eval_repeat/);
   });
 
   it("parses verify done-contract commands", () => {

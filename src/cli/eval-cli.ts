@@ -1,16 +1,20 @@
 import { writeSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseModelRef } from "../../extensions/xio-eval/src/eval-identity.ts";
+import { resolveEvalRoot } from "../../extensions/xio-eval/src/eval-support.ts";
+import { draftFixtureFromPrivateCase } from "../../extensions/xio-eval/src/fixture-drafter.ts";
 import { EvalRunner } from "../../extensions/xio-eval/src/index.ts";
+import { RegressionCaseStore } from "../../extensions/xio-regress/src/index.ts";
 
 import type { CandidateMode, EvalReport } from "../../extensions/xio-eval/src/types.ts";
 
 const MAX_REPEAT = 10;
 
 export type EvalCliArgs = Readonly<{
-  command: "preflight" | "smoke" | "compare" | "help";
+  command: "preflight" | "smoke" | "compare" | "draft" | "help";
   json: boolean;
   candidateMode: CandidateMode;
   model?: string;
@@ -55,6 +59,9 @@ export async function runEvalCli(
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const trustedRoot = options.trustedRoot ?? packageRoot();
   const env = options.env ?? process.env;
+  if (args.command === "draft") {
+    return runDraftCommand(args, env, write);
+  }
   const runner = new EvalRunner({
     trusted_root: trustedRoot,
     before_root: args.beforeRoot ? path.resolve(cwd, args.beforeRoot) : undefined,
@@ -89,7 +96,7 @@ export async function runEvalCli(
 
 export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
   const first = argv[0];
-  const command = first === "preflight" || first === "smoke" || first === "compare"
+  const command = first === "preflight" || first === "smoke" || first === "compare" || first === "draft"
     ? first
     : first === undefined || first === "help" || first === "--help" || first === "-h"
     ? "help"
@@ -171,7 +178,17 @@ export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
   if (command === "compare" && (!beforeRoot || !candidateRoot)) {
     throw new Error("compare requires --before PATH and --candidate PATH");
   }
-  if (command !== "compare" && (gateManifestPath || perfBeforePath || perfCandidatePath || privateCaseIds.length > 0)) {
+  if (command === "draft") {
+    if (privateCaseIds.length !== 1) {
+      throw new Error("draft requires exactly one --private-case ID (or \"last\")");
+    }
+    if (model !== undefined || repeat !== 1 || beforeRoot || candidateRoot || caseIds.length > 0
+      || priceTablePath || gateManifestPath || perfBeforePath || perfCandidatePath) {
+      throw new Error("draft only accepts --private-case and --json");
+    }
+  }
+  if (command !== "compare" && command !== "draft"
+    && (gateManifestPath || perfBeforePath || perfCandidatePath || privateCaseIds.length > 0)) {
     throw new Error("--manifest / --perf-* / --private-case are only valid for compare");
   }
   if ((perfBeforePath && !perfCandidatePath) || (!perfBeforePath && perfCandidatePath)) {
@@ -206,7 +223,7 @@ export function parseEvalArgs(argv: readonly string[]): EvalCliArgs {
 
 async function runCommand(
   runner: EvalRunner,
-  command: Exclude<EvalCliArgs["command"], "help">,
+  command: Exclude<EvalCliArgs["command"], "help" | "draft">,
 ): Promise<EvalReport> {
   if (command === "preflight") {
     return runner.preflight();
@@ -215,6 +232,44 @@ async function runCommand(
     return runner.smoke();
   }
   return runner.compare();
+}
+
+/**
+ * Draft a fixture template from a private regression case (exam pool grows
+ * from real failures). Writes outside the repo; human-reviewed, never merged.
+ */
+async function runDraftCommand(
+  args: EvalCliArgs,
+  env: NodeJS.ProcessEnv,
+  write: (chunk: string) => void,
+): Promise<number> {
+  try {
+    const store = new RegressionCaseStore(env.XIO_REGRESSION_ROOT);
+    const caseId = await store.resolvePrivateCaseId(args.privateCaseIds[0]!);
+    const regression = await store.readCase(caseId);
+    const draft = draftFixtureFromPrivateCase(regression);
+    const draftRoot = path.join(resolveEvalRoot(env.XIO_EVAL_ROOT), "fixture-drafts", caseId);
+    await mkdir(draftRoot, { recursive: true, mode: 0o700 });
+    const tsPath = path.join(draftRoot, "draft-fixture.ts");
+    const mdPath = path.join(draftRoot, "DRAFT.md");
+    await writeFile(tsPath, draft.draft_ts, { encoding: "utf8", mode: 0o600 });
+    await writeFile(mdPath, draft.draft_md, { encoding: "utf8", mode: 0o600 });
+    if (args.json) {
+      write(`${JSON.stringify({ case_id: caseId, draft_ts: tsPath, draft_md: mdPath })}\n`);
+    } else {
+      write([
+        `draft case=${caseId}`,
+        `template: ${tsPath}`,
+        `checklist: ${mdPath}`,
+        "Review + de-identify before porting into fixtures.ts (dev/holdout pairing is enforced by the loader).",
+        "",
+      ].join("\n"));
+    }
+    return 0;
+  } catch (error) {
+    write(`xio eval: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 3;
+  }
 }
 
 function formatEvalReport(report: EvalReport): string {
@@ -270,6 +325,9 @@ function evalHelp(): string {
     "  xio eval smoke [--candidate PATH] [--candidate-mode real|stub] [--model PROVIDER/MODEL] [--repeat N] [--case ID] [--json]",
     "  xio eval compare --before PATH --candidate PATH [--candidate-mode real|stub] [--model PROVIDER/MODEL] [--repeat N] [--case ID] [--json]",
     "    [--manifest PATH] [--perf-before PATH] [--perf-candidate PATH] [--private-case ID ...]",
+    "  xio eval draft --private-case ID|last [--json]",
+    "    Draft a fixture template from a private regression case (written under",
+    "    ~/.xiocode/evals/fixture-drafts/<case>/; human-reviewed, never auto-merged).",
     "  Compatibility: --provider real|stub is an alias for --candidate-mode (deprecated).",
     "  Add --price-table PATH (or XIO_EVAL_PRICE_TABLE) for versioned cost estimates.",
     "  Multi-axis gate: --manifest (default package gate when perf/private set), independent",

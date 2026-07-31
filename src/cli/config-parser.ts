@@ -179,6 +179,17 @@ export type XioContextConfig = Readonly<{
 }>;
 
 /**
+ * Provider runtime knobs (not per-provider credentials — those live under `[providers.*]`).
+ */
+export type XioProviderRuntimeConfig = Readonly<{
+  /**
+   * Anthropic prompt-cache cold threshold in seconds. When a cache miss follows a hit after
+   * this many seconds, emit `provider.cache_cold_warning`. Default 300. 0 disables warnings.
+   */
+  cacheColdSecs: number;
+}>;
+
+/**
  * Per-model price overrides for the cost footer, keyed by `model` or
  * `provider/model`. Built-in rows cover the presets; this table extends or
  * corrects them (custom gateways, negotiated rates, new models).
@@ -207,6 +218,8 @@ export type XioImproveConfig = Readonly<{
   capabilityGate: boolean;
   /** Optional private case id, or `"last"` for the durable last-captured pointer. */
   privateCase?: string;
+  /** Optional trial repeats per fixture for the capability gate (1-10). Default 1. */
+  evalRepeat?: number;
 }>;
 
 /**
@@ -302,6 +315,8 @@ export type XioConfig = Readonly<{
   agent?: XioAgentConfig;
   /** Optional; when omitted, defaults to tool_result_max_chars = 16000. */
   context?: XioContextConfig;
+  /** Optional; when omitted, defaults to cache_cold_secs = 300. */
+  providerRuntime?: XioProviderRuntimeConfig;
   /** Per-model price overrides; empty when `[pricing]` is absent. */
   pricing: XioPricingConfig;
   trust: XioTrustConfig;
@@ -329,6 +344,8 @@ export type XioRuntimeConfig = Readonly<{
   agent?: XioAgentConfig;
   /** Optional; when omitted, runtime treats context.tool_result_max_chars as 16000. */
   context?: XioContextConfig;
+  /** Optional; when omitted, runtime treats provider.cache_cold_secs as 300. */
+  providerRuntime?: XioProviderRuntimeConfig;
   /** Optional on hand-built fixtures; parseXioConfig always sets `{}` when absent. */
   pricing?: XioPricingConfig;
   /** Optional on hand-built fixtures; parseXioConfig always sets mode=ask default. */
@@ -400,6 +417,10 @@ const DEFAULT_CONTEXT: XioContextConfig = {
   keepToolRounds: 4,
 };
 
+const DEFAULT_PROVIDER_RUNTIME: XioProviderRuntimeConfig = {
+  cacheColdSecs: 300,
+};
+
 const DEFAULT_TRUST: XioTrustConfig = {
   mode: "ask",
 };
@@ -457,6 +478,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const harness = parseHarness(getTable(data, "harness"));
   const agent = parseAgent(getTable(data, "agent"));
   const context = parseContext(getTable(data, "context"));
+  const providerRuntime = parseProviderRuntime(getTable(data, "provider"));
   const pricing = parsePricing(getTable(data, "pricing"));
   const trust = parseTrust(getTable(data, "trust"));
   const improve = parseImprove(getTable(data, "improve"));
@@ -479,6 +501,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     harness,
     agent,
     context,
+    providerRuntime,
     pricing,
     trust,
     improve,
@@ -507,6 +530,7 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     harness: config.harness,
     agent: config.agent,
     context: config.context,
+    providerRuntime: config.providerRuntime,
     pricing: config.pricing,
     trust: config.trust,
     explore: config.explore,
@@ -705,6 +729,20 @@ function parseContext(table: Record<string, unknown> | undefined): XioContextCon
   };
 }
 
+function parseProviderRuntime(
+  table: Record<string, unknown> | undefined,
+): XioProviderRuntimeConfig {
+  const cacheColdSecs = getOptionalNumber(table, "cache_cold_secs");
+  if (cacheColdSecs !== undefined) {
+    if (!Number.isInteger(cacheColdSecs) || cacheColdSecs < 0) {
+      throw new Error("provider.cache_cold_secs must be an integer >= 0 (0 disables)");
+    }
+  }
+  return {
+    cacheColdSecs: cacheColdSecs ?? DEFAULT_PROVIDER_RUNTIME.cacheColdSecs,
+  };
+}
+
 /**
  * `[pricing."<model>"]` / `[pricing."<provider>/<model>"]` — USD per 1M tokens.
  * A malformed row is a hard error: a silently dropped rate would show a wrong
@@ -771,9 +809,14 @@ function parseImprove(table: Record<string, unknown> | undefined): XioImproveCon
   if (privateCase !== undefined && privateCase !== "last" && !/^[a-f0-9]{64}$/.test(privateCase)) {
     throw new Error('improve.private_case must be "last" or a 64-char hex case id');
   }
+  const evalRepeat = getOptionalNumber(table, "eval_repeat");
+  if (evalRepeat !== undefined && (!Number.isInteger(evalRepeat) || evalRepeat < 1 || evalRepeat > 10)) {
+    throw new Error("improve.eval_repeat must be an integer between 1 and 10");
+  }
   return {
     capabilityGate: getOptionalBoolean(table, "capability_gate") ?? DEFAULT_IMPROVE.capabilityGate,
     ...(privateCase ? { privateCase } : {}),
+    ...(evalRepeat !== undefined ? { evalRepeat } : {}),
   };
 }
 

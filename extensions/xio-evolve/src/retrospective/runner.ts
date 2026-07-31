@@ -536,7 +536,8 @@ export async function loadRetrospectiveImproveGoals(
             source: "queue" as const,
             title: raw.title ?? name,
             prompt: raw.prompt,
-            ...(raw.meta ? { meta: raw.meta } : {}),
+            // queueFile keeps a stable source ref for the improve run ledger.
+            meta: { ...(raw.meta ?? {}), queueFile: name },
           });
         }
       } catch {

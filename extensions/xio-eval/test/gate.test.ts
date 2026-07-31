@@ -280,6 +280,52 @@ describe("multi-axis evaluation gate", () => {
     expect(packageRoot.length).toBeGreaterThan(0);
   });
 
+  it("fails and names the regressed holdout even when the target family improves", () => {
+    const before = summarizeCandidate("before", "b1", [
+      trial("local-bug-holdout", "local-bug", false),
+      trial("cli-holdout", "cli-behavior", true),
+    ]);
+    const candidate = summarizeCandidate("candidate", "c1", [
+      trial("local-bug-holdout", "local-bug", true),
+      trial("cli-holdout", "cli-behavior", false),
+    ]);
+    const decision = compareSummaries(before, candidate);
+    expect(decision.status).toBe("FAIL");
+    expect(decision.errors.some((item) =>
+      item.includes("stable capability regression") && item.includes("cli-holdout"))).toBe(true);
+  });
+
+  it("passes when the target family improves and no holdout regresses", () => {
+    const fullUsage = (report: TrialReport) => withCost(withUsage(report, 10, 20), 0.01);
+    const before = summarizeCandidate("before", "b1", [
+      fullUsage(trial("local-bug-holdout", "local-bug", false)),
+      fullUsage(trial("cli-holdout", "cli-behavior", true)),
+    ]);
+    const candidate = summarizeCandidate("candidate", "c1", [
+      fullUsage(trial("local-bug-holdout", "local-bug", true)),
+      fullUsage(trial("cli-holdout", "cli-behavior", true)),
+    ]);
+    const decision = compareSummaries(before, candidate);
+    expect(decision.status).toBe("PASS");
+    expect(decision.errors).toEqual([]);
+  });
+
+  it("treats unstable repeated holdout results as neither regression nor improvement", () => {
+    const before = summarizeCandidate("before", "b1", [
+      trial("cli-holdout", "cli-behavior", true),
+      trial("cli-holdout", "cli-behavior", true),
+    ]);
+    const candidate = summarizeCandidate("candidate", "c1", [
+      trial("cli-holdout", "cli-behavior", true),
+      trial("cli-holdout", "cli-behavior", false),
+    ]);
+    const decision = compareSummaries(before, candidate);
+    expect(decision.status).toBe("PASS_WITH_CONCERNS");
+    expect(decision.errors).toEqual([]);
+    expect(decision.concerns.some((item) => item.includes("no stable capability improvement"))).toBe(true);
+    expect(decision.pairedDeltas["cli-holdout"]).toBeCloseTo(-0.5, 5);
+  });
+
   it("populates awareness coverage/overlap from trial metrics (not fixed null)", () => {
     const before = summarizeCandidate("before", "b1", [
       trial("local-bug-holdout", "local-bug", false),
