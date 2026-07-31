@@ -15,29 +15,66 @@
 ## What is XioCode?
 
 ```
-  ┌─────────────────────────────────────────────┐
-  │            Your Terminal                    │
-  │                                             │
-  │  $ xio "add a login page"                   │
-  │                                             │
-  │  ┌─────────────────────────────────────┐    │
-  │  │  XioCode reads your project         │    │
-  │  │  → understands the code             │    │
-  │  │  → edits files                      │    │
-  │  │  → runs commands                    │    │
-  │  │  → shows you every change it makes  │    │
-  │  └─────────────────────────────────────┘    │
-  │                                             │
-  │  Result: your project is updated.           │
-  └─────────────────────────────────────────────┘
+  ┌────────────────────────────────────┐
+  │          Your Terminal             │
+  │                                    │
+  │  $ xio "add a login page"          │
+  │                                    │
+  │  XioCode:                          │
+  │    → reads your project            │
+  │    → understands the code          │
+  │    → edits files                   │
+  │    → runs commands                 │
+  │    → shows you every change        │
+  │      it makes                      │
+  │                                    │
+  │  Result: project is updated.       │
+  └────────────────────────────────────┘
 ```
 
-XioCode is a **local AI coding agent**. It works inside your project folder, on your machine. There is no cloud service in the middle and no upload step: the code stays where it already is.
+XioCode is a **coding agent that runs on your machine**, inside the project folder you launch it from. There is no XioCode cloud, no account to create, and nothing to upload — the code stays exactly where it already is.
+
+The only thing that ever leaves your computer is the conversation you send to a model API — and that request goes **straight from you to the provider**, not through any middleman:
+
+```
+  ┌────────────────────────────────────┐
+  │          YOUR MACHINE              │
+  │                                    │
+  │  your code                         │
+  │    │ reads                         │
+  │    ▼                               │
+  │  XioCode (runs locally)            │
+  │    │ edits                         │
+  │    ▼                               │
+  │  your code — now changed           │
+  └───────┬────────────────────────────┘
+          │  conversation (text only)
+          ▼
+  ┌────────────────────────────────────┐
+  │  THE MODEL (cloud)                 │
+  │  DeepSeek · OpenAI ·               │
+  │  Anthropic · Gemini ...            │
+  │                                    │
+  │  sees only what you send —         │
+  │  never your files or secrets       │
+  └────────────────────────────────────┘
+```
 
 **Three reasons to use it:**
 
 1. **Sessions that survive anything.** XioCode writes a journal entry before every step it takes. Kill the process mid-task, lose the terminal, lose power: `xio resume` reopens the session exactly where it stopped, with the full conversation and task state intact. In worktree mode, `/rollback` also undoes the file changes.
-2. **Local and private, with your own key.** No telemetry, no account, no middleman. Session history lives in `~/.xiocode/` and nowhere else. Any API key you already have works: DeepSeek, OpenAI, Anthropic, OpenRouter, Google Gemini, or any OpenAI-compatible endpoint.
+
+```
+  "refactor payments" ──► step 1 ──► step 2 ──► crash!
+                                                     │
+                                                     ▼
+                $ xio resume                          
+                reopens right where                   
+                it stopped — nothing lost             
+```
+
+2. **Local and private, with your own key.** No telemetry, no account, no middleman. Session history lives in `~/.xiocode/` and nowhere else. Any API key you already have works: DeepSeek, OpenAI, Anthropic, OpenRouter, Google Gemini, or any service that speaks the OpenAI API.
+
 3. **You own the merge.** By default XioCode edits your working directory and shows each change as it lands, and known-dangerous commands stop and ask before running. Turn on worktree mode and it works in a separate git copy instead — your tree stays untouched until you type `/merge`.
 
 ```bash
@@ -92,7 +129,7 @@ Done. You get `xio` and `xiocode`.
 
 ```bash
 cd your-project
-export DEEPSEEK_API_KEY=sk-xxxxx   # or run /connect inside the TUI instead
+export DEEPSEEK_API_KEY=sk-xxxxx   # or run /connect inside the app instead
 xio
 ```
 
@@ -102,15 +139,15 @@ No key yet? Start anyway — the session opens and walks you through `/connect`,
   xio
    │
    ▼
-  ┌──────────────────────────────┐
-  │  Welcome!                    │
-  │                              │
-  │  Try: /connect to set API    │
-  │  Or: just type your task     │
-  │                              │
-  │  > "add error handling to    │
-  │    the payment module"       │
-  └──────────────────────────────┘
+  ┌──────────────────────────────────┐
+  │  Welcome!                        │
+  │                                  │
+  │  Try: /connect to set API        │
+  │  Or: just type your task         │
+  │                                  │
+  │  > "add error handling to        │
+  │    the payment module"           │
+  └──────────────────────────────────┘
 ```
 
 ---
@@ -141,9 +178,19 @@ You type a task                    XioCode works
                              └──────────────────────┘
 ```
 
-**The isolation ladder** — you choose how much separation you want:
+**How much separation do you want?** You pick:
 
-1. **Direct (default):** XioCode edits the directory you launched it from. No git required; a brand-new `git init` folder works too.
+```
+  DIRECT MODE (default)          WORKTREE MODE (opt-in)
+  ┌──────────────────────┐            ┌────────────────────────┐
+  │  your project        │            │  your project          │
+  │  agent edits here    │            │  ▲                     │
+  │  directly            │            │  │ /merge — when       │
+  │  changes land now    │            │  │ you say so          │
+  └──────────────────────┘            └────────────────────────┘
+```
+
+1. **Direct (default):** XioCode edits the directory you launched it from. No git required — a brand-new `git init` folder works too.
 2. **Worktree (opt-in):** set `[worktree] enabled = true` in `~/.xiocode/config.toml`. XioCode works in a separate git worktree, and its changes reach your tree only when you run `/merge`. This mode also unlocks `/rollback`.
 3. **Container:** planned — tell us if you need it.
 
@@ -161,7 +208,7 @@ You type a task                    XioCode works
 | `xio doctor` | Self-check: Node version, config, keys, provider connectivity |
 | `xio feedback` | Report a bug or request a feature (`--bug`, `--feature`) |
 
-Inside the TUI:
+Inside the app:
 
 | Command | What it does |
 |---------|--------------|
@@ -180,9 +227,9 @@ While a turn is running: press Enter or type `!text` to steer the agent mid-task
 
 ## What ships in the box
 
-- Its own agent loop and tools: `read` / `write` / `edit` / `bash` / `grep` / `glob`
-- A terminal UI with streaming answers, live tool output, markdown rendering, and a running cost in real dollars
-- Crash-safe sessions: journaled steps and checkpoints, `xio resume`, `/rollback` in worktree mode
+- A built-in agent with its own tools: `read` / `write` / `edit` / `bash` / `grep` / `glob`
+- A terminal interface where answers appear as they are generated, live tool output is visible, markdown renders, and cost is shown in real dollars
+- Crash-safe sessions: every step is journaled and checkpointed, so `xio resume` and (in worktree mode) `/rollback` can pick up or undo cleanly
 - Reads your repo's `CLAUDE.md`, skills, hooks, and MCP servers
 - Opt-in worktree isolation with an explicit `/merge` gate
 - Everything stored locally under `~/.xiocode/`

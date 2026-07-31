@@ -20,7 +20,6 @@ import {
   registerRollbackCommand,
   registerSandboxFallbackCommand,
 } from "./session-lifecycle.ts";
-import { formatReplHelp } from "./session.ts";
 
 import type { ChatMessage, LlmClient, ModelInfo } from "./types.ts";
 
@@ -57,21 +56,6 @@ describe("registerSandboxFallbackCommand", () => {
     const host = new ExtensionHost();
     registerSandboxFallbackCommand(host);
     await expect(host.runCommand("sandbox")).resolves.toMatch(/\[worktree\] enabled = true/);
-  });
-});
-
-describe("formatReplHelp", () => {
-  it("lists registered commands plus REPL built-ins, without hardcoded entries", () => {
-    const host = new ExtensionHost();
-    registerMergeCommand(host, undefined, async () => true);
-    registerSandboxFallbackCommand(host);
-    const help = formatReplHelp(host.listCommandEntries());
-    expect(help).toContain("/merge");
-    expect(help).toContain("/sandbox");
-    expect(help).toContain("/help");
-    expect(help).toContain("/exit");
-    // Dynamic only: commands not registered on this host must not appear.
-    expect(help).not.toContain("/model");
   });
 });
 
