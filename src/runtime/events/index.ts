@@ -7,7 +7,11 @@ export {
   type RuntimeEventName,
   type RuntimeEventV1,
 } from "./types.ts";
-export { createRuntimeEventEmitter, type CreateRuntimeEventEmitterOptions } from "./emitter.ts";
+export {
+  createRuntimeEventEmitter,
+  type CreateRuntimeEventEmitterOptions,
+  type SubscriberErrorReport,
+} from "./emitter.ts";
 export { redactRuntimePayload } from "./redact.ts";
 export {
   applyRuntimeEventToSessionUi,

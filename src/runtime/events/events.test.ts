@@ -59,6 +59,52 @@ describe("RuntimeEvent.v1 envelope", () => {
     expect(String(redacted.note).endsWith("…[truncated]")).toBe(true);
   });
 
+  it("reports sync and async subscriber failures to the diagnostic sink without breaking emit", async () => {
+    const reports: { event: string; phase: string; message: string }[] = [];
+    const bus = createRuntimeEventEmitter({
+      sessionId: "s",
+      runId: "r-diag",
+      onSubscriberError: ({ event, phase, error }) => {
+        reports.push({ event, phase, message: error instanceof Error ? error.message : String(error) });
+      },
+    });
+    bus.subscribe(() => {
+      throw new Error("sync boom");
+    });
+    bus.subscribe(async () => {
+      throw new Error("async boom");
+    });
+    const seen: string[] = [];
+    bus.subscribe((event) => {
+      seen.push(event.event);
+    });
+
+    const envelope = bus.emit("run.start", {});
+    await bus.flushPending();
+
+    // Emit survived and healthy subscribers still ran.
+    expect(envelope.event).toBe("run.start");
+    expect(seen).toEqual(["run.start"]);
+    expect(reports).toEqual([
+      { event: "run.start", phase: "sync", message: "sync boom" },
+      { event: "run.start", phase: "async", message: "async boom" },
+    ]);
+  });
+
+  it("a throwing diagnostic sink never breaks the agent loop", () => {
+    const bus = createRuntimeEventEmitter({
+      sessionId: "s",
+      runId: "r-diag2",
+      onSubscriberError: () => {
+        throw new Error("diagnostic sink is itself broken");
+      },
+    });
+    bus.subscribe(() => {
+      throw new Error("boom");
+    });
+    expect(() => bus.emit("run.start", {})).not.toThrow();
+  });
+
   it("agent loop dual-writes RuntimeEvents; two sinks see the same order", async () => {
     const bus = createRuntimeEventEmitter({ sessionId: "sess", runId: "run-a" });
     const collected: RuntimeEventV1[] = [];

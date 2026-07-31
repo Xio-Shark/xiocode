@@ -10,6 +10,7 @@ import {
   resolveGrepEngine,
   resolveRgBinary,
 } from "./builtin.ts";
+import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
 
 import type { ToolDefinition } from "../types.ts";
 
@@ -73,6 +74,45 @@ describe("builtin grep/glob search backends", () => {
       expect(glob.text).toContain("src/alpha.ts");
       expect(glob.text).toContain("src/beta.ts");
       expect(glob.text).not.toContain("readme.md");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("appends a structure outline on first hit and omits it on repeat (same session)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-outline-"));
+    try {
+      await mkdir(path.join(root, "src"), { recursive: true });
+      await writeFile(
+        path.join(root, "src", "mod.ts"),
+        "export function doThing() {\n  return 1;\n}\nexport class Widget {}\n",
+        "utf8",
+      );
+      // Shared grep tool instance keeps the session seen-state across calls.
+      const grep = toolByName(createBuiltinTools({ cwd: root, searchEngine: "node" }), "grep");
+      const first = await textOf(grep, { pattern: "export" });
+      expect(first.isError).toBeFalsy();
+      expect(first.text).toContain("--- structure ---");
+      expect(first.text).toContain("outline src/mod.ts (heuristic, not full AST):");
+      expect(first.text).toContain("export class Widget {}");
+
+      const second = await textOf(grep, { pattern: "export" });
+      expect(second.text).toContain("outline src/mod.ts: omitted (already shown this session)");
+      expect(second.text.length).toBeLessThan(first.text.length);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the outline when grepOutline is disabled", async () => {
+    const root = await makeFixture();
+    try {
+      const grep = toolByName(
+        createBuiltinTools({ cwd: root, searchEngine: "node", grepOutline: false }),
+        "grep",
+      );
+      const result = await textOf(grep, { pattern: "needle" });
+      expect(result.text).not.toContain("--- structure ---");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -426,6 +466,60 @@ describe("builtin edit robustness", () => {
 
       // Both completed through the queue; last scheduled write should be intact.
       expect(await readFile(path.join(root, "exact.ts"), "utf8")).toBe("final\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("builtin cross-context file-shift notify", () => {
+  it("fires once when a main write lands on a file an explore worker read, and dedupes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-file-shift-tool-"));
+    try {
+      await writeFile(path.join(root, "shared.ts"), "export const v = 1;\n", "utf8");
+      const registry = new FileShiftRegistry();
+      const shifts: FileShiftInfo[] = [];
+      const onFileShift = (info: FileShiftInfo): void => {
+        shifts.push(info);
+      };
+
+      // Explore worker (read-only context) reads the file.
+      const explore = createBuiltinTools({ cwd: root, fileShift: registry, contextId: "explore-1" });
+      const exploreRead = await textOf(toolByName(explore, "read"), { path: "shared.ts" });
+      expect(exploreRead.isError).toBeFalsy();
+
+      // Main agent reads (own context) then overwrites — a genuine cross-context shift.
+      const main = createBuiltinTools({ cwd: root, fileShift: registry, contextId: "main", onFileShift });
+      await textOf(toolByName(main, "read"), { path: "shared.ts" });
+      const write = toolByName(main, "write");
+      const first = await textOf(write, { path: "shared.ts", content: "export const v = 2;\n" });
+      expect(first.isError).toBeFalsy();
+      expect(shifts).toHaveLength(1);
+      expect(shifts[0]).toMatchObject({ writer: "main", readers: ["explore-1"] });
+
+      // Second write to the same path by the same writer must not re-notify.
+      await textOf(write, { path: "shared.ts", content: "export const v = 3;\n" });
+      expect(shifts).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fire for a normal same-context read-then-write", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-file-shift-none-"));
+    try {
+      await writeFile(path.join(root, "solo.ts"), "export const s = 1;\n", "utf8");
+      const registry = new FileShiftRegistry();
+      const shifts: FileShiftInfo[] = [];
+      const tools = createBuiltinTools({
+        cwd: root,
+        fileShift: registry,
+        contextId: "main",
+        onFileShift: (info) => shifts.push(info),
+      });
+      await textOf(toolByName(tools, "read"), { path: "solo.ts" });
+      await textOf(toolByName(tools, "write"), { path: "solo.ts", content: "export const s = 2;\n" });
+      expect(shifts).toHaveLength(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

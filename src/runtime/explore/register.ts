@@ -1,6 +1,7 @@
 import type { ExtensionHost } from "../extension-host.ts";
 import type { XioRuntimeConfig } from "../../cli/config-parser.ts";
 import type { WorkspacePerceptionService } from "../workspace/service.ts";
+import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
 
 import {
   createExploreTool,
@@ -49,6 +50,10 @@ export type RegisterExploreOptions = Readonly<{
   workspacePerception?: WorkspacePerceptionService;
   /** Bridge for nested subagent UI streaming (TUI / stdout). */
   subagentUi?: SubagentUiBridge;
+  /** Shared cross-context file-shift registry (main + explore workers). */
+  fileShift?: FileShiftRegistry;
+  /** Called when an explore worker's read is later overwritten by another context. */
+  onFileShift?: (info: FileShiftInfo) => void;
 }>;
 
 export type ExploreCapabilityHandle = Readonly<{
@@ -154,6 +159,8 @@ export async function registerExploreCapability(
         workspacePerception: options.workspacePerception,
         orchestrator,
         subagentUi: options.subagentUi,
+        fileShift: options.fileShift,
+        onFileShift: options.onFileShift,
       }));
 
       host.on("before_agent_start", (payload, ctx) => {

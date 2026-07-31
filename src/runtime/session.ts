@@ -33,8 +33,11 @@ import {
   registerRollbackCommand,
 } from "./session-lifecycle.ts";
 import { FileReadSet } from "./file-read-set.ts";
+import { FileShiftRegistry, type FileShiftInfo } from "./file-shift.ts";
 import { FileWriteQueue } from "./file-write-queue.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
+import { GrepSeenState } from "./tools/grep-outline.ts";
+import { DEFAULT_CACHE_COLD_SECS, ProviderCacheColdTracker } from "./providers/cache-cold.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatContextStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
 import {
@@ -188,11 +191,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const sessionEventId = options.sessionId ?? randomUUID().replaceAll("-", "").slice(0, 16);
   const runEventId = randomUUID().replaceAll("-", "").slice(0, 16);
   // Always create a RuntimeEvent.v1 bus so product sinks share one stream.
-  const runtimeEvents = options.runtimeEvents
-    ?? createRuntimeEventEmitter({ sessionId: sessionEventId, runId: runEventId });
   const sink = streamJson
     ? (options.uiSink ?? createStreamJsonSessionUiSink(options.streamJsonStderr))
     : (options.uiSink ?? createStdoutSessionUiSink());
+  // Subscriber failures are isolated from the loop but must surface as a UI notice (R6.4).
+  const runtimeEvents = options.runtimeEvents
+    ?? createRuntimeEventEmitter({
+      sessionId: sessionEventId,
+      runId: runEventId,
+      onSubscriberError: ({ event, phase, error }) => {
+        const message = error instanceof Error ? error.message : String(error);
+        sink.notify?.(`runtime-event subscriber failed (${phase}) on ${event}: ${message}`, "warn");
+      },
+    });
   const subagentUi = options.subagentUi
     ?? (streamJson ? noopSubagentUiBridge : createStdoutSubagentUiBridge());
   if (streamJson) {
@@ -230,6 +241,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   // within a run and clears on each new user turn (see beforePrompt below).
   const fileWriteQueue = new FileWriteQueue();
   const fileReadSet = new FileReadSet();
+  const grepSeen = new GrepSeenState();
+  const fileShift = new FileShiftRegistry();
   const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
   const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
     options,
@@ -243,6 +256,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     subagentUi,
     fileWriteQueue,
     fileReadSet,
+    grepSeen,
+    fileShift,
     requireReadBeforeEdit,
   });
 
@@ -607,6 +622,10 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         // New user turn: reset read discipline so prior-turn reads do not authorize edits.
         // Abort / hard-steer hops within the same runPrompt do not hit this path.
         fileReadSet.clear();
+        // Fresh prompt should not inherit stale grep-outline "already shown" state.
+        grepSeen.clear();
+        // Fresh prompt resets the cross-context read landscape for file-shift detection.
+        fileShift.clear();
         if (mergeGate) {
           const checkpoint = await mergeGate.captureTurnCheckpoint();
           currentExecution = {
@@ -743,6 +762,8 @@ async function createConfiguredHost(input: Readonly<{
   subagentUi?: SubagentUiBridge;
   fileWriteQueue?: FileWriteQueue;
   fileReadSet?: FileReadSet;
+  grepSeen?: GrepSeenState;
+  fileShift?: FileShiftRegistry;
   requireReadBeforeEdit?: boolean;
 }>): Promise<{
   host: ExtensionHost;
@@ -762,12 +783,21 @@ async function createConfiguredHost(input: Readonly<{
     workspaceRoot: input.workspaceRoot,
     writeQueue: input.fileWriteQueue,
     readSet: input.fileReadSet,
+    grepSeen: input.grepSeen,
+    fileShift: input.fileShift,
+    contextId: "main",
+    onFileShift: (info) => emitFileShift(info, input.runtimeEvents, input.sink),
     requireReadBeforeEdit: input.requireReadBeforeEdit,
   })) {
     host.registerTool(tool);
   }
   registerPerceptionCapability(host, { service: input.workspacePerception });
   registerConfiguredProviders(host, input.options.runtimeConfig);
+  registerCacheColdWarning(host, {
+    coldSecs: input.options.runtimeConfig.providerRuntime?.cacheColdSecs ?? DEFAULT_CACHE_COLD_SECS,
+    runtimeEvents: input.runtimeEvents,
+    sink: input.sink,
+  });
   const worktreeSession = input.options.runtimeConfig.worktree?.session;
   const restoredCheckpoint = input.options.initialExecution?.checkpoint;
   const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
@@ -783,6 +813,8 @@ async function createConfiguredHost(input: Readonly<{
     onStatus: (key, text) => input.sink.setStatus?.(key, text),
     workspacePerception: input.workspacePerception,
     subagentUi: input.subagentUi,
+    fileShift: input.fileShift,
+    onFileShift: (info) => emitFileShift(info, input.runtimeEvents, input.sink),
   });
   await registerPlanCapability(host, {
     workspaceRoot: input.workspaceRoot,
@@ -794,6 +826,59 @@ async function createConfiguredHost(input: Readonly<{
   // Rollback is registered in prepareSession after failure-capture offer is wired.
   // session_start is emitted from prepareSession after /agent filter is installed.
   return { host, mergeGate, ensureExploreForUltra: () => explore.ensure("ultra") };
+}
+
+/**
+ * Observe each `provider_response` and surface Anthropic prompt-cache cold warnings.
+ * Best-effort projection: a hint failure must never break the turn, and it never
+ * issues keep-alive requests (report only, no token burn).
+ */
+function registerCacheColdWarning(
+  host: ExtensionHost,
+  input: Readonly<{
+    coldSecs: number;
+    runtimeEvents?: RuntimeEventEmitter;
+    sink: SessionUiSink;
+  }>,
+): void {
+  const tracker = new ProviderCacheColdTracker(input.coldSecs);
+  host.on("provider_response", (payload) => {
+    const record = payload as { providerApi?: unknown; usage?: { cacheTokens?: unknown } };
+    const providerApi = typeof record.providerApi === "string" ? record.providerApi : "";
+    const cacheTokens = typeof record.usage?.cacheTokens === "number" ? record.usage.cacheTokens : null;
+    const warning = tracker.observe({ providerApi, cacheTokens, now: Date.now() });
+    if (!warning) return;
+    input.runtimeEvents?.emit("provider.cache_cold_warning", {
+      since_last_hit_secs: warning.sinceLastHitSecs,
+      cold_secs: warning.coldSecs,
+    });
+    input.sink.notify?.(
+      `prompt cache likely cold: ${warning.sinceLastHitSecs}s since last hit `
+      + `(> ${warning.coldSecs}s); this turn paid full uncached input.`,
+      "warn",
+    );
+  });
+}
+
+/**
+ * Project a cross-context file shift as a `workspace.file_shifted` RuntimeEvent + a
+ * non-blocking hint. Report only — never auto-spawn a fixer or auto-revert.
+ */
+function emitFileShift(
+  info: FileShiftInfo,
+  runtimeEvents: RuntimeEventEmitter | undefined,
+  sink: SessionUiSink,
+): void {
+  runtimeEvents?.emit("workspace.file_shifted", {
+    path: info.path,
+    writer: info.writer,
+    readers: info.readers,
+  });
+  sink.notify?.(
+    `file shifted underneath: ${info.path} written by ${info.writer} after `
+    + `${info.readers.join(", ")} read it — that view may be stale.`,
+    "warn",
+  );
 }
 
 function createSessionClient(input: Readonly<{
