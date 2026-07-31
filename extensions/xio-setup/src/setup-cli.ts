@@ -21,6 +21,7 @@ import {
   type ConfigSectionId,
 } from "./sections.ts";
 import { runProviderCommand } from "./provider-setup.ts";
+import { runTrellisCommand } from "./trellis-setup.ts";
 import {
   distributeTemplates,
   getSetupTemplate,
@@ -51,6 +52,7 @@ Usage:
   xio-setup provider [id]   Add a provider from presets (keys stay in env vars)
   xio-setup templates       Show project starter templates (AGENTS.md, .trellis/spec)
   xio-setup templates add [id...] [--yes]  Write missing starters (confirm first)
+  xio-setup trellis         Trellis DAG config & update (see: xio-setup trellis help)
   xio-setup path         Print the config.toml path
   xio-setup help         This help
 
@@ -92,6 +94,16 @@ export async function runSetupCli(
   }
   if (command === "templates") {
     return runTemplates(rest, write, options);
+  }
+  if (command === "trellis") {
+    const isTty = options.isTty ?? process.stdin.isTTY === true;
+    const trellisOptions = {
+      write,
+      isTty,
+      ...(options.ask ? { ask: options.ask } : {}),
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    };
+    return runTrellisCommand(rest, trellisOptions);
   }
   if (command === undefined || command === "menu") {
     const isTty = options.isTty ?? process.stdin.isTTY === true;

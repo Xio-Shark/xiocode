@@ -531,7 +531,7 @@ export function App(props: AppProps): React.JSX.Element {
 }
 
 /** Sticky live stream — only re-renders when live buffer / in-flight tools change. */
-const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
+export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
   live: ScrollbackState["live"];
   inFlightTools: ScrollbackState["inFlightTools"];
   inFlightSubagents: ScrollbackState["inFlightSubagents"];
@@ -606,7 +606,7 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
     ...rows);
 });
 
-const HistoryBlockRow = memo(function HistoryBlockRow(
+export const HistoryBlockRow = memo(function HistoryBlockRow(
   props: Readonly<{
     block: HistoryBlock;
     /** Flat selectable-line index of this block's first line (fullscreen select). */
