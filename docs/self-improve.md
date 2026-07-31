@@ -70,6 +70,24 @@ MergeGate ask may fire only when **both** hold:
 
 **Prerequisite**: run evidence must be trustworthy (provider/model + numeric usage).
 
+## Verification boundary & exam-pool growth
+
+**规范类改动不走 fixture 验证（设计边界）**：受信评分器只观察代码行为（typecheck / f2p / p2p / 禁区），
+测不了 prompt 层的 agent 行为。对 AGENTS.md / norms 这类规范改动，验证路径是
+**私有回归 FIXED + 人审**（joint gate），不假装 fixture 能覆盖它。
+
+**负样本门禁（已内置）**：capability compare 跑全量 holdout；任一张 before PASS → candidate FAIL
+即 `stable capability regression: <case>` 硬 FAIL，“目标类修好但改坏别的”进不了 merge ask。
+
+**多次运行分布**：`xio eval --repeat N`（分歧时自适应加跑）；improve 闭环用
+`xio improve --eval-repeat N` 或 `[improve] eval_repeat = N`（1-10）透传给 capability gate，
+重复结果不稳定的 case 既不算回退也不算改进（保守判定）；INFRA_ERROR 不入分母。
+
+**考试卷从真实失败生长（换皮入库）**：private case 达到 FIXED 后，用
+`xio eval draft --private-case <id|last>` 生成模板函数草稿（dev+holdout 成对）到
+`~/.xiocode/evals/fixture-drafts/<case>/`（repo 外）。草稿仅供人审：脱敏、缩减、定稿后
+手工入 `fixtures.ts`；suite loader 的 dev/holdout 成对校验是入库门禁，永不自动合入。
+
 ## CLI
 
 ```bash
@@ -77,8 +95,54 @@ xio improve              # runOnce (uses [improve] defaults when flags omitted)
 xio improve --max 3      # runLoop
 xio improve --capability-gate  # require trusted before/after PASS
 xio improve --private-case <id|last> --capability-gate  # FIXED × PASS joint gate
+xio improve --eval-repeat 3                     # capability-gate trial repeats (1-10)
+xio eval draft --private-case <id|last>         # fixture draft from a private case (human-reviewed)
+xio improve status [RUN] [--json]   # durable run ledger: phase, next action, stale evidence
+xio improve resume RUN              # validate repo/worktree identity, continue (no agent replay)
+xio improve retry RUN [--override-reason TEXT]  # new attempt for a terminal run (keeps lineage)
+xio improve abandon RUN [--reason TEXT]         # terminal abandon; worktree kept for inspection
 ./bin/xio-improve --max 1
 ```
+
+**Maintainer-only**: `xio improve` refuses to run unless the git main root is the
+XioCode source repository (`package.json` name `@xioshark/xiocode`). Generic
+project improvement is a separate future mode, not an ambiguous cwd fallback.
+
+## Improvement run ledger (evidence & recovery)
+
+Every `xio improve` goal is **claimed durably before any worktree exists** and
+tracked at `~/.xiocode/improve/runs/<run_id>/`:
+
+| File | Role |
+|------|------|
+| `state.json` | machine-owned run state (`xio-improve-run.v1`), atomic replace |
+| `events.jsonl` | append-only transition audit (`xio-improve-event.v1`), WAL for crash repair |
+| `receipts/verifier-*.json` | trusted verifier receipt bound to candidate revision before/after |
+| `receipts/merge-*.json` | MergeGate decision/result projection |
+| `diagnostics.jsonl` | cleanup/lock/repair failures — observable, never swallowed |
+
+Lifecycle (single reducer owns all transitions):
+`created → candidate_ready → applying → verifying → awaiting_merge → terminal`
+with terminal outcomes `merged | rejected | verifier_red | gate_blocked | infra_error | abandoned | no_changes`.
+
+Invariants:
+
+- **Dedupe**: a goal fingerprint with an active or terminal run is never silently
+  re-executed; `retry` creates attempt N+1 with `parent_run_id` lineage and never
+  overwrites old evidence. Queue files remain evidence inputs (no destructive dedupe).
+- **Freshness**: merge eligibility re-reads the live candidate revision; if the
+  candidate, receipts or baseline drifted, the run retreats to `verifying` — it
+  never re-asks MergeGate with stale evidence.
+- **Recovery**: interrupted apply is *completion unknown*; `resume` validates
+  repo id / common dir / registered worktree / branch, then verifies the worktree
+  as-is. It never replays the agent automatically. `status` projects one
+  continuation (phase, next action, blockers, stale evidence) per run.
+- **Repeated failure**: identical failure signatures warn at 2, manual-stop at 3;
+  `retry --override-reason` is a one-use, audited override that never changes
+  recorded receipts.
+- Ledger stores refs/hashes only — no trajectories, private cases, eval reports
+  or prompts are copied; state/events/receipts are secret-redacted, bounded and
+  schema-checked (unknown fields / future schemas fail closed).
 
 ## Components
 
@@ -86,7 +150,8 @@ xio improve --private-case <id|last> --capability-gate  # FIXED × PASS joint ga
 |-----------|------|
 | `GoalStore` | queue / red_test / seeds (T4); entropy drafts prepend; production seeds prompt-only |
 | `Verifier` | always `npm run check` first; CLI `--check` extras append only |
-| `SelfImproveRunner` | outer owner: worktree create → agent → verifier → gates → single MergeGate ask |
+| `SelfImproveRunner` | outer owner: durable claim → worktree create → agent → verifier → gates → single MergeGate ask; ledger transitions at every step |
+| `ImprovementRunService` (`run-ledger/`) | single claim/transition/receipt owner; CLI status/resume/retry/abandon call it — no phase inference elsewhere |
 | Improve agent executor | runs real agent in **existing** candidate worktree (`spawnImproveAgent`); no nested sandbox session |
 | `ExternalEvalAdapter` | stub: eval failure → Goal |
 | `xio-eval` | trusted local fixtures, external hidden grader, versioned before/after report |
