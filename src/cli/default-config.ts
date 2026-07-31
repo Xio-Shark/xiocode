@@ -1,29 +1,27 @@
 /**
  * Default ~/.xiocode/config.toml written on first run / `xio init`.
  * Providers read API keys from env — never embed secrets here.
+ *
+ * Minimal by design: general + providers only. Optional sections (worktree /
+ * explore / permissions / tools / trust / mcp / improve / regress / agent /
+ * context / retrospective) live in extensions/xio-setup and are appended on
+ * demand via `xio-setup`.
  */
 export const DEFAULT_CONFIG_TOML = `# XioCode local config — edit providers to match your API keys.
 # Docs: https://github.com/Xio-Shark/xiocode
+#
+# Minimal by design. Optional sections (worktree / explore / permissions / tools /
+# trust / mcp / improve / regress / agent / context / retrospective) are managed
+# by the companion CLI: run \`xio-setup list\`, then \`xio-setup add <section>\`.
 
 [general]
 default_provider = "deepseek"
 default_model = "deepseek-chat"
+# default_thinking_level = "medium"  # off|minimal|low|medium|high|xhigh|max|ultra — UI ladder
 # max_session_messages = 80  # auto-compact before the next prompt would exceed this message budget
 # max_session_tokens = 48000 # optional token-aware compact budget; else ~75% of model context_window
-# default_thinking_level = "medium"  # off|minimal|low|medium|high|xhigh|max|ultra — UI ladder
-# max/ultra stay product levels: deepseek* models wire them as reasoning_effort=max;
-# other OpenAI-compat models wire them as xhigh. Override with providers.*.thinking_level_map.
-# max_turns = 24                 # per-prompt agent↔model turns (1–40; default 24)
-# repeat_tool_limit = 3          # block identical tool+args after N in a row; 0 = off
-#
-# Host search tools (optional — never required):
-#   grep order: ugrep → rg → grep → node
-#   glob order: ugrep → rg → bfs → find → node
-# Recommended: brew install ugrep ripgrep bfs
-#
-# Update checks (startup): XioCode polls npm for a newer @xioshark/xiocode release
-# about once per day and shows a one-line notice. Disable with:
-#   export XIO_DISABLE_UPDATE_CHECK=1
+# max_turns = 24             # per-prompt agent↔model turns (1–40; default 24)
+# repeat_tool_limit = 3      # block identical tool+args after N in a row; 0 = off
 
 [providers.deepseek]
 kind = "openai"
@@ -36,102 +34,10 @@ api_key_env = "DEEPSEEK_API_KEY"
 # max = "max"
 # ultra = "max"
 
-# Optional OpenAI-compatible example (uncomment to use):
+# More providers: run /connect inside a session, or uncomment:
 # [providers.openai]
 # kind = "openai"
 # base_url = "https://api.openai.com/v1"
 # model = "gpt-4.1"
 # api_key_env = "OPENAI_API_KEY"
-#
-# [general]
-# default_provider = "openai"
-# default_model = "gpt-4.1"
-
-# Outer worktree sandbox is opt-in. Default: run in the launch directory (git optional).
-[worktree]
-enabled = false
-retain_on_reject = false
-# allow_dirty = true   # only matters when enabled = true
-
-# Multi-explore: primary model keeps the session; cheaper workers survey tiny slices.
-# thinking=ultra AUTO-ENABLES explore even when enabled=false (uses explore.model or the session model).
-# For non-ultra sessions, set enabled=true + model to opt in.
-# max_concurrency is the absolute ceiling 1–16 (default 16). Adaptive lanes (live):
-#   - fast (0): simple/single-file — do not spawn unless user asks or uncertainty remains
-#   - standard (2–4): default multi-file exploration when enabled
-#   - deep (4–8): ultra / high uncertainty raises the ceiling (does not force spawn on trivial tasks)
-#   - explicit_high (≤16): only when the user clearly requests high fan-out
-# Wave budgets (soft; 0 = unlimited): max_tokens / max_cost_usd / max_starts_per_minute.
-# Optional partition_hint tells the primary how you want slices chosen (API / feature / package / …).
-# [explore]
-# enabled = false                  # ultra still auto-enables; set true for explore at any effort
-# model = "deepseek-v4-flash"       # or "opencode-go/deepseek-v4-flash"; fallback = session primary
-# # provider = "opencode-go"        # optional when model has no provider prefix
-# max_turns = 12
-# max_concurrency = 16
-# max_output_chars = 64000          # verbatim file excerpts back to primary; raise if reports truncate
-# max_tokens = 250000               # soft wave token budget; 0 = unlimited
-# max_cost_usd = 1                  # soft USD estimate across workers; 0 = unlimited
-# max_starts_per_minute = 24        # provider-rate: worker starts / rolling minute; 0 = unlimited
-# # partition_hint = "按 API 边界拆成小片；用户另有说明时以用户为准"
-# timeout_ms = 180000
-# allow_bash = false                # keep false: workers stay read/grep/glob only
-
-# [permissions]
-# allow_high_risk = false  # set true for non-interactive bash/MCP without session ask
-
-# [tools]
-# require_read_before_edit = true  # set false to allow edit/overwrite without a prior read
-
-# Project trust gate: untrusted cwd skips project hooks/skills/MCP and restricts write/exec.
-# Decisions persist in ~/.xiocode/trust.json (normalized paths; revocable).
-# [trust]
-# mode = "ask"    # ask (default) | trust (always allow) | off (disable gate / dogfood)
-
-# [mcp]
-# unknown_source_fail_closed = false  # set true to skip Claude/Cursor user MCP auto-import
-# # read_cursor = true               # auto-loads ~/.cursor/mcp.json (broken command paths will warn)
-# # timeout_ms = 30000               # per-server connect/listTools; close force-kills stdio after ~1.5s
-
-# [improve]
-# capability_gate = false  # set true so bare xio improve requires trusted PASS before merge ask
-# private_case = "last"    # optional; "last" or a 64-char case id (requires capability_gate)
-
-# Failure-signal capture offer (rollback / hard steer / turn failed). Verdict stays human.
-# [regress]
-# offer_on_failure = true  # set false to silence offers; /regress manual path unchanged
-
-# Agent-loop tool scheduling. When true, tools start as soon as complete tool_calls
-# arrive on the provider stream (overlap with remaining stream events). Default false.
-# [agent]
-# streaming_tools = false
-
-# Context / tool_result pressure before each provider request.
-# Oversized tool bodies spill under the run dir (or ~/.xiocode/spills) and become stubs.
-# [context]
-# tool_result_max_chars = 16000
-# keep_tool_rounds = 4          # microcompact: keep newest N tool rounds; 0 = off
-
-# Cost footer prices. Common provider models are priced in the box; add rows here
-# for private gateways, negotiated rates, or models newer than your XioCode build.
-# Rates are USD per 1M tokens. Key by "model" or "provider/model" (the latter wins).
-# Unpriced models show ~unknown in the footer — never a fake $0.
-# [pricing."deepseek-chat"]
-# input_per_mtok = 0.27
-# output_per_mtok = 1.1
-# cache_per_mtok = 0.07         # optional; defaults to input_per_mtok
-
-# Post-task retrospective: after each full agent task, extract blockers → log → washed report.
-# Report injects into the next turn for the primary agent; optional improve-queue goals for xio improve.
-# [retrospective]
-# enabled = true
-# skip_trivial = true
-# min_tool_calls = 1
-# auto_inject = true
-# enqueue_improve = true
-# use_llm = false                 # reserved; deterministic wash always runs
-# session_end_subagent = true     # authoritative LLM/deterministic report on session_end
-# # model = "deepseek-chat"       # optional cheap model for session-end subagent
-# session_end_timeout_ms = 45000
-# norms_auto_write = false        # drafts only unless true + strong confirm (never silent)
 `;

@@ -6,7 +6,8 @@
   "bin": {
     "xio": "bin/xio",
     "xiocode": "bin/xio",
-    "xio-improve": "bin/xio-improve"
+    "xio-improve": "bin/xio-improve",
+    "xio-setup": "bin/xio-setup"
   },
   "publishConfig": {
     "access": "public"

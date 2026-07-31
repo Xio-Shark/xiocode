@@ -60,3 +60,9 @@ coverage/
 
 # scrape/search cache
 .firecrawl/
+
+# personal / temporary
+.scratch/
+Agent_Harness_*.md
+Agent工程教程*.md
+*.tgz

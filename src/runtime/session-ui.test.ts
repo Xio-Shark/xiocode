@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   createStdoutSessionUiSink,
   createStdoutSubagentUiBridge,
+  formatContextStatus,
   formatToolOutputForDisplay,
-  formatUsageStatus,
   previewText,
   toolCallDetail,
   toolResultOutput,
@@ -138,28 +138,23 @@ describe("tool transcript helpers", () => {
     const report = "## Explore report (cancelled)\nmodel: p/m\n\nfound branch logic";
     expect(exploreReportStatus(report)).toBe("cancelled");
     expect(exploreReportBody(report)).toBe("found branch logic");
-    expect(formatToolExpandHint(1)).toBe("Ctrl+O · 1 line");
-    expect(formatToolExpandHint(12)).toBe("Ctrl+O · 12 lines");
+    expect(formatToolExpandHint(1)).toBe("Ctrl+O/dblclick · 1 line");
+    expect(formatToolExpandHint(12)).toBe("Ctrl+O/dblclick · 12 lines");
   });
 });
 
-describe("formatUsageStatus", () => {
-  it("scales token counts and shows the priced dollar figure", () => {
-    expect(formatUsageStatus({ totalTokens: 950, costUsd: 0.0042, hasUnpriced: false }))
-      .toBe("tok:950 $0.0042");
-    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: 0.013, hasUnpriced: false }))
-      .toBe("tok:12.3k $0.013");
-    expect(formatUsageStatus({ totalTokens: 2_500_000, costUsd: 2.5, hasUnpriced: false }))
-      .toBe("tok:2.5M $2.50");
+describe("formatContextStatus", () => {
+  it("shows context occupancy percentage without cost", () => {
+    expect(formatContextStatus(12_800, 128_000)).toBe("ctx:10%");
+    expect(formatContextStatus(0, 128_000)).toBe("ctx:0%");
+    // Over-window usage clamps at 100% instead of fabricating >100%.
+    expect(formatContextStatus(200_000, 128_000)).toBe("ctx:100%");
   });
 
-  it("never renders an unpriced model as $0", () => {
-    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: null, hasUnpriced: true }))
-      .toBe("tok:12.3k ~unknown");
-  });
-
-  it("marks a partially priced session with a trailing +", () => {
-    expect(formatUsageStatus({ totalTokens: 12_345, costUsd: 0.02, hasUnpriced: true }))
-      .toBe("tok:12.3k $0.020+");
+  it("falls back to a plain token count when the window is unknown", () => {
+    expect(formatContextStatus(950)).toBe("tok:950");
+    expect(formatContextStatus(12_345)).toBe("tok:12.3k");
+    expect(formatContextStatus(2_500_000)).toBe("tok:2.5M");
+    expect(formatContextStatus(12_345, 0)).toBe("tok:12.3k");
   });
 });

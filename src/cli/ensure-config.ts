@@ -35,6 +35,7 @@ export async function ensureConfigFile(
   write(
     `Created ${configPath}\n`
       + "Set your provider API key env (default: DEEPSEEK_API_KEY), then re-run `xio` from your project directory.\n"
+      + "Optional sections (explore / mcp / trust / …) are managed by `xio-setup` — run `xio-setup list`.\n"
       + "\n"
       + await formatRecommendedCliToolsNotice(),
   );
