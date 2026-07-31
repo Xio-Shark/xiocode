@@ -62,7 +62,7 @@ export type PrivateGate = Readonly<{
 export type MergeOutcome =
   | Readonly<{
     asked: false;
-    reason: "verifier_red" | "no_changes" | "skipped_by_policy"
+    reason: "verifier_red" | "no_changes" | "skipped_by_policy" | "stale_evidence"
       | "capability_gate_fail" | "capability_gate_concerns" | "capability_gate_infra"
       | "private_gate_requires_capability" | "private_gate_still_red"
       | "private_gate_invalid" | "private_gate_infra";
@@ -74,6 +74,8 @@ export type MergeOutcome =
 export type ImproveRunResult = Readonly<{
   goal: ImproveGoal;
   worktreePath: string;
+  /** Durable ledger run id (present when a ledger is injected). */
+  runId?: string;
   verifier: VerifierResult;
   capabilityGate?: CapabilityGateResult;
   privateGate?: PrivateGateResult;

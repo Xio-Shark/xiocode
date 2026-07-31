@@ -1,5 +1,7 @@
 export { EvalRunner } from "./eval-runner.ts";
 export { createTrustedCapabilityGate } from "./capability-gate.ts";
+export { draftFixtureFromPrivateCase } from "./fixture-drafter.ts";
+export type { FixtureDraft } from "./fixture-drafter.ts";
 export { loadTrustedSuite } from "./suite-loader.ts";
 export { runPreflight } from "./preflight.ts";
 export { decodePriceTable, loadPriceTable } from "./price-table.ts";

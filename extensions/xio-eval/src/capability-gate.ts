@@ -8,6 +8,8 @@ export function createTrustedCapabilityGate(options: Readonly<{
   candidateMode?: CandidateMode;
   evalRoot?: string;
   priceTablePath?: string;
+  /** Fixed trial repeats per fixture (default 1); pass-rate smoothing against single-run luck. */
+  repeat?: number;
   env?: NodeJS.ProcessEnv;
 }>): CapabilityGate {
   return {
@@ -19,6 +21,7 @@ export function createTrustedCapabilityGate(options: Readonly<{
         candidate_mode: options.candidateMode ?? "real",
         eval_root: options.evalRoot,
         price_table_path: options.priceTablePath,
+        repeat: options.repeat,
         env: options.env,
       });
       const report = await runner.compare();
