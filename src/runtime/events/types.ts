@@ -23,6 +23,8 @@ export const RUNTIME_EVENT_NAMES = [
   "provider.request",
   "provider.first_token",
   "provider.done",
+  /** Anthropic prompt cache likely expired (miss after a hit past the cold threshold). */
+  "provider.cache_cold_warning",
   "error",
   "cancel",
   "steer.requested",
@@ -41,6 +43,8 @@ export const RUNTIME_EVENT_NAMES = [
   "harness.save_point",
   /** Structural op finished and tracked settles drained. */
   "harness.settled",
+  /** A file one context read was overwritten by another concurrent context (stale view). */
+  "workspace.file_shifted",
 ] as const;
 
 export type RuntimeEventName = (typeof RUNTIME_EVENT_NAMES)[number];

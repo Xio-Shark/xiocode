@@ -30,6 +30,7 @@ import type { ExploreRoleId } from "./roles.ts";
 import { Semaphore } from "./semaphore.ts";
 import { runExploreSubagent, type RunExploreSubagentOptions } from "./subagent.ts";
 import type { SubagentUiBridge, SubagentUiScope } from "./subagent-ui.ts";
+import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
 import type { ExploreSubagentResult, ResolvedExploreConfig } from "./types.ts";
 import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 
@@ -193,6 +194,10 @@ export type CreateExploreToolOptions = Readonly<{
   globalMaxStartsPerMinute?: number;
   /** Optional bridge for nested subagent UI streaming (TUI / stdout). */
   subagentUi?: SubagentUiBridge;
+  /** Shared cross-context file-shift registry; explore workers register reads under their workerId. */
+  fileShift?: FileShiftRegistry;
+  /** Called when a worker's read is later overwritten by another context. */
+  onFileShift?: (info: FileShiftInfo) => void;
 }>;
 
 export function createExploreTool(options: CreateExploreToolOptions): ToolDefinition {
@@ -495,6 +500,9 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           capsule,
           workspacePerception: options.workspacePerception,
           ui: uiScope,
+          fileShift: options.fileShift,
+          contextId: `explore-${workerId}`,
+          onFileShift: options.onFileShift,
         });
 
         // Persist raw worker body into EvidenceStore; primary gets brief only.
