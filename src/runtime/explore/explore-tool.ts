@@ -253,6 +253,10 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
         description:
           "One narrow research question for this worker only. Do not pack multiple areas into one goal.",
       }),
+      name: Type.String({
+        description:
+          "Short 2–4 word label naming this subagent by its purpose (e.g. \"auth flow\", \"router map\"). Shown in the UI.",
+      }),
       focus_paths: Type.Array(Type.String({ description: "Optional path/glob hints." }), {
         description: "Paths for this slice only; keep the worker inside a small boundary.",
       }),
@@ -275,6 +279,7 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
       const focusPaths = parseFocusPaths(params.focus_paths);
       const maxTurns = clampTurns(params.max_turns, options.config.maxTurns);
       const role = parseExploreRole(params.role);
+      const name = parseExploreName(params.name, role, goal);
       const budget = resolveBudget();
 
       // Mechanical fast-lane refuse on the real tool path (not prompt-only).
@@ -463,10 +468,12 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           ? {
               workerId,
               role: assignedRole,
+              name,
               modelLabel,
               sink: options.subagentUi.forWorker({
                 workerId,
                 role: assignedRole,
+                name,
                 modelLabel,
                 goal,
               }),
@@ -668,6 +675,23 @@ function parseExploreRole(value: unknown): ExploreRoleId | undefined {
   if (typeof value !== "string") return undefined;
   const role = value.trim() as ExploreRoleId;
   return EXPLORE_ROLE_IDS.has(role) ? role : undefined;
+}
+
+/**
+ * Short purpose label for the subagent UI. Prefer the primary agent's explicit
+ * `name`; else fall back to the role, else a few words derived from the goal.
+ */
+export function parseExploreName(
+  value: unknown,
+  role: ExploreRoleId | undefined,
+  goal: string,
+): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim().replace(/\s+/g, " ").slice(0, 40);
+  }
+  if (role) return role.replace(/_/g, " ");
+  const words = goal.trim().replace(/\s+/g, " ").split(" ").slice(0, 4).join(" ");
+  return words.length > 0 ? words.slice(0, 40) : "explore";
 }
 
 function clampTurns(value: unknown, max: number): number {

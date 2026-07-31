@@ -8,9 +8,9 @@ import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
   App,
-  CONFIRM_WINDOW_MS,
   busyPhaseLabel,
   collectSlashCommands,
+  composePhaseChrome,
   filterSlashCommands,
   formatExploreFooter,
   formatMcpFooter,
@@ -19,11 +19,14 @@ import {
   estimateTranscriptEntryLines,
   isDefaultPermissionMode,
   isExploreTool,
+  livePreviewCharBudget,
   reduceEvent,
   slashQuery,
   sliceTranscriptWindow,
   thoughtLabel,
   toggleLatestExpandable,
+  viewerScrollBounds,
+  VIEWER_CHROME_ROWS,
   type ViewState,
 } from "./app.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
@@ -46,11 +49,22 @@ function stubWorkspacePerception(): WorkspacePerceptionService {
 }
 
 describe("busyPhaseLabel", () => {
+  it("prefixes the phase with the spinner frame only when both exist", () => {
+    expect(composePhaseChrome("working…", "⠋")).toBe("⠋ working…");
+    expect(composePhaseChrome("working…", undefined)).toBe("working…");
+    expect(composePhaseChrome(undefined, "⠋")).toBeUndefined();
+  });
+
   it("maps requesting → streaming → tools chrome", () => {
     expect(busyPhaseLabel({ busy: false, inFlightToolCount: 0 })).toBeUndefined();
     expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0 })).toBe("working…");
     expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0, liveKind: "assistant" })).toBe("streaming…");
     expect(busyPhaseLabel({ busy: true, inFlightToolCount: 0, liveKind: "thinking" })).toBe("streaming…");
+    expect(busyPhaseLabel({
+      busy: true,
+      inFlightToolCount: 1,
+      inFlightSubagentCount: 2,
+    })).toBe("agents…");
     expect(busyPhaseLabel({
       busy: true,
       inFlightToolCount: 2,
@@ -105,7 +119,6 @@ describe("App", () => {
       followUp() {},
       getMessages: () => [],
       workspacePerception: stubWorkspacePerception(),
-      getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
       async close() {},
       waitForIdle: async () => {},
       getHarnessPhase: () => "idle" as const,
@@ -135,7 +148,7 @@ describe("App", () => {
     expect(output).not.toMatch(/▸think|触控板|Shift\+Enter 换行|DIRECT \/ NO MERGEGATE/);
   });
 
-  it("shows usage status in the Claude-style footer", async () => {
+  it("shows context occupancy status in the Claude-style footer", async () => {
     const bridge = new TuiSessionBridge();
     const instance = render(React.createElement(App, {
       session: createSession(new ExtensionHost()),
@@ -143,12 +156,163 @@ describe("App", () => {
       cwd: "/tmp/project",
       async onExit() {},
     }));
-    bridge.sink.setStatus?.("usage", "tok:12.3k ~$0.01");
+    bridge.sink.setStatus?.("usage", "ctx:42%");
     await new Promise((resolve) => setTimeout(resolve, 10));
     const frame = instance.lastFrame() ?? "";
     expect(frame).toContain("? for shortcuts");
     expect(frame).toContain("/tmp/project");
-    expect(frame).toContain("tok:12.3k ~$0.01");
+    expect(frame).toContain("ctx:42%");
+  });
+
+  it("folds completed thinking while retaining it in the transcript viewer", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    bridge.sink.onThinkingDelta?.("inspect private reasoning");
+    bridge.sink.onAssistantText?.("final answer");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const collapsed = instance.lastFrame() ?? "";
+    expect(collapsed).toMatch(/Thought for \d+s/);
+    expect(collapsed).toContain("Ctrl+O");
+    // Folded block keeps a one-line nested peek; full body stays in the viewer.
+    expect(collapsed).toContain("└ inspect private reasoning");
+
+    instance.stdin.write("\x0f");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const viewer = instance.lastFrame() ?? "";
+    expect(viewer).toContain("Transcript · Thinking");
+    expect(viewer).toContain("inspect private reasoning");
+  });
+
+  it("navigates retained thinking and tool transcripts without crossing history bounds", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    bridge.sink.onThinkingDelta?.("reasoning transcript");
+    bridge.sink.onAssistantText?.("answer");
+    const call = { id: "read-1", name: "read", arguments: { path: "src/main.ts" } };
+    bridge.sink.onToolStart?.(call);
+    bridge.sink.onToolEnd?.(call, {
+      content: [{ type: "text", text: "tool transcript" }],
+      isError: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    instance.stdin.write("\x0f");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("Transcript 2/2 · read");
+    expect(instance.lastFrame()).toContain("tool transcript");
+
+    instance.stdin.write("\x1b[D");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("Transcript 1/2 · Thinking");
+    expect(instance.lastFrame()).toContain("reasoning transcript");
+
+    instance.stdin.write("\x1b[D");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("Transcript 1/2 · Thinking");
+
+    instance.stdin.write("\x1b[C");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("Transcript 2/2 · read");
+  });
+
+  it("shows compact subagent activity and opens the retained transcript", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    const subagent = bridge.createSubagentUiBridge().forWorker({
+      workerId: 3,
+      modelLabel: "stub/flash",
+      role: "locator",
+      goal: "map routes",
+    });
+    const meta = {
+      workerId: 3,
+      modelLabel: "stub/flash",
+      role: "locator" as const,
+      goal: "map routes",
+    };
+
+    subagent.onLifecycle?.("start", meta);
+    subagent.onThinkingDelta?.("private reasoning");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(instance.lastFrame()).toContain("subagent #3");
+    expect(instance.lastFrame()).toContain("Thinking");
+    expect(instance.lastFrame()).not.toContain("private reasoning");
+
+    const call = { id: "w3:1", name: "grep", arguments: { pattern: "route" } };
+    subagent.onToolStart?.(call);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("Running: grep");
+
+    subagent.onToolEnd?.(call, {
+      content: [{ type: "text", text: "route hit" }],
+      isError: false,
+    });
+    subagent.onAssistantText?.("found the route");
+    subagent.onLifecycle?.("end", { ...meta, success: true, status: "success" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const collapsed = instance.lastFrame() ?? "";
+    expect(collapsed).toContain("success");
+    expect(collapsed).toContain("found the route");
+    expect(collapsed).toContain("Ctrl+O");
+    expect(collapsed).not.toContain("private reasoning");
+    expect(collapsed).not.toContain("route hit");
+
+    instance.stdin.write("\x0f");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const viewer = instance.lastFrame() ?? "";
+    expect(viewer).toContain("Transcript · subagent #3");
+    expect(viewer).toContain("private reasoning");
+    expect(viewer).toContain("route hit");
+  });
+
+  it("line-granular window shows the tail of a report taller than the viewport", async () => {
+    // Regression: block-granular windowing hid a >viewport assistant report
+    // entirely at offset 0 and overflowed on scroll ("一滑就消失").
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    const report = Array.from({ length: 200 }, (_, i) => `report line ${i + 1}`).join("\n");
+    bridge.sink.onAssistantText?.(report);
+    bridge.sink.notify?.("Done in 1s");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("Done in 1s");
+    // Tail of the tall report stays visible at the bottom window.
+    expect(frame).toContain("report line 200");
+
+    // PgUp scrolls 20 lines up: the window now ends near report line 180
+    // (201 total lines - 20), independent of the test terminal height.
+    // (Top hint row can be garbled by ink-testing-library frame merging, so
+    // assert on the bottom hint + stable content lines only.)
+    instance.stdin.write("\x1b[5~");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const scrolled = instance.lastFrame() ?? "";
+    expect(scrolled).toContain("lines to latest");
+    expect(scrolled).toContain("report line 175");
+    expect(scrolled).toContain("report line 180");
+    expect(scrolled).not.toContain("report line 200");
   });
 
   it("executes pasted slash input and renders the command result", async () => {
@@ -384,8 +548,8 @@ describe("App", () => {
   });
 
   it("labels think rows and empty tool output for layered display", () => {
-    expect(thoughtLabel({ collapsed: false })).toBe("thinking…");
-    expect(thoughtLabel({ collapsed: true, thoughtSeconds: 8 })).toBe("think 8s");
+    expect(thoughtLabel({ collapsed: false })).toBe("Thinking…");
+    expect(thoughtLabel({ collapsed: true, thoughtSeconds: 8 })).toBe("Thought for 8s");
     expect(isExploreTool("explore")).toBe(true);
     expect(isExploreTool("bash")).toBe(false);
     expect(formatToolOutputBody("", true, true)).toEqual([`  ${theme.sym.nest} (empty)`]);
@@ -476,7 +640,7 @@ describe("App", () => {
     state = reduceEvent(state, { kind: "assistant-delta", text: "你好" });
     const thinking = state.entries.find((entry) => entry.kind === "thinking");
     expect(thinking).toMatchObject({ collapsed: true, thoughtSeconds: 8 });
-    expect(thoughtLabel(thinking!)).toBe("think 8s");
+    expect(thoughtLabel(thinking!)).toBe("Thought for 8s");
     expect(state.entries.at(-1)).toMatchObject({ kind: "assistant", text: "你好" });
   });
 
@@ -557,6 +721,39 @@ describe("App", () => {
     expect(state.entries.at(-1)).toMatchObject({ previewCollapsed: false });
   });
 
+  it("bounds Ctrl+O viewer scrolling to the retained output length", () => {
+    // Regression: unclamped wheel/PgDn overshoot accrued invisible offset debt,
+    // so scrolling back up after hitting the bottom felt dead (无法滑动).
+    const block = {
+      id: 1,
+      kind: "tool" as const,
+      lines: ["> bash"],
+      output: Array.from({ length: 40 }, (_, i) => `line${i}`).join("\n"),
+    };
+    // 24 terminal rows − chrome (header + overlay + composer + footer) → 6-line
+    // viewport → last valid offset 40 - 6 = 34. Regression: rows-10 overflowed
+    // the terminal and left residue after Esc closed the overlay.
+    expect(viewerScrollBounds(block, 24)).toEqual({ viewport: 6, maxOffset: 34 });
+    // Content shorter than the viewport never scrolls.
+    expect(viewerScrollBounds({ ...block, output: "one\ntwo" }, 24).maxOffset).toBe(0);
+    // Tiny terminals keep the 4-line viewport floor.
+    expect(viewerScrollBounds(block, 10).viewport).toBe(4);
+    // Viewer viewport + chrome must fit the terminal (no un-erasable overflow).
+    for (const rows of [20, 24, 40, 60]) {
+      expect(viewerScrollBounds(block, rows).viewport + VIEWER_CHROME_ROWS)
+        .toBeLessThanOrEqual(Math.max(rows, 4 + VIEWER_CHROME_ROWS));
+    }
+  });
+
+  it("caps the live preview char budget to a screen-bounded region", () => {
+    // 24×80 terminal: 8 preview rows × 78 usable cols.
+    expect(livePreviewCharBudget(24, 80)).toBe(8 * 78);
+    // Tall terminals clamp at 12 rows so streams never crowd out the composer.
+    expect(livePreviewCharBudget(200, 100)).toBe(12 * 98);
+    // Tiny/unknown sizes keep a sane floor.
+    expect(livePreviewCharBudget(6, 0)).toBe(3 * 78);
+  });
+
   it("filters slash commands by prefix and hides menu after a space", () => {
     expect(slashQuery("/")).toBe("");
     expect(slashQuery("/ef")).toBe("ef");
@@ -570,26 +767,6 @@ describe("App", () => {
     expect(all.filter((item) => item.name === "compact")).toHaveLength(1);
     expect(filterSlashCommands(all, "ef")?.map((item) => item.name)).toEqual(["effort"]);
     expect(filterSlashCommands(all, undefined)).toBeUndefined();
-    expect(filterSlashCommands(all, "")).toEqual(all);
-  });
-
-  it("ranks slash commands prefix → substring → subsequence, like the @ picker", () => {
-    const host = new ExtensionHost();
-    host.registerCommand("compact", { description: "Compact context.", handler: async () => {} });
-    host.registerCommand("connect", { description: "Set up a key.", handler: async () => {} });
-    host.registerCommand("rollback", { description: "Undo changes.", handler: async () => {} });
-    const all = collectSlashCommands(host);
-
-    // Substring: typing the middle of a name now finds it.
-    expect(filterSlashCommands(all, "pact")?.map((item) => item.name)).toEqual(["compact"]);
-    // Subsequence: scattered letters still resolve.
-    expect(filterSlashCommands(all, "rlb")?.map((item) => item.name)).toEqual(["rollback"]);
-    // Prefix outranks the rest, and case never matters.
-    expect(filterSlashCommands(all, "CO")?.map((item) => item.name).slice(0, 2))
-      .toEqual(["compact", "connect"]);
-    // One letter stays tight — no subsequence blowout.
-    expect(filterSlashCommands(all, "k")?.map((item) => item.name)).toEqual(["rollback"]);
-    expect(filterSlashCommands(all, "zz")).toEqual([]);
   });
 
   it("shows slash command menu when typing /", async () => {
@@ -675,305 +852,7 @@ describe("App", () => {
     releasePrompt();
     await new Promise((resolve) => setTimeout(resolve, 40));
   });
-
-  it("? on an empty prompt opens the shortcut sheet the footer advertises", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    expect(instance.lastFrame() ?? "").toContain("? for shortcuts");
-
-    instance.stdin.write("?");
-    await settle();
-    const frame = instance.lastFrame() ?? "";
-    expect(frame).toContain("Shortcuts");
-    expect(frame).toContain("Prompt");
-    expect(frame).toContain("Send the prompt");
-
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").not.toContain("Send the prompt");
-  });
-
-  it("scrolls the shortcut sheet when it does not fit the terminal", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("?");
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("Send the prompt");
-
-    // Paging down must reveal the later groups, not dismiss the sheet.
-    instance.stdin.write(PAGE_DOWN);
-    await settle();
-    const frame = instance.lastFrame() ?? "";
-    expect(frame).toContain(">>text");
-    expect(frame).not.toContain("Send the prompt");
-  });
-
-  it("? inside a draft types a question mark instead of opening the sheet", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("what");
-    instance.stdin.write("?");
-    await settle();
-    const frame = instance.lastFrame() ?? "";
-    expect(frame).toContain("what?");
-    expect(frame).not.toContain(">>text");
-  });
-
-  it("/help lands on the same sheet as ?", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("/help\r");
-    await settle();
-    const frame = instance.lastFrame() ?? "";
-    expect(frame).toContain("Shortcuts");
-    expect(frame).toContain("Send the prompt");
-    // The old one-line notify dump is gone — one key map, not two.
-    expect(frame).not.toContain("Commands: /");
-  });
-
-  it("Esc cancels a running turn and keeps the draft", async () => {
-    const host = new ExtensionHost();
-    let aborts = 0;
-    let releasePrompt!: () => void;
-    const promptGate = new Promise<void>((resolve) => {
-      releasePrompt = resolve;
-    });
-    const session: PreparedSession = {
-      ...createSession(host),
-      abortTurn() {
-        aborts += 1;
-        releasePrompt();
-      },
-      runPrompt: async () => {
-        await promptGate;
-        return {
-          text: "done",
-          success: true,
-          turns: 1,
-          toolCalls: 0,
-          toolErrors: 0,
-          usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
-        };
-      },
-    };
-    const instance = render(React.createElement(App, {
-      session,
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-
-    instance.stdin.write("long task\r");
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("esc cancel");
-
-    instance.stdin.write("keep me");
-    await settle();
-    instance.stdin.write(ESC);
-    await settle();
-
-    expect(aborts).toBe(1);
-    expect(instance.lastFrame() ?? "").toContain("keep me");
-  });
-
-  it("idle Esc is harmless alone and clears the draft when tapped twice", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("draft text");
-    await settle();
-
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("draft text");
-    expect(instance.lastFrame() ?? "").toContain("esc again to clear the draft");
-
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").not.toContain("draft text");
-  });
-
-  it("keeps a cleared draft recallable from prompt history", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      // Route B: arrows walk prompt history instead of scrolling the transcript.
-      appendScrollback: true,
-      async onExit() {},
-    }));
-    instance.stdin.write("draft text");
-    instance.stdin.write(ESC);
-    await settle();
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").not.toContain("draft text");
-
-    instance.stdin.write(ARROW_UP);
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("draft text");
-  });
-
-  it("asks before an idle Ctrl+C ends the session", async () => {
-    const exits: number[] = [];
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit(code) {
-        exits.push(code);
-      },
-    }));
-
-    instance.stdin.write(CTRL_C);
-    await settle();
-    expect(exits).toEqual([]);
-    expect(instance.lastFrame() ?? "").toContain("ctrl+c again to exit");
-
-    instance.stdin.write(CTRL_C);
-    await settle();
-    expect(exits).toEqual([0]);
-  });
-
-  it("lets an idle Ctrl+C clear the draft before it arms the exit", async () => {
-    const exits: number[] = [];
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit(code) {
-        exits.push(code);
-      },
-    }));
-
-    instance.stdin.write("half-written thought");
-    await settle();
-    instance.stdin.write(CTRL_C);
-    await settle();
-    let frame = instance.lastFrame() ?? "";
-    expect(frame).not.toContain("half-written thought");
-    expect(frame).not.toContain("ctrl+c again to exit");
-    expect(exits).toEqual([]);
-
-    // Only now, on an empty prompt, does Ctrl+C start asking about the exit.
-    instance.stdin.write(CTRL_C);
-    await settle();
-    frame = instance.lastFrame() ?? "";
-    expect(frame).toContain("ctrl+c again to exit");
-    expect(exits).toEqual([]);
-  });
-
-  it("keeps Ctrl+C a one-press cancel while a turn is running", async () => {
-    const host = new ExtensionHost();
-    const exits: number[] = [];
-    let aborts = 0;
-    let releasePrompt!: () => void;
-    const promptGate = new Promise<void>((resolve) => {
-      releasePrompt = resolve;
-    });
-    const session: PreparedSession = {
-      ...createSession(host),
-      abortTurn() {
-        aborts += 1;
-        releasePrompt();
-      },
-      runPrompt: async () => {
-        await promptGate;
-        return {
-          text: "done",
-          success: true,
-          turns: 1,
-          toolCalls: 0,
-          toolErrors: 0,
-          usage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, reasoningTokens: 0 },
-        };
-      },
-    };
-    const instance = render(React.createElement(App, {
-      session,
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit(code) {
-        exits.push(code);
-      },
-    }));
-
-    instance.stdin.write("long task\r");
-    await settle();
-    instance.stdin.write(CTRL_C);
-    await settle();
-
-    expect(aborts).toBe(1);
-    expect(exits).toEqual([]);
-  });
-
-  it("lets the armed draft clear expire instead of leaving a stale hint", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("slow hands");
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("esc again to clear the draft");
-
-    await settle(CONFIRM_WINDOW_MS + 150);
-    expect(instance.lastFrame() ?? "").not.toContain("esc again to clear");
-
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("slow hands");
-  });
-
-  it("typing between two Escs disarms the draft clear", async () => {
-    const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge: new TuiSessionBridge(),
-      cwd: "/tmp/project",
-      async onExit() {},
-    }));
-    instance.stdin.write("keep this");
-    instance.stdin.write(ESC);
-    await settle();
-    instance.stdin.write("!");
-    await settle();
-    expect(instance.lastFrame() ?? "").not.toContain("esc again to clear");
-
-    instance.stdin.write(ESC);
-    await settle();
-    expect(instance.lastFrame() ?? "").toContain("keep this!");
-  });
 });
-
-const ESC = "\u001B";
-const ARROW_UP = "\u001B[A";
-const PAGE_DOWN = "\u001B[6~";
-const CTRL_C = "\u0003";
-
-function settle(ms = 40): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function emptyView(): ViewState {
   return { entries: [] as ViewState["entries"], statuses: {}, widgets: {}, bypass: false };
@@ -1012,7 +891,6 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     followUp() {},
     getMessages: () => messages,
     workspacePerception: stubWorkspacePerception(),
-    getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
     async close() {},
     waitForIdle: async () => {},
     getHarnessPhase: () => "idle" as const,

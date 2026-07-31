@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  LINK="$(readlink "$SOURCE")"
+  [[ "$LINK" != /* ]] && SOURCE="$DIR/$LINK" || SOURCE="$LINK"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+if [ -f "$ROOT/dist/xio-setup.js" ]; then
+  exec node "$ROOT/dist/xio-setup.js" "$@"
+fi
+exec node --experimental-strip-types "$ROOT/src/cli/setup-entry.ts" "$@"

@@ -16,7 +16,6 @@ import {
   expandFileMentions,
   filterFiles,
   insertFileMention,
-  isSubsequence,
   listWorkspaceFiles,
 } from "./file-mention.ts";
 import {
@@ -24,7 +23,6 @@ import {
   estimateContentBottomRow,
   estimateContentTopRow,
   extractSelectedText,
-  flattenBlockLines,
   highlightLineSegments,
   selectionDragDistance,
   selectionIsEmpty,
@@ -55,18 +53,25 @@ import {
   type ComposerState,
 } from "./composer.ts";
 import {
+  adjacentExpandableHistoryBlock,
   appendUserBlock,
   blocksFromRestoredMessages,
   emptyScrollbackState,
+  expandableHistoryBlocks,
   formatLiveLines,
+  formatSubagentActivity,
   isExploreHistoryBlock,
   latestExpandableToolBlock,
+  liveTextTail,
   reduceScrollback,
-  toggleLatestScrollbackExpandable,
+  sliceTranscriptLineWindow,
   type HistoryBlock,
+  type InFlightSubagent,
+  type RenderLine,
   type ScrollbackState,
 } from "./transcript-log.ts";
 import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
+import { motionEnabled, REDUCED_TICK_MS, SPINNER_INTERVAL_MS, spinnerFrameAt } from "./motion.ts";
 import type { ChatMessage, ContextCompactionUiEvent } from "../runtime/types.ts";
 import {
   collapseNoticesForDisplay,
@@ -76,7 +81,6 @@ import {
   truncateToolDetail,
 } from "./theme.ts";
 import { BrandHeader } from "./shark-logo.ts";
-import { ShortcutsOverlay, composerHint, shortcutGroups } from "./shortcuts.ts";
 
 const h = React.createElement;
 const require = createRequire(import.meta.url);
@@ -135,7 +139,7 @@ export type AppProps = Readonly<{
 export type SlashCommand = Readonly<{ name: string; description: string }>;
 
 const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "help", description: "Show the shortcut sheet (or press ?)." },
+  { name: "help", description: "Show available commands." },
   { name: "bypass", description: "Toggle merge/rollback auto-approve for this session." },
   { name: "exit", description: "End the session." },
   { name: "quit", description: "Alias for /exit." },
@@ -143,17 +147,22 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
 
 const SLASH_MENU_VISIBLE = 8;
 
-/**
- * Window for a two-step keystroke confirmation (Esc-Esc clears the draft,
- * Ctrl+C-Ctrl+C exits). One press arms, the next within this window commits.
- */
-export const CONFIRM_WINDOW_MS = 1_000;
+/** Process-wide reduced-motion preference (TERM=dumb / XIO_ANIMATION=off). */
+const MOTION_ENABLED = motionEnabled();
 
-/** Keystrokes that ask once before doing something the user cannot undo. */
-export type ArmedAction = "clear-draft" | "exit";
+/** What lives on one visible terminal row of the fullscreen content band (double-click hit-test). */
+export type LineTarget = Readonly<
+  | { type: "block"; blockId: number }
+  | { type: "hint" }
+  | { type: "live" }
+  | { type: "subagent"; workerId: number }
+>;
+
+/** Max ms between two presses on the same row to count as a double-click. */
+export const DOUBLE_CLICK_MS = 450;
 
 export function App(props: AppProps): React.JSX.Element {
-  const { rows } = useWindowSize();
+  const { columns, rows } = useWindowSize();
   const appendScrollback = props.appendScrollback === true;
   const [view, setView] = useState<ViewState>(() =>
     ({ entries: [], statuses: {}, widgets: {}, bypass: false }),
@@ -162,6 +171,7 @@ export function App(props: AppProps): React.JSX.Element {
   const [scrollback, setScrollback] = useState<ScrollbackState>(() =>
     blocksFromRestoredMessages(props.session.getMessages()),
   );
+  const [subagentClock, setSubagentClock] = useState(() => Date.now());
   // Fullscreen / Route A: 0 = stick to latest; >0 = lines scrolled up.
   const [scrollOffset, setScrollOffset] = useState(0);
 
@@ -212,6 +222,7 @@ export function App(props: AppProps): React.JSX.Element {
   const contentBottomRowRef = useRef(1);
   const dragActiveRef = useRef(false);
   const selectionFlashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lineTargetsRef = useRef<readonly LineTarget[]>([]);
   const selectionApiRef = useRef({
     selectableLinesRef,
     contentTopRowRef,
@@ -219,6 +230,7 @@ export function App(props: AppProps): React.JSX.Element {
     textSelectionRef,
     dragActiveRef,
     selectionFlashTimer,
+    lineTargetsRef,
     setTextSelection,
     clearTextSelection: () => {},
     finishTextSelectionCopy: (_range: TextSelectionRange) => {},
@@ -270,9 +282,8 @@ export function App(props: AppProps): React.JSX.Element {
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
-    shortcutsOpen,
-    shortcutsScroll,
-    armed,
+    focusedSubagentId,
+    setFocusedSubagentId,
   } = useSessionInteraction(
     props,
     setView,
@@ -283,17 +294,20 @@ export function App(props: AppProps): React.JSX.Element {
     selectionApiRef,
   );
 
-  // Rebuilding the sorted command list on every keystroke showed up on the key
-  // path; cache it on the host's command revision so late-registering
-  // extensions / MCP servers still appear.
-  const commandsRevision = props.session.host.commandsRevision;
-  const slashCommands = useMemo(
-    () => collectSlashCommands(props.session.host),
-    [props.session.host, commandsRevision],
-  );
+  // One animation clock drives all motion: spinner chrome at ~8fps while busy,
+  // 1s ticks under reduced motion (subagent elapsed labels still advance).
+  useEffect(() => {
+    if (!busy && scrollback.inFlightSubagents.length === 0) return;
+    const tickMs = MOTION_ENABLED ? SPINNER_INTERVAL_MS : REDUCED_TICK_MS;
+    setSubagentClock(Date.now());
+    const timer = setInterval(() => setSubagentClock(Date.now()), tickMs);
+    return () => clearInterval(timer);
+  }, [busy, scrollback.inFlightSubagents.length]);
+  const spinnerFrame = MOTION_ENABLED && busy ? spinnerFrameAt(subagentClock) : undefined;
+
   const slashItems = useMemo(
-    () => filterSlashCommands(slashCommands, slashQuery(input)),
-    [slashCommands, input],
+    () => filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(input)),
+    [props.session.host, input],
   );
   const slashOpen = !busy && slashItems !== undefined;
   const safeSlashIndex = slashOpen && slashItems.length > 0
@@ -303,25 +317,20 @@ export function App(props: AppProps): React.JSX.Element {
   const safeAtIndex = atOpen && atItems.length > 0 ? Math.min(atIndex, atItems.length - 1) : 0;
 
   const tasklist = view.widgets.tasklist;
+  const viewerHistory = transcriptViewer ? expandableHistoryBlocks(scrollback) : [];
+  const viewerIndex = transcriptViewer
+    ? viewerHistory.findIndex((block) => block.id === transcriptViewer.id)
+    : -1;
 
-  // One contextual line under the composer: what this state actually accepts.
-  const hint = composerHint({
-    busy,
-    armed,
-    queued: composer.queue !== undefined,
-    canSteer: typeof props.session.steer === "function",
-  });
-
-  // --- Fullscreen / Route A: self-managed window over HistoryBlocks ---
+  // --- Fullscreen / Route A: self-managed line-granular window over HistoryBlocks ---
   const window = useMemo(() => {
     if (appendScrollback) {
       return {
-        visible: [] as HistoryBlock[],
+        lines: [] as readonly RenderLine[],
         offset: 0,
         maxOffset: 0,
         hiddenAbove: 0,
         hiddenBelow: 0,
-        viewport: 0,
         totalLines: 0,
       };
     }
@@ -331,20 +340,21 @@ export function App(props: AppProps): React.JSX.Element {
       : atOpen
         ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 1
         : 0;
+    // Live preview is screen-bounded; count wrapped rows so history + live +
+    // chrome never exceed the terminal (overflow = un-erasable residue).
     const liveExtra = formatLiveLines(
       scrollback.live,
       scrollback.inFlightTools,
       scrollback.inFlightSubagents,
-    ).length;
-    // Brand (~3) + composer (~4) + footer (~2) + hint + live sticky lines.
-    const baseChrome = 10 + menuRows + tasklistRows + liveExtra + (hint ? 1 : 0);
+      { charBudget: livePreviewCharBudget(rows, columns) },
+    ).reduce((sum, line) =>
+      sum + (line.startsWith(`${theme.sym.answer} `)
+        ? wrappedLineCount(line, Math.max(20, columns))
+        : 1), 0);
+    // Brand (~3) + composer (~4) + footer (~2) + live sticky lines.
+    const baseChrome = 10 + menuRows + tasklistRows + liveExtra;
     const viewportLines = Math.max(4, rows - baseChrome);
-    return sliceTranscriptWindow(
-      scrollback.blocks,
-      viewportLines,
-      scrollOffset,
-      (block) => Math.max(1, block.lines.length),
-    );
+    return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset);
   }, [
     appendScrollback,
     scrollback.blocks,
@@ -352,13 +362,13 @@ export function App(props: AppProps): React.JSX.Element {
     scrollback.inFlightTools,
     scrollback.inFlightSubagents,
     rows,
+    columns,
     scrollOffset,
     slashOpen,
     slashItems,
     atOpen,
     atItems,
     tasklist,
-    hint,
   ]);
 
   useEffect(() => {
@@ -377,14 +387,54 @@ export function App(props: AppProps): React.JSX.Element {
     ?? undefined;
   const scrolled = !appendScrollback && window.offset > 0;
 
-  selectableLinesRef.current = appendScrollback ? [] : flattenBlockLines(window.visible);
+  // Running worker focused via double-click; falls back to its history block once finished.
+  const focusedWorker = focusedSubagentId !== undefined
+    ? scrollback.inFlightSubagents.find((worker) => worker.workerId === focusedSubagentId)
+    : undefined;
+  useEffect(() => {
+    if (focusedSubagentId === undefined) return;
+    if (scrollback.inFlightSubagents.some((worker) => worker.workerId === focusedSubagentId)) return;
+    const block = scrollback.blocks.find(
+      (candidate) => candidate.kind === "subagent" && candidate.workerId === focusedSubagentId,
+    );
+    setFocusedSubagentId(undefined);
+    if (block) setTranscriptViewer(block);
+  }, [focusedSubagentId, scrollback.inFlightSubagents, scrollback.blocks]);
+
+  selectableLinesRef.current = appendScrollback
+    ? []
+    : window.lines.map((line) => stripAnsi(line.text));
   contentTopRowRef.current = estimateContentTopRow({ scrolled });
   contentBottomRowRef.current = estimateContentBottomRow(rows);
+  // Row → target map for double-click: transcript lines, then hint, then live rows
+  // (the last inFlightSubagents.length live rows are worker rows, in order).
+  lineTargetsRef.current = appendScrollback
+    ? []
+    : (() => {
+      const targets: LineTarget[] = window.lines.map((line) => ({
+        type: "block",
+        blockId: line.blockId,
+      }));
+      if (window.hiddenBelow > 0) targets.push({ type: "hint" });
+      const liveCount = formatLiveLines(
+        scrollback.live,
+        scrollback.inFlightTools,
+        scrollback.inFlightSubagents,
+      ).length;
+      const nonWorker = liveCount - scrollback.inFlightSubagents.length;
+      for (let i = 0; i < nonWorker; i += 1) targets.push({ type: "live" });
+      for (const worker of scrollback.inFlightSubagents) {
+        targets.push({ type: "subagent", workerId: worker.workerId });
+      }
+      return targets;
+    })();
 
   // Scrollback mode: natural height (Static history + chrome). Do not pin to full screen.
+  // Fullscreen clips overflow: a frame taller than the terminal scrolls Ink's
+  // managed region and leaves un-erasable residue after overlays close (Esc).
   const rootProps = appendScrollback
     ? { flexDirection: "column" as const }
-    : { flexDirection: "column" as const, height: rows };
+    : { flexDirection: "column" as const, height: rows, overflow: "hidden" as const };
 
   return h(Box, rootProps,
     appendScrollback
@@ -401,66 +451,65 @@ export function App(props: AppProps): React.JSX.Element {
       plan: planLabel,
       cwd: props.cwd,
       busy,
-      phase: busyPhaseLabel({
+      phase: composePhaseChrome(busyPhaseLabel({
         busy,
         inFlightToolCount: scrollback.inFlightTools.length,
+        inFlightSubagentCount: scrollback.inFlightSubagents.length,
         liveKind: scrollback.live?.kind,
-      }),
+      }), spinnerFrame),
     }),
-    shortcutsOpen
-      ? h(ShortcutsOverlay, {
-        groups: shortcutGroups({ fullscreen: !appendScrollback }),
-        rows,
-        scrollOffset: shortcutsScroll,
-        commandCount: slashCommands.length,
-      })
-      : transcriptViewer
+    transcriptViewer
       ? h(TranscriptViewerOverlay, {
         block: transcriptViewer,
         rows,
         scrollOffset: viewerScrollOffset,
+        historyIndex: viewerIndex >= 0 ? viewerIndex + 1 : undefined,
+        historyTotal: viewerHistory.length,
         onClose: () => setTranscriptViewer(undefined),
       })
-      : view.confirm
-        ? h(ConfirmView, { confirm: view.confirm, rows })
-        : view.select
-          ? h(SelectView, { select: view.select, rows })
-          : view.prompt
-            ? h(PromptView, { prompt: view.prompt })
-            : h(Box, { flexDirection: "column", flexGrow: 1 },
-              !appendScrollback && scrolled
-                ? h(Text, { dimColor: true },
-                  `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
-                : null,
-              ...(!appendScrollback
-                ? (() => {
-                  let lineBase = 0;
-                  return window.visible.map((block) => {
-                    const row = h(HistoryBlockRow, {
-                      key: block.id,
-                      block,
-                      lineBase,
+      : focusedWorker
+        ? h(SubagentDetailOverlay, {
+          worker: focusedWorker,
+          rows,
+          now: subagentClock,
+        })
+        : view.confirm
+          ? h(ConfirmView, { confirm: view.confirm, rows })
+          : view.select
+            ? h(SelectView, { select: view.select, rows })
+            : view.prompt
+              ? h(PromptView, { prompt: view.prompt })
+              : h(Box, { flexDirection: "column", flexGrow: 1 },
+                !appendScrollback && scrolled
+                  ? h(Text, { dimColor: true },
+                    `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
+                  : null,
+                ...(!appendScrollback
+                  ? window.lines.map((line, index) =>
+                    h(RenderLineRow, {
+                      key: `${line.blockId}-${line.indexInBlock}`,
+                      line,
+                      lineIndex: index,
                       selection: textSelection,
-                    });
-                    lineBase += block.lines.length;
-                    return row;
-                  });
-                })()
-                : []),
-              !appendScrollback && window.hiddenBelow > 0
-                ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
-                : null,
-              h(LiveStreamRegion, {
-                live: scrollback.live,
-                inFlightTools: scrollback.inFlightTools,
-                inFlightSubagents: scrollback.inFlightSubagents,
-              })),
+                    }))
+                  : []),
+                !appendScrollback && window.hiddenBelow > 0
+                  ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
+                  : null,
+                h(LiveStreamRegion, {
+                  live: scrollback.live,
+                  inFlightTools: scrollback.inFlightTools,
+                  inFlightSubagents: scrollback.inFlightSubagents,
+                  charBudget: livePreviewCharBudget(rows, columns),
+                  now: subagentClock,
+                  spinnerFrame,
+                })),
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
     h(ComposerChrome, {
       busy,
-      hint,
+      spinnerFrame,
       composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
     }),
     slashOpen
@@ -482,20 +531,31 @@ export function App(props: AppProps): React.JSX.Element {
 }
 
 /** Sticky live stream — only re-renders when live buffer / in-flight tools change. */
-export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
+const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
   live: ScrollbackState["live"];
   inFlightTools: ScrollbackState["inFlightTools"];
   inFlightSubagents: ScrollbackState["inFlightSubagents"];
+  /** Screen-bounded preview budget (rows × columns) — see livePreviewCharBudget. */
+  charBudget: number;
+  now: number;
+  /** Current spinner frame; undefined = reduced motion (static chrome). */
+  spinnerFrame?: string;
 }>): React.JSX.Element | null {
-  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents);
+  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents, {
+    charBudget: props.charBudget,
+    now: props.now,
+    spinnerFrame: props.spinnerFrame,
+  });
   if (liveLines.length === 0) return null;
   return h(Box, { flexDirection: "column", marginY: 0 },
     ...liveLines.map((line, index) =>
       h(Text, {
         key: `live-${index}`,
         dimColor: true,
-        wrap: "wrap",
-        color: line.includes(theme.sym.think)
+        // Activity rows are deliberately one terminal row; only answer text wraps.
+        wrap: line.startsWith(`${theme.sym.answer} `) ? "wrap" : "truncate-end",
+        // Nested `└` rows in the live region are the thinking-tail echo.
+        color: line.includes(theme.sym.think) || line.trimStart().startsWith(theme.sym.nest)
           ? theme.think
           : line.includes(theme.sym.explore)
             ? theme.explore
@@ -508,9 +568,9 @@ export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
 /** Composer with block cursor and multiline draft (pi Editor-style subset). */
 const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
   busy: boolean;
+  /** Current spinner frame; undefined = reduced motion (static busy dot). */
+  spinnerFrame?: string;
   composer: ComposerState;
-  /** Contextual affordance line (cancel / steer / queued), hidden when empty. */
-  hint?: string;
 }>): React.JSX.Element {
   const { text, cursor } = props.composer;
   const lines = text.length === 0 ? [""] : text.split("\n");
@@ -542,14 +602,11 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
     borderColor: "gray",
     paddingX: 1,
   },
-    h(Text, { dimColor: props.busy }, props.busy ? theme.sym.busy : theme.sym.prompt),
-    ...rows,
-    props.hint
-      ? h(Text, { dimColor: true, wrap: "truncate-end" }, props.hint)
-      : null);
+    h(Text, { dimColor: props.busy }, props.busy ? (props.spinnerFrame ?? theme.sym.busy) : theme.sym.prompt),
+    ...rows);
 });
 
-export const HistoryBlockRow = memo(function HistoryBlockRow(
+const HistoryBlockRow = memo(function HistoryBlockRow(
   props: Readonly<{
     block: HistoryBlock;
     /** Flat selectable-line index of this block's first line (fullscreen select). */
@@ -572,6 +629,9 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
     || props.block.kind === "thinking"
     || props.block.kind === "notice"
     || props.block.kind === "subagent";
+  const compact = props.block.kind === "tool"
+    || props.block.kind === "thinking"
+    || props.block.kind === "subagent";
   const lineBase = props.lineBase ?? 0;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
     ...props.block.lines.map((rawLine, index) => {
@@ -584,7 +644,7 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
           color,
           bold: bold && index === 0,
           dimColor: dim,
-          wrap: "wrap",
+          wrap: compact ? "truncate-end" : "wrap",
         }, rawLine);
       }
       return h(Text, {
@@ -592,7 +652,7 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
         color,
         bold: bold && index === 0,
         dimColor: dim,
-        wrap: "wrap",
+        wrap: compact ? "truncate-end" : "wrap",
       },
         ...segments.map((seg, segIndex) =>
           h(Text, {
@@ -602,6 +662,47 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
             dimColor: seg.selected ? false : dim,
           }, seg.text)));
     }));
+});
+
+/**
+ * One flattened transcript row (fullscreen line-granular window).
+ * Mirrors HistoryBlockRow styling; wraps only assistant/user/notice content.
+ */
+const RenderLineRow = memo(function RenderLineRow(props: Readonly<{
+  line: RenderLine;
+  /** Index within the visible window = selectable-line index (mouse selection). */
+  lineIndex: number;
+  selection?: TextSelectionRange;
+}>): React.JSX.Element {
+  const { line } = props;
+  const color = line.error
+    ? theme.error
+    : line.explore
+      ? theme.explore
+      : line.kind === "tool"
+        ? theme.tool
+        : line.kind === "thinking"
+          ? theme.think
+          : undefined;
+  const dim = line.kind === "tool"
+    || line.kind === "thinking"
+    || line.kind === "notice"
+    || line.kind === "subagent";
+  const wrap = line.compact ? "truncate-end" as const : "wrap" as const;
+  // Selection math is on plain text; render plain when highlighting so cols match.
+  const plain = stripAnsi(line.text);
+  const segments = highlightLineSegments(plain, props.lineIndex, props.selection);
+  if (!segments) {
+    return h(Text, { color, bold: line.boldFirst, dimColor: dim, wrap }, line.text || " ");
+  }
+  return h(Text, { color, bold: line.boldFirst, dimColor: dim, wrap },
+    ...segments.map((seg, segIndex) =>
+      h(Text, {
+        key: `seg-${segIndex}`,
+        inverse: seg.selected,
+        color: seg.selected ? undefined : color,
+        dimColor: seg.selected ? false : dim,
+      }, seg.text)));
 });
 
 /**
@@ -734,6 +835,18 @@ function wrappedLineCount(text: string, columns: number): number {
   return total;
 }
 
+/**
+ * Screen-bounded char budget for the live answer/thinking preview: at most
+ * ~1/3 of the terminal (clamped 3–12 rows) × usable columns. Long streams keep
+ * their full buffer; only the sticky preview is capped so it can never push
+ * the composer/footer off screen (思考输出超出输入框).
+ */
+export function livePreviewCharBudget(rows: number, columns: number): number {
+  const usableCols = Math.max(20, (columns || 80) - 2);
+  const budgetRows = Math.max(3, Math.min(12, Math.floor(rows / 3)));
+  return budgetRows * usableCols;
+}
+
 function useSessionInteraction(
   props: AppProps,
   setView: React.Dispatch<React.SetStateAction<ViewState>>,
@@ -748,6 +861,7 @@ function useSessionInteraction(
     textSelectionRef: React.MutableRefObject<TextSelectionRange | undefined>;
     dragActiveRef: React.MutableRefObject<boolean>;
     selectionFlashTimer: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>;
+    lineTargetsRef: React.MutableRefObject<readonly LineTarget[]>;
     setTextSelection: React.Dispatch<React.SetStateAction<TextSelectionRange | undefined>>;
     clearTextSelection: () => void;
     finishTextSelectionCopy: (range: TextSelectionRange) => void;
@@ -763,10 +877,8 @@ function useSessionInteraction(
   transcriptViewer: HistoryBlock | undefined;
   viewerScrollOffset: number;
   setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
-  shortcutsOpen: boolean;
-  shortcutsScroll: number;
-  /** Keystroke waiting on its second press, or undefined when nothing is armed. */
-  armed: ArmedAction | undefined;
+  focusedSubagentId: number | undefined;
+  setFocusedSubagentId: React.Dispatch<React.SetStateAction<number | undefined>>;
 }> {
   const { exit } = useApp();
   const [composer, setComposer] = useState<ComposerState>(() =>
@@ -788,44 +900,15 @@ function useSessionInteraction(
   };
   const transcriptViewerRef = useRef(transcriptViewer);
   transcriptViewerRef.current = transcriptViewer;
+  const [focusedSubagentId, setFocusedSubagentId] = useState<number | undefined>(undefined);
+  const focusedSubagentIdRef = useRef(focusedSubagentId);
+  focusedSubagentIdRef.current = focusedSubagentId;
+  /** Last mouse press for double-click detection (same row within DOUBLE_CLICK_MS). */
+  const lastPointerDownRef = useRef<{ at: number; row: number; col: number } | undefined>(undefined);
   const scrollbackRef = useRef(scrollback);
   scrollbackRef.current = scrollback;
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const shortcutsOpenRef = useRef(shortcutsOpen);
-  shortcutsOpenRef.current = shortcutsOpen;
-  const [shortcutsScroll, setShortcutsScroll] = useState(0);
-  const openShortcuts = (open: boolean) => {
-    shortcutsOpenRef.current = open;
-    setShortcutsOpen(open);
-    if (open) setShortcutsScroll(0);
-  };
-  // Two-step confirmation: one press arms and hints, the next commits. A lone
-  // press must stay harmless — idle Ctrl+C used to end the session outright.
-  const [armed, setArmed] = useState<ArmedAction | undefined>(undefined);
-  const armedRef = useRef<Readonly<{ action: ArmedAction; at: number }> | undefined>(undefined);
-  const armTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const disarm = () => {
-    if (armTimer.current) {
-      clearTimeout(armTimer.current);
-      armTimer.current = undefined;
-    }
-    armedRef.current = undefined;
-    setArmed(undefined);
-  };
-  // The hint promises a window, so it has to disappear when the window closes.
-  const arm = (action: ArmedAction) => {
-    if (armTimer.current) clearTimeout(armTimer.current);
-    armedRef.current = { action, at: Date.now() };
-    setArmed(action);
-    armTimer.current = setTimeout(disarm, CONFIRM_WINDOW_MS);
-  };
-  const isArmed = (action: ArmedAction) =>
-    armedRef.current?.action === action && Date.now() - armedRef.current.at <= CONFIRM_WINDOW_MS;
-  useEffect(() => () => {
-    if (armTimer.current) clearTimeout(armTimer.current);
-  }, []);
   const [slashIndex, setSlashIndex] = useState(0);
   const slashIndexRef = useRef(0);
   // `@` file picker: list loaded lazily on first trigger, Esc dismisses per query.
@@ -837,26 +920,12 @@ function useSessionInteraction(
   const [atDismissed, setAtDismissed] = useState<string | undefined>(undefined);
   const atDismissedRef = useRef(atDismissed);
   atDismissedRef.current = atDismissed;
-  const atFilterCacheRef = useRef<
-    { files: readonly string[]; query: string; items: readonly string[] } | undefined
-  >(undefined);
-  // Same cache rationale as the slash menu: the sorted command list is rebuilt
-  // per arrow key otherwise. Revision keeps late-registered commands visible.
-  const interactionCommandsRevision = props.session.host.commandsRevision;
-  const handlerSlashCommands = useMemo(() => {
-    const commands = collectSlashCommands(props.session.host);
-    return () => commands;
-  }, [props.session.host, interactionCommandsRevision]);
   const activeAtQuery = busy ? undefined : atQuery(composer.text, composer.cursor);
-  // Fuzzy-ranking the whole workspace runs on the keystroke path; memoize so a
-  // render that changed nothing relevant does not re-rank, and let the key
-  // handlers reuse this result instead of computing a second one.
-  const atItems = useMemo(
-    () => (activeAtQuery !== undefined && atDismissed !== activeAtQuery && fileList !== undefined
-      ? filterFiles(fileList, activeAtQuery, 50)
-      : undefined),
-    [activeAtQuery, atDismissed, fileList],
-  );
+  const atItems = activeAtQuery !== undefined
+    && atDismissed !== activeAtQuery
+    && fileList !== undefined
+    ? filterFiles(fileList, activeAtQuery, 50)
+    : undefined;
   useEffect(() => {
     if (activeAtQuery === undefined || fileList !== undefined) return;
     let cancelled = false;
@@ -875,7 +944,6 @@ function useSessionInteraction(
       : { ...next, text: cleanedText, cursor: Math.min(next.cursor, cleanedText.length) };
     composerRef.current = cleaned;
     setComposer(cleaned);
-    if (armedRef.current) disarm();
     setSlashIndex(0);
     slashIndexRef.current = 0;
     setAtIndex(0);
@@ -887,7 +955,7 @@ function useSessionInteraction(
   const moveSlash = (delta: number) => {
     setSlashIndex((current) => {
       const items = filterSlashCommands(
-        handlerSlashCommands(),
+        collectSlashCommands(props.session.host),
         slashQuery(composerRef.current.text),
       );
       if (!items || items.length === 0) return 0;
@@ -900,16 +968,7 @@ function useSessionInteraction(
     if (busyRef.current || fileListRef.current === undefined) return undefined;
     const query = atQuery(composerRef.current.text, composerRef.current.cursor);
     if (query === undefined || atDismissedRef.current === query) return undefined;
-    // Key handlers read the composer ref, which can be one character ahead of
-    // the last render — so this cannot reuse the rendered list. Cache the last
-    // (file list, query) instead, which collapses the render + handler pair
-    // into one ranking pass per keystroke.
-    const files = fileListRef.current;
-    const cached = atFilterCacheRef.current;
-    if (cached && cached.files === files && cached.query === query) return cached.items;
-    const items = filterFiles(files, query, 50);
-    atFilterCacheRef.current = { files, query, items };
-    return items;
+    return filterFiles(fileListRef.current, query, 50);
   };
   const moveAt = (delta: number) => {
     setAtIndex((current) => {
@@ -932,7 +991,20 @@ function useSessionInteraction(
     atIndexRef.current = 0;
   };
   const scrollViewer = (delta: number) => {
-    setViewerScrollOffset((current) => Math.max(0, current + delta));
+    setViewerScrollOffset((current) => {
+      const block = transcriptViewerRef.current;
+      if (!block) return 0;
+      // Clamp to content: wheel/PgDn overshoot must not accrue invisible offset
+      // debt that makes the next upward scroll feel dead (trackpad momentum).
+      const { maxOffset } = viewerScrollBounds(block, process.stdout.rows ?? 24);
+      return Math.max(0, Math.min(current + delta, maxOffset));
+    });
+  };
+  const cycleViewer = (delta: -1 | 1) => {
+    const current = transcriptViewerRef.current;
+    if (!current) return;
+    const next = adjacentExpandableHistoryBlock(scrollbackRef.current, current.id, delta);
+    if (next && next.id !== current.id) setTranscriptViewer(next);
   };
   const scrollTranscript = (delta: number) => {
     if (appendScrollback) return; // terminal owns scroll
@@ -1001,11 +1073,6 @@ function useSessionInteraction(
       await close(0);
       return;
     }
-    // `/help` and `?` land on the same sheet — one key map, not two.
-    if (value === "/help") {
-      openShortcuts(true);
-      return;
-    }
     const startedAt = Date.now();
     const isPrompt = !isCommand;
     busyRef.current = true;
@@ -1029,11 +1096,33 @@ function useSessionInteraction(
     }
   };
   // Fullscreen: mouse wheel scrolls; press-drag selects + copies on release (Grok-style).
-  // Bare click does not copy; move ≥1 cell then release to copy.
+  // Bare click does not copy; move ≥1 cell then release to copy. Double-click on a
+  // subagent/tool/thinking row drills into its transcript (running workers open live).
+  const openTargetAtRow = (row: number): boolean => {
+    const api = selectionApiRef.current;
+    const index = row - api.contentTopRowRef.current;
+    const targets = api.lineTargetsRef.current;
+    if (index < 0 || index >= targets.length) return false;
+    const target = targets[index]!;
+    if (target.type === "block") {
+      const block = scrollbackRef.current.blocks.find((candidate) => candidate.id === target.blockId);
+      if (block && (block.output?.length ?? 0) > 0) {
+        setTranscriptViewer(block);
+        return true;
+      }
+      return false;
+    }
+    if (target.type === "subagent") {
+      setFocusedSubagentId(target.workerId);
+      return true;
+    }
+    return false;
+  };
   useEffect(() => {
     if (appendScrollback) return;
     return attachMouseScrollListener(process.stdin, {
       onScroll: (direction) => {
+        if (focusedSubagentIdRef.current !== undefined) return; // live overlay auto-follows
         if (transcriptViewerRef.current) {
           scrollViewer(direction === "up" ? -3 : 3);
           return;
@@ -1041,7 +1130,7 @@ function useSessionInteraction(
         scrollTranscript(direction === "up" ? 3 : -3);
       },
       onPointer: (kind, col, row) => {
-        if (transcriptViewerRef.current) return;
+        if (transcriptViewerRef.current || focusedSubagentIdRef.current !== undefined) return;
         const api = selectionApiRef.current;
         const lines = api.selectableLinesRef.current;
         const hit = {
@@ -1054,6 +1143,21 @@ function useSessionInteraction(
         };
         const cell = cellFromMouse(hit);
         if (kind === "down") {
+          const previous = lastPointerDownRef.current;
+          const now = Date.now();
+          lastPointerDownRef.current = { at: now, row, col };
+          if (
+            previous
+            && now - previous.at <= DOUBLE_CLICK_MS
+            && previous.row === row
+            && Math.abs(previous.col - col) <= 2
+          ) {
+            lastPointerDownRef.current = undefined;
+            if (openTargetAtRow(row)) {
+              api.clearTextSelection();
+              return;
+            }
+          }
           if (!cell) {
             api.clearTextSelection();
             return;
@@ -1126,22 +1230,31 @@ function useSessionInteraction(
     scrollConfirm: (delta) => setView((current) => scrollConfirmation(current, delta)),
     scrollTranscript,
     scrollViewer,
+    cycleViewer,
     viewerOpen: () => transcriptViewerRef.current !== undefined,
     appendScrollback,
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
     toggleExpandable: () => {
-      // Ctrl+O: overlay over retained full tool/subagent output (Static lines stay collapsed).
+      // Ctrl+O: overlay over retained thinking/tool/subagent output.
+      if (focusedSubagentIdRef.current !== undefined) {
+        setFocusedSubagentId(undefined);
+        return;
+      }
       if (transcriptViewerRef.current) {
         setTranscriptViewer(undefined);
         return;
       }
       const current = scrollbackRef.current;
-      const next = toggleLatestScrollbackExpandable(current);
-      const block = latestExpandableToolBlock(next);
-      setScrollback(next);
+      const block = latestExpandableToolBlock(current);
       if (block?.output) setTranscriptViewer(block);
     },
+    closeSubagentOverlay: () => {
+      if (focusedSubagentIdRef.current === undefined) return false;
+      setFocusedSubagentId(undefined);
+      return true;
+    },
+    subagentOverlayOpen: () => focusedSubagentIdRef.current !== undefined,
     closeTranscriptViewer: () => {
       if (!transcriptViewerRef.current) return false;
       setTranscriptViewer(undefined);
@@ -1157,12 +1270,6 @@ function useSessionInteraction(
       setComposerState(clearQueue(composerRef.current));
       setView((current) => reduceEvent(current, { kind: "status", key: "queue", text: undefined }));
     },
-    shortcutsOpen: () => shortcutsOpenRef.current,
-    setShortcutsOpen: openShortcuts,
-    scrollShortcuts: (delta) => setShortcutsScroll((current) => Math.max(0, current + delta)),
-    isArmed,
-    arm,
-    disarm,
   }));
   const inputDisplay = composer.queue
     ? `${composer.text}${composer.text ? " " : ""}[queued: ${composer.queue.slice(0, 40)}${composer.queue.length > 40 ? "…" : ""}]`
@@ -1178,9 +1285,8 @@ function useSessionInteraction(
     transcriptViewer,
     viewerScrollOffset,
     setTranscriptViewer,
-    shortcutsOpen,
-    shortcutsScroll,
-    armed,
+    focusedSubagentId,
+    setFocusedSubagentId,
   };
 }
 
@@ -1229,6 +1335,7 @@ function handleInput(options: Readonly<{
   scrollConfirm: (delta: number) => void;
   scrollTranscript: (delta: number) => void;
   scrollViewer?: (delta: number) => void;
+  cycleViewer?: (delta: -1 | 1) => void;
   viewerOpen?: () => boolean;
   appendScrollback?: boolean;
   moveSelect: (delta: number) => void;
@@ -1236,16 +1343,13 @@ function handleInput(options: Readonly<{
   toggleExpandable: () => void;
   /** Returns true when an open transcript overlay was closed. */
   closeTranscriptViewer?: () => boolean;
+  /** Returns true when the live subagent overlay was closed. */
+  closeSubagentOverlay?: () => boolean;
+  /** True while the live subagent overlay is open (consumes nav keys). */
+  subagentOverlayOpen?: () => boolean;
   /** Returns true when an in-app text selection was cleared. */
   clearTextSelection?: () => boolean;
   clearQueued: () => void;
-  shortcutsOpen?: () => boolean;
-  setShortcutsOpen?: (open: boolean) => void;
-  scrollShortcuts?: (delta: number) => void;
-  /** True while a second press within `CONFIRM_WINDOW_MS` would commit `action`. */
-  isArmed?: (action: ArmedAction) => boolean;
-  arm?: (action: ArmedAction) => void;
-  disarm?: () => void;
 }>): void {
   if (options.interaction === "confirm") {
     handleConfirmInput(options);
@@ -1260,44 +1364,15 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.ctrl && options.character === "c") {
-    // Cancelling is recoverable, so it happens on the first press.
-    if (options.busy) {
-      options.session.abortTurn();
-      return;
-    }
-    // Shell muscle memory: clear the line before considering the exit.
-    if (options.composer.text.length > 0) {
-      options.setInputValue("");
-      return;
-    }
-    if (options.isArmed?.("exit") ?? true) {
-      options.disarm?.();
-      void options.close(0);
-      return;
-    }
-    options.arm?.("exit");
+    if (options.busy) options.session.abortTurn();
+    else void options.close(0);
     return;
-  }
-  // The shortcut sheet is modal: it owns this keystroke. Esc/?/q/Enter dismiss it;
-  // anything else dismisses and still lands in the composer, so it never traps.
-  if (options.shortcutsOpen?.()) {
-    if (options.key.upArrow || options.key.downArrow || options.key.pageUp || options.key.pageDown) {
-      const step = options.key.pageUp || options.key.pageDown ? 10 : 1;
-      options.scrollShortcuts?.(options.key.upArrow || options.key.pageUp ? -step : step);
-      return;
-    }
-    options.setShortcutsOpen?.(false);
-    if (
-      options.key.escape
-      || options.key.return
-      || options.character === "?"
-      || options.character === "q"
-    ) {
-      return;
-    }
   }
   if (options.key.ctrl && options.character === "o") {
     options.toggleExpandable();
+    return;
+  }
+  if (options.key.escape && options.closeSubagentOverlay?.()) {
     return;
   }
   if (options.key.escape && options.closeTranscriptViewer?.()) {
@@ -1306,15 +1381,25 @@ function handleInput(options: Readonly<{
   if (options.key.escape && options.clearTextSelection?.()) {
     return;
   }
-  // Esc while a task runs cancels it and keeps the draft (Ctrl+C stays the alias).
-  if (options.key.escape && options.busy) {
-    options.session.abortTurn();
+
+  // Live subagent overlay: auto-follows; swallow nav keys so the transcript
+  // window behind it does not scroll.
+  if (options.subagentOverlayOpen?.()
+    && (options.key.upArrow || options.key.downArrow || options.key.pageUp || options.key.pageDown)) {
     return;
   }
 
-  // Transcript viewer (Route B Ctrl+O): scroll full retained output in-overlay.
+  // Transcript viewer: scroll full retained output in-overlay.
   if (options.viewerOpen?.()) {
     const step = options.key.pageUp || options.key.pageDown ? 12 : 1;
+    if (options.key.leftArrow) {
+      options.cycleViewer?.(-1);
+      return;
+    }
+    if (options.key.rightArrow) {
+      options.cycleViewer?.(1);
+      return;
+    }
     if (options.key.pageUp || options.key.upArrow) {
       options.scrollViewer?.(-step);
       return;
@@ -1342,18 +1427,6 @@ function handleInput(options: Readonly<{
   // Shift+Tab: permission mode (auto → full → strict), even while slash menu is open.
   if (options.key.tab && options.key.shift && !options.busy) {
     options.session.cyclePermissionMode();
-    return;
-  }
-
-  // `?` on an empty prompt opens the sheet the footer advertises. Guarded on an
-  // empty draft so "what?" still types a question mark.
-  if (
-    options.character === "?"
-    && !options.key.ctrl
-    && !options.key.meta
-    && options.composer.text.length === 0
-  ) {
-    options.setShortcutsOpen?.(true);
     return;
   }
 
@@ -1399,21 +1472,6 @@ function handleInput(options: Readonly<{
         return;
       }
     }
-  }
-
-  // Idle Esc: harmless alone, clears the draft when tapped twice in a row.
-  if (options.key.escape) {
-    if (options.composer.text.length === 0) {
-      options.disarm?.();
-      return;
-    }
-    if (options.isArmed?.("clear-draft")) {
-      options.disarm?.();
-      options.setComposerState(rememberSubmission(options.composer, options.composer.text));
-      return;
-    }
-    options.arm?.("clear-draft");
-    return;
   }
 
   // Route A only: self-managed transcript scroll. Route B: composer history + cursor.
@@ -1521,6 +1579,14 @@ function handleInput(options: Readonly<{
 
 async function runInput(session: PreparedSession, value: string, bridge: TuiSessionBridge): Promise<void> {
   try {
+    if (value === "/help") {
+      const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
+      bridge.sink.notify?.(
+        `Commands: ${names} · Shift+Tab permissions · Tab thinking · Ctrl+O transcript · ? /help`,
+        "info",
+      );
+      return;
+    }
     if (value === "/bypass") {
       bridge.toggleBypass();
       return;
@@ -1968,10 +2034,10 @@ export function thoughtLabel(entry: Readonly<{ collapsed?: boolean; thoughtSecon
   if (entry.collapsed) {
     const seconds = entry.thoughtSeconds;
     return typeof seconds === "number" && seconds > 0
-      ? `think ${seconds}s`
-      : "think";
+      ? `Thought for ${seconds}s`
+      : "Thought";
   }
-  return "thinking…";
+  return "Thinking…";
 }
 
 /** Tool output under the title: collapsed = no body (Ctrl+O); expanded = full. */
@@ -1999,12 +2065,23 @@ function indentBlock(text: string, prefix: string): string {
 export function busyPhaseLabel(input: Readonly<{
   busy: boolean;
   inFlightToolCount: number;
+  inFlightSubagentCount?: number;
   liveKind?: "thinking" | "assistant";
 }>): string | undefined {
   if (!input.busy) return undefined;
+  if ((input.inFlightSubagentCount ?? 0) > 0) return "agents…";
   if (input.inFlightToolCount > 0) return "tools…";
   if (input.liveKind === "assistant" || input.liveKind === "thinking") return "streaming…";
   return "working…";
+}
+
+/** Prefix the header phase with the shared spinner frame (motion on + busy only). */
+export function composePhaseChrome(
+  label: string | undefined,
+  spinnerFrame: string | undefined,
+): string | undefined {
+  if (label === undefined) return undefined;
+  return spinnerFrame ? `${spinnerFrame} ${label}` : label;
 }
 
 const SessionHeader = memo(function SessionHeader(props: Readonly<{
@@ -2014,7 +2091,7 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   plan?: string;
   cwd: string;
   busy?: boolean;
-  /** Turn phase chrome: working… / streaming… / tools… */
+  /** Turn phase chrome: working… / streaming… / tools… / agents… */
   phase?: string;
 }>): React.JSX.Element {
   // Path / permission / usage / workspace live in the Claude-style footer;
@@ -2033,28 +2110,35 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   });
 });
 
-/** Route B Ctrl+O overlay: full retained tool output without mutating Static history. */
+/** Ctrl+O overlay: retained thinking/tool/subagent output without mutating history. */
 function TranscriptViewerOverlay(props: Readonly<{
   block: HistoryBlock;
   rows: number;
   scrollOffset: number;
+  historyIndex?: number;
+  historyTotal: number;
   onClose: () => void;
 }>): React.JSX.Element {
   const body = props.block.output ?? props.block.lines.join("\n");
   const lines = body.split("\n");
-  const viewport = Math.max(6, props.rows - 10);
+  const { viewport } = viewerScrollBounds(props.block, props.rows);
   const window = sliceViewerWindow(lines, viewport, props.scrollOffset);
-  const title = props.block.title
-    ? `${props.block.title}${props.block.detail ? ` ${props.block.detail}` : ""}`
-    : "tool output";
+  const title = props.block.kind === "thinking"
+    ? `Thinking${props.block.thoughtSeconds ? ` · ${props.block.thoughtSeconds}s` : ""}`
+    : props.block.title
+      ? `${props.block.title}${props.block.detail ? ` ${truncateToolDetail(props.block.detail, 64)}` : ""}`
+      : "transcript";
+  const position = props.historyIndex && props.historyTotal > 1
+    ? ` ${props.historyIndex}/${props.historyTotal}`
+    : "";
   return h(Box, {
     flexDirection: "column",
     borderStyle: "round",
     paddingX: 1,
     marginY: 1,
   },
-    h(Text, { bold: true }, `Transcript · ${title}`),
-    h(Text, { dimColor: true }, "↑↓/PgUp/PgDn scroll · Ctrl+O/Esc close · full retained output"),
+    h(Text, { bold: true }, `Transcript${position} · ${title}`),
+    h(Text, { dimColor: true }, "←/→ history · ↑↓/PgUp/PgDn scroll · Ctrl+O/Esc close"),
     window.indicator
       ? h(Text, { dimColor: true }, window.indicator)
       : null,
@@ -2062,6 +2146,75 @@ function TranscriptViewerOverlay(props: Readonly<{
       h(Text, {
         key: `tv-${window.offset + index}`,
         color: props.block.error ? theme.error : undefined,
+        wrap: "truncate-end",
+      }, line || " ")));
+}
+
+/**
+ * Rows consumed by chrome around the Ctrl+O overlay: brand header (4) +
+ * overlay margins/border/title/hint/indicator (7) + composer (5) + footer (2).
+ * The viewer viewport must leave this room or the frame exceeds the terminal
+ * and Ink leaves residue on close.
+ */
+export const VIEWER_CHROME_ROWS = 18;
+
+/**
+ * Viewer viewport height and last valid scroll offset — one formula shared by
+ * the Ctrl+O overlay render and the scroll clamp in useSessionInteraction.
+ */
+export function viewerScrollBounds(block: HistoryBlock, rows: number): Readonly<{
+  viewport: number;
+  maxOffset: number;
+}> {
+  const body = block.output ?? block.lines.join("\n");
+  const viewport = Math.max(4, rows - VIEWER_CHROME_ROWS);
+  return { viewport, maxOffset: Math.max(0, body.split("\n").length - viewport) };
+}
+
+/**
+ * Live drill-in for one running explore worker (opened by double-click).
+ * Shows the retained nested transcript tail + current stream, auto-following.
+ */
+function SubagentDetailOverlay(props: Readonly<{
+  worker: InFlightSubagent;
+  rows: number;
+  now: number;
+}>): React.JSX.Element {
+  const { worker } = props;
+  const name = worker.name ?? worker.role ?? "explore";
+  const role = worker.role ? ` [${worker.role}]` : "";
+  const activity = formatSubagentActivity(worker, 48, props.now);
+  const bodyLines: string[] = [...worker.lines];
+  if (worker.live) {
+    const label = worker.live.kind === "thinking" ? theme.sym.think : theme.sym.answer;
+    const tail = liveTextTail(worker.live.buffer, 2_000);
+    for (const row of tail.split("\n")) {
+      bodyLines.push(`  ${label} ${row}`);
+    }
+  }
+  // One extra chrome row vs the Ctrl+O viewer (goal line under the title).
+  const viewport = Math.max(4, props.rows - VIEWER_CHROME_ROWS - 1);
+  const visible = bodyLines.slice(-viewport);
+  const hiddenAbove = bodyLines.length - visible.length;
+  return h(Box, {
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: theme.explore,
+    paddingX: 1,
+    marginY: 1,
+  },
+    h(Text, { bold: true, color: theme.explore },
+      `${theme.sym.explore} subagent #${worker.workerId} · ${name}${role} · ${worker.model} ${theme.sym.meta} ${activity}`),
+    h(Text, { dimColor: true, wrap: "truncate-end" },
+      `goal: ${worker.goal}`),
+    h(Text, { dimColor: true }, "live · follows latest · Ctrl+O/Esc close"),
+    hiddenAbove > 0
+      ? h(Text, { dimColor: true }, `… ${hiddenAbove} earlier lines (full transcript via Ctrl+O when done)`)
+      : null,
+    ...visible.map((line, index) =>
+      h(Text, {
+        key: `sd-${hiddenAbove + index}`,
+        dimColor: true,
         wrap: "truncate-end",
       }, line || " ")));
 }
@@ -2087,7 +2240,7 @@ function FooterHints(props: Readonly<{
   permissionMode: string;
   cwd: string;
   context?: string;
-  /** Cumulative session tokens + estimated cost, e.g. "tok:12.3k ~$0.01". */
+  /** Context occupancy of the latest request, e.g. "ctx:42%". */
   usage?: string;
   /** Active explore subagents, e.g. "subs:3". */
   explore?: string;
@@ -2246,35 +2399,14 @@ export function collectSlashCommands(host: { listCommandEntries(): readonly Slas
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/**
- * Exported for unit tests. Returns undefined when slash menu should be hidden.
- *
- * Ranks like the `@` picker so one UI does not hold two matching rules: prefix
- * beats substring beats subsequence, shorter names win ties. Subsequence needs
- * two characters — one letter would otherwise drag in most of the list.
- */
+/** Exported for unit tests. Returns undefined when slash menu should be hidden. */
 export function filterSlashCommands(
   commands: readonly SlashCommand[],
   query: string | undefined,
 ): readonly SlashCommand[] | undefined {
   if (query === undefined) return undefined;
   const needle = query.toLowerCase();
-  if (needle.length === 0) return commands;
-  const scored: Array<{ command: SlashCommand; score: number }> = [];
-  for (const command of commands) {
-    const name = command.name.toLowerCase();
-    let score: number;
-    if (name.startsWith(needle)) score = 0;
-    else if (name.includes(needle)) score = 1;
-    else if (needle.length >= 2 && isSubsequence(needle, name)) score = 2;
-    else continue;
-    scored.push({ command, score });
-  }
-  scored.sort((a, b) =>
-    a.score - b.score
-    || a.command.name.length - b.command.name.length
-    || a.command.name.localeCompare(b.command.name));
-  return scored.map((entry) => entry.command);
+  return commands.filter((command) => command.name.toLowerCase().startsWith(needle));
 }
 
 function ConfirmView(props: Readonly<{

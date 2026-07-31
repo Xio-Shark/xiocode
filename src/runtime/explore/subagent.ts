@@ -168,6 +168,7 @@ export async function runExploreSubagent(
         workerId: ui.workerId,
         modelLabel: ui.modelLabel,
         role: ui.role,
+        name: ui.name,
         goal: options.goal,
       }
     : undefined;
