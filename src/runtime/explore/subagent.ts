@@ -2,6 +2,7 @@ import { ExtensionHost } from "../extension-host.ts";
 import { runAgentLoop } from "../agent-loop.ts";
 import { createLlmClient } from "../providers/client.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
+import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
 import {
   PERCEPTION_TOOL_NAMES,
   registerPerceptionCapability,
@@ -93,6 +94,12 @@ export type RunExploreSubagentOptions = Readonly<{
   }>) => LlmClient;
   /** Optional UI scope — nested loop streams here; never primary session history. */
   ui?: SubagentUiScope;
+  /** Shared cross-context file-shift registry (worker reads register under `contextId`). */
+  fileShift?: FileShiftRegistry;
+  /** Logical context id for this worker's tool set (defaults to "explore"). */
+  contextId?: string;
+  /** Called when this worker's read is later overwritten by another context. */
+  onFileShift?: (info: FileShiftInfo) => void;
 }>;
 
 /**
@@ -134,6 +141,9 @@ export async function runExploreSubagent(
   for (const tool of createBuiltinTools({
     cwd: options.cwd,
     workspaceRoot: options.workspaceRoot,
+    fileShift: options.fileShift,
+    contextId: options.contextId ?? "explore",
+    onFileShift: options.onFileShift,
   })) {
     if (allowed.has(tool.name)) {
       host.registerTool(tool);

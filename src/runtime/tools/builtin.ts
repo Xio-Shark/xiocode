@@ -6,7 +6,9 @@ import { applyPatch, parsePatch } from "diff";
 
 import { defineTool } from "../define-tool.ts";
 import { FileReadSet } from "../file-read-set.ts";
+import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
 import { FileWriteQueue } from "../file-write-queue.ts";
+import { GrepSeenState, annotateGrepOutput } from "./grep-outline.ts";
 import { Type } from "../schema.ts";
 import { verifyWriteBack } from "../verify/write-back.ts";
 import { withFixHint } from "./error-guidance.ts";
@@ -53,6 +55,22 @@ export type BuiltinToolsOptions = Readonly<{
    * overwrite-write. Default true. Set false to rollback ([tools] require_read_before_edit).
    */
   requireReadBeforeEdit?: boolean;
+  /**
+   * Session grep outline memory (structure-aware grep). When omitted, a fresh state is
+   * created for this tool set. Cleared on new user turn alongside `readSet`.
+   */
+  grepSeen?: GrepSeenState;
+  /** Disable the grep structure outline (default enabled). */
+  grepOutline?: boolean;
+  /**
+   * Cross-context file-shift registry (shared across main + explore workers). When a write
+   * lands on a path another context read, `onFileShift` fires. Omit to disable detection.
+   */
+  fileShift?: FileShiftRegistry;
+  /** Logical context id for this tool set (main agent vs an explore worker). Default "main". */
+  contextId?: string;
+  /** Called once when a write shifts a file another context had read. */
+  onFileShift?: (info: FileShiftInfo) => void;
 }>;
 
 export {
@@ -74,17 +92,27 @@ export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly 
   const writeQueue = options.writeQueue ?? new FileWriteQueue();
   const readSet = options.readSet ?? new FileReadSet();
   const requireReadBeforeEdit = options.requireReadBeforeEdit !== false;
+  const grepSeen = options.grepSeen ?? new GrepSeenState();
+  const grepOutline = options.grepOutline !== false;
+  const fileShift = options.fileShift;
+  const contextId = options.contextId ?? "main";
+  const onFileShift = options.onFileShift;
   return [
-    createReadTool(cwd, readSet),
-    createWriteTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit),
-    createEditTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit),
+    createReadTool(cwd, readSet, fileShift, contextId),
+    createWriteTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
+    createEditTool(cwd, workspaceRoot, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
     createBashTool(cwd),
-    createGrepTool(cwd, searchOverride),
+    createGrepTool(cwd, searchOverride, grepOutline ? grepSeen : undefined),
     createGlobTool(cwd, searchOverride),
   ];
 }
 
-function createReadTool(cwd: string, readSet: FileReadSet): ToolDefinition {
+function createReadTool(
+  cwd: string,
+  readSet: FileReadSet,
+  fileShift?: FileShiftRegistry,
+  contextId = "main",
+): ToolDefinition {
   return defineTool({
     name: "read",
     description: "Read a file. Optionally limit to a line range with offset and limit.",
@@ -103,6 +131,7 @@ function createReadTool(cwd: string, readSet: FileReadSet): ToolDefinition {
         const slice = lines.slice(offset - 1, offset - 1 + limit);
         const numbered = slice.map((line, index) => `${offset + index}|${line}`).join("\n");
         await readSet.mark(filePath);
+        await fileShift?.markRead(contextId, filePath);
         return textResult(numbered);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -112,6 +141,20 @@ function createReadTool(cwd: string, readSet: FileReadSet): ToolDefinition {
   });
 }
 
+/** Emit a file-shift notification once when a write lands on a path another context read. */
+async function noteFileShift(
+  fileShift: FileShiftRegistry | undefined,
+  contextId: string,
+  onFileShift: ((info: FileShiftInfo) => void) | undefined,
+  filePath: string,
+): Promise<void> {
+  if (!fileShift) return;
+  const readers = await fileShift.noteWrite(contextId, filePath);
+  if (readers.length > 0) {
+    onFileShift?.({ path: filePath, writer: contextId, readers });
+  }
+}
+
 function createWriteTool(
   cwd: string,
   workspaceRoot: string,
@@ -119,6 +162,9 @@ function createWriteTool(
   writeQueue: FileWriteQueue,
   readSet: FileReadSet,
   requireReadBeforeEdit: boolean,
+  fileShift?: FileShiftRegistry,
+  contextId = "main",
+  onFileShift?: (info: FileShiftInfo) => void,
 ): ToolDefinition {
   return defineTool({
     name: "write",
@@ -149,6 +195,7 @@ function createWriteTool(
         await writeFile(filePath, content, "utf8");
         if (!writeBackVerify) {
           await readSet.mark(filePath);
+          await noteFileShift(fileShift, contextId, onFileShift, filePath);
           return textResult(`wrote ${filePath}`);
         }
         const verified = await verifyWriteBack(filePath, content);
@@ -156,6 +203,7 @@ function createWriteTool(
           return errorResult("write", verified.message);
         }
         await readSet.mark(filePath);
+        await noteFileShift(fileShift, contextId, onFileShift, filePath);
         return textResult(`wrote ${filePath}; ${verified.message}`);
       });
     },
@@ -169,6 +217,9 @@ function createEditTool(
   writeQueue: FileWriteQueue,
   readSet: FileReadSet,
   requireReadBeforeEdit: boolean,
+  fileShift?: FileShiftRegistry,
+  contextId = "main",
+  onFileShift?: (info: FileShiftInfo) => void,
 ): ToolDefinition {
   return defineTool({
     name: "edit",
@@ -212,7 +263,7 @@ function createEditTool(
           if (!patched.ok) {
             return errorResult("edit", patched.error);
           }
-          return finishEdit(filePath, patched.next, writeBackVerify, readSet);
+          return finishEdit(filePath, patched.next, writeBackVerify, readSet, false, fileShift, contextId, onFileShift);
         }
 
         if (params.old_string === undefined || params.new_string === undefined) {
@@ -225,7 +276,7 @@ function createEditTool(
         if (!replaced.ok) {
           return errorResult("edit", replaced.error);
         }
-        return finishEdit(filePath, replaced.next, writeBackVerify, readSet, replaced.fuzzy);
+        return finishEdit(filePath, replaced.next, writeBackVerify, readSet, replaced.fuzzy, fileShift, contextId, onFileShift);
       });
     },
   });
@@ -237,11 +288,15 @@ async function finishEdit(
   writeBackVerify: boolean,
   readSet: FileReadSet,
   fuzzy = false,
+  fileShift?: FileShiftRegistry,
+  contextId = "main",
+  onFileShift?: (info: FileShiftInfo) => void,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError: boolean }> {
   await writeFile(filePath, next, "utf8");
   const fuzzyNote = fuzzy ? "; fuzzy: whitespace normalized" : "";
   if (!writeBackVerify) {
     await readSet.mark(filePath);
+    await noteFileShift(fileShift, contextId, onFileShift, filePath);
     return textResult(`edited ${filePath}${fuzzyNote}`);
   }
   const verified = await verifyWriteBack(filePath, next);
@@ -249,6 +304,7 @@ async function finishEdit(
     return errorResult("edit", verified.message);
   }
   await readSet.mark(filePath);
+  await noteFileShift(fileShift, contextId, onFileShift, filePath);
   return textResult(`edited ${filePath}${fuzzyNote}; ${verified.message}`);
 }
 
@@ -368,12 +424,17 @@ function createBashTool(cwd: string): ToolDefinition {
   });
 }
 
-function createGrepTool(cwd: string, searchOverride?: string | null): ToolDefinition {
+function createGrepTool(
+  cwd: string,
+  searchOverride?: string | null,
+  grepSeen?: GrepSeenState,
+): ToolDefinition {
   return defineTool({
     name: "grep",
     description:
       "Search file contents with a regular expression. "
-      + "Uses host tools in order: ugrep → rg → grep → node.",
+      + "Uses host tools in order: ugrep → rg → grep → node. "
+      + "Appends a lightweight structure outline per hit file (heuristic; omitted on repeat).",
     parameters: Type.Object({
       pattern: Type.String({ description: "Regular expression pattern." }),
       path: Type.String({ description: "File or directory to search (optional)." }),
@@ -383,6 +444,8 @@ function createGrepTool(cwd: string, searchOverride?: string | null): ToolDefini
       const pattern = String(params.pattern ?? "");
       const searchRoot = params.path ? resolvePath(cwd, String(params.path)) : cwd;
       const globFilter = typeof params.glob === "string" ? params.glob : undefined;
+      const withOutline = (text: string): Promise<string> =>
+        grepSeen ? annotateGrepOutput(text, { cwd, seen: grepSeen }) : Promise.resolve(text);
       const engine = await resolveGrepEngine(searchOverride);
       if (engine.kind !== "node") {
         const result = await runGrepWithEngine(engine, {
@@ -392,7 +455,7 @@ function createGrepTool(cwd: string, searchOverride?: string | null): ToolDefini
           globFilter,
         });
         if (result.kind === "ok") {
-          return textResult(result.text);
+          return textResult(await withOutline(result.text));
         }
         if (result.kind === "error") {
           return errorResult("grep", result.text);
@@ -400,7 +463,7 @@ function createGrepTool(cwd: string, searchOverride?: string | null): ToolDefini
         // spawn failure → Node fallback
       }
       const nodeText = await grepWithNode(cwd, pattern, searchRoot, globFilter);
-      return textResult(`${nodeBackendNote("grep")}\n${nodeText}`);
+      return textResult(`${nodeBackendNote("grep")}\n${await withOutline(nodeText)}`);
     },
   });
 }

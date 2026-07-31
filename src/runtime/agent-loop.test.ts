@@ -7,8 +7,29 @@ import { ExtensionHost } from "./extension-host.ts";
 import { defineTool } from "./define-tool.ts";
 import { Type } from "./schema.ts";
 import { DEFAULT_MAX_TURNS, deriveTurnIndex, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
+import { SteerMailbox } from "./steer.ts";
 
 import type { ChatMessage, LlmClient, StreamEvent, TurnEndPayload } from "./types.ts";
+
+/**
+ * Injection-point invariant (see .trellis/spec/runtime/steer-injection-points.md §4):
+ * every assistant(toolCalls) message is immediately followed by exactly its tool
+ * results in call order, with nothing (user/system/assistant) interleaved.
+ */
+function assertToolPairingIntact(messages: readonly ChatMessage[]): void {
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i]!;
+    if (message.role !== "assistant" || !message.toolCalls || message.toolCalls.length === 0) {
+      continue;
+    }
+    const expectedIds = message.toolCalls.map((call) => call.id);
+    for (let offset = 0; offset < expectedIds.length; offset += 1) {
+      const follower = messages[i + 1 + offset];
+      expect(follower?.role).toBe("tool");
+      expect(follower?.toolCallId).toBe(expectedIds[offset]);
+    }
+  }
+}
 
 describe("runAgentLoop context wiring", () => {
   it("merges turn_start return value into outbound provider messages", async () => {
@@ -952,5 +973,105 @@ describe("runAgentLoop turn_end contract", () => {
       { role: "user", content: "u1" },
       { role: "assistant", content: "a1" },
     ])).toBe(2);
+  });
+});
+
+describe("runAgentLoop soft steer injection discipline", () => {
+  it("injects a soft steer enqueued mid tool-batch only after all tool_results", async () => {
+    const mailbox = new SteerMailbox();
+    const host = new ExtensionHost();
+    // First tool enqueues a soft steer while the batch is still running.
+    host.registerTool(defineTool({
+      name: "probe",
+      description: "probe",
+      parameters: Type.Object({ index: Type.Number() }),
+      async execute(_id, params) {
+        if (params.index === 1) {
+          mailbox.enqueue({ text: "focus on tests", mode: "soft" });
+        }
+        return { content: [{ type: "text", text: `probe ${String(params.index)}` }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [
+              { id: "one", name: "probe", arguments: { index: 1 } },
+              { id: "two", name: "probe", arguments: { index: 2 } },
+            ],
+          };
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+
+    const result = await runAgentLoop("batch then steer", {
+      host,
+      client,
+      model: "stub",
+      steerMailbox: mailbox,
+      parallelToolCalls: false,
+    });
+
+    assertToolPairingIntact(result.messages);
+    const softIndex = result.messages.findIndex(
+      (m) => m.role === "user" && m.content === "[steer:soft] focus on tests",
+    );
+    expect(softIndex).toBeGreaterThan(-1);
+    const lastToolIndex = result.messages.reduce(
+      (acc, m, i) => (m.role === "tool" ? i : acc),
+      -1,
+    );
+    // Prohibited-zone guard: soft user message never lands before/between tool_results.
+    expect(softIndex).toBeGreaterThan(lastToolIndex);
+  });
+
+  it("holds a follow-up until the loop would otherwise end (no tools + soft empty)", async () => {
+    const mailbox = new SteerMailbox();
+    mailbox.enqueueFollowUp({ text: "then summarize" });
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "probe",
+      description: "probe",
+      parameters: Type.Object({ index: Type.Number() }),
+      async execute(_id, params) {
+        return { content: [{ type: "text", text: `probe ${String(params.index)}` }] };
+      },
+    }));
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "one", name: "probe", arguments: { index: 1 } }],
+          };
+        }
+        return { content: `answer-${calls}`, toolCalls: [] };
+      },
+    };
+
+    const result = await runAgentLoop("work then follow up", {
+      host,
+      client,
+      model: "stub",
+      steerMailbox: mailbox,
+    });
+
+    assertToolPairingIntact(result.messages);
+    const followUpIndex = result.messages.findIndex(
+      (m) => m.role === "user" && m.content === "then summarize",
+    );
+    const lastToolIndex = result.messages.reduce(
+      (acc, m, i) => (m.role === "tool" ? i : acc),
+      -1,
+    );
+    // Follow-up applied only at a no-tool boundary, after the tool batch resolved.
+    expect(followUpIndex).toBeGreaterThan(lastToolIndex);
   });
 });
