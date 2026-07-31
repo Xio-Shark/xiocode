@@ -3,24 +3,27 @@ import { describe, expect, it } from "vitest";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
+  adjacentExpandableHistoryBlock,
   appendUserBlock,
   blocksFromRestoredMessages,
   emptyScrollbackState,
+  expandableHistoryBlocks,
   formatLiveLines,
   latestExpandableToolBlock,
   liveTextString,
   reduceScrollback,
-  toggleLatestScrollbackExpandable,
+  sliceTranscriptLineWindow,
+  type HistoryBlock,
 } from "./transcript-log.ts";
 import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
-import { theme } from "./theme.ts";
 
 describe("reduceScrollback", () => {
   it("streams thinking then commits collapsed think on tool-start", () => {
     let state = emptyScrollbackState();
     state = reduceScrollback(state, { kind: "thinking-delta", text: "plan A" });
     expect(state.live?.kind).toBe("thinking");
-    expect(formatLiveLines(state.live!, state.inFlightTools).some((l) => l.includes("plan A"))).toBe(true);
+    // Working state echoes the thinking tail under a tree branch.
+    expect(formatLiveLines(state.live!, state.inFlightTools)).toEqual(["▸ Thinking…", "  └ plan A"]);
 
     state = reduceScrollback(state, {
       kind: "tool-start",
@@ -30,7 +33,10 @@ describe("reduceScrollback", () => {
     });
     expect(state.inFlightTools).toHaveLength(1);
     expect(state.blocks.some((b) => b.kind === "thinking")).toBe(true);
-    expect(state.blocks.find((b) => b.kind === "thinking")!.lines[0]).toMatch(/think \d+s/);
+    const thinking = state.blocks.find((b) => b.kind === "thinking")!;
+    expect(thinking.lines[0]).toMatch(/Thought for \d+s.*Ctrl\+O/);
+    expect(thinking.lines[1]).toBe("  └ plan A");
+    expect(thinking.output).toBe("plan A");
   });
 
   it("pairs parallel same-name tools by callId completing out of order", () => {
@@ -84,7 +90,7 @@ describe("reduceScrollback", () => {
     expect(formatLiveLines(state.live, state.inFlightTools)).toEqual([]);
   });
 
-  it("retains full tool output while Static stays collapsed", () => {
+  it("retains full tool output while Static keeps a bounded tree preview", () => {
     let state = emptyScrollbackState();
     const long = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
     state = reduceScrollback(state, {
@@ -104,11 +110,12 @@ describe("reduceScrollback", () => {
     expect(tool?.output).toBe(long);
     expect(tool?.previewCollapsed).toBe(true);
     expect(tool?.lines.join("\n")).toContain("Ctrl+O");
-    expect(tool?.lines.join("\n")).not.toContain("line0");
+    // Tree preview: first rows nested under the header, rest stays in Ctrl+O.
+    expect(tool?.lines[1]).toBe("  └ line0");
+    expect(tool?.lines.join("\n")).toContain("line2");
+    expect(tool?.lines.join("\n")).not.toContain("line3");
     expect(tool?.lines.join("\n")).not.toContain("line11");
     expect(latestExpandableToolBlock(state)?.output).toBe(long);
-    const toggled = toggleLatestScrollbackExpandable(state);
-    expect(toggled.blocks.find((b) => b.kind === "tool")?.previewCollapsed).toBe(false);
   });
 
   it("labels explore tools as subagent in history", () => {
@@ -150,6 +157,13 @@ describe("reduceScrollback", () => {
       goal: "survey auth",
     });
     state = reduceScrollback(state, { kind: "subagent-thinking-delta", workerId: 1, text: "plan" });
+    const thinkingWorker = state.inFlightSubagents[0]!;
+    const thinkingStartedAt = thinkingWorker.activity.kind === "thinking"
+      ? thinkingWorker.activity.startedAt
+      : thinkingWorker.startedAt;
+    expect(formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents, {
+      now: thinkingStartedAt + 5_000,
+    }).join("\n")).toContain("Thinking 5s");
     state = reduceScrollback(state, {
       kind: "subagent-tool-start",
       workerId: 1,
@@ -178,6 +192,8 @@ describe("reduceScrollback", () => {
     // Tool-call history collapsed out of Static; retained in output for Ctrl+O.
     expect(block!.lines.join("\n")).not.toMatch(/\bread\b.*done/);
     expect(block!.output).toMatch(/read/);
+    expect(block!.output).toContain("plan");
+    expect(block!.output).toContain("export function auth() {}");
   });
 
   it("isolates parallel subagent workers by workerId", () => {
@@ -197,10 +213,73 @@ describe("reduceScrollback", () => {
     state = reduceScrollback(state, { kind: "subagent-assistant-delta", workerId: 1, text: "A-only" });
     state = reduceScrollback(state, { kind: "subagent-assistant-delta", workerId: 2, text: "B-only" });
     const live = formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents).join("\n");
-    expect(live).toContain("A-only");
-    expect(live).toContain("B-only");
+    expect(live).toContain("Responding");
+    expect(live).not.toContain("A-only");
+    expect(live).not.toContain("B-only");
     expect(live).toContain("slice A");
     expect(live).toContain("slice B");
+    expect(liveTextString(state.inFlightSubagents[0]!.live!.buffer)).toBe("A-only");
+    expect(liveTextString(state.inFlightSubagents[1]!.live!.buffer)).toBe("B-only");
+  });
+
+  it("keeps folded thinking and tool history navigable in transcript order", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "thinking-delta", text: "inspect the code" });
+    state = reduceScrollback(state, { kind: "assistant-delta", text: "next" });
+    state = reduceScrollback(state, { kind: "assistant-text", text: "next" });
+    state = reduceScrollback(state, {
+      kind: "tool-start",
+      name: "read",
+      detail: "src/main.ts",
+      callId: "read-1",
+    });
+    state = reduceScrollback(state, {
+      kind: "tool-end",
+      name: "read",
+      error: false,
+      output: "export const x = 1;",
+      callId: "read-1",
+    });
+
+    const expandable = expandableHistoryBlocks(state);
+    expect(expandable.map((block) => block.kind)).toEqual(["thinking", "tool"]);
+    const latest = latestExpandableToolBlock(state)!;
+    expect(latest.kind).toBe("tool");
+    expect(adjacentExpandableHistoryBlock(state, latest.id, -1)).toMatchObject({
+      kind: "thinking",
+      output: "inspect the code",
+    });
+    expect(adjacentExpandableHistoryBlock(state, expandable[0]!.id, 1)).toMatchObject({
+      kind: "tool",
+      output: "export const x = 1;",
+    });
+  });
+
+  it("records an interrupted nested tool when a subagent ends early", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, {
+      kind: "subagent-start",
+      workerId: 4,
+      model: "stub/flash",
+      goal: "run checks",
+    });
+    state = reduceScrollback(state, {
+      kind: "subagent-tool-start",
+      workerId: 4,
+      name: "bash",
+      detail: "npm test",
+      callId: "w4:b1",
+    });
+    state = reduceScrollback(state, {
+      kind: "subagent-end",
+      workerId: 4,
+      success: false,
+      status: "cancelled",
+    });
+
+    const block = state.blocks.find((entry) => entry.kind === "subagent");
+    expect(block?.lines[0]).toContain("cancelled");
+    expect(block?.output).toContain("bash npm test interrupted");
   });
 
   it("keeps tool body non-empty after tool-end", () => {
@@ -295,23 +374,6 @@ describe("reduceScrollback", () => {
     expect(block?.lines.join("\n")).toContain(expected);
   });
 
-  it("keeps the answer mark off a table so its columns stay aligned", () => {
-    const strip = (line: string) => line.replace(/\[[0-9;]*m/g, "");
-    let state = emptyScrollbackState();
-    const table = "| a | bbbb |\n|---|---|\n| 1 | 2 |";
-    state = reduceScrollback(state, { kind: "assistant-text", text: table });
-    const lines = state.blocks.find((block) => block.kind === "assistant")!.lines.map(strip);
-
-    expect(lines[0]).toBe(theme.sym.answer);
-    expect(new Set(lines.slice(1).map((line) => line.length)).size).toBe(1);
-
-    // Prose answers keep the mark inline, as before.
-    let prose = emptyScrollbackState();
-    prose = reduceScrollback(prose, { kind: "assistant-text", text: "plain answer" });
-    expect(strip(prose.blocks.find((block) => block.kind === "assistant")!.lines[0]!))
-      .toBe(`${theme.sym.answer} plain answer`);
-  });
-
   it("keeps finalized Static blocks immutable across later deltas", () => {
     let state = emptyScrollbackState();
     state = reduceScrollback(state, { kind: "assistant-delta", text: "done" });
@@ -331,6 +393,32 @@ describe("reduceScrollback", () => {
     expect(lines[0]!.length).toBeLessThan(long.length);
     expect(lines[0]).toContain("…");
     expect(lines[0]!.endsWith("a".repeat(20))).toBe(true);
+  });
+
+  it("animates live chrome when a spinner frame is provided, static otherwise", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "thinking-delta", text: "plan" });
+    expect(formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" }))
+      .toEqual(["▸ Thinking… ⠋", "  └ plan"]);
+
+    state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "assistant-delta", text: "hello" });
+    // Streaming answer gets the ▊ cursor; running tools get the spinner tail.
+    state = reduceScrollback(state, { kind: "tool-start", name: "read", detail: "a.ts", callId: "c1" });
+    const lines = formatLiveLines(state.live, state.inFlightTools, [], { spinnerFrame: "⠙" });
+    expect(lines.find((line) => line.includes("read"))).toContain("⠙");
+
+    // Reduced motion (no frame) keeps today's static chrome — no cursor, no spinner.
+    const staticLines = formatLiveLines(state.live, state.inFlightTools);
+    expect(staticLines.join("\n")).not.toContain("⠙");
+    expect(staticLines.join("\n")).not.toContain("▊");
+  });
+
+  it("appends the stream cursor to the live assistant preview", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "assistant-delta", text: "hello" });
+    const lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
+    expect(lines[0]).toBe("● hello▊");
   });
 
   it("formatLiveLines stays near-linear as stream grows (no full rejoin per paint)", () => {
@@ -400,5 +488,78 @@ describe("delta coalescer", () => {
       { kind: "assistant-delta", text: "ab" },
       { kind: "thinking-delta", text: "tu" },
     ]);
+  });
+});
+
+describe("subagent purpose naming", () => {
+  it("shows the primary-chosen name on live rows and the finished block", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, {
+      kind: "subagent-start",
+      workerId: 7,
+      model: "stub/flash",
+      role: "locator",
+      name: "auth flow",
+      goal: "survey the auth flow entrypoints",
+    });
+    const live = formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents).join("\n");
+    expect(live).toContain("subagent #7 · auth flow");
+
+    state = reduceScrollback(state, { kind: "subagent-assistant-text", workerId: 7, text: "found it" });
+    state = reduceScrollback(state, { kind: "subagent-end", workerId: 7, success: true, status: "success" });
+    const block = state.blocks.find((b) => b.kind === "subagent")!;
+    expect(block.lines[0]).toContain("subagent #7 · auth flow");
+  });
+
+  it("omits the name separator when no name was provided", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, {
+      kind: "subagent-start",
+      workerId: 8,
+      model: "stub/flash",
+      goal: "slice X",
+    });
+    const live = formatLiveLines(state.live, state.inFlightTools, state.inFlightSubagents).join("\n");
+    expect(live).toContain("subagent #8 · stub/flash");
+  });
+});
+
+describe("sliceTranscriptLineWindow", () => {
+  const block = (id: number, kind: HistoryBlock["kind"], lineCount: number): HistoryBlock => ({
+    id,
+    kind,
+    lines: Array.from({ length: lineCount }, (_, i) => `b${id}:${i}`),
+  });
+
+  it("scrolls line by line through a block taller than the viewport", () => {
+    // Old block-granular window either hid the 30-line report entirely or
+    // overflowed the viewport — the reported "scroll and it disappears" bug.
+    const blocks = [block(1, "user", 1), block(2, "assistant", 30), block(3, "notice", 1)];
+    const bottom = sliceTranscriptLineWindow(blocks, 10, 0);
+    expect(bottom.lines).toHaveLength(10);
+    expect(bottom.lines.at(-1)!.text).toBe("b3:0");
+    // Tail of the tall block is partially visible at the bottom.
+    expect(bottom.lines[0]!.text).toBe("b2:21");
+    expect(bottom.maxOffset).toBe(22);
+
+    const up3 = sliceTranscriptLineWindow(blocks, 10, 3);
+    expect(up3.lines).toHaveLength(10);
+    expect(up3.lines[0]!.text).toBe("b2:18");
+    expect(up3.lines.at(-1)!.text).toBe("b2:27");
+    expect(up3.hiddenBelow).toBe(3);
+
+    const top = sliceTranscriptLineWindow(blocks, 10, 10_000);
+    expect(top.offset).toBe(22);
+    expect(top.lines[0]!.text).toBe("b1:0");
+    expect(top.hiddenAbove).toBe(0);
+  });
+
+  it("tags lines with block styling metadata for per-line rendering", () => {
+    const blocks = [block(1, "assistant", 2), block(2, "tool", 1)];
+    const window = sliceTranscriptLineWindow(blocks, 10, 0);
+    expect(window.lines.map((l) => l.blockId)).toEqual([1, 1, 2]);
+    expect(window.lines[0]).toMatchObject({ boldFirst: true, compact: false });
+    expect(window.lines[1]).toMatchObject({ boldFirst: false, compact: false });
+    expect(window.lines[2]).toMatchObject({ kind: "tool", compact: true });
   });
 });

@@ -22,7 +22,7 @@ export type TuiEvent =
   | Readonly<{ kind: "thinking-delta"; text: string }>
   | Readonly<{ kind: "tool-start"; name: string; detail: string; callId?: string }>
   | Readonly<{ kind: "tool-end"; name: string; error: boolean; output: string; callId?: string }>
-  | Readonly<{ kind: "subagent-start"; workerId: number; model: string; role?: string; goal: string }>
+  | Readonly<{ kind: "subagent-start"; workerId: number; model: string; role?: string; name?: string; goal: string }>
   | Readonly<{ kind: "subagent-end"; workerId: number; success: boolean; status?: string }>
   | Readonly<{ kind: "subagent-thinking-delta"; workerId: number; text: string }>
   | Readonly<{ kind: "subagent-assistant-delta"; workerId: number; text: string }>
@@ -250,6 +250,7 @@ export function createTuiSubagentUiBridge(
             workerId: meta.workerId,
             model: meta.modelLabel,
             role: meta.role,
+            name: meta.name,
             goal: meta.goal,
           });
           return;

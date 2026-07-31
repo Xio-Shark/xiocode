@@ -5,6 +5,8 @@ export type SubagentLifecycleMeta = Readonly<{
   workerId: number;
   modelLabel: string;
   role?: ExploreRoleId;
+  /** Short purpose label chosen by the primary agent (falls back to role/goal). */
+  name?: string;
   goal: string;
   success?: boolean;
   status?: string;
@@ -22,6 +24,8 @@ export type SubagentUiSink = Readonly<{
 export type SubagentUiScope = Readonly<{
   workerId: number;
   role?: ExploreRoleId;
+  /** Short purpose label chosen by the primary agent (falls back to role/goal). */
+  name?: string;
   modelLabel: string;
   sink: SubagentUiSink;
 }>;
@@ -30,6 +34,8 @@ export type SubagentUiBridge = Readonly<{
   forWorker: (input: Readonly<{
     workerId: number;
     role?: ExploreRoleId;
+    /** Short purpose label chosen by the primary agent (falls back to role/goal). */
+    name?: string;
     modelLabel: string;
     goal: string;
   }>) => SubagentUiSink;

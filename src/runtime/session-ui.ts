@@ -1,8 +1,5 @@
 import { stdout as output } from "node:process";
 
-import { formatSessionCost } from "./pricing.ts";
-
-import type { SessionCostSummary } from "./pricing.ts";
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
 import type { ExploreRoleId } from "./explore/roles.ts";
 import type { ChatToolCall, CommandUi, ContextCompactionUiEvent, ToolExecuteResult } from "./types.ts";
@@ -131,22 +128,28 @@ export function exploreReportBody(output: string): string | undefined {
  */
 export function formatToolExpandHint(lineCount: number): string {
   if (lineCount <= 0) return "(empty)";
-  return `Ctrl+O · ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+  return `Ctrl+O/dblclick · ${lineCount} line${lineCount === 1 ? "" : "s"}`;
 }
 
 /**
- * Cumulative session usage for the status row. Tokens are provider-reported;
- * cost comes from the versioned price table (built-ins + `[pricing]` overrides),
- * so it is a real dollar figure — `~unknown` when the model has no known rate.
+ * Context occupancy for the status row (grok-build parity: used / window).
+ * `usedTokens` is the latest provider-reported request usage (prompt already
+ * includes cache reads after normalization, plus completion) — not a session
+ * running sum, which double-counts the context every turn. No cost estimate.
  */
-export function formatUsageStatus(summary: SessionCostSummary): string {
-  const total = summary.totalTokens;
-  const tokens = total >= 1_000_000
-    ? `${(total / 1_000_000).toFixed(1)}M`
-    : total >= 1_000
-      ? `${(total / 1_000).toFixed(1)}k`
-      : String(total);
-  return `tok:${tokens} ${formatSessionCost(summary)}`;
+export function formatContextStatus(usedTokens: number, contextWindow?: number): string {
+  const used = Math.max(0, usedTokens);
+  if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+    // Window unknown: plain token count beats a fabricated percentage.
+    const tokens = used >= 1_000_000
+      ? `${(used / 1_000_000).toFixed(1)}M`
+      : used >= 1_000
+        ? `${(used / 1_000).toFixed(1)}k`
+        : String(used);
+    return `tok:${tokens}`;
+  }
+  const percent = Math.min(100, Math.round((used / contextWindow) * 100));
+  return `ctx:${percent}%`;
 }
 
 export function createStdoutSessionUiSink(write: (chunk: string) => void = (chunk) => output.write(chunk)): SessionUiSink {

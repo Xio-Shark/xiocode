@@ -18,8 +18,9 @@ export type GeneralDefaultsUpsert = Readonly<{
 
 export function upsertProviderBlock(content: string, provider: ProviderUpsert): string {
   const block = formatProviderBlock(provider);
+  // Anchor to line start so commented examples (`# [providers.openai]`) never match.
   const sectionRe = new RegExp(
-    `\\[providers\\.${escapeRegExp(provider.name)}\\][\\s\\S]*?(?=\\n\\[|$)`,
+    `(?<=^|\\n)[ \\t]*\\[providers\\.${escapeRegExp(provider.name)}\\][\\s\\S]*?(?=\\n\\[|$)`,
   );
   if (sectionRe.test(content)) {
     return content.replace(sectionRe, () => `${block}\n`);
@@ -77,7 +78,9 @@ function upsertTomlKey(
   key: string,
   value: string,
 ): string {
-  const sectionRe = new RegExp(`(\\[${escapeRegExp(section)}\\][\\s\\S]*?)(?=\\n\\[|$)`);
+  const sectionRe = new RegExp(
+    `((?<=^|\\n)[ \\t]*\\[${escapeRegExp(section)}\\][\\s\\S]*?)(?=\\n\\[|$)`,
+  );
   const match = content.match(sectionRe);
   if (!match) {
     return `${content.replace(/\s*$/, "")}\n\n[${section}]\n${key} = ${tomlString(value)}\n`;

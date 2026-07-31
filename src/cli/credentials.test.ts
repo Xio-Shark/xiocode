@@ -110,4 +110,26 @@ api_key_env = "OPENAI_API_KEY"
     expect(next).not.toContain('model = "old"');
     expect(next.match(/\[providers\.openai\]/g)).toHaveLength(1);
   });
+
+  it("ignores commented provider headers and appends a fresh real block", () => {
+    const original = `[general]
+default_provider = "deepseek"
+
+# More providers: uncomment to enable:
+# [providers.openai]
+# kind = "openai"
+# model = "gpt-4.1"
+`;
+    const next = upsertProviderBlock(original, {
+      name: "openai",
+      kind: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4.1",
+      apiKeyEnv: "OPENAI_API_KEY",
+    });
+    // The commented example must stay untouched; the real block is appended.
+    expect(next).toContain("# [providers.openai]");
+    expect(next.match(/^\[providers\.openai\]/gm)).toHaveLength(1);
+    expect(next).toContain('api_key_env = "OPENAI_API_KEY"');
+  });
 });
