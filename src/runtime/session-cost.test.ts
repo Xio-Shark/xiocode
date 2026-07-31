@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { prepareSession, writeUsageSummary } from "./session.ts";
+import { prepareSession } from "./session.ts";
 import { createScriptedLlmClient, loadAgentTape } from "./providers/scripted/index.ts";
 
 import type { XioRuntimeConfig } from "../cli/config-parser.ts";
@@ -32,7 +32,6 @@ afterEach(async () => {
  */
 async function runPricedSession(pricing: PricingOverrides): Promise<{
   status: string[];
-  summary: string;
 }> {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "xio-session-cost-"));
   const status: string[] = [];
@@ -57,36 +56,29 @@ async function runPricedSession(pricing: PricingOverrides): Promise<{
   try {
     const result = await session.runPrompt("hi");
     expect(result.success).toBe(true);
-    const chunks: string[] = [];
-    writeUsageSummary(session, (chunk) => void chunks.push(chunk));
-    return { status, summary: chunks.join("") };
+    return { status };
   } finally {
     await session.close();
   }
 }
 
-describe("session cost path (scripted provider, no network)", () => {
-  it("turns provider-reported usage into a real dollar figure", async () => {
-    // 1M in / 1M out priced at $3 / $6 → the tape's 10 in + 2 out costs
-    // 10*3e-6 + 2*6e-6 = $0.000042.
-    const { status, summary } = await runPricedSession({
+describe("session usage status path (scripted provider, no network)", () => {
+  it("turns provider-reported usage into a context status row", async () => {
+    // The tape carries 10 in + 2 out tokens. The scripted model registers a
+    // context window, so the status row shows occupancy (the `xio -p` cost
+    // footer moved out in 7dfd5f0).
+    const { status } = await runPricedSession({
       "priced-model": { inputPerMTok: 3, outputPerMTok: 6 },
     });
 
     expect(status.length).toBeGreaterThan(0);
-    // Below the last displayed digit, but real — shown as `<$0.0001`, not `$0.0000`.
-    expect(status.at(-1)).toBe("tok:12 <$0.0001");
-    expect(summary).toContain("tok:12 <$0.0001");
-    expect(summary).toContain("scripted/priced-model");
-    expect(summary).not.toContain("~unknown");
+    expect(status.at(-1)).toBe("ctx:0.0%");
   }, 30_000);
 
-  it("reports ~unknown for a model with no price instead of $0", async () => {
-    const { status, summary } = await runPricedSession({});
+  it("still reports a status row when the model has no price", async () => {
+    const { status } = await runPricedSession({});
 
-    expect(status.at(-1)).toBe("tok:12 ~unknown");
-    expect(summary).toContain("~unknown");
-    expect(summary).toContain("[pricing.\"<model>\"]");
+    expect(status.at(-1)).toBe("ctx:0.0%");
   }, 30_000);
 });
 

@@ -120,6 +120,9 @@ function ReplayFrame(props: Readonly<{ state: ScrollbackState }>): React.JSX.Ele
       live: props.state.live,
       inFlightTools: props.state.inFlightTools,
       inFlightSubagents: props.state.inFlightSubagents,
+      // Fixed 80×24 terminal budget; frozen clock keeps the bench reproducible.
+      charBudget: 24 * 78,
+      now: 0,
     }));
 }
 

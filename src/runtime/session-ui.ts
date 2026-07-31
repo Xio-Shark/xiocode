@@ -140,16 +140,12 @@ export function formatToolExpandHint(lineCount: number): string {
 export function formatContextStatus(usedTokens: number, contextWindow?: number): string {
   const used = Math.max(0, usedTokens);
   if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) {
-    // Window unknown: plain token count beats a fabricated percentage.
-    const tokens = used >= 1_000_000
-      ? `${(used / 1_000_000).toFixed(1)}M`
-      : used >= 1_000
-        ? `${(used / 1_000).toFixed(1)}k`
-        : String(used);
-    return `tok:${tokens}`;
+    // Window unknown: no percentage to show — stay silent rather than surface
+    // a raw token count (pi-style: percent-only usage status).
+    return "";
   }
-  const percent = Math.min(100, Math.round((used / contextWindow) * 100));
-  return `ctx:${percent}%`;
+  const percent = Math.min(100, (used / contextWindow) * 100);
+  return `ctx:${percent.toFixed(1)}%`;
 }
 
 export function createStdoutSessionUiSink(write: (chunk: string) => void = (chunk) => output.write(chunk)): SessionUiSink {

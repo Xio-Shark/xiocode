@@ -93,9 +93,14 @@ const SYMBOL_RE = /\b([A-Z][A-Za-z0-9]{2,}|(?:[a-z]+[A-Z][A-Za-z0-9]+))\b/g;
 /**
  * Session-scoped orchestrator shared by all concurrent `explore` tool calls.
  */
+export type BeginWaveResult =
+  | Readonly<{ ok: true; waveId: number }>
+  | Readonly<{ ok: false; reason: "active_workers"; activeCount: number }>;
+
 export class ExploreOrchestrator {
   readonly #budgets: ExploreGlobalBudgets;
   #nextId = 0;
+  #waveId = 0;
   #waveStartedAt: number | undefined;
   #tokensUsed = 0;
   #costUsd = 0;
@@ -298,6 +303,30 @@ export class ExploreOrchestrator {
     this.cancelStragglers("reset");
     this.#active.clear();
     this.#onParentAbort.clear();
+    this.#clearWaveState();
+    this.#startTimestamps = [];
+    this.#waveId += 1;
+  }
+
+  /**
+   * Start a fresh wave: clear the wall clock / early-stop state so a later
+   * turn can explore again. Refuses while workers are active; keeps the
+   * session start-rate sliding window across waves.
+   */
+  beginWave(): BeginWaveResult {
+    if (this.#active.size > 0) {
+      return { ok: false, reason: "active_workers", activeCount: this.#active.size };
+    }
+    this.#clearWaveState();
+    this.#waveId += 1;
+    return { ok: true, waveId: this.#waveId };
+  }
+
+  get waveId(): number {
+    return this.#waveId;
+  }
+
+  #clearWaveState(): void {
     this.#claimedPaths.clear();
     this.#reports = [];
     this.#coverageHistory = [];
@@ -307,7 +336,6 @@ export class ExploreOrchestrator {
     this.#tokensUsed = 0;
     this.#costUsd = 0;
     this.#roleCursor = 0;
-    this.#startTimestamps = [];
   }
 
   #budgetCode(): SkipCode | undefined {

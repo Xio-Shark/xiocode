@@ -145,16 +145,16 @@ describe("tool transcript helpers", () => {
 
 describe("formatContextStatus", () => {
   it("shows context occupancy percentage without cost", () => {
-    expect(formatContextStatus(12_800, 128_000)).toBe("ctx:10%");
-    expect(formatContextStatus(0, 128_000)).toBe("ctx:0%");
+    expect(formatContextStatus(12_800, 128_000)).toBe("ctx:10.0%");
+    expect(formatContextStatus(0, 128_000)).toBe("ctx:0.0%");
     // Over-window usage clamps at 100% instead of fabricating >100%.
-    expect(formatContextStatus(200_000, 128_000)).toBe("ctx:100%");
+    expect(formatContextStatus(200_000, 128_000)).toBe("ctx:100.0%");
   });
 
-  it("falls back to a plain token count when the window is unknown", () => {
-    expect(formatContextStatus(950)).toBe("tok:950");
-    expect(formatContextStatus(12_345)).toBe("tok:12.3k");
-    expect(formatContextStatus(2_500_000)).toBe("tok:2.5M");
-    expect(formatContextStatus(12_345, 0)).toBe("tok:12.3k");
+  it("stays silent when the window is unknown (no token count, pi-style)", () => {
+    expect(formatContextStatus(950)).toBe("");
+    expect(formatContextStatus(12_345)).toBe("");
+    expect(formatContextStatus(2_500_000)).toBe("");
+    expect(formatContextStatus(12_345, 0)).toBe("");
   });
 });
