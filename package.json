@@ -35,7 +35,11 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run check && npm run build && node --experimental-strip-types ./scripts/prepack-check.ts",
     "test": "vitest run",
-    "test:unit": "vitest run extensions/xio-eval/test extensions/xio-evolve/test extensions/xio-hygiene/test extensions/xio-improve/test extensions/xio-regress/test extensions/xio-sandbox/test src/cli/regress-cli.test.ts"
+    "test:unit": "vitest run extensions/xio-eval/test extensions/xio-evolve/test extensions/xio-hygiene/test extensions/xio-improve/test extensions/xio-regress/test extensions/xio-sandbox/test src/cli/regress-cli.test.ts",
+    "version": "node ./scripts/sync-version.mjs && git add README.md README.zh-CN.md",
+    "release:patch": "npm version patch -m \"chore: bump version to %s\"",
+    "release:minor": "npm version minor -m \"chore: bump version to %s\"",
+    "release:major": "npm version major -m \"chore: bump version to %s\""
   },
   "keywords": [
     "cli",

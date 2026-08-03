@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh |
 Pin a version:
 
 ```bash
-export XIO_INSTALL_VERSION=1.1.1
+export XIO_INSTALL_VERSION=1.1.2
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
