@@ -250,10 +250,13 @@ describe("App", () => {
 
     subagent.onLifecycle?.("start", meta);
     subagent.onThinkingDelta?.("private reasoning");
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(instance.lastFrame()).toContain("subagent #3");
-    expect(instance.lastFrame()).toContain("Thinking");
-    expect(instance.lastFrame()).not.toContain("private reasoning");
+    // Soft deltas flush on a 16ms coalescer timer; fixed sleeps go flaky under
+    // parallel CI load, so poll the frame until the expected rows appear.
+    const started = await waitForFrame(instance, (frame) =>
+      frame.includes("subagent #3") && frame.includes("Thinking"));
+    expect(started).toContain("subagent #3");
+    expect(started).toContain("Thinking");
+    expect(started).not.toContain("private reasoning");
 
     const call = { id: "w3:1", name: "grep", arguments: { pattern: "route" } };
     subagent.onToolStart?.(call);
@@ -856,6 +859,24 @@ describe("App", () => {
 
 function emptyView(): ViewState {
   return { entries: [] as ViewState["entries"], statuses: {}, widgets: {}, bypass: false };
+}
+
+/**
+ * Poll the rendered frame until `predicate` matches (or timeout). Fixed sleeps
+ * are unreliable for soft-delta renders under parallel test load.
+ */
+async function waitForFrame(
+  instance: ReturnType<typeof render>,
+  predicate: (frame: string) => boolean,
+  timeoutMs = 2_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let frame = instance.lastFrame() ?? "";
+  while (!predicate(frame) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    frame = instance.lastFrame() ?? "";
+  }
+  return frame;
 }
 
 function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = []): PreparedSession {
