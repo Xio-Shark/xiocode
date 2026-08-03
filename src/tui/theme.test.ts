@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { collapseNoticesForDisplay, formatShortCwd, padSlashName, theme } from "./theme.ts";
+import {
+  collapseNoticesForDisplay,
+  formatShortCwd,
+  padSlashName,
+  resolveTheme,
+  theme,
+} from "./theme.ts";
 
 describe("theme helpers", () => {
   it("exposes semantic slots used by App", () => {
@@ -8,6 +14,18 @@ describe("theme helpers", () => {
     expect(theme.sym.meta).toBe("·");
     expect(theme.userBar).toMatch(/^#/);
     expect(theme.pathMax).toBeGreaterThan(10);
+  });
+
+  it("defaults to the groknight palette (XIO_THEME unset or unknown)", () => {
+    expect(resolveTheme(undefined).accent).toBe("#7dcfff");
+    expect(resolveTheme("groknight").brand).toBe("#bb9af7");
+    expect(resolveTheme("bogus").tool).toBe("#e0af68");
+  });
+
+  it("keeps the claude quiet theme opt-in", () => {
+    const claude = resolveTheme("claude");
+    expect(claude.accent).toBe("cyan");
+    expect(claude.userBar).toBe("#303030");
   });
 
   it("shortens home paths and middle-ellipsis long paths", () => {

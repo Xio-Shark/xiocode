@@ -728,6 +728,7 @@ export function sliceTranscriptLineWindow(
   blocks: readonly HistoryBlock[],
   viewport: number,
   offset: number,
+  folded?: ReadonlySet<number>,
 ): Readonly<{
   lines: readonly RenderLine[];
   offset: number;
@@ -744,8 +745,15 @@ export function sliceTranscriptLineWindow(
       || block.kind === "thinking"
       || block.kind === "subagent";
     const boldable = block.kind === "assistant";
+    // Folded compact blocks keep only their title row (the rest stays in
+    // `output` for the Ctrl+O viewer); user/assistant blocks never fold.
+    const isFolded = compact && folded?.has(block.id) === true;
     // Every block occupies at least one row so empty blocks stay addressable.
-    const source = block.lines.length > 0 ? block.lines : [""];
+    const source = isFolded
+      ? [block.lines[0] ?? block.title ?? ""]
+      : block.lines.length > 0
+        ? block.lines
+        : [""];
     source.forEach((text, index) => {
       flat.push({
         blockId: block.id,

@@ -107,6 +107,69 @@ export function moveCursor(state: ComposerState, delta: number): ComposerState {
   return { ...state, cursor: clamp(state.cursor + delta, 0, state.text.length) };
 }
 
+/**
+ * Word boundaries in readline/Emacs style: whitespace is skipped, then a run of
+ * word chars (letters/digits/underscore) or a run of non-word chars (punctuation/
+ * symbols) is traversed as one unit. `delta` +1 moves to the start of the next
+ * word, -1 to the start of the current/previous word.
+ */
+function wordBoundaryLeft(text: string, cursor: number): number {
+  let index = cursor;
+  while (index > 0 && /\s/.test(text[index - 1]!)) index -= 1;
+  if (index === 0) return 0;
+  const word = /[\p{L}\p{N}_]/u.test(text[index - 1]!);
+  while (index > 0) {
+    const ch = text[index - 1]!;
+    if (word ? !/[\p{L}\p{N}_]/u.test(ch) : /\s|[\p{L}\p{N}_]/u.test(ch)) break;
+    index -= 1;
+  }
+  return index;
+}
+
+function wordBoundaryRight(text: string, cursor: number): number {
+  let index = cursor;
+  while (index < text.length && /\s/.test(text[index]!)) index += 1;
+  if (index >= text.length) return text.length;
+  const word = /[\p{L}\p{N}_]/u.test(text[index]!);
+  while (index < text.length) {
+    const ch = text[index]!;
+    if (word ? !/[\p{L}\p{N}_]/u.test(ch) : /\s|[\p{L}\p{N}_]/u.test(ch)) break;
+    index += 1;
+  }
+  return index;
+}
+
+/** Move the cursor one word left (`delta` -1) or right (`delta` +1). */
+export function moveCursorWord(state: ComposerState, delta: -1 | 1): ComposerState {
+  const position = delta < 0
+    ? wordBoundaryLeft(state.text, state.cursor)
+    : wordBoundaryRight(state.text, state.cursor);
+  return { ...state, cursor: position, historyIndex: -1 };
+}
+
+/** Delete the word left of the cursor (Alt+Backspace / Ctrl+W). */
+export function deleteWordBackward(state: ComposerState): ComposerState {
+  const start = wordBoundaryLeft(state.text, state.cursor);
+  if (start === state.cursor) return state;
+  const text = state.text.slice(0, start) + state.text.slice(state.cursor);
+  return { ...state, text, cursor: start, historyIndex: -1 };
+}
+
+/** Delete the word right of the cursor (Alt+D). */
+export function deleteWordForward(state: ComposerState): ComposerState {
+  const end = wordBoundaryRight(state.text, state.cursor);
+  if (end === state.cursor) return state;
+  const text = state.text.slice(0, state.cursor) + state.text.slice(end);
+  return { ...state, text, historyIndex: -1 };
+}
+
+/** Kill the draft from the line start to the cursor (Ctrl+U, readline kill). */
+export function killToCursor(state: ComposerState): ComposerState {
+  if (state.cursor === 0) return state;
+  const text = state.text.slice(state.cursor);
+  return { ...state, text, cursor: 0, historyIndex: -1 };
+}
+
 export function moveCursorTo(state: ComposerState, position: number): ComposerState {
   return { ...state, cursor: clamp(position, 0, state.text.length) };
 }

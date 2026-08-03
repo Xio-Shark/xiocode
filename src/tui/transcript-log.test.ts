@@ -562,4 +562,30 @@ describe("sliceTranscriptLineWindow", () => {
     expect(window.lines[1]).toMatchObject({ boldFirst: false, compact: false });
     expect(window.lines[2]).toMatchObject({ kind: "tool", compact: true });
   });
+
+  it("folds compact blocks to a single title row and keeps offsets consistent", () => {
+    const blocks = [
+      block(1, "assistant", 2),
+      block(2, "tool", 5),
+      block(3, "user", 1),
+    ];
+    const folded = sliceTranscriptLineWindow(blocks, 10, 0, new Set([2]));
+    expect(folded.lines.map((l) => l.blockId)).toEqual([1, 1, 2, 3]);
+    expect(folded.totalLines).toBe(4);
+    // Folding removes rows, so the same viewport now reaches deeper content.
+    expect(folded.maxOffset).toBe(0);
+  });
+
+  it("does not fold assistant or user blocks", () => {
+    const blocks = [block(1, "user", 3), block(2, "assistant", 3)];
+    const folded = sliceTranscriptLineWindow(blocks, 10, 0, new Set([1, 2]));
+    expect(folded.totalLines).toBe(6);
+  });
+
+  it("folded blocks stay addressable even with an empty title row", () => {
+    const blocks = [{ id: 1, kind: "thinking" as const, lines: [] }];
+    const folded = sliceTranscriptLineWindow(blocks, 10, 0, new Set([1]));
+    expect(folded.lines).toHaveLength(1);
+    expect(folded.lines[0]!.text).toBe("");
+  });
 });

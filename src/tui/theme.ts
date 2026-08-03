@@ -1,6 +1,8 @@
 /**
- * Single default Claude-quiet theme for the Ink TUI.
- * Semantic slots only — no multi-theme loader in MVP.
+ * Semantic theme slots. Two palettes ship: `groknight` (default — neutral
+ * gray base + TokyoNight-style accents, following grok-build's groknight)
+ * and `claude` (the original magenta/cyan quiet theme). Select with
+ * `XIO_THEME=groknight|claude`; unknown values fall back to groknight.
  */
 
 import { homedir } from "node:os";
@@ -43,16 +45,17 @@ export type Theme = Readonly<{
   }>;
 }>;
 
-export const theme: Theme = {
-  brand: "magenta",
-  accent: "cyan",
-  userBar: "#303030",
-  tool: "yellow",
-  think: "blue",
-  explore: "magenta",
-  error: "red",
-  shark: "magenta",
-  sharkEyeBg: "#1a1a1a",
+/** grok-build `groknight` palette: neutral gray base + TokyoNight accents. */
+const GROKNIGHT: Theme = {
+  brand: "#bb9af7",
+  accent: "#7dcfff",
+  userBar: "#242424",
+  tool: "#e0af68",
+  think: "#7aa2f7",
+  explore: "#9ece6a",
+  error: "#f7768e",
+  shark: "#bb9af7",
+  sharkEyeBg: "#111111",
   pathMax: 42,
   toolDetailMax: 72,
   slashNameWidth: 16,
@@ -70,6 +73,38 @@ export const theme: Theme = {
     nest: "└",
   },
 };
+
+/** Original Claude-quiet theme — keep for XIO_THEME=claude. */
+const CLAUDE: Theme = {
+  ...GROKNIGHT,
+  brand: "magenta",
+  accent: "cyan",
+  userBar: "#303030",
+  tool: "yellow",
+  think: "blue",
+  explore: "magenta",
+  error: "red",
+  shark: "magenta",
+  sharkEyeBg: "#1a1a1a",
+};
+
+export const THEME_NAMES = ["groknight", "claude"] as const;
+export type ThemeName = (typeof THEME_NAMES)[number];
+
+const THEMES: Readonly<Record<ThemeName, Theme>> = { groknight: GROKNIGHT, claude: CLAUDE };
+
+/** Resolve a named theme; unknown names fall back to the default. */
+export function resolveTheme(name: string | undefined): Theme {
+  if (name === "claude") return CLAUDE;
+  return GROKNIGHT;
+}
+
+/**
+ * The active theme — resolved once at module load from `XIO_THEME`.
+ * Everything renders through this object, so a future theme loader only
+ * needs to swap it before the first paint.
+ */
+export const theme: Theme = resolveTheme(process.env.XIO_THEME);
 
 /** Single-line ellipsis for tool args on the transcript title row. */
 export function truncateToolDetail(detail: string, maxLen = theme.toolDetailMax): string {
