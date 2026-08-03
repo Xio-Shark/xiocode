@@ -351,8 +351,12 @@ export function App(props: AppProps): React.JSX.Element {
       sum + (line.startsWith(`${theme.sym.answer} `)
         ? wrappedLineCount(line, Math.max(20, columns))
         : 1), 0);
-    // Brand (~3) + composer (~4) + footer (~2) + live sticky lines.
-    const baseChrome = 10 + menuRows + tasklistRows + liveExtra;
+    // Brand header (4 incl. margin) + composer border (5) + footer (2) = 11
+    // chrome rows. The ↑ above / ↓ to latest hints render inside the content
+    // band, so reserve their rows when scrolled: without this the window + hints
+    // overflow the band and ink drops children (a visible line disappears).
+    const hintRows = scrollOffset > 0 ? 2 : 0;
+    const baseChrome = 11 + menuRows + tasklistRows + liveExtra + hintRows;
     const viewportLines = Math.max(4, rows - baseChrome);
     return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset);
   }, [
