@@ -31,7 +31,11 @@ export function shortcutGroups(
     options.fullscreen
       ? { keys: "↑ ↓", description: "Scroll the transcript" }
       : { keys: "↑ ↓", description: "Walk prompt history (or draft lines)" },
-    { keys: "ctrl+u ctrl+c", description: "Clear the draft" },
+    { keys: "home end ctrl+a ctrl+e", description: "Jump to the draft start / end" },
+    { keys: "alt+←→ alt+b/f", description: "Move one word" },
+    { keys: "alt+backspace alt+d", description: "Delete a word" },
+    { keys: "ctrl+u", description: "Kill the draft to the cursor" },
+    { keys: "ctrl+c", description: "Clear the draft" },
     { keys: "esc esc", description: "Clear the draft, keeping it in history" },
     { keys: "tab", description: "Cycle thinking level" },
     { keys: "shift+tab", description: "Cycle permission mode" },
@@ -46,16 +50,34 @@ export function shortcutGroups(
     { keys: "ctrl+x", description: "Drop the queued input" },
   ];
 
+  const find: Shortcut[] = [
+    { keys: "ctrl+f", description: "Search the transcript — type to filter, enter/↓ next, ↑ prev" },
+    { keys: "ctrl+r", description: "Fold / unfold the block at the top of the view" },
+    { keys: "ctrl+p", description: "Command palette — type to filter slash commands" },
+    { keys: "ctrl+t", description: "Switch model (runs /model)" },
+    { keys: "esc", description: "Close the search / palette" },
+  ];
+
   const output: Shortcut[] = [
     { keys: "ctrl+o", description: "Open the last tool output in full" },
     { keys: "↑ ↓ pgup pgdn", description: "Scroll inside that overlay" },
     { keys: "ctrl+g ctrl+e", description: "Jump to its top / bottom" },
+    { keys: "y", description: "Copy the open block to the clipboard" },
     { keys: "esc", description: "Close the overlay" },
   ];
   if (options.fullscreen) {
     output.push(
       { keys: "pgup pgdn", description: "Page through the transcript" },
+      { keys: "ctrl+j k", description: "Scroll the transcript by line" },
+      { keys: "ctrl+u d", description: "Scroll half a page (ctrl+u needs an empty draft)" },
       { keys: "drag", description: "Select with the mouse — copies on release" },
+    );
+  } else {
+    output.push(
+      { keys: "pgup pgdn", description: "Open the transcript review (keyboard scroll)" },
+      { keys: "ctrl+j k", description: "Scroll the review by line" },
+      { keys: "ctrl+u d", description: "Scroll the review half a page (ctrl+u needs an empty draft)" },
+      { keys: "y", description: "Copy the block at the top of the review" },
     );
   }
 
@@ -63,6 +85,7 @@ export function shortcutGroups(
     { title: "Prompt", items: prompt },
     { title: "While a task runs", items: running },
     { title: "Output", items: output },
+    { title: "Find", items: find },
     {
       title: "Session",
       items: [
