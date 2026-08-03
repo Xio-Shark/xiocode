@@ -4,14 +4,18 @@ import {
   applyInputChunk,
   deleteBackward,
   deleteForward,
+  deleteWordBackward,
+  deleteWordForward,
   emptyComposer,
   historyDown,
   historyUp,
   insertAtCursor,
+  killToCursor,
   loadQueueIntoDraft,
   moveCursor,
   moveCursorLine,
   moveCursorTo,
+  moveCursorWord,
   parseBusySubmitIntent,
   queueWhileBusy,
   rememberSubmission,
@@ -144,6 +148,73 @@ describe("composer", () => {
     expect(state.cursor).toBe(4);
     state = moveCursorLine(state, -1);
     expect(state.cursor).toBe(1);
+  });
+
+  it("moves the cursor word-by-word left and right", () => {
+    let state = setComposerText(emptyComposer(), "fix src/tui bug", 16);
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src/tui ");
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src/");
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src");
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix ");
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src");
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src/");
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("fix src/tui");
+    state = moveCursorWord(state, 1);
+    expect(state.cursor).toBe(state.text.length);
+  });
+
+  it("treats punctuation runs as words and skips whitespace", () => {
+    let state = setComposerText(emptyComposer(), "a->b  c", 7);
+    // cursor after "c" — the word run before it stops at the whitespace.
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("a->b  ");
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("a->");
+    // punctuation run "->" is its own word; then "a".
+    state = moveCursorWord(state, -1);
+    expect(state.text.slice(0, state.cursor)).toBe("a");
+    state = moveCursorWord(state, -1);
+    expect(state.cursor).toBe(0);
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("a");
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("a->");
+    state = moveCursorWord(state, 1);
+    expect(state.text.slice(0, state.cursor)).toBe("a->b");
+    state = moveCursorWord(state, 1);
+    expect(state.cursor).toBe(7);
+  });
+
+  it("deletes the word left of the cursor", () => {
+    let state = setComposerText(emptyComposer(), "fix the bug", 8);
+    state = deleteWordBackward(state);
+    expect(state.text).toBe("fix bug");
+    expect(state.cursor).toBe(4);
+    state = deleteWordBackward(state);
+    expect(state.text).toBe("bug");
+  });
+
+  it("deletes the word right of the cursor, keeping separator whitespace", () => {
+    let state = setComposerText(emptyComposer(), "fix the bug", 4);
+    state = deleteWordForward(state);
+    expect(state.text).toBe("fix  bug");
+    expect(state.cursor).toBe(4);
+  });
+
+  it("kills the draft from the line start to the cursor", () => {
+    let state = setComposerText(emptyComposer(), "hello world", 5);
+    state = killToCursor(state);
+    expect(state.text).toBe(" world");
+    expect(state.cursor).toBe(0);
+    // Cursor at line start: kill is a no-op.
+    expect(killToCursor(state)).toBe(state);
   });
 
   it("slices viewer windows for scrollable overlays", () => {

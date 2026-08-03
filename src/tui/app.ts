@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
+import { Box, Static, Text, useApp, useBoxMetrics, useInput, useWindowSize } from "ink";
+
+import {
+  scrollOffsetForLine,
+  searchTranscriptLines,
+  transcriptFlatLines,
+} from "./transcript-search.ts";
 
 import {
   formatExploreToolLabel,
@@ -39,12 +45,17 @@ import {
   clearQueue,
   deleteBackward,
   deleteForward,
+  deleteWordBackward,
+  deleteWordForward,
   emptyComposer,
   historyDown,
   historyUp,
+  killToCursor,
   loadQueueIntoDraft,
   moveCursor,
   moveCursorLine,
+  moveCursorTo,
+  moveCursorWord,
   parseBusySubmitIntent,
   queueWhileBusy,
   rememberSubmission,
@@ -80,6 +91,7 @@ import {
   theme,
   truncateToolDetail,
 } from "./theme.ts";
+import { composerHint } from "./shortcuts.ts";
 import { BrandHeader } from "./shark-logo.ts";
 
 const h = React.createElement;
@@ -284,6 +296,12 @@ export function App(props: AppProps): React.JSX.Element {
     setTranscriptViewer,
     focusedSubagentId,
     setFocusedSubagentId,
+    review,
+    search,
+    palette,
+    foldedBlockIds,
+    escArmed,
+    setReview,
   } = useSessionInteraction(
     props,
     setView,
@@ -292,6 +310,8 @@ export function App(props: AppProps): React.JSX.Element {
     setScrollback,
     scrollback,
     selectionApiRef,
+    rows,
+    scrollOffset,
   );
 
   // One animation clock drives all motion: spinner chrome at ~8fps while busy,
@@ -358,7 +378,7 @@ export function App(props: AppProps): React.JSX.Element {
     const hintRows = scrollOffset > 0 ? 2 : 0;
     const baseChrome = 11 + menuRows + tasklistRows + liveExtra + hintRows;
     const viewportLines = Math.max(4, rows - baseChrome);
-    return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset);
+    return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset, foldedBlockIds);
   }, [
     appendScrollback,
     scrollback.blocks,
@@ -373,6 +393,7 @@ export function App(props: AppProps): React.JSX.Element {
     atOpen,
     atItems,
     tasklist,
+    foldedBlockIds,
   ]);
 
   useEffect(() => {
@@ -441,13 +462,6 @@ export function App(props: AppProps): React.JSX.Element {
     : { flexDirection: "column" as const, height: rows, overflow: "hidden" as const };
 
   return h(Box, rootProps,
-    appendScrollback
-      ? h(Static as React.FC<{ items: HistoryBlock[]; children: (block: HistoryBlock) => React.ReactNode }>, {
-        // Ink Static mutates its items prop type; blocks array is only replaced on hard boundaries.
-        items: scrollback.blocks as HistoryBlock[],
-        children: (block: HistoryBlock) => h(HistoryBlockRow, { key: block.id, block }),
-      })
-      : null,
     h(SessionHeader, {
       version: PACKAGE_VERSION,
       model: modelLabel,
@@ -462,6 +476,25 @@ export function App(props: AppProps): React.JSX.Element {
         liveKind: scrollback.live?.kind,
       }), spinnerFrame),
     }),
+    appendScrollback
+      ? h(Static as React.FC<{ items: HistoryBlock[]; children: (block: HistoryBlock) => React.ReactNode }>, {
+        // Ink Static mutates its items prop type; blocks array is only replaced on hard boundaries.
+        items: scrollback.blocks as HistoryBlock[],
+        children: (block: HistoryBlock) => h(HistoryBlockRow, { key: block.id, block }),
+      })
+      : null,
+    appendScrollback && review
+      ? h(ReviewOverlay, {
+        blocks: scrollback.blocks,
+        offset: review.offset,
+        search,
+        folded: foldedBlockIds,
+        onOffset: (delta) => setReview((current) => ({
+          ...(current ?? { offset: 0 }),
+          offset: Math.max(0, (current?.offset ?? 0) + delta),
+        })),
+      })
+      : null,
     transcriptViewer
       ? h(TranscriptViewerOverlay, {
         block: transcriptViewer,
@@ -484,6 +517,9 @@ export function App(props: AppProps): React.JSX.Element {
             : view.prompt
               ? h(PromptView, { prompt: view.prompt })
               : h(Box, { flexDirection: "column", flexGrow: 1 },
+                search && !appendScrollback
+                  ? h(SearchBar, { search, totalLines: window.totalLines })
+                  : null,
                 !appendScrollback && scrolled
                   ? h(Text, { dimColor: true },
                     `↑ ${window.hiddenAbove} lines above · PgUp/PgDn · ↓ latest`)
@@ -515,12 +551,25 @@ export function App(props: AppProps): React.JSX.Element {
       busy,
       spinnerFrame,
       composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
+      hint: composerHint({
+        busy,
+        armed: escArmed,
+        queued: composer.queue !== undefined,
+        canSteer: typeof props.session.steer === "function",
+      }),
     }),
     slashOpen
       ? h(SlashMenu, { items: slashItems ?? [], selected: safeSlashIndex })
       : null,
     atOpen
       ? h(FileMenu, { items: atItems ?? [], selected: safeAtIndex })
+      : null,
+    palette
+      ? h(CommandPalette, {
+        query: palette.query,
+        selected: palette.index,
+        entries: collectSlashCommands(props.session.host),
+      })
       : null,
     h(FooterHints, {
       bypass: view.bypass || Boolean(view.statuses.bypass),
@@ -531,6 +580,7 @@ export function App(props: AppProps): React.JSX.Element {
       explore: view.statuses.explore,
       workspace: workspaceLabel,
       mcp: view.statuses.mcp,
+      turn: scrollback.blocks.filter((block) => block.kind === "user").length,
     }));
 }
 
@@ -575,6 +625,8 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
   /** Current spinner frame; undefined = reduced motion (static busy dot). */
   spinnerFrame?: string;
   composer: ComposerState;
+  /** Contextual hint line (esc cancel / double-esc clear / steer / queued). */
+  hint?: string;
 }>): React.JSX.Element {
   const { text, cursor } = props.composer;
   const lines = text.length === 0 ? [""] : text.split("\n");
@@ -607,7 +659,10 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
     paddingX: 1,
   },
     h(Text, { dimColor: props.busy }, props.busy ? (props.spinnerFrame ?? theme.sym.busy) : theme.sym.prompt),
-    ...rows);
+    ...rows,
+    props.hint
+      ? h(Text, { dimColor: true }, `${theme.sym.nest} ${props.hint}`)
+      : null);
 });
 
 export const HistoryBlockRow = memo(function HistoryBlockRow(
@@ -669,6 +724,93 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
 });
 
 /**
+ * Search-in-transcript state shared by the fullscreen window and the route B
+ * review overlay. `results` are top-based line indexes into the flattened
+ * transcript (`transcriptFlatLines`); `index` points into `results`.
+ */
+export type SearchState = Readonly<{
+  query: string;
+  index: number;
+  results: readonly number[];
+}>;
+
+/** One-line search input + match counter rendered above the transcript. */
+function SearchBar(props: Readonly<{
+  search: SearchState;
+  totalLines: number;
+}>): React.JSX.Element {
+  const { search } = props;
+  const position = search.results.length > 0
+    ? ` ${search.index + 1}/${search.results.length}`
+    : " 0/0";
+  return h(Box, { flexDirection: "row", gap: 1, marginY: 0 },
+    h(Text, { color: theme.accent, bold: true }, `/${search.query}${position}`),
+    h(Text, { dimColor: true }, "enter/↓ next · ↑ prev · esc close"));
+}
+
+/**
+ * Route B review overlay: a self-managed scrolling window over the finalized
+ * transcript (the terminal scrollback can't be keyboard-scrolled). Height is
+ * measured with useBoxMetrics so it adapts to whatever room Ink leaves after
+ * the Static history; the first frame renders 4 rows, then snaps to the real
+ * viewport. `y` copies the block at the top of the window.
+ */
+function ReviewOverlay(props: Readonly<{
+  blocks: readonly HistoryBlock[];
+  offset: number;
+  search?: SearchState;
+  folded?: ReadonlySet<number>;
+  onOffset: (delta: number) => void;
+}>): React.JSX.Element {
+  const ref = useRef<React.ElementRef<typeof Box> | null>(null);
+  const { height, hasMeasured } = useBoxMetrics(ref);
+  // Border (2) + title row + hint row + optional search row.
+  const viewport = hasMeasured ? Math.max(4, Math.floor(height) - 4) : 4;
+  const window = sliceTranscriptLineWindow(props.blocks, viewport, props.offset, props.folded);
+  const total = window.totalLines;
+  const firstVisibleIndex = Math.max(0, total - window.offset - window.lines.length);
+  const matchIndexes = new Set(props.search?.results ?? []);
+  const currentLine = props.search !== undefined && props.search.results.length > 0
+    ? props.search.results[props.search.index] ?? -1
+    : -1;
+  const title = total > viewport
+    ? `Transcript · lines ${firstVisibleIndex + 1}–${firstVisibleIndex + window.lines.length}/${total}`
+    : `Transcript · ${total} line${total === 1 ? "" : "s"}`;
+  return h(Box, {
+    ref,
+    flexDirection: "column",
+    flexGrow: 1,
+    borderStyle: "round",
+    borderColor: "gray",
+    paddingX: 1,
+    marginTop: 1,
+  },
+    h(Text, { bold: true }, `${theme.sym.brand} ${title}`),
+    props.search
+      ? h(SearchBar, { search: props.search, totalLines: total })
+      : h(Text, { dimColor: true }, "↑↓/PgUp/PgDn scroll · ctrl+f search · y copy · esc close"),
+    ...window.lines.map((line, index) => {
+      const globalIndex = firstVisibleIndex + index;
+      const match = matchIndexes.has(globalIndex);
+      return h(RenderLineRow, {
+        key: `${line.blockId}-${line.indexInBlock}-${index}`,
+        line,
+        lineIndex: index,
+        match,
+        matchCurrent: match && globalIndex === currentLine,
+      });
+    }),
+    window.hiddenBelow > 0
+      ? h(Text, { dimColor: true }, `↓ ${window.hiddenBelow} lines to latest`)
+      : null);
+}
+
+/** Full text of a block (retained output wins over the folded lines). */
+function blockFullText(block: HistoryBlock): string {
+  return block.output ?? block.lines.join("\n");
+}
+
+/**
  * One flattened transcript row (fullscreen line-granular window).
  * Mirrors HistoryBlockRow styling; wraps only assistant/user/notice content.
  */
@@ -677,6 +819,10 @@ const RenderLineRow = memo(function RenderLineRow(props: Readonly<{
   /** Index within the visible window = selectable-line index (mouse selection). */
   lineIndex: number;
   selection?: TextSelectionRange;
+  /** Search hit highlight (plain-text row, no selection math). */
+  match?: boolean;
+  /** Current search result — accent background. */
+  matchCurrent?: boolean;
 }>): React.JSX.Element {
   const { line } = props;
   const color = line.error
@@ -693,6 +839,15 @@ const RenderLineRow = memo(function RenderLineRow(props: Readonly<{
     || line.kind === "notice"
     || line.kind === "subagent";
   const wrap = line.compact ? "truncate-end" as const : "wrap" as const;
+  if (props.match || props.matchCurrent) {
+    return h(Text, {
+      color: props.matchCurrent ? undefined : color,
+      bold: line.boldFirst,
+      dimColor: props.matchCurrent ? false : dim,
+      wrap,
+      backgroundColor: props.matchCurrent ? theme.accent : "#3d3d3d",
+    }, line.text || " ");
+  }
   // Selection math is on plain text; render plain when highlighting so cols match.
   const plain = stripAnsi(line.text);
   const segments = highlightLineSegments(plain, props.lineIndex, props.selection);
@@ -870,6 +1025,8 @@ function useSessionInteraction(
     clearTextSelection: () => void;
     finishTextSelectionCopy: (range: TextSelectionRange) => void;
   }>>,
+  rows: number,
+  scrollOffset: number,
 ): Readonly<{
   input: string;
   composer: ComposerState;
@@ -883,6 +1040,35 @@ function useSessionInteraction(
   setTranscriptViewer: React.Dispatch<React.SetStateAction<HistoryBlock | undefined>>;
   focusedSubagentId: number | undefined;
   setFocusedSubagentId: React.Dispatch<React.SetStateAction<number | undefined>>;
+  /** Route B review overlay state (keyboard scroll over the Static transcript). */
+  review: Readonly<{ offset: number }> | undefined;
+  setReview: React.Dispatch<React.SetStateAction<Readonly<{ offset: number }> | undefined>>;
+  search: SearchState | undefined;
+  /** Command palette (Ctrl+P). */
+  palette: Readonly<{ query: string; index: number }> | undefined;
+  /** Esc layering: cancel turn / double-press clear draft. */
+  pressEsc: () => boolean;
+  escArmed: "clear-draft" | undefined;
+  /** Manually folded block ids (tool/thinking/subagent collapse to title). */
+  foldedBlockIds: ReadonlySet<number>;
+  searchOpen: () => SearchState | undefined;
+  openSearch: () => void;
+  searchAppend: (chunk: string) => void;
+  searchBackspace: () => void;
+  searchNext: () => void;
+  searchPrev: () => void;
+  searchClose: () => void;
+  copyReviewTop: () => void;
+  copyViewer: () => void;
+  topBlockOfCurrentView: () => HistoryBlock | undefined;
+  toggleTopFold: () => void;
+  viewTopBlock: () => void;
+  paletteOpen: () => boolean;
+  paletteInput: (chunk: string) => void;
+  paletteBackspace: () => void;
+  paletteMove: (delta: number) => void;
+  paletteClose: () => void;
+  paletteRun: () => void;
 }> {
   const { exit } = useApp();
   const [composer, setComposer] = useState<ComposerState>(() =>
@@ -907,6 +1093,54 @@ function useSessionInteraction(
   const [focusedSubagentId, setFocusedSubagentId] = useState<number | undefined>(undefined);
   const focusedSubagentIdRef = useRef(focusedSubagentId);
   focusedSubagentIdRef.current = focusedSubagentId;
+  // Route B review overlay (keyboard scroll over the Static transcript) + search.
+  const [review, setReview] = useState<Readonly<{ offset: number }> | undefined>(undefined);
+  const reviewRef = useRef(review);
+  reviewRef.current = review;
+  const [search, setSearch] = useState<SearchState | undefined>(undefined);
+  const searchRef = useRef(search);
+  searchRef.current = search;
+  // Manual folds (Grok h/l): compact blocks collapse to their title row.
+  const [foldedBlockIds, setFoldedBlockIds] = useState<ReadonlySet<number>>(new Set());
+  const foldedBlockIdsRef = useRef(foldedBlockIds);
+  foldedBlockIdsRef.current = foldedBlockIds;
+  // Command palette (Ctrl+P): searchable slash commands + built-in actions.
+  const [palette, setPalette] = useState<Readonly<{ query: string; index: number }> | undefined>(undefined);
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
+  // Esc layering (grok parity): busy → cancel (draft kept); idle non-empty
+  // draft → double-press within 800ms clears it. A cancel suppresses the arm
+  // for ~1s so mashing Esc to stop a turn can't wipe the draft.
+  const [escArmed, setEscArmed] = useState<"clear-draft" | undefined>(undefined);
+  const escArmedRef = useRef(escArmed);
+  escArmedRef.current = escArmed;
+  const lastCancelAtRef = useRef(0);
+  const escTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pressEsc = (): boolean => {
+    if (busyRef.current) {
+      lastCancelAtRef.current = Date.now();
+      setEscArmed(undefined);
+      props.session.abortTurn();
+      return true;
+    }
+    if (composerRef.current.text.length === 0) {
+      setEscArmed(undefined);
+      return false;
+    }
+    if (escArmedRef.current === "clear-draft") {
+      setComposerState(setComposerText(composerRef.current, "", 0));
+      setEscArmed(undefined);
+      return true;
+    }
+    if (Date.now() - lastCancelAtRef.current < 1_000) {
+      setEscArmed(undefined);
+      return true;
+    }
+    setEscArmed("clear-draft");
+    if (escTimerRef.current) clearTimeout(escTimerRef.current);
+    escTimerRef.current = setTimeout(() => setEscArmed(undefined), 800);
+    return true;
+  };
   /** Last mouse press for double-click detection (same row within DOUBLE_CLICK_MS). */
   const lastPointerDownRef = useRef<{ at: number; row: number; col: number } | undefined>(undefined);
   const scrollbackRef = useRef(scrollback);
@@ -1192,7 +1426,13 @@ function useSessionInteraction(
           : current;
         api.dragActiveRef.current = false;
         if (selectionDragDistance(finalRange) < 1) {
+          // Bare click: no selection — open the block under the pointer
+          // (grok selects the entry; this TUI has no scrollback cursor, so a
+          // click drills straight into the retained output).
           api.clearTextSelection();
+          if (!openTargetAtRow(row)) {
+            api.clearTextSelection();
+          }
           return;
         }
         api.finishTextSelectionCopy(finalRange);
@@ -1237,6 +1477,46 @@ function useSessionInteraction(
     cycleViewer,
     viewerOpen: () => transcriptViewerRef.current !== undefined,
     appendScrollback,
+    rows,
+    searchOpen: () => searchRef.current,
+    openSearch: () => setSearch({ query: "", index: 0, results: [] }),
+    searchAppend: (chunk: string) => applySearchQuery(`${searchRef.current?.query ?? ""}${chunk}`),
+    searchBackspace: () => applySearchQuery((searchRef.current?.query ?? "").slice(0, -1)),
+    searchNext: () => searchStep(1),
+    searchPrev: () => searchStep(-1),
+    searchClose: () => setSearch(undefined),
+    reviewOpen: () => reviewRef.current !== undefined,
+    reviewScroll: (delta) => setReview((current) => ({
+      ...(current ?? { offset: 0 }),
+      offset: Math.max(0, (current?.offset ?? 0) + delta),
+    })),
+    copyReviewTop,
+    copyViewer: () => copyBlock(transcriptViewerRef.current),
+    topBlockOfCurrentView,
+    toggleTopFold,
+    viewTopBlock,
+    paletteOpen: () => paletteRef.current !== undefined,
+    paletteInput: (chunk: string) => setPalette((current) => {
+      const query = `${current?.query ?? ""}${chunk}`;
+      return { query, index: 0 };
+    }),
+    paletteBackspace: () => setPalette((current) => {
+      const query = (current?.query ?? "").slice(0, -1);
+      return { query, index: 0 };
+    }),
+    paletteMove: (delta: number) => setPalette((current) => {
+      if (!current) return current;
+      const entries = paletteEntries();
+      const query = current.query.trim().toLowerCase();
+      const count = entries.filter((entry) =>
+        query.length === 0 || entry.label.toLowerCase().includes(query)).length;
+      if (count === 0) return current;
+      return { ...current, index: (current.index + delta + count) % count };
+    }),
+    paletteClose: () => setPalette(undefined),
+    paletteRun,
+    pressEsc,
+    escArmed,
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
     toggleExpandable: () => {
@@ -1275,6 +1555,107 @@ function useSessionInteraction(
       setView((current) => reduceEvent(current, { kind: "status", key: "queue", text: undefined }));
     },
   }));
+
+  // --- Search + route B review overlay ---
+  const jumpToSearchLine = (lineIndex: number) => {
+    const total = transcriptFlatLines(scrollbackRef.current.blocks).length;
+    const offset = scrollOffsetForLine(total, lineIndex);
+    if (appendScrollback) {
+      setReview({ offset });
+    } else {
+      setScrollOffset(offset);
+    }
+  };
+  const applySearchQuery = (query: string) => {
+    const results = searchTranscriptLines(scrollbackRef.current.blocks, query);
+    setSearch({ query, index: 0, results });
+    if (results.length > 0) jumpToSearchLine(results[0]!);
+  };
+  const searchStep = (direction: 1 | -1) => {
+    const current = searchRef.current;
+    if (!current || current.results.length === 0) return;
+    const count = current.results.length;
+    const index = ((current.index + direction) % count + count) % count;
+    jumpToSearchLine(current.results[index]!);
+    setSearch({ ...current, index });
+  };
+  const copyBlock = (block: HistoryBlock | undefined) => {
+    if (!block) return;
+    const text = blockFullText(block);
+    if (text.trim().length === 0) return;
+    const result = copyTextToClipboard(text);
+    setScrollback((current) => reduceScrollback(current, {
+      kind: "notice",
+      level: result.ok ? undefined : "error",
+      text: result.ok
+        ? `Copied to clipboard (${result.via.join(", ")})`
+        : "Copy failed: no clipboard available",
+    }));
+  };
+  const copyReviewTop = () => {
+    // The window's top row owns the copy; viewport is measured in the overlay,
+    // so find the block by the line the current offset exposes (viewport 1).
+    const blocks = scrollbackRef.current.blocks;
+    const total = transcriptFlatLines(blocks).length;
+    const offset = reviewRef.current?.offset ?? 0;
+    const topIndex = Math.max(0, total - 1 - offset);
+    let cursor = 0;
+    for (const block of blocks) {
+      const count = Math.max(1, block.lines.length);
+      if (topIndex < cursor + count) {
+        copyBlock(block);
+        return;
+      }
+      cursor += count;
+    }
+  };
+  // Block at the top of the current view (fullscreen window or review overlay).
+  const topBlockOfCurrentView = (): HistoryBlock | undefined => {
+    const blocks = scrollbackRef.current.blocks;
+    const total = transcriptFlatLines(blocks).length;
+    const offset = appendScrollback
+      ? (reviewRef.current?.offset ?? 0)
+      : scrollOffset;
+    const topIndex = Math.max(0, total - 1 - offset);
+    let cursor = 0;
+    for (const block of blocks) {
+      const count = Math.max(1, block.lines.length);
+      if (topIndex < cursor + count) return block;
+      cursor += count;
+    }
+    return undefined;
+  };
+  const toggleTopFold = () => {
+    const block = topBlockOfCurrentView();
+    if (!block) return;
+    const compact = block.kind === "tool" || block.kind === "thinking" || block.kind === "subagent";
+    if (!compact) return;
+    setFoldedBlockIds((current) => {
+      const next = new Set(current);
+      if (next.has(block.id)) next.delete(block.id);
+      else next.add(block.id);
+      return next;
+    });
+  };
+  const viewTopBlock = () => {
+    const block = topBlockOfCurrentView();
+    if (block && (block.output?.length ?? 0) > 0) setTranscriptViewer(block);
+  };
+  const paletteEntries = () => {
+    const commands = collectSlashCommands(props.session.host);
+    return commands.map((command) => ({ label: `/${command.name}`, description: command.description }));
+  };
+  const paletteRun = () => {
+    const current = paletteRef.current;
+    if (!current) return;
+    const entries = paletteEntries();
+    const query = current.query.trim().toLowerCase();
+    const filtered = entries.filter((entry) =>
+      query.length === 0 || entry.label.toLowerCase().includes(query));
+    const picked = filtered[Math.min(current.index, filtered.length - 1)];
+    setPalette(undefined);
+    if (picked) void submit(`/${picked.label.slice(1).split(/\s+/)[0]}`);
+  };
   const inputDisplay = composer.queue
     ? `${composer.text}${composer.text ? " " : ""}[queued: ${composer.queue.slice(0, 40)}${composer.queue.length > 40 ? "…" : ""}]`
     : composer.text;
@@ -1291,6 +1672,45 @@ function useSessionInteraction(
     setTranscriptViewer,
     focusedSubagentId,
     setFocusedSubagentId,
+    review,
+    setReview,
+    search,
+    palette,
+    foldedBlockIds,
+    searchOpen: () => searchRef.current,
+    openSearch: () => setSearch({ query: "", index: 0, results: [] }),
+    searchAppend: (chunk: string) => applySearchQuery(`${searchRef.current?.query ?? ""}${chunk}`),
+    searchBackspace: () => applySearchQuery((searchRef.current?.query ?? "").slice(0, -1)),
+    searchNext: () => searchStep(1),
+    searchPrev: () => searchStep(-1),
+    searchClose: () => setSearch(undefined),
+    copyReviewTop,
+    copyViewer: () => copyBlock(transcriptViewerRef.current),
+    topBlockOfCurrentView,
+    toggleTopFold,
+    viewTopBlock,
+    paletteOpen: () => paletteRef.current !== undefined,
+    paletteInput: (chunk: string) => setPalette((current) => {
+      const query = `${current?.query ?? ""}${chunk}`;
+      return { query, index: 0 };
+    }),
+    paletteBackspace: () => setPalette((current) => {
+      const query = (current?.query ?? "").slice(0, -1);
+      return { query, index: 0 };
+    }),
+    paletteMove: (delta: number) => setPalette((current) => {
+      if (!current) return current;
+      const entries = paletteEntries();
+      const query = current.query.trim().toLowerCase();
+      const count = entries.filter((entry) =>
+        query.length === 0 || entry.label.toLowerCase().includes(query)).length;
+      if (count === 0) return current;
+      return { ...current, index: (current.index + delta + count) % count };
+    }),
+    paletteClose: () => setPalette(undefined),
+    paletteRun,
+    pressEsc,
+    escArmed,
   };
 }
 
@@ -1317,6 +1737,8 @@ function handleInput(options: Readonly<{
     downArrow?: boolean;
     pageUp?: boolean;
     pageDown?: boolean;
+    home?: boolean;
+    end?: boolean;
     tab?: boolean;
   }>;
   composer: ComposerState;
@@ -1354,6 +1776,35 @@ function handleInput(options: Readonly<{
   /** Returns true when an in-app text selection was cleared. */
   clearTextSelection?: () => boolean;
   clearQueued: () => void;
+  /** Terminal height for page-sized scroll steps (Ctrl+U/D). */
+  rows: number;
+  /** Active transcript search, if any. */
+  searchOpen?: () => SearchState | undefined;
+  openSearch?: () => void;
+  searchAppend?: (chunk: string) => void;
+  searchBackspace?: () => void;
+  searchNext?: () => void;
+  searchPrev?: () => void;
+  searchClose?: () => void;
+  /** Route B review overlay is open (consumes scroll keys + `y`). */
+  reviewOpen?: () => boolean;
+  reviewScroll?: (delta: number) => void;
+  copyReviewTop?: () => void;
+  copyViewer?: () => void;
+  /** Block at the top of the current view (fold / view targets). */
+  topBlockOfCurrentView?: () => HistoryBlock | undefined;
+  toggleTopFold?: () => void;
+  viewTopBlock?: () => void;
+  /** Esc layering: cancel turn / double-press clear draft. Returns handled. */
+  pressEsc: () => boolean;
+  /** Esc arm state for the composer hint. */
+  escArmed: "clear-draft" | undefined;
+  paletteOpen?: () => boolean;
+  paletteInput?: (chunk: string) => void;
+  paletteBackspace?: () => void;
+  paletteMove?: (delta: number) => void;
+  paletteClose?: () => void;
+  paletteRun?: () => void;
 }>): void {
   if (options.interaction === "confirm") {
     handleConfirmInput(options);
@@ -1372,6 +1823,97 @@ function handleInput(options: Readonly<{
     else void options.close(0);
     return;
   }
+  // Command palette (Ctrl+P): while open it owns typing, navigation and Enter.
+  if (options.paletteOpen?.()) {
+    if (options.key.escape) {
+      options.paletteClose?.();
+      return;
+    }
+    if (options.key.return) {
+      options.paletteRun?.();
+      return;
+    }
+    if (options.key.upArrow) {
+      options.paletteMove?.(-1);
+      return;
+    }
+    if (options.key.downArrow) {
+      options.paletteMove?.(1);
+      return;
+    }
+    if (options.key.backspace && !options.key.meta) {
+      options.paletteBackspace?.();
+      return;
+    }
+    if (!options.key.ctrl && !options.key.meta && options.character.length > 0) {
+      options.paletteInput?.(options.character);
+      return;
+    }
+    return;
+  }
+  // Search-in-transcript: while open it swallows typing (query input) and
+  // navigation keys; Esc closes search first, then the review overlay.
+  const searchState = options.searchOpen?.();
+  if (searchState) {
+    if (options.key.escape) {
+      options.searchClose?.();
+      return;
+    }
+    if (options.key.return || options.key.downArrow) {
+      options.searchNext?.();
+      return;
+    }
+    if (options.key.upArrow) {
+      options.searchPrev?.();
+      return;
+    }
+    if (options.key.ctrl && options.character === "f") {
+      options.searchClose?.();
+      return;
+    }
+    if (options.key.backspace && !options.key.meta) {
+      options.searchBackspace?.();
+      return;
+    }
+    if (!options.key.ctrl && !options.key.meta && options.character.length > 0) {
+      options.searchAppend?.(options.character);
+      return;
+    }
+    return;
+  }
+  // Ctrl+F toggles search; `y` copies while the review overlay or the Ctrl+O
+  // transcript viewer is open (never a bare keystroke otherwise).
+  if (options.key.ctrl && options.character === "f") {
+    options.openSearch?.();
+    return;
+  }
+  // Ctrl+P command palette, Ctrl+T model switch (Ctrl+M is Return on most
+  // terminals without the Kitty keyboard protocol, so grok's binding is not
+  // reachable here).
+  if (options.key.ctrl && options.character === "p") {
+    options.paletteOpen?.() ? options.paletteClose?.() : options.paletteInput?.("");
+    return;
+  }
+  if (options.key.ctrl && options.character === "t" && !options.busy) {
+    void options.submit("/model");
+    return;
+  }
+  // Fold / unfold the block at the top of the current view (Ctrl+R — grok's
+  // h/l need a scrollback focus that this TUI does not have).
+  if (options.key.ctrl && options.character === "r") {
+    options.toggleTopFold?.();
+    return;
+  }
+  if (options.character === "y" && !options.key.ctrl && !options.key.meta) {
+    if (options.reviewOpen?.()) {
+      options.copyReviewTop?.();
+      return;
+    }
+    if (options.viewerOpen?.()) {
+      options.copyViewer?.();
+      return;
+    }
+  }
   if (options.key.ctrl && options.character === "o") {
     options.toggleExpandable();
     return;
@@ -1383,6 +1925,11 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.escape && options.clearTextSelection?.()) {
+    return;
+  }
+  // Esc layering after overlays: busy → cancel (draft kept); idle non-empty
+  // draft → double-press clears it (see pressEsc in the interaction hook).
+  if (options.key.escape && options.pressEsc?.()) {
     return;
   }
 
@@ -1478,8 +2025,27 @@ function handleInput(options: Readonly<{
     }
   }
 
+  // Route B: the terminal owns the Static scrollback, so PgUp/PgDn and the
+  // Grok line/half-page chords open the in-app review overlay (first press
+  // scrolls it too). Fullscreen already binds the same keys to its window.
+  if (options.appendScrollback) {
+    const halfPage = Math.max(4, Math.floor(options.rows / 2));
+    let step = 0;
+    if (options.key.pageUp) step = 20;
+    else if (options.key.pageDown) step = -20;
+    else if (options.key.ctrl && options.character === "j") step = 1;
+    else if (options.key.ctrl && options.character === "k") step = -1;
+    else if (options.key.ctrl && options.character === "u" && options.composer.text.length === 0) step = halfPage;
+    else if (options.key.ctrl && options.character === "d") step = -halfPage;
+    if (step !== 0) {
+      options.reviewScroll?.(step);
+      return;
+    }
+  }
+
   // Route A only: self-managed transcript scroll. Route B: composer history + cursor.
   if (!options.appendScrollback) {
+    const halfPage = Math.max(4, Math.floor(options.rows / 2));
     if (options.key.pageUp) {
       options.scrollTranscript(20);
       return;
@@ -1504,6 +2070,24 @@ function handleInput(options: Readonly<{
       options.scrollTranscript(-100_000);
       return;
     }
+    // Grok parity: Ctrl+J/K line scroll, Ctrl+U/D half-page (Ctrl+U only when
+    // the draft is empty — with text it is the readline kill-to-cursor below).
+    if (options.key.ctrl && options.character === "j") {
+      options.scrollTranscript(1);
+      return;
+    }
+    if (options.key.ctrl && options.character === "k") {
+      options.scrollTranscript(-1);
+      return;
+    }
+    if (options.key.ctrl && options.character === "u" && options.composer.text.length === 0) {
+      options.scrollTranscript(halfPage);
+      return;
+    }
+    if (options.key.ctrl && options.character === "d") {
+      options.scrollTranscript(-halfPage);
+      return;
+    }
   } else {
     const multilineDraft = options.composer.text.includes("\n");
     if (options.key.upArrow && multilineDraft) {
@@ -1526,11 +2110,46 @@ function handleInput(options: Readonly<{
   }
 
   if (options.key.leftArrow) {
-    options.setComposerState(moveCursor(options.composer, -1));
+    if (options.key.ctrl || options.key.meta) {
+      options.setComposerState(moveCursorWord(options.composer, -1));
+    } else {
+      options.setComposerState(moveCursor(options.composer, -1));
+    }
     return;
   }
   if (options.key.rightArrow) {
-    options.setComposerState(moveCursor(options.composer, 1));
+    if (options.key.ctrl || options.key.meta) {
+      options.setComposerState(moveCursorWord(options.composer, 1));
+    } else {
+      options.setComposerState(moveCursor(options.composer, 1));
+    }
+    return;
+  }
+
+  // Line start/end (Home/End, Ctrl+A/E — readline/Emacs).
+  if (options.key.home || (options.key.ctrl && options.character === "a")) {
+    options.setComposerState(moveCursorTo(options.composer, 0));
+    return;
+  }
+  if (options.key.end || (options.key.ctrl && options.character === "e")) {
+    options.setComposerState(moveCursorTo(options.composer, options.composer.text.length));
+    return;
+  }
+  // Word moves / kills (Emacs alt bindings, macOS Option+arrows).
+  if (options.key.meta && options.character === "b") {
+    options.setComposerState(moveCursorWord(options.composer, -1));
+    return;
+  }
+  if (options.key.meta && options.character === "f") {
+    options.setComposerState(moveCursorWord(options.composer, 1));
+    return;
+  }
+  if (options.key.meta && options.character === "d") {
+    options.setComposerState(deleteWordForward(options.composer));
+    return;
+  }
+  if (options.key.meta && options.key.backspace) {
+    options.setComposerState(deleteWordBackward(options.composer));
     return;
   }
 
@@ -1566,8 +2185,10 @@ function handleInput(options: Readonly<{
     options.setComposerState(deleteBackward(options.composer));
     return;
   }
+  // Ctrl+U: readline kill-to-cursor. With an empty draft it scrolls a half page
+  // up in fullscreen (handled above); here it always has text to kill.
   if (options.key.ctrl && options.character === "u") {
-    options.setInputValue("");
+    options.setComposerState(killToCursor(options.composer));
     return;
   }
   // Ignore pure mouse-SGR chunks (trackpad/wheel) so they never append to the prompt.
@@ -2250,6 +2871,8 @@ function FooterHints(props: Readonly<{
   explore?: string;
   workspace?: string;
   mcp?: string;
+  /** Completed user turns (grok status-bar parity). */
+  turn?: number;
 }>): React.JSX.Element {
   const elevated = props.bypass || !isDefaultPermissionMode(props.permissionMode);
   const modeLabel = props.bypass
@@ -2260,6 +2883,7 @@ function FooterHints(props: Readonly<{
   const exploreLabel = props.explore ? formatExploreFooter(props.explore) : undefined;
   const workspaceLabel = formatWorkspaceFooter(props.workspace);
   const mcpLabel = formatMcpFooter(props.mcp);
+  const turnLabel = props.turn !== undefined && props.turn > 0 ? `turn ${props.turn}` : undefined;
 
   const rightParts = [workspaceLabel, mcpLabel].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
@@ -2281,6 +2905,9 @@ function FooterHints(props: Readonly<{
       h(Text, { dimColor: true }, ` ${theme.sym.meta} ${path}`),
       contextLabel
         ? h(Text, { dimColor: true }, ` ${theme.sym.meta} ${contextLabel}`)
+        : null,
+      turnLabel
+        ? h(Text, { dimColor: true }, ` ${theme.sym.meta} ${turnLabel}`)
         : null,
       exploreLabel
         ? h(Text, { dimColor: true }, ` ${theme.sym.meta} ${exploreLabel}`)
@@ -2382,6 +3009,49 @@ function FileMenu(props: Readonly<{
     }),
     h(Text, { dimColor: true },
       `(${props.selected + 1}/${props.items.length}) ↑↓ · Tab/Enter insert · Esc`));
+}
+
+/**
+ * Command palette (Ctrl+P): searchable slash commands + built-in actions.
+ * Filtering is substring on the label; Enter runs the picked command through
+ * the same path as typing it.
+ */
+function CommandPalette(props: Readonly<{
+  query: string;
+  selected: number;
+  entries: readonly SlashCommand[];
+}>): React.JSX.Element {
+  const needle = props.query.trim().toLowerCase();
+  const filtered = props.entries.filter((entry) =>
+    needle.length === 0 || `/${entry.name}`.toLowerCase().includes(needle));
+  if (filtered.length === 0) {
+    return h(Box, { flexDirection: "column", marginTop: 1 },
+      h(Text, { color: theme.accent, bold: true }, `/${props.query}`),
+      h(Text, { dimColor: true }, "No matching commands · esc close"));
+  }
+  const safeIndex = Math.min(props.selected, filtered.length - 1);
+  const start = Math.min(
+    Math.max(0, safeIndex - SLASH_MENU_VISIBLE + 1),
+    Math.max(0, filtered.length - SLASH_MENU_VISIBLE),
+  );
+  const visible = filtered.slice(start, start + SLASH_MENU_VISIBLE);
+  return h(Box, { flexDirection: "column", marginTop: 1 },
+    h(Text, { color: theme.accent, bold: true }, `/${props.query}`),
+    ...visible.map((item, index) => {
+      const absolute = start + index;
+      const active = absolute === safeIndex;
+      const nameCol = padSlashName(item.name);
+      const label = item.description ? `${nameCol}  ${item.description}` : nameCol;
+      const marker = active ? `${theme.sym.select} ` : "  ";
+      return h(Text, {
+        key: item.name,
+        color: active ? theme.accent : undefined,
+        dimColor: !active,
+        wrap: "truncate-end",
+      }, `${marker}${label}`);
+    }),
+    h(Text, { dimColor: true },
+      `(${safeIndex + 1}/${filtered.length}) ↑↓ · Enter · esc close`));
 }
 
 /** Exported for unit tests. */
