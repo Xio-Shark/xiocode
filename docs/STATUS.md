@@ -1,6 +1,6 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-07-26** (v1.1.1; **Route B Phase 1 code complete** — cost table wired, dangerous-command layer, `xio doctor` / `xio feedback`, first-run onboarding, provider error guidance, Route B default + live line cap, real-Ink bench axis; CI workflow — typecheck + vitest + build on push/PR; **07-22-tui-interaction-polish in progress** — P1–P4 streaming tools / spill / session-end retrospective; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
+> Single delivery snapshot. Updated **2026-08-03** (v1.1.2; **audit-2026-07-31 fixes landed** — fullscreen line-granular scroll window reserves hint rows so tall reports no longer drop a line mid-scroll; compact-subagent test de-flaked with polled frame wait; `npm run release:patch|minor|major` bumps + tags + syncs README version pins; missing `v1.1.1`/`v1.1.2` tags backfilled; **Route B Phase 1 code complete** — cost table wired, dangerous-command layer, `xio doctor` / `xio feedback`, first-run onboarding, provider error guidance, Route B default + live line cap, real-Ink bench axis; CI workflow — typecheck + vitest + build on push/PR; **07-22-tui-interaction-polish in progress** — P1–P4 streaming tools / spill / session-end retrospective; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
 > Active plan: [ROUTE-B-PRODUCT-PLAN.md](./ROUTE-B-PRODUCT-PLAN.md) (Phase 1 done; Phase 2 = users, not code).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md). Self-improve loop: [self-improve.md](./self-improve.md).
 > Boards (internal Trellis workflow; not part of the published tree): performance · audit · runtime events.
@@ -40,7 +40,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 
 ## Shipping
 
-- Self-owned TypeScript runtime (`src/runtime`); package version **1.1.1**; GitHub Actions CI (`.github/workflows/ci.yml`: `npm ci` → typecheck → vitest → build)
+- Self-owned TypeScript runtime (`src/runtime`); package version **1.1.2**; GitHub Actions CI (`.github/workflows/ci.yml`: `npm ci` → typecheck → vitest → build); releases via `npm run release:patch|minor|major` — bumps `package.json`, syncs README version badge + pinned-install example (`scripts/sync-version.mjs`), commits and tags `vX.Y.Z`
 - CLI + TOML config (`providers`, `worktree`, extension on/off); `curl | bash` installer + slim npm payload (`files` excludes tests/docs/scripts); **`prepack` runs `npm run check` then payload existence checks**
 - **Performance suite (Trellis 07-15) — 8/8 archived** (see board):
   - **Observability (archived)**: trusted fixtures (reducer/coalescer + SessionStore WAL + runs mirror); `xio bench run --all --json` → `~/.xiocode/perf/`. Explore mock labeled; real-provider explore opt-in only.
