@@ -23,6 +23,7 @@ import {
 } from "./search-backend.ts";
 
 import type { ToolDefinition } from "../types.ts";
+import { buildChildEnv } from "../secret-environment.ts";
 
 export type BuiltinToolsOptions = Readonly<{
   cwd?: string;
@@ -74,6 +75,11 @@ export type BuiltinToolsOptions = Readonly<{
   contextId?: string;
   /** Called once when a write shifts a file another context had read. */
   onFileShift?: (info: FileShiftInfo) => void;
+  /**
+   * Explicit env for bash children. When omitted, uses the scrubbed base allowlist
+   * from process.env (never full inheritance).
+   */
+  childEnv?: NodeJS.ProcessEnv;
 }>;
 
 export {
@@ -103,11 +109,12 @@ export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly 
   const pathPolicy = options.pathPolicy
     ? Promise.resolve(options.pathPolicy)
     : WorkspacePathPolicy.create({ workspaceRoot, cwd });
+  const childEnv = options.childEnv ?? buildChildEnv(process.env);
   return [
     createReadTool(cwd, pathPolicy, readSet, fileShift, contextId),
     createWriteTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
     createEditTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
-    createBashTool(cwd),
+    createBashTool(cwd, childEnv),
     createGrepTool(cwd, pathPolicy, searchOverride, grepOutline ? grepSeen : undefined),
     createGlobTool(cwd, pathPolicy, searchOverride),
   ];
@@ -436,7 +443,7 @@ function applyUnifiedPatch(content: string, patchText: string): PatchApplyResult
   return { ok: true, next: result };
 }
 
-function createBashTool(cwd: string): ToolDefinition {
+function createBashTool(cwd: string, childEnv: NodeJS.ProcessEnv): ToolDefinition {
   return defineTool({
     name: "bash",
     description: "Run a shell command in the workspace.",
@@ -445,7 +452,7 @@ function createBashTool(cwd: string): ToolDefinition {
     }),
     async execute(_id, params, ctx) {
       const command = String(params.command ?? "");
-      const result = await runCommand(command, cwd, ctx?.signal);
+      const result = await runCommand(command, cwd, ctx?.signal, childEnv);
       const body = `exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
       if (result.exitCode !== 0) {
         return errorResult("bash", body);
@@ -680,12 +687,14 @@ async function runCommand(
   command: string,
   cwd: string,
   signal?: AbortSignal,
+  env?: NodeJS.ProcessEnv,
 ): Promise<CommandResult> {
   if (signal?.aborted) {
     return { exitCode: 1, stdout: "", stderr: "bash cancelled: AbortSignal aborted before start" };
   }
   return runArgv("/bin/sh", ["-c", command], cwd, signal, {
     abortedMessage: "bash cancelled: AbortSignal aborted",
+    env,
   });
 }
 
@@ -694,10 +703,13 @@ async function runArgv(
   args: readonly string[],
   cwd: string,
   signal?: AbortSignal,
-  options?: Readonly<{ abortedMessage?: string }>,
+  options?: Readonly<{ abortedMessage?: string; env?: NodeJS.ProcessEnv }>,
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, [...args], { cwd });
+    const child = spawn(command, [...args], {
+      cwd,
+      env: options?.env ?? buildChildEnv(process.env),
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;

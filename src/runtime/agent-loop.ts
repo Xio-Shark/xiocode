@@ -54,6 +54,13 @@ export type AgentLoopOptions = Readonly<{
   systemPrompt?: string;
   maxTurns?: number;
   doneContract?: DoneContract;
+  /** Scrubbed env for done-contract verifier children. */
+  doneContractEnv?: NodeJS.ProcessEnv;
+  /**
+   * Immutable projection for provider-bound messages (value-level secret redaction).
+   * SessionHistory / WAL keep raw messages; only the outbound clone is redacted.
+   */
+  redactOutbound?: <T>(value: T) => T;
   /** Extra turns allowed after a failed done contract to attempt fixes. Default 3. */
   verifyRepairTurns?: number;
   /**
@@ -413,7 +420,9 @@ async function runSegments(
   if (primary.cancelled || !options.doneContract) {
     return primary;
   }
-  const firstCheck = await runDoneContract(options.doneContract);
+  const firstCheck = await runDoneContract(options.doneContract, {
+    env: options.doneContractEnv,
+  });
   const repairBudget = Math.min(budget.repairTurns, budget.maxTurns - primary.turns);
   if (firstCheck.passed || repairBudget <= 0) {
     return { ...primary, doneContract: firstCheck };
@@ -430,7 +439,9 @@ async function runSegments(
     usages: [...primary.usages, ...repair.usages],
     cancelled: repair.cancelled,
     toolResults: budget.toolCollector.results,
-    doneContract: repair.cancelled ? firstCheck : await runDoneContract(options.doneContract),
+    doneContract: repair.cancelled
+      ? firstCheck
+      : await runDoneContract(options.doneContract, { env: options.doneContractEnv }),
   };
 }
 
@@ -692,9 +703,12 @@ async function requestCompletion(
       ? request.toolChoiceScope
       : toolChoiceScope) as ProviderToolChoiceScope | undefined;
 
+    const outboundMessages = options.redactOutbound
+      ? options.redactOutbound(requestMessages)
+      : requestMessages;
     const completionRequest = {
       model: requestedModel,
-      messages: requestMessages,
+      messages: outboundMessages,
       tools: requestTools,
       parallelToolCalls,
       thinkingLevel: options.host.getThinkingLevel(),

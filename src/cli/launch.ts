@@ -6,9 +6,8 @@ import { git, gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
-import { setupProviderEnv } from "./env-setup.ts";
-import { applyCredentialsToEnv } from "./credentials.ts";
 import { XIO_VERSION } from "./version.ts";
+import { SecretEnvironment } from "../runtime/secret-environment.ts";
 
 import type { WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import type { SessionStartPayload } from "../runtime/types.ts";
@@ -21,6 +20,8 @@ export type LaunchPlan = Readonly<{
   runtimeConfig: XioRuntimeConfig;
   runtimeConfigPath: string;
   env: NodeJS.ProcessEnv;
+  /** Session-scoped secrets; never written into env / child process.env. */
+  secretEnvironment: SecretEnvironment;
   cwd: string;
   mainRoot: string;
   worktree?: WorktreeSession;
@@ -94,8 +95,11 @@ export async function prepareLaunch(
   await mkdir(configRoot, { recursive: true });
   await mkdir(expandHome(parsed.xio.general.runRoot), { recursive: true });
   await writeJson(runtimeConfigPath, workspace.runtimeConfig);
-  await applyCredentialsToEnv(env, parsed.xio.providers);
-  setupProviderEnv(parsed.xio.providers, env);
+  // Credentials load into a session store — do not mutate the shared process.env.
+  const secretEnvironment = await SecretEnvironment.create({
+    env,
+    providers: parsed.xio.providers,
+  });
 
   return {
     runtimeConfig: workspace.runtimeConfig,
@@ -105,6 +109,7 @@ export async function prepareLaunch(
     worktree: workspace.worktree,
     runtimeExtensionEnabled: options.runtimeExtensionEnabled !== false,
     sessionStart: { provenance: { ...sourceProvenance, workspace_root: workspace.cwd } },
+    secretEnvironment,
     env: {
       ...env,
       XIO_RUNTIME_CONFIG: runtimeConfigPath,

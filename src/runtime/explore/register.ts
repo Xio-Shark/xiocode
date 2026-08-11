@@ -44,6 +44,8 @@ export type RegisterExploreOptions = Readonly<{
   cwd: string;
   workspaceRoot: string;
   env?: NodeJS.ProcessEnv;
+  secretEnvironment?: import("../secret-environment.ts").SecretEnvironment;
+  childEnv?: NodeJS.ProcessEnv;
   onNotify?: (message: string) => void;
   onStatus?: (key: string, text: string | undefined) => void;
   /** Shared session perception map for explore workers (read-only tools). */
@@ -152,6 +154,8 @@ export async function registerExploreCapability(
         workspaceRoot: options.workspaceRoot,
         getProvider: (name) => host.getProvider(name),
         env: options.env,
+        secretEnvironment: options.secretEnvironment,
+        childEnv: options.childEnv,
         onNotify: options.onNotify,
         onStatus: options.onStatus,
         getThinkingLevel: () => host.getThinkingLevel(),

@@ -117,10 +117,17 @@ export function comparisonCompatibilityErrors(
   return errors;
 }
 
-export function compactLogs(stdout: string, stderr: string): readonly string[] {
+export function compactLogs(
+  stdout: string,
+  stderr: string,
+  knownSecret?: string,
+): readonly string[] {
   const limit = 16_000;
+  const redactor = knownSecret && knownSecret.length >= 8
+    ? new SecretRedactor({ knownValues: [knownSecret] })
+    : LOG_REDACTOR;
   return [stdout, stderr].filter((value) => value.trim()).map((value) => {
-    const redacted = String(LOG_REDACTOR.redact(value));
+    const redacted = String(redactor.redact(value));
     return redacted.length <= limit
       ? redacted
       : `${redacted.slice(0, limit)}\n...[truncated by trusted evaluator]`;

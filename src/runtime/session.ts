@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 
-import { applyCredentialsToEnv } from "../cli/credentials.ts";
 import { ExtensionHost } from "./extension-host.ts";
-import { createLlmClient, resolveApiKey } from "./providers/client.ts";
+import { createLlmClient } from "./providers/client.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
 import { registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
@@ -62,6 +61,7 @@ import {
   HarnessController,
   type HarnessPhase,
 } from "./harness/admission.ts";
+import { SecretEnvironment } from "./secret-environment.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ContextCompactionResult } from "./context-compaction.ts";
@@ -99,6 +99,8 @@ export type SessionOptions = Readonly<{
    */
   projectTrust?: ProjectTrustState;
   env?: NodeJS.ProcessEnv;
+  /** Session-scoped secrets; created from env+credentials when omitted. */
+  secretEnvironment?: SecretEnvironment;
   ask?: (question: string) => Promise<boolean>;
   interactive?: InteractiveIO;
   maxTurns?: number;
@@ -187,7 +189,14 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = options.workspaceRoot ?? cwd;
   const env = options.env ?? process.env;
-  await applyCredentialsToEnv(env, options.runtimeConfig.providers);
+  const secretEnvironment = options.secretEnvironment
+    ?? await SecretEnvironment.create({
+      env,
+      providers: options.runtimeConfig.providers,
+    });
+  const childEnv = secretEnvironment.buildChildEnv(env, {
+    extraNames: options.runtimeConfig.tools?.childEnv ?? [],
+  });
   const model = options.model ?? resolveDefaultModel(options.runtimeConfig);
   const verify = options.runtimeConfig.verify ?? { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] };
   const ask = options.ask ?? defaultAsk;
@@ -203,6 +212,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     ?? createRuntimeEventEmitter({
       sessionId: sessionEventId,
       runId: runEventId,
+      redactValue: (payload) => secretEnvironment.redactProjection(payload),
       onSubscriberError: ({ event, phase, error }) => {
         const message = error instanceof Error ? error.message : String(error);
         sink.notify?.(`runtime-event subscriber failed (${phase}) on ${event}: ${message}`, "warn");
@@ -270,6 +280,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     fileShift,
     requireReadBeforeEdit,
     pathPolicy,
+    childEnv,
+    secretEnvironment,
   });
 
   let currentModel = model;
@@ -284,7 +296,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   let client: LlmClient | undefined = options.llmClient;
   const getOrCreateClient = (): LlmClient => {
     if (client) return client;
-    const created = createSessionClient({ host, model: currentModel, env });
+    const created = createSessionClient({ host, model: currentModel, secretEnvironment });
     client = created.client;
     registration = created.registration;
     return client;
@@ -293,7 +305,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     if (client) return `${currentModel.provider}/${currentModel.id}`;
     try {
       // Project only availability; never emit or retain the resolved secret.
-      resolveApiKey(registration, env);
+      secretEnvironment.resolveProvider(registration);
       return `${currentModel.provider}/${currentModel.id}`;
     } catch {
       return "not connected · /connect";
@@ -396,7 +408,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     onThinkingLevelChanged,
   };
   const setModel = async (next: ModelInfo) => {
-    const created = createSessionClient({ host, model: next, env });
+    const created = createSessionClient({ host, model: next, secretEnvironment });
     currentModel = next;
     client = created.client;
     registration = created.registration;
@@ -415,6 +427,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     interactive,
     runtimeConfig: options.runtimeConfig,
     env,
+    secretEnvironment,
     sink,
     getModel,
     setModel,
@@ -509,7 +522,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
           try {
             const identity = resolveFailureDraftIdentity();
             const reg = host.getProvider(identity.provider) ?? registration;
-            return resolveApiKey(reg, env);
+            return secretEnvironment.resolveProvider(reg);
           } catch {
             return undefined;
           }
@@ -548,6 +561,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         contextWindow: modelCfg?.contextWindow,
       });
     },
+    redactOutbound: (value) => secretEnvironment.redactProjection(value),
     onUiEvent: (event) => sink.onContextCompaction?.(event),
     onRuntimeEvent: async (event) => {
       try {
@@ -629,6 +643,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
       repeatToolLimit: options.runtimeConfig.general.repeatToolLimit,
       doneContract: toDoneContract(verify),
+      doneContractEnv: childEnv,
+      redactOutbound: (value) => secretEnvironment.redactProjection(value),
       verify,
       getParallelToolCalls: () => parallelToolCalls,
       maxSessionMessages,
@@ -716,6 +732,9 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         }
         await history.persist();
       },
+      onClosed: () => {
+        secretEnvironment.dispose();
+      },
     }),
     abortTurn: () => {
       turnAbort?.abort();
@@ -797,6 +816,8 @@ async function createConfiguredHost(input: Readonly<{
   fileShift?: FileShiftRegistry;
   requireReadBeforeEdit?: boolean;
   pathPolicy?: WorkspacePathPolicy;
+  childEnv: NodeJS.ProcessEnv;
+  secretEnvironment: SecretEnvironment;
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
@@ -821,6 +842,7 @@ async function createConfiguredHost(input: Readonly<{
     contextId: "main",
     onFileShift: (info) => emitFileShift(info, input.runtimeEvents, input.sink),
     requireReadBeforeEdit: input.requireReadBeforeEdit,
+    childEnv: input.childEnv,
   })) {
     host.registerTool(tool);
   }
@@ -842,6 +864,8 @@ async function createConfiguredHost(input: Readonly<{
     cwd: input.cwd,
     workspaceRoot: input.workspaceRoot,
     env: input.options.env,
+    secretEnvironment: input.secretEnvironment,
+    childEnv: input.childEnv,
     onNotify: (message) => input.sink.notify?.(message, "info"),
     onStatus: (key, text) => input.sink.setStatus?.(key, text),
     workspacePerception: input.workspacePerception,
@@ -917,12 +941,12 @@ function emitFileShift(
 function createSessionClient(input: Readonly<{
   host: ExtensionHost;
   model: ModelInfo;
-  env: NodeJS.ProcessEnv;
+  secretEnvironment: SecretEnvironment;
 }>): { client: LlmClient; registration: ProviderRegistration } {
   const registration = requireSessionRegistration(input.host, input.model);
   const client = createLlmClient({
     registration,
-    apiKey: resolveApiKey(registration, input.env),
+    apiKey: input.secretEnvironment.resolveProvider(registration),
   });
   return { client, registration };
 }

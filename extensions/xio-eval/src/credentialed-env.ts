@@ -3,46 +3,18 @@ import os from "node:os";
 import path from "node:path";
 
 import { expandHome, parseXioConfig } from "../../../src/cli/config-parser.ts";
-
-import { applyCredentialsToEnv } from "../../../src/cli/credentials.ts";
-import { setupProviderEnv, targetApiKeyEnv } from "../../../src/cli/env-setup.ts";
+import { targetApiKeyEnv } from "../../../src/cli/env-setup.ts";
+import {
+  SecretEnvironment,
+  buildChildEnv,
+  NETWORK_TLS_ENV_NAMES,
+} from "../../../src/runtime/secret-environment.ts";
 import {
   pinModelInConfig,
   resolvePinnedIdentity,
 } from "./eval-identity.ts";
 
 import type { PinnedEvalIdentity } from "./eval-identity.ts";
-
-const PASSTHROUGH_ENV = new Set([
-  "PATH",
-  "PATHEXT",
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-  "LANG",
-  "LC_ALL",
-  "LC_CTYPE",
-  "TERM",
-  "COLORTERM",
-  "NO_COLOR",
-  "FORCE_COLOR",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "REQUESTS_CA_BUNDLE",
-  "XIO_HOME",
-  "XIO_CONFIG",
-  "XIO_EVAL_ROOT",
-  "XIO_EVAL_PRICE_TABLE",
-  "SystemRoot",
-  "ComSpec",
-  "PROCESSOR_ARCHITECTURE",
-]);
 
 export type CredentialedEvalSetup = Readonly<{
   identity: PinnedEvalIdentity;
@@ -75,14 +47,15 @@ export function buildChildEnvAllowlist(
   apiKeyEnv: string,
   apiKeyValue: string,
 ): NodeJS.ProcessEnv {
-  const child: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(parent)) {
-    if (value === undefined) continue;
-    if (PASSTHROUGH_ENV.has(key) || key.startsWith("npm_") || key.startsWith("NPM_")) {
-      child[key] = value;
-    }
-  }
-  child[apiKeyEnv] = apiKeyValue;
+  const child = buildChildEnv(parent, {
+    includeNetworkTls: true,
+    extraNames: [...NETWORK_TLS_ENV_NAMES, "XIO_EVAL_ROOT", "XIO_EVAL_PRICE_TABLE"],
+    overrides: {
+      [apiKeyEnv]: apiKeyValue,
+    },
+    // Selected key is an intentional override — do not reject it as a known secret.
+    rejectKnownSecrets: false,
+  });
   return child;
 }
 
@@ -110,12 +83,15 @@ async function resolveSelectedProviderSecret(
   if (!provider) {
     throw new Error(`provider ${JSON.stringify(identity.provider)} missing after pin`);
   }
-  const scratch: NodeJS.ProcessEnv = { ...env };
-  await applyCredentialsToEnv(scratch, parsed.xio.providers);
-  setupProviderEnv(parsed.xio.providers, scratch);
+  const store = await SecretEnvironment.create({
+    env,
+    providers: parsed.xio.providers,
+  });
   const sourceEnv = provider.apiKeyEnv ?? targetApiKeyEnv(provider);
   const targetEnv = targetApiKeyEnv(provider);
-  const value = scratch[identity.api_key_env] ?? scratch[sourceEnv] ?? scratch[targetEnv];
+  const value = store.resolveExplicitReference(identity.api_key_env)
+    ?? store.resolveExplicitReference(sourceEnv)
+    ?? store.resolveExplicitReference(targetEnv);
   if (!value || value.length === 0) {
     throw new Error(
       `missing credential for provider ${identity.provider} `

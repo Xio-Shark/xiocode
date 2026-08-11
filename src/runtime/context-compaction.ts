@@ -106,6 +106,7 @@ export class ContextCompactionController {
   readonly #getMaxTokens?: () => number | undefined;
   readonly #onUiEvent?: (event: ContextCompactionUiEvent) => void;
   readonly #onRuntimeEvent?: (event: ContextCompactionUiEvent) => Promise<void> | void;
+  readonly #redactOutbound?: <T>(value: T) => T;
   #running = false;
 
   constructor(options: Readonly<{
@@ -118,6 +119,7 @@ export class ContextCompactionController {
     getMaxTokens?: () => number | undefined;
     onUiEvent?: (event: ContextCompactionUiEvent) => void;
     onRuntimeEvent?: (event: ContextCompactionUiEvent) => Promise<void> | void;
+    redactOutbound?: <T>(value: T) => T;
   }>) {
     assertMaxSessionMessages(options.maxMessages);
     this.#history = options.history;
@@ -128,6 +130,7 @@ export class ContextCompactionController {
     this.#getMaxTokens = options.getMaxTokens;
     this.#onUiEvent = options.onUiEvent;
     this.#onRuntimeEvent = options.onRuntimeEvent;
+    this.#redactOutbound = options.redactOutbound;
   }
 
   needsAutomaticCompaction(incomingMessages = 2, incomingTokenEstimate = 256): boolean {
@@ -156,6 +159,7 @@ export class ContextCompactionController {
         maxTokens: this.#getMaxTokens?.() ?? this.#maxTokens,
         focus,
         signal,
+        redactOutbound: this.#redactOutbound,
       });
       if (result.compacted) {
         await this.#history.replace(result.messages, result.fact ? { compaction: result.fact } : undefined);
@@ -199,6 +203,8 @@ export async function compactSessionMessages(options: Readonly<{
   maxTokens?: number;
   focus?: string;
   signal?: AbortSignal;
+  /** Project secrets out of the summarizer request only (history stays raw). */
+  redactOutbound?: <T>(value: T) => T;
 }>): Promise<ContextCompactionResult> {
   assertMaxSessionMessages(options.maxMessages);
   assertCompleteToolBatches(options.messages);
@@ -218,11 +224,14 @@ export async function compactSessionMessages(options: Readonly<{
       usage: emptyTokenUsage(),
     };
   }
+  const olderForProvider = options.redactOutbound
+    ? options.redactOutbound(plan.older)
+    : plan.older;
   const completion = await options.client.complete({
     model: options.model,
     messages: [
       { role: "system", content: SUMMARY_SYSTEM_PROMPT },
-      { role: "user", content: formatSummaryRequest(plan.older, options.focus) },
+      { role: "user", content: formatSummaryRequest(olderForProvider, options.focus) },
     ],
   }, { signal: options.signal });
   if (completion.toolCalls.length > 0) {

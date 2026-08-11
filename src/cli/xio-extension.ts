@@ -54,6 +54,11 @@ export async function registerRuntimeFromConfig(
      * Defaults from XIO_INCLUDE_PROJECT env ("0" → false) or true.
      */
     includeProject?: boolean;
+    childEnv?: NodeJS.ProcessEnv;
+    redactPayload?: <T>(value: T) => T;
+    resolveEnvReference?: (name: string) => string | undefined;
+    registerSecretValue?: (value: string) => void;
+    knownSecretValues?: () => ReadonlySet<string> | readonly string[];
   }>,
 ): Promise<void> {
   const evolveApi = adaptEvolveApi(api);
@@ -61,6 +66,15 @@ export async function registerRuntimeFromConfig(
   const workspaceCwd = options.workspaceCwd;
   const includeProject = options.includeProject
     ?? process.env.XIO_INCLUDE_PROJECT !== "0";
+  const hygieneSecretOptions = {
+    childEnv: options.childEnv,
+    redactPayload: options.redactPayload,
+    resolveEnvReference: options.resolveEnvReference,
+    registerSecretValue: options.registerSecretValue,
+  };
+  const evolveSecretOptions = {
+    knownSecretValues: options.knownSecretValues,
+  };
 
   if (options.minimal) {
     const [{ registerXioHygiene }, { registerXioEvolve }, { registerXioSandbox }] = await Promise.all([
@@ -74,8 +88,9 @@ export async function registerRuntimeFromConfig(
       includeProject,
       registerTool: (tool) => api.registerTool(tool),
       warn: (message) => console.warn(message),
+      ...hygieneSecretOptions,
     });
-    registerXioEvolve(evolveApi);
+    registerXioEvolve(evolveApi, evolveSecretOptions);
     registerXioSandbox(api);
     return;
   }
@@ -108,11 +123,13 @@ export async function registerRuntimeFromConfig(
     mcp: toHygieneMcp(config.mcp),
     registerTool: (tool) => api.registerTool(tool),
     warn: (message) => console.warn(message),
+    ...hygieneSecretOptions,
   });
 
   if (config.extensions.evolve?.enabled !== false) {
     registerXioEvolve(evolveApi, {
       runStore,
+      ...evolveSecretOptions,
       retrospective: {
         ...config.retrospective,
         getWorkspaceRoot: () => workspaceCwd,

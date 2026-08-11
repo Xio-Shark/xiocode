@@ -54,6 +54,12 @@ export {
 } from "./context-compaction.ts";
 export { prepareSession, runSession, toDoneContract } from "./session.ts";
 export {
+  SecretEnvironment,
+  buildChildEnv,
+  redactWithKnownValues,
+  resolveMcpEnvEntries,
+} from "./secret-environment.ts";
+export {
   createStdoutSessionUiSink,
   TOOL_OUTPUT_PREVIEW_LINES,
   exploreReportBody,

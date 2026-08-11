@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { withFixHint } from "../tools/error-guidance.ts";
+import { buildChildEnv } from "../secret-environment.ts";
 
 export type DoneCommand = Readonly<{
   name: string;
@@ -94,7 +95,10 @@ async function runCommand(
     };
   }
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd, env: env ?? process.env });
+    const child = spawn(bin, args, {
+      cwd,
+      env: env ?? buildChildEnv(process.env),
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

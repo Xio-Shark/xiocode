@@ -2,7 +2,6 @@ import path from "node:path";
 
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { runSession } from "../runtime/session.ts";
-import registerXioRuntime from "./xio-extension.ts";
 import { prepareLaunch } from "./launch.ts";
 import { shouldUseInk } from "./cli-args.ts";
 import { createSessionStore, resolveResume } from "./session-resume.ts";
@@ -130,6 +129,7 @@ async function runPreparedLaunch(input: Readonly<{
     workspaceRoot: input.launch.cwd,
     runtimeConfig: input.launch.runtimeConfig,
     env: input.launch.env,
+    secretEnvironment: input.launch.secretEnvironment,
     promptOnce: input.xioArgs.promptOnce,
     outputFormat: input.xioArgs.outputFormat,
     sessionId: input.sessionId,
@@ -271,6 +271,18 @@ function createExtensionRegistrar(launch: LaunchPlan): SessionOptions["registerE
   if (!launch.runtimeExtensionEnabled) return undefined;
   return async (api) => {
     process.env.XIO_RUNTIME_CONFIG = launch.runtimeConfigPath;
-    await registerXioRuntime(api);
+    const { registerRuntimeFromConfig } = await import("./xio-extension.ts");
+    const secrets = launch.secretEnvironment;
+    await registerRuntimeFromConfig(api, launch.runtimeConfig, {
+      workspaceCwd: launch.cwd,
+      home: process.env.HOME,
+      childEnv: secrets.buildChildEnv(launch.env, {
+        extraNames: launch.runtimeConfig.tools?.childEnv ?? [],
+      }),
+      redactPayload: (value) => secrets.redactProjection(value),
+      resolveEnvReference: (name) => secrets.resolveExplicitReference(name),
+      registerSecretValue: (value) => secrets.registerKnownValue(value),
+      knownSecretValues: () => secrets.knownSecretValues(),
+    });
   };
 }

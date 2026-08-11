@@ -1,7 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
-  applyCredentialsToEnv,
   loadCredentials,
   saveProviderCredential,
 } from "../cli/credentials.ts";
@@ -21,12 +20,14 @@ import type { ExtensionHost } from "./extension-host.ts";
 import type { ModelInfo, ProviderRegistration } from "./types.ts";
 import type { SessionUiSink } from "./session-ui.ts";
 import type { XioProviderConfig, XioRuntimeConfig } from "../cli/config-parser.ts";
+import type { SecretEnvironment } from "./secret-environment.ts";
 
 export type ConnectCommandOptions = Readonly<{
   host: ExtensionHost;
   interactive: InteractiveIO;
   runtimeConfig: XioRuntimeConfig;
   env: NodeJS.ProcessEnv;
+  secretEnvironment: SecretEnvironment;
   sink: SessionUiSink;
   getModel: () => ModelInfo;
   setModel: (model: ModelInfo) => Promise<void>;
@@ -215,7 +216,8 @@ async function persistConnect(input: Readonly<{
   models: readonly string[];
 }>): Promise<void> {
   const { options } = input;
-  options.env[input.apiKeyEnv] = input.apiKey;
+  // Session store only — never write credentials into shared process.env.
+  options.secretEnvironment.setProvider(input.apiKeyEnv, input.apiKey);
   await saveProviderCredential(input.providerName, {
     apiKey: input.apiKey,
     models: input.models,
@@ -241,10 +243,6 @@ async function persistConnect(input: Readonly<{
     apiKeyEnv: input.apiKeyEnv,
   };
   options.host.registerProvider(input.providerName, toRegistration(providerConfig, input.models));
-  await applyCredentialsToEnv(options.env, {
-    ...options.runtimeConfig.providers,
-    [input.providerName]: providerConfig,
-  });
 }
 
 async function persistModelDefault(
@@ -303,14 +301,12 @@ async function listConnectedProviders(options: ConnectCommandOptions): Promise<r
     ...options.host.listProviders().map((provider) => provider.name).filter((name) => {
       const registration = options.host.getProvider(name);
       if (!registration?.apiKey?.startsWith("$")) return false;
-      const value = options.env[registration.apiKey.slice(1)];
-      return typeof value === "string" && value.length > 0;
+      return options.secretEnvironment.has(registration.apiKey.slice(1));
     }),
     ...Object.keys(options.runtimeConfig.providers).filter((name) => {
       const provider = options.runtimeConfig.providers[name];
       if (!provider?.apiKeyEnv) return false;
-      const value = options.env[provider.apiKeyEnv];
-      return typeof value === "string" && value.length > 0;
+      return options.secretEnvironment.has(provider.apiKeyEnv);
     }),
   ]);
   const result: XioProviderConfig[] = [];
@@ -342,7 +338,9 @@ async function collectModelsForProvider(
   const preset = findProviderPreset(provider.name);
   const registered = options.host.getProvider(provider.name)?.models.map((model) => model.id) ?? [];
   const envName = provider.apiKeyEnv ?? preset?.apiKeyEnv;
-  const apiKey = envName ? options.env[envName] : undefined;
+  const apiKey = envName
+    ? options.secretEnvironment.resolveExplicitReference(envName)
+    : undefined;
   const catalog = uniqueModels([
     ...(provider.model ? [provider.model] : []),
     ...cached,

@@ -8,6 +8,7 @@ import {
   isMissingResource,
   readAuthorizedResourceText,
 } from "./project-resource-read.ts";
+import { buildChildEnv } from "../../../src/runtime/secret-environment.ts";
 
 export type HooksConfig = Readonly<{
   enabled: boolean;
@@ -77,6 +78,10 @@ export type RegisterHooksBridgeOptions = Readonly<{
   warn?: (message: string) => void;
   /** Injectable runner for tests. */
   runCommand?: typeof runCommandHook;
+  /** Scrubbed child env (never full process.env). */
+  childEnv?: NodeJS.ProcessEnv;
+  /** Project stdin / payloads through this before writing to hook stdin. */
+  redactPayload?: <T>(value: T) => T;
 }>;
 
 export type HooksBridgeRegistration = Readonly<{
@@ -169,6 +174,19 @@ export function registerHooksBridge(
   const config = options.config;
   const warn = options.warn ?? (() => undefined);
   const runCommand = options.runCommand ?? runCommandHook;
+  const childEnv = options.childEnv;
+  const redactPayload = options.redactPayload ?? (<T>(value: T) => value);
+  const runHook = async (input: Readonly<{
+    command: string;
+    stdin: unknown;
+    timeoutMs: number;
+  }>) => runCommand({
+    command: input.command,
+    cwd: options.cwd,
+    stdin: redactPayload(input.stdin),
+    timeoutMs: input.timeoutMs,
+    ...(childEnv ? { env: childEnv } : {}),
+  });
   let loaded: LoadedHooks | undefined;
   let sessionContext = "";
   const lastRuns: HookRunSummary[] = [];
@@ -204,15 +222,13 @@ export function registerHooksBridge(
         continue;
       }
       for (const hook of group.hooks) {
-        const stdin = {
-          hook_event_name: "SessionStart",
-          cwd: options.cwd,
-          source,
-        };
-        const result = await runCommand({
+        const result = await runHook({
           command: hook.command,
-          cwd: options.cwd,
-          stdin,
+          stdin: {
+            hook_event_name: "SessionStart",
+            cwd: options.cwd,
+            source,
+          },
           timeoutMs: hook.timeoutMs ?? config.timeoutMs,
         });
         const parsed = interpretHookOutput("SessionStart", result);
@@ -291,9 +307,8 @@ export function registerHooksBridge(
         continue;
       }
       for (const hook of group.hooks) {
-        const result = await runCommand({
+        const result = await runHook({
           command: hook.command,
-          cwd: options.cwd,
           stdin: {
             hook_event_name: "PreToolUse",
             cwd: options.cwd,
@@ -354,9 +369,8 @@ export function registerHooksBridge(
         continue;
       }
       for (const hook of group.hooks) {
-        const result = await runCommand({
+        const result = await runHook({
           command: hook.command,
-          cwd: options.cwd,
           stdin: {
             hook_event_name: "PostToolUse",
             cwd: options.cwd,
@@ -400,9 +414,8 @@ export function registerHooksBridge(
     for (const group of loaded.events.Stop) {
       // Stop has no matcher support in Claude; ignore matcher if present.
       for (const hook of group.hooks) {
-        const result = await runCommand({
+        const result = await runHook({
           command: hook.command,
-          cwd: options.cwd,
           stdin: {
             hook_event_name: "Stop",
             cwd: options.cwd,
@@ -457,7 +470,7 @@ export async function runCommandHook(options: Readonly<{
   return new Promise((resolve) => {
     const child = spawn("/bin/sh", ["-c", options.command], {
       cwd: options.cwd,
-      env: options.env ?? process.env,
+      env: options.env ?? buildChildEnv(process.env),
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

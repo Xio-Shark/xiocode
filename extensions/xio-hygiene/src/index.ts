@@ -57,6 +57,14 @@ export type XioHygieneOptions = Readonly<{
   /** Register extension tools (e.g. `skill`, `mcp__*`). */
   registerTool?: (tool: ToolDefinition) => void;
   warn?: (message: string) => void;
+  /** Scrubbed child env for hooks. */
+  childEnv?: NodeJS.ProcessEnv;
+  /** Redact hook stdin / MCP-related projections. */
+  redactPayload?: <T>(value: T) => T;
+  /** Resolve `${NAME}` in MCP stdio env. */
+  resolveEnvReference?: (name: string) => string | undefined;
+  /** Register resolved MCP secret values. */
+  registerSecretValue?: (value: string) => void;
 }>;
 
 export type XioHygieneRegistration = Readonly<{
@@ -102,6 +110,8 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
       config: hooksConfig,
       includeProject,
       warn: options.warn,
+      childEnv: options.childEnv,
+      redactPayload: options.redactPayload,
     })
     : undefined;
 
@@ -113,6 +123,8 @@ export function registerXioHygiene(ctx: ExtensionContext, options: XioHygieneOpt
       includeProject,
       registerTool: options.registerTool,
       warn: options.warn,
+      resolveEnvReference: options.resolveEnvReference,
+      registerSecretValue: options.registerSecretValue,
     })
     : undefined;
 

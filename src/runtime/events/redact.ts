@@ -3,6 +3,8 @@
  * Trajectory store may apply additional SecretRedactor; this is the bus-level floor.
  */
 
+import { redactWithKnownValues } from "../secret-environment.ts";
+
 /** Whole-key match only — avoid false positives on `inputTokens` / `outputTokens`. */
 const SECRET_KEY = /^(?:api[_-]?key|authorization|password|secret|token|access_token|refresh_token|cookie|credential)s?$/i;
 const MAX_STRING = 8_000;
@@ -10,7 +12,16 @@ const MAX_DEPTH = 6;
 
 export function redactRuntimePayload(
   payload: Readonly<Record<string, unknown>>,
+  knownSecretValues?: ReadonlySet<string> | readonly string[],
 ): Record<string, unknown> {
+  if (knownSecretValues) {
+    const values = Array.isArray(knownSecretValues)
+      ? knownSecretValues
+      : [...knownSecretValues];
+    if (values.length > 0) {
+      return redactWithKnownValues(payload, values) as Record<string, unknown>;
+    }
+  }
   return redactValue(payload, 0) as Record<string, unknown>;
 }
 

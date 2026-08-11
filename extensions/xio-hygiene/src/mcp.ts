@@ -14,6 +14,7 @@ import {
   isMissingResource,
   readAuthorizedResourceText,
 } from "./project-resource-read.ts";
+import { resolveMcpEnvEntries } from "../../../src/runtime/secret-environment.ts";
 
 export type McpConfig = Readonly<{
   enabled: boolean;
@@ -121,6 +122,13 @@ export type RegisterMcpBridgeOptions = Readonly<{
   onToolsChanged?: () => void;
   /** Injectable connect for tests. */
   connectServer?: typeof connectMcpServer;
+  /**
+   * Resolve `${NAME}` in stdio `spec.env` (SecretEnvironment / parent bootstrap).
+   * When omitted, whole-string refs fail closed.
+   */
+  resolveEnvReference?: (name: string) => string | undefined;
+  /** Register resolved sensitive MCP env values for redaction. */
+  registerSecretValue?: (value: string) => void;
 }>;
 
 type LiveConnection = {
@@ -275,7 +283,11 @@ export function registerMcpBridge(
 ): McpBridgeRegistration {
   const config = options.config;
   const warn = options.warn ?? ((message: string) => console.warn(message));
-  const connect = options.connectServer ?? connectMcpServer;
+  const connect = options.connectServer ?? ((server, connectOptions) => connectMcpServer(server, {
+    ...connectOptions,
+    resolveEnvReference: options.resolveEnvReference,
+    registerSecretValue: options.registerSecretValue,
+  }));
 
   let loaded: LoadedMcpConfigs | undefined;
   let statuses: McpConnectionStatus[] = [];
@@ -548,14 +560,22 @@ async function connectServersInBackground(options: Readonly<{
 
 export async function connectMcpServer(
   server: ResolvedMcpServer,
-  options: Readonly<{ cwd: string; timeoutMs: number }>,
+  options: Readonly<{
+    cwd: string;
+    timeoutMs: number;
+    resolveEnvReference?: (name: string) => string | undefined;
+    registerSecretValue?: (value: string) => void;
+  }>,
 ): Promise<LiveConnection> {
   if (server.spec.transport === "stdio") {
     await assertStdioCommandExists(server.spec.command);
   }
 
   const client = new Client({ name: "xiocode", version: "1.1.0" });
-  const transport = createTransport(server.spec, options.cwd);
+  const transport = createTransport(server.spec, options.cwd, {
+    resolveEnvReference: options.resolveEnvReference,
+    registerSecretValue: options.registerSecretValue,
+  });
 
   // Ownership starts at transport creation — connect timeout must still tear down the child.
   let initialPid: number | null = null;
@@ -656,12 +676,19 @@ export async function assertStdioCommandExists(command: string): Promise<void> {
   }
 }
 
-function createTransport(spec: McpServerSpec, cwd: string) {
+function createTransport(
+  spec: McpServerSpec,
+  cwd: string,
+  envOptions: Readonly<{
+    resolveEnvReference?: (name: string) => string | undefined;
+    registerSecretValue?: (value: string) => void;
+  }> = {},
+) {
   if (spec.transport === "stdio") {
     return new StdioClientTransport({
       command: spec.command,
       args: spec.args ? [...spec.args] : undefined,
-      env: mergeStdioEnv(spec.env),
+      env: mergeStdioEnv(spec.env, envOptions),
       cwd: spec.cwd ? path.resolve(cwd, spec.cwd) : cwd,
       stderr: "pipe",
     });
@@ -679,19 +706,27 @@ function createTransport(spec: McpServerSpec, cwd: string) {
   return new StreamableHTTPClientTransport(url, { requestInit });
 }
 
+/**
+ * Custom MCP env: resolve declared keys only — never copy full process.env.
+ * When `extra` is omitted, return undefined so the SDK uses its safe default.
+ */
 function mergeStdioEnv(
   extra: Readonly<Record<string, string>> | undefined,
+  options: Readonly<{
+    resolveEnvReference?: (name: string) => string | undefined;
+    registerSecretValue?: (value: string) => void;
+  }> = {},
 ): Record<string, string> | undefined {
   if (!extra) {
     return undefined;
   }
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") {
-      env[key] = value;
-    }
-  }
-  return { ...env, ...extra };
+  return resolveMcpEnvEntries(
+    extra,
+    (name) => options.resolveEnvReference?.(name),
+    {
+      onResolvedSecret: (_dest, value) => options.registerSecretValue?.(value),
+    },
+  );
 }
 
 function createMcpToolDefinition(options: Readonly<{

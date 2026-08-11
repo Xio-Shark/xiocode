@@ -1,5 +1,7 @@
 export type SecretRedactorOptions = Readonly<{
   debugMode?: boolean;
+  /** Exact known secret values for value-level redaction. */
+  knownValues?: ReadonlySet<string> | readonly string[];
 }>;
 
 type RedactionPattern = Readonly<{
@@ -54,9 +56,14 @@ const API_KEY_PATTERNS: readonly RedactionPattern[] = [
 
 export class SecretRedactor {
   private readonly debugMode: boolean;
+  private readonly knownValues: readonly string[];
 
   constructor(options: SecretRedactorOptions = {}) {
     this.debugMode = options.debugMode ?? false;
+    const known = options.knownValues
+      ? (options.knownValues instanceof Set ? [...options.knownValues] : [...options.knownValues])
+      : [];
+    this.knownValues = known.filter((value) => value.length >= 8).sort((a, b) => b.length - a.length);
   }
 
   redact(value: unknown): unknown {
@@ -81,6 +88,12 @@ export class SecretRedactor {
 
   private redactString(text: string): string {
     let redacted = text;
+
+    for (const secret of this.knownValues) {
+      if (redacted.includes(secret)) {
+        redacted = redacted.split(secret).join("***REDACTED***");
+      }
+    }
 
     // Apply API key patterns
     for (const pattern of API_KEY_PATTERNS) {
