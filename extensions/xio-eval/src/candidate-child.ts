@@ -186,12 +186,17 @@ async function prepareCandidateSession(
     },
   };
   await writeFile(launch.runtimeConfigPath, `${JSON.stringify(runtimeConfig, null, 2)}\n`, "utf8");
-  Object.assign(process.env, launch.env);
+  // Apply only XIO_* launch markers into this child's process.env — never full host env.
+  for (const key of ["XIO_RUNTIME_CONFIG", "XIO_MAIN_ROOT", "XIO_WORKTREE"] as const) {
+    const value = launch.env[key];
+    if (typeof value === "string") process.env[key] = value;
+  }
   const session = await api.prepareSession({
     cwd: launch.cwd,
     workspaceRoot: launch.cwd,
     runtimeConfig,
     env: launch.env,
+    secretEnvironment: launch.secretEnvironment,
     ask: async () => false,
     maxTurns,
     registerExtensions: async (extensionApi: unknown) => {
@@ -242,6 +247,9 @@ async function seedEvalWorktreeConfig(env: NodeJS.ProcessEnv): Promise<void> {
 
 function isolatedEnv(trialHome: string): NodeJS.ProcessEnv {
   const xioHome = path.join(trialHome, ".xiocode");
+  // process.env is already the controller-built allowlist from spawnCommand
+  // (stub: base only; real: base + selected provider key). Do not re-scrub —
+  // that would drop the intentional selected key before prepareSession.
   return {
     ...process.env,
     HOME: trialHome,
@@ -374,6 +382,7 @@ type RuntimeLaunch = {
   mainRoot?: string;
   runtimeConfigPath: string;
   env: NodeJS.ProcessEnv;
+  secretEnvironment?: unknown;
   worktree?: RuntimeWorktreeSession;
   runtimeConfig: { general: { runRoot: string }; worktree: Record<string, unknown> };
 };
@@ -385,6 +394,7 @@ type CandidateApi = {
     workspaceRoot: string;
     runtimeConfig: RuntimeLaunch["runtimeConfig"];
     env: NodeJS.ProcessEnv;
+    secretEnvironment?: unknown;
     ask: () => Promise<boolean>;
     maxTurns: number;
     registerExtensions: (api: unknown) => Promise<void>;

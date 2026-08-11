@@ -66,7 +66,9 @@ export async function saveProviderCredential(
   return filePath;
 }
 
-/** Fill missing provider API key env vars from credentials.json (env wins). */
+/** Fill missing provider API key env vars from credentials.json (env wins).
+ * @deprecated Prefer SecretEnvironment.create — production paths must not mutate shared process.env.
+ */
 export async function applyCredentialsToEnv(
   env: NodeJS.ProcessEnv,
   providers: Readonly<Record<string, XioProviderConfig>>,

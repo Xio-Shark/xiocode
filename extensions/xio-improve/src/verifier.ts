@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { buildChildEnv } from "../../../src/runtime/secret-environment.ts";
+
 import type { VerifierResult } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +19,8 @@ export type VerifierOptions = Readonly<{
    * Production CLI always leaves this false so `npm run check` cannot be dropped.
    */
   replaceDefault?: boolean;
+  /** Scrubbed env for verifier children. */
+  env?: NodeJS.ProcessEnv;
 }>;
 
 const DEFAULT_COMMANDS = ["npm run check"] as const;
@@ -28,9 +32,11 @@ const DEFAULT_COMMANDS = ["npm run check"] as const;
 export class Verifier {
   readonly #cwd: string;
   readonly #commands: readonly string[];
+  readonly #env: NodeJS.ProcessEnv;
 
   constructor(options: VerifierOptions) {
     this.#cwd = options.cwd;
+    this.#env = options.env ?? buildChildEnv(process.env);
     if (options.replaceDefault === true) {
       this.#commands = options.commands && options.commands.length > 0
         ? [...options.commands]
@@ -49,7 +55,7 @@ export class Verifier {
     let lastCode = 0;
 
     for (const command of this.#commands) {
-      const result = await runShell(command, this.#cwd);
+      const result = await runShell(command, this.#cwd, this.#env);
       chunks.push(`$ ${command}\n${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`);
       if (result.code !== 0) {
         lastCode = result.code;
@@ -74,13 +80,15 @@ export class Verifier {
 async function runShell(
   command: string,
   cwd: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    const { stdout, stderr } = await execFileAsync("bash", ["-lc", command], {
+    // Non-login shell — profile must not reintroduce filtered secrets.
+    const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
       cwd,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
-      env: process.env,
+      env,
     });
     return {
       stdout: typeof stdout === "string" ? stdout : "",

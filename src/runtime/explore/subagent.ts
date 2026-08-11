@@ -101,6 +101,8 @@ export type RunExploreSubagentOptions = Readonly<{
   contextId?: string;
   /** Called when this worker's read is later overwritten by another context. */
   onFileShift?: (info: FileShiftInfo) => void;
+  /** Scrubbed env for explore bash (when allowBash). */
+  childEnv?: NodeJS.ProcessEnv;
 }>;
 
 /**
@@ -151,6 +153,7 @@ export async function runExploreSubagent(
     fileShift: options.fileShift,
     contextId: options.contextId ?? "explore",
     onFileShift: options.onFileShift,
+    childEnv: options.childEnv,
   })) {
     if (allowed.has(tool.name)) {
       host.registerTool(tool);

@@ -20,6 +20,11 @@ export type TrajectoryRecorderOptions = Readonly<{
   toolTimeoutMs?: number;
   loopSignatureThreshold?: number;
   errorTracker?: ErrorTracker;
+  /**
+   * Live known secret values (e.g. session SecretEnvironment).
+   * Resolved on each redact so `/connect` updates are included.
+   */
+  knownValues?: () => ReadonlySet<string> | readonly string[];
 }>;
 
 type PendingEvent = Readonly<{
@@ -47,7 +52,8 @@ export class TrajectoryRecorder {
   private readonly stuckThreshold: number;
   private readonly toolTimeoutMs: number;
   private readonly loopSignatureThreshold: number;
-  private readonly redactor: SecretRedactor;
+  private readonly debugMode: boolean;
+  private readonly getKnownValues?: () => ReadonlySet<string> | readonly string[];
   private readonly errorTracker?: ErrorTracker;
   private metadata: RunMetadata | null = null;
   private readonly toolCalls: ToolCall[] = [];
@@ -73,11 +79,19 @@ export class TrajectoryRecorder {
     this.stuckThreshold = options.stuckThreshold ?? 3;
     this.toolTimeoutMs = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
     this.loopSignatureThreshold = options.loopSignatureThreshold ?? DEFAULT_LOOP_SIGNATURE_THRESHOLD;
-    this.redactor = new SecretRedactor({ debugMode: options.debugMode });
+    this.debugMode = options.debugMode ?? false;
+    this.getKnownValues = options.knownValues;
     this.errorTracker = options.errorTracker;
     if (options.metadata) {
       this.metadata = options.metadata as RunMetadata;
     }
+  }
+
+  private redact(value: unknown): unknown {
+    return new SecretRedactor({
+      debugMode: this.debugMode,
+      knownValues: this.getKnownValues?.(),
+    }).redact(value);
   }
 
   async start(input: Partial<RunMetadata> = {}): Promise<RunMetadata> {
@@ -234,13 +248,13 @@ export class TrajectoryRecorder {
 
   private async flushTrajectory(): Promise<void> {
     const metadata = await this.ensureStarted();
-    await this.store.writeJson(metadata.run_id, "trajectory.json", {
+    await this.store.writeJson(metadata.run_id, "trajectory.json", this.redact({
       metadata,
       messages: this.turns.map((turn) => turn.message),
       tool_rounds: this.toolResults,
       todo_items: this.todoItems,
       finalMessage: this.turns.at(-1)?.message ?? null,
-    });
+    }));
     await this.store.writeText(metadata.run_id, "todo.md", formatTodos(this.todoItems));
   }
 
@@ -314,7 +328,7 @@ export class TrajectoryRecorder {
       call_id: pending.call?.id,
       tool_name: pending.call?.name,
       message: pending.message,
-      payload: this.redactor.redact(pending.payload),
+      payload: this.redact(pending.payload),
       schema_version: "run-event.v1",
     })));
   }

@@ -129,6 +129,10 @@ export function createPromptRunner(options: Readonly<{
   /** Identical tool+args consecutive cap; 0 disables. Default from agent-loop. */
   repeatToolLimit?: number;
   doneContract?: DoneContract;
+  /** Scrubbed env for done-contract verifier children. */
+  doneContractEnv?: NodeJS.ProcessEnv;
+  /** Project secrets out of UI tool results (SessionStore keeps raw history). */
+  redactOutbound?: <T>(value: T) => T;
   verify: XioVerifyConfig;
   parallelToolCalls?: boolean;
   getParallelToolCalls?: () => boolean;
@@ -274,6 +278,8 @@ export function createPromptRunner(options: Readonly<{
             maxTurns: options.maxTurns,
             repeatToolLimit: options.repeatToolLimit,
             doneContract: options.doneContract,
+            doneContractEnv: options.doneContractEnv,
+            redactOutbound: options.redactOutbound,
             verifyRepairTurns: options.verify.repairTurns,
             parallelToolCalls: options.getParallelToolCalls?.() ?? options.parallelToolCalls,
             priorMessages: history.getMessages(),
@@ -283,7 +289,12 @@ export function createPromptRunner(options: Readonly<{
             onAssistantText: (text) => sink.onAssistantText?.(text),
             onThinkingDelta: (text) => sink.onThinkingDelta?.(text),
             onToolStart: (call) => sink.onToolStart?.(call),
-            onToolEnd: (call, toolResult) => sink.onToolEnd?.(call, toolResult),
+            onToolEnd: (call, toolResult) => {
+              const projected = options.redactOutbound
+                ? options.redactOutbound(toolResult)
+                : toolResult;
+              sink.onToolEnd?.(call, projected);
+            },
             onCheckpoint,
             runtimeEvents: options.runtimeEvents,
             steerMailbox: options.steerMailbox,
@@ -371,6 +382,7 @@ export function createSessionCloser(options: Readonly<{
   retainOnReject: boolean;
   sink?: SessionUiSink;
   onFinalized?: (disposition: WorktreeDisposition) => Promise<void> | void;
+  onClosed?: () => void;
 }>): PreparedSession["close"] {
   const sink = options.sink ?? createStdoutSessionUiSink();
   return async () => {
@@ -384,5 +396,6 @@ export function createSessionCloser(options: Readonly<{
       );
       void disposition;
     }
+    options.onClosed?.();
   };
 }

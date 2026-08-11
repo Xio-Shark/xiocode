@@ -4,6 +4,7 @@ import path from "node:path";
 import { assertArtifactsOmitSecret } from "./credentialed-env.ts";
 import { spawnCommand } from "./process.ts";
 import { emptyUsage } from "./types.ts";
+import { buildChildEnv, NETWORK_TLS_ENV_NAMES } from "../../../src/runtime/secret-environment.ts";
 
 import type { CandidateExecutorOptions, CandidateInput, CandidateResult, UsageMetrics } from "./types.ts";
 
@@ -26,10 +27,7 @@ const REAL_CHILD_ENV_ALLOWLIST = new Set([
   "NO_COLOR",
   "FORCE_COLOR",
   "TZ",
-  "NODE_EXTRA_CA_CERTS",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
-  "REQUESTS_CA_BUNDLE",
+  ...NETWORK_TLS_ENV_NAMES,
   "SystemRoot",
   "ComSpec",
   "PROCESSOR_ARCHITECTURE",
@@ -56,7 +54,9 @@ export async function executeCandidate(options: CandidateExecutorOptions): Promi
     }
     baseChildEnv = preparedEnv.env;
   } else {
-    baseChildEnv = { ...(options.env ?? process.env) };
+    baseChildEnv = buildChildEnv(options.env ?? process.env, {
+      includeNetworkTls: false,
+    });
   }
   const inputPath = path.join(options.trial_root, "candidate-input.json");
   const input = createCandidateInput(options);

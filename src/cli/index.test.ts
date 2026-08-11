@@ -67,7 +67,13 @@ api_key_env = "XIO_DEEPSEEK_KEY"
     expect(launch.worktree).toBeUndefined();
     expect(launch.cwd).toBe(path.resolve(root));
     expect(launch.mainRoot).toBe(path.resolve(root));
-    expect(launch.env.DEEPSEEK_API_KEY).toBe("secret");
+    expect(launch.env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(launch.secretEnvironment.resolveProvider({
+      name: "deepseek",
+      api: "openai-completions",
+      apiKey: "$XIO_DEEPSEEK_KEY",
+      models: [],
+    })).toBe("secret");
     expect(launch.sessionStart.provenance).toMatchObject({
       schema_version: "xio-run-provenance.v1",
       workspace_root: launch.cwd,
@@ -106,7 +112,14 @@ ${WORKTREE_ON}
     expect(launch.runtimeConfig.general.defaultProvider).toBe("deepseek");
     expect(launch.runtimeConfigPath).toBe(path.join(xioHome, "runtime-config.json"));
     expect(launch.env.XIO_RUNTIME_CONFIG).toBe(path.join(xioHome, "runtime-config.json"));
-    expect(launch.env.DEEPSEEK_API_KEY).toBe("secret");
+    // Credentials stay in SecretEnvironment — not copied onto launch.env / process.env.
+    expect(launch.env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(launch.secretEnvironment.resolveProvider({
+      name: "deepseek",
+      api: "openai-completions",
+      apiKey: "$XIO_DEEPSEEK_KEY",
+      models: [],
+    })).toBe("secret");
     expect(launch.runtimeExtensionEnabled).toBe(true);
     expect(launch.worktree).toBeDefined();
     expect(launch.cwd).toBe(launch.worktree!.worktreePath);

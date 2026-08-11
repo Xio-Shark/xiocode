@@ -62,6 +62,7 @@ export async function runTrial(options: Readonly<{
     trajectoryPath: runEvidence.trajectoryPath,
     runEvidenceComplete: runEvidence.complete,
     patchSummary: await worktreePatchSummary(execution.result.worktree_path),
+    secretForScan: options.secretForScan,
   });
 }
 
@@ -153,6 +154,7 @@ function buildTrialReport(
     trajectoryPath: string | null;
     runEvidenceComplete: boolean;
     patchSummary: string;
+    secretForScan?: string;
   }>,
 ): TrialReport {
   const result = execution.result;
@@ -243,19 +245,31 @@ function trialEvidence(
   mode: CandidateMode,
   execution: ExecutedCandidate,
   grader: GraderResult,
-  evidence: Readonly<{ trajectoryPath: string | null; runEvidenceComplete: boolean; patchSummary: string }>,
+  evidence: Readonly<{
+    trajectoryPath: string | null;
+    runEvidenceComplete: boolean;
+    patchSummary: string;
+    secretForScan?: string;
+  }>,
 ): TrialReport["evidence"] {
   const concerns = mode === "stub" ? ["stub execution is harness-only"] : [];
   if (mode === "real" && !evidence.runEvidenceComplete) {
     concerns.push("run/trajectory evidence is missing or incomplete");
   }
+  const secret = evidence.secretForScan;
+  const redactText = (text: string): string => {
+    if (!secret || secret.length < 8 || !text.includes(secret)) return text;
+    return text.split(secret).join("***REDACTED***");
+  };
   return {
     run_id: execution.result.run_id ?? null,
     trajectory_path: evidence.trajectoryPath,
     patch_summary: evidence.patchSummary,
-    logs: compactLogs(execution.stdout, execution.stderr),
+    logs: compactLogs(execution.stdout, execution.stderr, secret),
     concerns,
-    infra_errors: [execution.result.error, grader.error].filter((item): item is string => Boolean(item)),
+    infra_errors: [execution.result.error, grader.error]
+      .filter((item): item is string => Boolean(item))
+      .map(redactText),
     irreversible_side_effects: ["host isolation unsupported; external side effects are not rollback-guaranteed"],
   };
 }

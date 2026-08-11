@@ -28,6 +28,8 @@ export type XioEvolveOptions = Readonly<{
   runStore?: RunStore;
   trajectoryRecorder?: TrajectoryRecorder;
   onRunStart?: (metadata: RunMetadata) => void;
+  /** Live known secret values for trajectory / prompt artifact redaction. */
+  knownSecretValues?: () => ReadonlySet<string> | readonly string[];
   /** Post-task retrospective (blockers → log → washed report → inject/improve queue). */
   retrospective?: Partial<RetrospectiveConfig> & Readonly<{
     summarizeWithLlm?: (input: Readonly<{
@@ -44,7 +46,6 @@ export type XioEvolveOptions = Readonly<{
 }>;
 
 const CONTEXT_INVALIDATING_TOOLS = new Set(["bash", "edit", "write"]);
-const PROMPT_REDACTOR = new SecretRedactor();
 
 /**
  * Default evolve path: TrajectoryRecorder + RunStore + Denoiser + ContextInjector + TodoEnforcer.
@@ -56,9 +57,19 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   const resultDenoiser = options.resultDenoiser ?? new ResultDenoiser();
   const todoEnforcer = options.todoEnforcer ?? new TodoEnforcer();
   const runStore = options.runStore ?? new RunStore();
+  const redactPromptText = (prompt: string): string => {
+    const redacted = new SecretRedactor({
+      knownValues: options.knownSecretValues?.(),
+    }).redact(prompt);
+    if (typeof redacted !== "string") {
+      throw new Error("redacted prompt must remain a string");
+    }
+    return redacted;
+  };
   const recorder = options.trajectoryRecorder ?? new TrajectoryRecorder({
     store: runStore,
     errorTracker: contextInjector.getErrorTracker(),
+    knownValues: options.knownSecretValues,
   });
   const retrospective = new RetrospectiveRunner({
     runStore,
@@ -145,7 +156,7 @@ export function registerXioEvolve(ctx: ExtensionContext, options: XioEvolveOptio
   ctx.on?.("turn_start", async (payload) => {
     const prompt = userPromptFromPayload(payload);
     if (prompt.length > 0 && currentRun && !promptArtifactWritten) {
-      const replayPrompt = redactPrompt(prompt);
+      const replayPrompt = redactPromptText(prompt);
       await runStore.writeJson(currentRun.run_id, "prompt.json", {
         schema_version: "xio-run-prompt.v2",
         content: replayPrompt,
@@ -400,14 +411,6 @@ function userPromptFromPayload(payload: unknown): string {
   }
   const text = asRecord(content).text;
   return typeof text === "string" ? text : "";
-}
-
-function redactPrompt(prompt: string): string {
-  const redacted = PROMPT_REDACTOR.redact(prompt);
-  if (typeof redacted !== "string") {
-    throw new Error("redacted prompt must remain a string");
-  }
-  return redacted;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

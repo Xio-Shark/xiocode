@@ -168,6 +168,8 @@ export type CreateExploreToolOptions = Readonly<{
   workspaceRoot: string;
   getProvider: (name: string) => ProviderRegistration | undefined;
   env?: NodeJS.ProcessEnv;
+  secretEnvironment?: import("../secret-environment.ts").SecretEnvironment;
+  childEnv?: NodeJS.ProcessEnv;
   onNotify?: (message: string) => void;
   /** Header status: active subagent count (e.g. setStatus("explore", "subs:2")). */
   onStatus?: (key: string, text: string | undefined) => void;
@@ -423,7 +425,9 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
         }
         let apiKey: string;
         try {
-          apiKey = resolveApiKey(registration, env);
+          apiKey = options.secretEnvironment
+            ? options.secretEnvironment.resolveProvider(registration)
+            : resolveApiKey(registration, env);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           // Still complete orchestrator so ownership leases / counters stay consistent.
@@ -503,6 +507,7 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           fileShift: options.fileShift,
           contextId: `explore-${workerId}`,
           onFileShift: options.onFileShift,
+          childEnv: options.childEnv,
         });
 
         // Persist raw worker body into EvidenceStore; primary gets brief only.

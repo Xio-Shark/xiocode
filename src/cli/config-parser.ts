@@ -136,6 +136,11 @@ export type XioToolsConfig = Readonly<{
    * Default true. Set false to rollback the edit-before-read gate.
    */
   requireReadBeforeEdit: boolean;
+  /**
+   * Extra non-secret env names inherited by bash/hook/verifier children.
+   * Provider secrets and sensitive names are still rejected.
+   */
+  childEnv?: readonly string[];
 }>;
 
 /**
@@ -692,9 +697,14 @@ function parsePermissions(table: Record<string, unknown> | undefined): XioPermis
 }
 
 function parseTools(table: Record<string, unknown> | undefined): XioToolsConfig {
+  const childEnvRaw = table?.child_env;
+  const childEnv = Array.isArray(childEnvRaw)
+    ? childEnvRaw.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : undefined;
   return {
     requireReadBeforeEdit:
       getOptionalBoolean(table, "require_read_before_edit") ?? DEFAULT_TOOLS.requireReadBeforeEdit,
+    ...(childEnv && childEnv.length > 0 ? { childEnv } : {}),
   };
 }
 

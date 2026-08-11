@@ -114,8 +114,11 @@ describe("G9 credentialed provider evidence", () => {
 
     const allowlist = buildChildEnvAllowlist(env, "XIO_ALPHA_KEY", "alpha-secret-key-value");
     expect(Object.keys(allowlist).sort()).toEqual(
-      expect.arrayContaining(["PATH", "HOME", "XIO_HOME", "XIO_CONFIG", "XIO_ALPHA_KEY"]),
+      expect.arrayContaining(["PATH", "HOME", "XIO_ALPHA_KEY"]),
     );
+    // Trial XIO_HOME/XIO_CONFIG are written by the executor, not inherited from host.
+    expect(allowlist.XIO_HOME).toBeUndefined();
+    expect(allowlist.XIO_CONFIG).toBeUndefined();
   });
 
   it("maps missing credentials to INFRA_ERROR without stub fallback", async () => {

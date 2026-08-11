@@ -5,9 +5,8 @@ import path from "node:path";
 import { runSession } from "../runtime/session.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
-import { applyCredentialsToEnv } from "./credentials.ts";
-import { setupProviderEnv } from "./env-setup.ts";
 import { registerRuntimeFromConfig } from "./xio-extension.ts";
+import { SecretEnvironment } from "../runtime/secret-environment.ts";
 
 import type { XioRuntimeConfig } from "./config-parser.ts";
 
@@ -37,8 +36,13 @@ export async function spawnImproveAgent(
     },
   };
 
-  await applyCredentialsToEnv(env, parsed.xio.providers);
-  setupProviderEnv(parsed.xio.providers, env);
+  const secretEnvironment = await SecretEnvironment.create({
+    env,
+    providers: parsed.xio.providers,
+  });
+  const childEnv = secretEnvironment.buildChildEnv(env, {
+    extraNames: runtimeConfig.tools?.childEnv ?? [],
+  });
 
   const configRoot = expandHome(env.XIO_HOME ?? path.join(os.homedir(), ".xiocode"));
   const exitCode = await runSession({
@@ -50,6 +54,7 @@ export async function spawnImproveAgent(
       XIO_MAIN_ROOT: options.mainRoot,
       XIO_WORKTREE: worktreePath,
     },
+    secretEnvironment,
     promptOnce: prompt,
     // Decline any incidental prompts; outer SelfImproveRunner owns the real merge ask.
     ask: async () => false,
@@ -57,6 +62,11 @@ export async function spawnImproveAgent(
       workspaceCwd: worktreePath,
       home: os.homedir(),
       configRoot,
+      childEnv,
+      redactPayload: (value) => secretEnvironment.redactProjection(value),
+      resolveEnvReference: (name) => secretEnvironment.resolveExplicitReference(name),
+      registerSecretValue: (value) => secretEnvironment.registerKnownValue(value),
+      knownSecretValues: () => secretEnvironment.knownSecretValues(),
     }),
   });
 

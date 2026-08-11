@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
+import { buildChildEnv } from "../../../src/runtime/secret-environment.ts";
+
 export type SpawnResult = Readonly<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -29,7 +31,8 @@ export async function spawnCommand(options: Readonly<{
   }
   const child = spawn(options.command, [...options.args], {
     cwd: options.cwd,
-    env: options.env,
+    // Explicit env is final; omitted → scrubbed base (never inherit full host).
+    env: options.env ?? buildChildEnv(process.env),
     detached,
     stdio: ["ignore", "pipe", "pipe"],
   });

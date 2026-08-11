@@ -23,6 +23,11 @@ export type CreateRuntimeEventEmitterOptions = Readonly<{
   /** When false, skip redaction (tests only). Default true. */
   redact?: boolean;
   /**
+   * Optional projection for known secret values (session SecretEnvironment).
+   * When set, replaces the default field-name redactor.
+   */
+  redactValue?: (payload: Record<string, unknown>) => Record<string, unknown>;
+  /**
    * Diagnostic sink for subscriber failures. Failures are isolated from the
    * agent loop but must stay observable (R6.4) — default reports to stderr.
    */
@@ -68,9 +73,11 @@ export function createRuntimeEventEmitter(
 
   return {
     emit(event: RuntimeEventName, payload: Readonly<Record<string, unknown>> = {}, ids?) {
-      const body = shouldRedact
-        ? redactRuntimePayload({ ...payload })
-        : { ...payload };
+      const body = !shouldRedact
+        ? { ...payload }
+        : options.redactValue
+          ? options.redactValue({ ...payload })
+          : redactRuntimePayload({ ...payload });
       const envelope: RuntimeEventV1 = {
         schema_version: RUNTIME_EVENT_SCHEMA_VERSION,
         seq: seq++,

@@ -9,6 +9,7 @@ import { writeFile } from "node:fs/promises";
 import { ExtensionHost } from "./extension-host.ts";
 import { registerConnectCommands } from "./connect-commands.ts";
 import { createPromptRunner } from "./session-lifecycle.ts";
+import { SecretEnvironment } from "./secret-environment.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { LlmClient, ModelInfo } from "./types.ts";
@@ -94,6 +95,7 @@ describe("registerConnectCommands", () => {
     const configPath = path.join(home, "config.toml");
     await writeFile(configPath, DEFAULT_CONFIG_TOML, "utf8");
     const env: NodeJS.ProcessEnv = { XIO_HOME: home, XIO_CONFIG: configPath };
+    const secretEnvironment = await SecretEnvironment.create({ env, providers: {} });
     const host = new ExtensionHost();
     host.registerProvider("deepseek", {
       name: "deepseek",
@@ -117,6 +119,7 @@ describe("registerConnectCommands", () => {
       interactive: io,
       runtimeConfig: baseRuntime(configPath),
       env,
+      secretEnvironment,
       sink: {
         notify: (message) => notices.push(message),
         setStatus: () => undefined,
@@ -131,7 +134,9 @@ describe("registerConnectCommands", () => {
     const connected = await host.runCommand("connect");
     expect(connected).toContain("connected deepseek/deepseek-chat");
     expect(connected).not.toContain("sk-live-test-key-not-real");
-    expect(env.DEEPSEEK_API_KEY).toBe("sk-live-test-key-not-real");
+    // Credentials live in the session store — never written back to shared env.
+    expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(secretEnvironment.has("DEEPSEEK_API_KEY")).toBe(true);
     expect(current).toEqual({
       provider: "deepseek",
       id: "deepseek-chat",
@@ -157,6 +162,7 @@ describe("registerConnectCommands", () => {
       interactive: modelIo,
       runtimeConfig: baseRuntime(configPath),
       env,
+      secretEnvironment,
       sink: { notify: () => undefined, setStatus: () => undefined },
       getModel: () => current,
       setModel: async (model) => {
@@ -173,12 +179,14 @@ describe("registerConnectCommands", () => {
     tempDirs.push(home);
     const configPath = path.join(home, "config.toml");
     await writeFile(configPath, DEFAULT_CONFIG_TOML, "utf8");
+    const env = { XIO_HOME: home, XIO_CONFIG: configPath };
     const host = new ExtensionHost();
     registerConnectCommands({
       host,
       interactive: fakeIo({}),
       runtimeConfig: baseRuntime(configPath),
-      env: { XIO_HOME: home, XIO_CONFIG: configPath },
+      env,
+      secretEnvironment: await SecretEnvironment.create({ env, providers: {} }),
       sink: {},
       getModel: () => ({ provider: "deepseek", id: "deepseek-chat" }),
       setModel: async () => {},
@@ -191,6 +199,7 @@ describe("registerConnectCommands", () => {
     tempDirs.push(home);
     const configPath = path.join(home, "config.toml");
     await writeFile(configPath, DEFAULT_CONFIG_TOML, "utf8");
+    const env = { XIO_HOME: home, XIO_CONFIG: configPath };
     const host = new ExtensionHost();
     const fetchImpl = vi.fn(async () => new Response("unauthorized key=sk-echoed", { status: 401 }));
     registerConnectCommands({
@@ -200,7 +209,8 @@ describe("registerConnectCommands", () => {
         prompts: ["bad-key"],
       }),
       runtimeConfig: baseRuntime(configPath),
-      env: { XIO_HOME: home, XIO_CONFIG: configPath },
+      env,
+      secretEnvironment: await SecretEnvironment.create({ env, providers: {} }),
       sink: {},
       getModel: () => ({ provider: "deepseek", id: "deepseek-chat" }),
       setModel: async () => {},
@@ -229,6 +239,7 @@ describe("registerConnectCommands", () => {
       interactive: fakeIo({ selects: [undefined] }),
       runtimeConfig: baseRuntime(configPath),
       env,
+      secretEnvironment: await SecretEnvironment.create({ env, providers: {} }),
       sink: {},
       getModel: () => ({ provider: "deepseek", id: "deepseek-chat" }),
       setModel: async () => {},
