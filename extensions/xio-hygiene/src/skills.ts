@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 import { defineTool } from "../../../src/runtime/define-tool.ts";
 import { Type } from "../../../src/runtime/schema.ts";
+import { WorkspacePathError } from "../../../src/runtime/workspace-path-policy.ts";
 
 import type { ToolDefinition } from "../../../src/runtime/types.ts";
+import {
+  createHygieneResourcePolicy,
+  isMissingResource,
+  readAuthorizedResourceText,
+} from "./project-resource-read.ts";
 
 export type SkillsConfig = Readonly<{
   enabled: boolean;
@@ -73,15 +79,21 @@ export async function discoverSkills(options: DiscoverSkillsOptions): Promise<Sk
   const byName = new Map<string, SkillEntry>();
 
   const roots = listSkillRoots(cwd, home, config, options.includeProject !== false);
+  const policy = await createHygieneResourcePolicy({
+    cwd,
+    home,
+    includeUserClaude: config.readClaude,
+    includeUserCursor: config.readCursor,
+  });
   // Parallelize independent skill roots (user/project trees do not depend on each other).
   const rootBatches = await Promise.all(roots.map(async (root) => {
     const localWarnings: string[] = [];
-    const files = await listSkillFiles(root.dir, (message) => {
+    const files = await listSkillFiles(root.dir, policy, (message) => {
       localWarnings.push(message);
       warn(message);
     });
     const parsedEntries = await Promise.all(files.map((filePath) =>
-      parseSkillFile(filePath, root.kind, config.maxBodyBytes, (message) => {
+      parseSkillFile(filePath, root.kind, config.maxBodyBytes, policy, (message) => {
         localWarnings.push(message);
         warn(message);
       })));
@@ -127,8 +139,27 @@ function listSkillRoots(
 
 async function listSkillFiles(
   root: string,
+  policy: Awaited<ReturnType<typeof createHygieneResourcePolicy>>,
   warn: (message: string) => void,
 ): Promise<string[]> {
+  try {
+    await policy.resolve("search", root);
+  } catch (error) {
+    if (error instanceof WorkspacePathError) {
+      if (error.code === "NOT_FOUND") {
+        return [];
+      }
+      warn(`skills: ${error.code} for skill root ${root}; skipping`);
+      return [];
+    }
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    if (code === "ENOENT") {
+      return [];
+    }
+    warn(`skills: failed to authorize ${root}: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+
   let entries: string[];
   try {
     entries = await readdir(root, { recursive: true, encoding: "utf8" });
@@ -150,15 +181,17 @@ async function parseSkillFile(
   filePath: string,
   source: SkillSourceKind,
   maxBodyBytes: number,
+  policy: Awaited<ReturnType<typeof createHygieneResourcePolicy>>,
   warn: (message: string) => void,
 ): Promise<SkillEntry | undefined> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch (error) {
-    warn(`skills: failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  const loaded = await readAuthorizedResourceText(policy, filePath);
+  if (!loaded.ok) {
+    if (!isMissingResource(loaded)) {
+      warn(`skills: ${loaded.code} for ${filePath}; skipping`);
+    }
     return undefined;
   }
+  const raw = loaded.text;
 
   const parsed = parseFrontmatter(raw);
   if (!parsed) {
@@ -180,7 +213,7 @@ async function parseSkillFile(
   return {
     name,
     description,
-    path: path.resolve(filePath),
+    path: loaded.canonicalPath,
     body: truncatedBody.text,
     hash,
     truncated: truncatedBody.truncated,

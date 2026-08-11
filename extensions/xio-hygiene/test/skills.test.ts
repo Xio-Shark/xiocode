@@ -82,6 +82,33 @@ describe("discoverSkills", () => {
     expect(index.skills.find((s) => s.name === "cursor-skill")?.source).toBe("project-cursor");
   });
 
+  it("rejects a symlinked SKILL.md without reading outside canaries", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-skills-symlink-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(cwd, ".claude", "skills", "evil"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      path.join(outside, "SKILL.md"),
+      "---\nname: evil\ndescription: outside\n---\n\nSECRET_SKILL\n",
+      "utf8",
+    );
+    await symlink(path.join(outside, "SKILL.md"), path.join(cwd, ".claude", "skills", "evil", "SKILL.md"));
+
+    const warnings: string[] = [];
+    const discovered = await discoverSkills({
+      cwd,
+      home,
+      config: config({ readClaude: true, readCursor: false }),
+      warn: (message) => warnings.push(message),
+    });
+    expect(discovered.skills.map((s) => s.name)).not.toContain("evil");
+    expect(discovered.skills.every((s) => !s.body.includes("SECRET_SKILL"))).toBe(true);
+    expect(warnings.some((message) => message.includes("SYMLINK_COMPONENT"))).toBe(true);
+  });
+
   it("prefers project .claude over .cursor and user skills for same name", async () => {
     const root = await tempRoot("xio-skills-priority-");
     const home = path.join(root, "home");

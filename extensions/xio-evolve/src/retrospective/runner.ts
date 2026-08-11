@@ -356,8 +356,13 @@ export class RetrospectiveRunner {
       return undefined;
     }
     const result = await applyNormsWrites({ workspaceRoot, files: proposals });
-    if (result.rejected.length > 0) {
-      this.#notify?.(`norms write rejected: ${result.rejected.join("; ")}`);
+    if (result.status !== "ok" || result.rejected.length > 0) {
+      this.#notify?.(
+        `norms write ${result.status}: ${
+          result.error
+            ?? (result.rejected.length > 0 ? result.rejected.join("; ") : "no files written")
+        }`,
+      );
       return undefined;
     }
     this.#notify?.(`norms written: ${result.written.join(", ")}`);

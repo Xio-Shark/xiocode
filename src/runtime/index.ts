@@ -67,6 +67,19 @@ export {
 } from "./session-ui.ts";
 export { SessionStore } from "./session-store.ts";
 export { createBuiltinTools } from "./tools/builtin.ts";
+export {
+  WorkspacePathError,
+  WorkspacePathPolicy,
+  type CheckedWorkspacePath,
+  type ExternalPathRequest,
+  type PathDecision,
+  type StagedWorkspaceWrite,
+  type WorkspacePathErrorCode,
+  type WorkspacePathKind,
+  type WorkspacePathOperation,
+  type WorkspacePathPolicyHooks,
+  type WorkspacePathPolicyOptions,
+} from "./workspace-path-policy.ts";
 export { createLlmClient, resolveApiKey } from "./providers/client.ts";
 export {
   EXPLORE_TOOL_NAME,

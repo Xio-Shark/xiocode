@@ -254,3 +254,123 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
     expect(notices.some((notice) => notice.includes("Dangerous command auto-allowed"))).toBe(true);
   });
 });
+
+describe("registerToolPermissionGate — outside path one-shot grants", () => {
+  it("grants an exact interactive outside read once and never reuses it", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { WorkspacePathPolicy } = await import("./workspace-path-policy.ts");
+
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-path-grant-"));
+    try {
+      const root = path.join(base, "ws");
+      const outside = path.join(base, "outside.txt");
+      await mkdir(root);
+      await writeFile(outside, "secret\n", "utf8");
+      const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot: root });
+      const host = new ExtensionHost();
+      const io = fakeIo([true, true]);
+      const notices: string[] = [];
+      registerToolPermissionGate({
+        host,
+        interactive: io,
+        sink: { notify: (message) => notices.push(message) },
+        getMode: () => "auto",
+        pathPolicy,
+      });
+
+      const first = await host.emit("tool_call", {
+        toolName: "read",
+        input: { path: outside },
+        call: { id: "c1", name: "read", args: { path: outside } },
+      });
+      expect(blocked(first)).toBe(false);
+      expect(io.asks.length).toBe(1);
+      expect(notices.some((n) => n.includes("Granted outside"))).toBe(true);
+
+      // Same call id already consumed after tool execute would run; second gate ask needed.
+      const second = await host.emit("tool_call", {
+        toolName: "read",
+        input: { path: outside },
+        call: { id: "c2", name: "read", args: { path: outside } },
+      });
+      expect(blocked(second)).toBe(false);
+      expect(io.asks.length).toBe(2);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("denies outside read under non-interactive sessions without asking", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { WorkspacePathPolicy } = await import("./workspace-path-policy.ts");
+
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-path-deny-"));
+    try {
+      const root = path.join(base, "ws");
+      const outside = path.join(base, "outside.txt");
+      await mkdir(root);
+      await writeFile(outside, "secret\n", "utf8");
+      const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot: root });
+      const host = new ExtensionHost();
+      const io = fakeIo([true]);
+      registerToolPermissionGate({
+        host,
+        interactive: io,
+        sink: {},
+        getMode: () => "auto",
+        interactiveSession: false,
+        pathPolicy,
+      });
+
+      const result = await host.emit("tool_call", {
+        toolName: "read",
+        input: { path: outside },
+        call: { id: "c1", name: "read", args: { path: outside } },
+      });
+      expect(blocked(result)).toBe(true);
+      expect(io.asks).toEqual([]);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not grant outside write even when high-risk policy is allow", async () => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { WorkspacePathPolicy } = await import("./workspace-path-policy.ts");
+
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-path-write-"));
+    try {
+      const root = path.join(base, "ws");
+      const outside = path.join(base, "outside.txt");
+      await mkdir(root);
+      await writeFile(outside, "secret\n", "utf8");
+      const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot: root });
+      const host = new ExtensionHost();
+      registerToolPermissionGate({
+        host,
+        interactive: fakeIo([true]),
+        sink: {},
+        getMode: () => "full",
+        highRiskPolicy: "allow",
+        pathPolicy,
+      });
+
+      // write is not offered an external grant channel at the gate; tool execute denies.
+      const result = await host.emit("tool_call", {
+        toolName: "write",
+        input: { path: outside, content: "x\n" },
+        call: { id: "w1", name: "write", args: { path: outside, content: "x\n" } },
+      });
+      expect(blocked(result)).toBe(false);
+      await expect(pathPolicy.resolve("write-file", outside, "w1")).rejects.toThrow(/OUTSIDE_WORKSPACE/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+});

@@ -12,6 +12,10 @@ import {
   allowsProjectResources,
   type TrustDecision,
 } from "./project-trust.ts";
+import {
+  WorkspacePathError,
+  type WorkspacePathPolicy,
+} from "./workspace-path-policy.ts";
 
 import type { ExtensionHost } from "./extension-host.ts";
 import type { InteractiveIO } from "./interactive-io.ts";
@@ -47,6 +51,13 @@ export type ToolPermissionGateOptions = Readonly<{
    * Default: ask when interactive, deny for `-p`.
    */
   untrustedHighRiskPolicy?: HighRiskPolicy;
+  /**
+   * Session workspace path policy. When set, lexical outside read/search paths
+   * may receive an exact one-tool-call grant (interactive only). Outside
+   * write/edit, non-interactive sessions, and explore workers never get a grant.
+   * Approvals are never cached across calls or promoted by `/bypass` / full mode.
+   */
+  pathPolicy?: WorkspacePathPolicy;
 }>;
 
 export type ToolPermissionGate = Readonly<{
@@ -103,6 +114,17 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
       });
       if (trustBlock) return trustBlock;
     }
+
+    const pathBlock = await enforceExternalPathAccess({
+      name,
+      args: toolArgsFromEvent(record),
+      callId: toolCallIdFromEvent(record),
+      pathPolicy: options.pathPolicy,
+      interactiveSession,
+      interactive: options.interactive,
+      sink: options.sink,
+    });
+    if (pathBlock) return pathBlock;
 
     // Command-level layer: session tool approval does not carry over to the
     // commands that destroy data or run remote code. Re-asked every time.
@@ -296,11 +318,109 @@ async function enforceCommandRisk(input: Readonly<{
   return undefined;
 }
 
+/**
+ * Exact one-tool-call grant for lexical outside read/search paths.
+ * Never session-cached; never opened by high-risk allow / `/bypass`.
+ */
+async function enforceExternalPathAccess(input: Readonly<{
+  name: string;
+  args: unknown;
+  callId: string | undefined;
+  pathPolicy: WorkspacePathPolicy | undefined;
+  interactiveSession: boolean;
+  interactive: InteractiveIO;
+  sink: SessionUiSink;
+}>): Promise<{ block: true; reason: string } | undefined> {
+  if (!input.pathPolicy) return undefined;
+  const operation = pathOperationForTool(input.name);
+  if (!operation) return undefined;
+  const requestedPath = pathArgForTool(input.name, input.args);
+  if (requestedPath === undefined) return undefined;
+
+  let decision;
+  try {
+    decision = await input.pathPolicy.inspect(operation, requestedPath);
+  } catch (error) {
+    if (error instanceof WorkspacePathError) {
+      return { block: true, reason: error.message };
+    }
+    throw error;
+  }
+  if (decision.decision === "allow") {
+    return undefined;
+  }
+
+  if (!input.interactiveSession) {
+    return {
+      block: true,
+      reason:
+        `outside path denied in non-interactive mode (${input.name}): `
+        + decision.request.canonicalPath,
+    };
+  }
+  if (!input.callId) {
+    return {
+      block: true,
+      reason: `outside path requires a tool call id (${input.name})`,
+    };
+  }
+
+  const ok = await input.interactive.ask(
+    `Allow outside ${operation} for this tool call only? [y/N] `,
+    [
+      `tool: ${input.name}`,
+      `operation: ${operation}`,
+      `requested: ${decision.request.requestedPath}`,
+      `canonical: ${decision.request.canonicalPath}`,
+      "scope: this tool call only (not reusable)",
+    ].join("\n"),
+  );
+  if (!ok) {
+    return {
+      block: true,
+      reason: `user denied outside path: ${decision.request.canonicalPath}`,
+    };
+  }
+  input.pathPolicy.grantOnce(input.callId, decision.request);
+  input.sink.notify?.(
+    `Granted outside ${operation} once for ${input.name} (${input.callId}).`,
+    "warning",
+  );
+  return undefined;
+}
+
+function pathOperationForTool(name: string): "read-file" | "search" | undefined {
+  if (name === "read") return "read-file";
+  if (name === "grep" || name === "glob") return "search";
+  return undefined;
+}
+
+function pathArgForTool(name: string, args: unknown): string | undefined {
+  const record = asRecord(args);
+  if (name === "read") {
+    return typeof record?.path === "string" ? record.path : undefined;
+  }
+  if (name === "grep" || name === "glob") {
+    return typeof record?.path === "string" ? record.path : ".";
+  }
+  return undefined;
+}
+
 function toolArgsFromEvent(record: Record<string, unknown> | undefined): unknown {
   if (!record) return undefined;
   const call = asRecord(record.call);
   if (call && call.args !== undefined) return call.args;
   return record.args;
+}
+
+function toolCallIdFromEvent(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined;
+  const call = asRecord(record.call);
+  if (call && typeof call.id === "string" && call.id.length > 0) return call.id;
+  if (typeof record.toolCallId === "string" && record.toolCallId.length > 0) {
+    return record.toolCallId;
+  }
+  return undefined;
 }
 
 function toolNameFromEvent(record: Record<string, unknown> | undefined): string | undefined {

@@ -2,6 +2,7 @@ import { ExtensionHost } from "../extension-host.ts";
 import { runAgentLoop } from "../agent-loop.ts";
 import { createLlmClient } from "../providers/client.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
+import { WorkspacePathPolicy } from "../workspace-path-policy.ts";
 import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
 import {
   PERCEPTION_TOOL_NAMES,
@@ -138,9 +139,15 @@ export async function runExploreSubagent(
     },
   });
   const allowed = options.allowBash ? EXPLORE_TOOLS_WITH_BASH : READ_ONLY_TOOLS;
+  // Explore gets its own policy with no grant channel — outside paths stay denied.
+  const pathPolicy = await WorkspacePathPolicy.create({
+    workspaceRoot: options.workspaceRoot,
+    cwd: options.cwd,
+  });
   for (const tool of createBuiltinTools({
     cwd: options.cwd,
     workspaceRoot: options.workspaceRoot,
+    pathPolicy,
     fileShift: options.fileShift,
     contextId: options.contextId ?? "explore",
     onFileShift: options.onFileShift,

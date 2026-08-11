@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,6 +11,7 @@ import {
   resolveRgBinary,
 } from "./builtin.ts";
 import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
+import { WorkspacePathPolicy } from "../workspace-path-policy.ts";
 
 import type { ToolDefinition } from "../types.ts";
 
@@ -468,6 +469,104 @@ describe("builtin edit robustness", () => {
       expect(await readFile(path.join(root, "exact.ts"), "utf8")).toBe("final\n");
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("builtin workspace path boundary", () => {
+  it("denies direct outside reads and rejects final/ancestor symlinks without exposing canaries", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-boundary-"));
+    const root = path.join(base, "workspace");
+    const outside = path.join(base, "outside");
+    try {
+      await mkdir(root);
+      await mkdir(outside);
+      const canary = path.join(outside, "canary.txt");
+      await writeFile(canary, "UNREADABLE_CANARY\n", "utf8");
+      await symlink(canary, path.join(root, "file-link.txt"));
+      await symlink(outside, path.join(root, "dir-link"), "dir");
+      const read = toolByName(createBuiltinTools({ cwd: root }), "read");
+
+      for (const target of [canary, "../outside/canary.txt", "file-link.txt", "dir-link/canary.txt"]) {
+        const result = await textOf(read, { path: target });
+        expect(result.isError).toBe(true);
+        expect(result.text).not.toContain("UNREADABLE_CANARY");
+      }
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("never follows a target or parent symlink during write/edit", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-write-boundary-"));
+    const root = path.join(base, "workspace");
+    const outside = path.join(base, "outside");
+    try {
+      await mkdir(root);
+      await mkdir(outside);
+      const canary = path.join(outside, "canary.txt");
+      await writeFile(canary, "outside\n", "utf8");
+      await symlink(canary, path.join(root, "target.txt"));
+      await symlink(outside, path.join(root, "linked-dir"), "dir");
+      const tools = createBuiltinTools({
+        cwd: root,
+        workspaceRoot: root,
+        requireReadBeforeEdit: false,
+      });
+
+      const write = toolByName(tools, "write");
+      const edit = toolByName(tools, "edit");
+      expect((await textOf(write, { path: "target.txt", content: "changed\n" })).isError).toBe(true);
+      expect((await textOf(write, { path: "linked-dir/canary.txt", content: "changed\n" })).isError).toBe(true);
+      expect((await textOf(edit, {
+        path: "target.txt",
+        old_string: "outside",
+        new_string: "changed",
+      })).isError).toBe(true);
+      expect(await readFile(canary, "utf8")).toBe("outside\n");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("does not traverse workspace symlinks in Node grep/glob", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-search-boundary-"));
+    const root = path.join(base, "workspace");
+    const outside = path.join(base, "outside");
+    try {
+      await mkdir(root);
+      await mkdir(outside);
+      await writeFile(path.join(root, "inside.txt"), "ordinary\n", "utf8");
+      await writeFile(path.join(outside, "secret.txt"), "SEARCH_CANARY_39281\n", "utf8");
+      await symlink(outside, path.join(root, "linked-dir"), "dir");
+      const tools = createBuiltinTools({ cwd: root, searchEngine: "node" });
+      const grep = await textOf(toolByName(tools, "grep"), { pattern: "SEARCH_CANARY_39281" });
+      const glob = await textOf(toolByName(tools, "glob"), { pattern: "**/*" });
+      expect(grep.text).not.toContain("SEARCH_CANARY_39281");
+      expect(grep.text).not.toContain("secret.txt");
+      expect(glob.text).not.toContain("linked-dir");
+      expect(glob.text).not.toContain("secret.txt");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("consumes an exact pre-authorized outside read grant once", async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-grant-"));
+    const root = path.join(base, "workspace");
+    const outside = path.join(base, "outside.txt");
+    try {
+      await mkdir(root);
+      await writeFile(outside, "granted\n", "utf8");
+      const policy = await WorkspacePathPolicy.create({ workspaceRoot: root });
+      const decision = await policy.inspect("read-file", outside);
+      if (decision.decision !== "external") throw new Error("expected external request");
+      policy.grantOnce("t1", decision.request);
+      const read = toolByName(createBuiltinTools({ cwd: root, pathPolicy: policy }), "read");
+      expect((await textOf(read, { path: outside })).text).toContain("granted");
+      expect((await textOf(read, { path: outside })).isError).toBe(true);
+    } finally {
+      await rm(base, { recursive: true, force: true });
     }
   });
 });

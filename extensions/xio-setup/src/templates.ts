@@ -3,8 +3,8 @@
  * .trellis/spec) into the current workspace.
  *
  * Reuses the retrospective norms allowlist (AGENTS.md | CLAUDE.md |
- * .trellis/spec/**) and the staged WorkspaceMutationService writer — no
- * second path-policy implementation. Existing files are never overwritten;
+ * .trellis/spec/**) and WorkspacePathPolicy atomic writes via applyNormsWrites —
+ * no second path-policy implementation. Existing files are never overwritten;
  * writing requires explicit confirmation (--yes or interactive y/N).
  */
 
@@ -130,13 +130,16 @@ export async function distributeTemplates(
       summary: template.title,
     })),
   });
-  if (result.rejected.length > 0) {
+  if (result.status !== "ok" || result.rejected.length > 0) {
+    const reasons = result.rejected.length > 0
+      ? result.rejected
+      : [result.error ?? `norms write ${result.status}`];
     return {
       ...plan,
       pending: [],
       rejected: [
         ...plan.rejected,
-        ...result.rejected.map((reason) => ({
+        ...reasons.map((reason) => ({
           template: plan.pending[0]!,
           reason,
         })),

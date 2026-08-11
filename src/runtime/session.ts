@@ -37,6 +37,7 @@ import { FileShiftRegistry, type FileShiftInfo } from "./file-shift.ts";
 import { FileWriteQueue } from "./file-write-queue.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { GrepSeenState } from "./tools/grep-outline.ts";
+import { WorkspacePathPolicy } from "./workspace-path-policy.ts";
 import { DEFAULT_CACHE_COLD_SECS, ProviderCacheColdTracker } from "./providers/cache-cold.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatContextStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
@@ -244,6 +245,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const grepSeen = new GrepSeenState();
   const fileShift = new FileShiftRegistry();
   const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
+  const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot, cwd });
   const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
     options,
     model,
@@ -259,6 +261,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     grepSeen,
     fileShift,
     requireReadBeforeEdit,
+    pathPolicy,
   });
 
   let currentModel = model;
@@ -426,6 +429,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     allowHighRisk,
     interactiveSession,
     getTrust: () => projectTrust.decision,
+    pathPolicy,
   });
   const getRunId = async (): Promise<string | undefined> => {
     try {
@@ -783,6 +787,7 @@ async function createConfiguredHost(input: Readonly<{
   grepSeen?: GrepSeenState;
   fileShift?: FileShiftRegistry;
   requireReadBeforeEdit?: boolean;
+  pathPolicy?: WorkspacePathPolicy;
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
@@ -799,6 +804,7 @@ async function createConfiguredHost(input: Readonly<{
   for (const tool of createBuiltinTools({
     cwd: input.cwd,
     workspaceRoot: input.workspaceRoot,
+    pathPolicy: input.pathPolicy,
     writeQueue: input.fileWriteQueue,
     readSet: input.fileReadSet,
     grepSeen: input.grepSeen,

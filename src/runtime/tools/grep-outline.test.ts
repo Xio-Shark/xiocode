@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -74,13 +74,14 @@ describe("annotateGrepOutput adaptive truncation", () => {
       );
       const matchText = "src/mod.ts:1:export function doThing() {";
       const seen = new GrepSeenState();
+      const readText = (filePath: string) => readFile(filePath, "utf8");
 
-      const first = await annotateGrepOutput(matchText, { cwd: root, seen });
+      const first = await annotateGrepOutput(matchText, { cwd: root, seen, readText });
       expect(first).toContain("--- structure ---");
       expect(first).toContain("outline src/mod.ts (heuristic, not full AST):");
       expect(first).toContain("export class Widget {}");
 
-      const second = await annotateGrepOutput(matchText, { cwd: root, seen });
+      const second = await annotateGrepOutput(matchText, { cwd: root, seen, readText });
       expect(second).toContain("outline src/mod.ts: omitted (already shown this session)");
       expect(second).not.toContain("export class Widget {}");
       // Adaptive truncation: repeat output is strictly shorter than the first.
@@ -92,6 +93,24 @@ describe("annotateGrepOutput adaptive truncation", () => {
 
   it("leaves 'no matches' untouched", async () => {
     const seen = new GrepSeenState();
-    expect(await annotateGrepOutput("no matches", { cwd: process.cwd(), seen })).toBe("no matches");
+    expect(await annotateGrepOutput("no matches", {
+      cwd: process.cwd(),
+      seen,
+      readText: (filePath) => readFile(filePath, "utf8"),
+    })).toBe("no matches");
+  });
+
+  it("uses the injected checked reader for every secondary outline read", async () => {
+    const requested: string[] = [];
+    const result = await annotateGrepOutput("../outside.ts:1:export const secret = 1;", {
+      cwd: "/workspace",
+      seen: new GrepSeenState(),
+      readText: async (filePath) => {
+        requested.push(filePath);
+        throw new Error("blocked by policy");
+      },
+    });
+    expect(requested).toEqual([path.resolve("/workspace", "../outside.ts")]);
+    expect(result).not.toContain("--- structure ---");
   });
 });

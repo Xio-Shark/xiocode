@@ -1,6 +1,12 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
+import {
+  WorkspacePathError,
+  WorkspacePathPolicy,
+  type StagedWorkspaceWrite,
+} from "../../../../src/runtime/workspace-path-policy.ts";
 
 /** Paths allowed for norms auto-write under the workspace root. */
 export const NORMS_ALLOWLIST_ROOT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -23,10 +29,14 @@ export type NormsPendingOffer = Readonly<{
   files: readonly NormsProposedFile[];
 }>;
 
+export type NormsWriteStatus = "ok" | "rejected" | "rolled_back" | "rollback_failed";
+
 export type NormsWriteResult = Readonly<{
   written: readonly string[];
   backups: readonly string[];
   rejected: readonly string[];
+  status: NormsWriteStatus;
+  error?: string;
 }>;
 
 export function defaultPendingNormsPath(): string {
@@ -36,6 +46,7 @@ export function defaultPendingNormsPath(): string {
 /**
  * Resolve and validate an allowlisted relative path.
  * Returns absolute path or throws / returns error reason.
+ * Lexical allowlist only — filesystem authorization happens in applyNormsWrites.
  */
 export function resolveNormsAllowlistPath(
   workspaceRoot: string,
@@ -123,47 +134,201 @@ export async function clearPendingNormsOffer(
 }
 
 /**
- * Apply allowlisted writes. Rejects the whole batch if any path fails allowlist.
- * Does not ask — caller must have obtained strong confirmation.
+ * Apply allowlisted writes with policy-aware staging, in-process batch rollback,
+ * and `.bak-<stamp>` retention on success. Rejects the whole batch if any path
+ * fails allowlist or filesystem authorization. Does not ask — caller must have
+ * obtained strong confirmation.
  */
 export async function applyNormsWrites(input: Readonly<{
   workspaceRoot: string;
   files: readonly NormsProposedFile[];
   now?: () => number;
+  /** Test/failure-injection seam for staged publish validation. */
+  policyHooks?: import("../../../../src/runtime/workspace-path-policy.ts").WorkspacePathPolicyHooks;
 }>): Promise<NormsWriteResult> {
   const resolved: Array<{ absolutePath: string; relativePath: string; content: string }> = [];
   const rejected: string[] = [];
+  const seen = new Set<string>();
+
   for (const file of input.files) {
     const check = resolveNormsAllowlistPath(input.workspaceRoot, file.relativePath);
     if (!check.ok) {
       rejected.push(`${file.relativePath}: ${check.reason}`);
       continue;
     }
+    if (seen.has(check.relativePath)) {
+      rejected.push(`${file.relativePath}: duplicate target in batch`);
+      continue;
+    }
+    seen.add(check.relativePath);
     resolved.push({
       absolutePath: check.absolutePath,
       relativePath: check.relativePath,
-      content: file.content,
+      content: file.content.endsWith("\n") ? file.content : `${file.content}\n`,
     });
   }
   if (rejected.length > 0) {
-    return { written: [], backups: [], rejected };
+    return { written: [], backups: [], rejected, status: "rejected" };
+  }
+  if (resolved.length === 0) {
+    return { written: [], backups: [], rejected: [], status: "ok" };
+  }
+
+  let policy: WorkspacePathPolicy;
+  try {
+    policy = await WorkspacePathPolicy.create({
+      workspaceRoot: input.workspaceRoot,
+      cwd: input.workspaceRoot,
+      hooks: input.policyHooks,
+    });
+  } catch (error) {
+    return {
+      written: [],
+      backups: [],
+      rejected: [`workspace: ${error instanceof Error ? error.message : String(error)}`],
+      status: "rejected",
+    };
   }
 
   const stamp = (input.now ?? Date.now)();
-  const written: string[] = [];
-  const backups: string[] = [];
-  for (const file of resolved) {
-    await mkdir(path.dirname(file.absolutePath), { recursive: true });
-    try {
-      await readFile(file.absolutePath, "utf8");
-      const bak = `${file.absolutePath}.bak-${stamp}`;
-      await rename(file.absolutePath, bak);
-      backups.push(bak);
-    } catch {
-      // new file
+  const staged: Array<{
+    relativePath: string;
+    absolutePath: string;
+    content: string;
+    write: StagedWorkspaceWrite;
+    prior: Buffer | undefined;
+    bakPath: string;
+  }> = [];
+
+  try {
+    for (const file of resolved) {
+      const checked = await policy.resolve("write-file", file.relativePath);
+      const prior = checked.kind === "regular-file"
+        ? await policy.readFile(file.relativePath)
+        : undefined;
+
+      const bakPath = `${file.absolutePath}.bak-${stamp}`;
+      if (prior) {
+        const bakRelative = path.relative(policy.workspaceRoot, bakPath);
+        await policy.resolve("write-file", bakRelative);
+      }
+
+      const write = await policy.stageWrite(file.relativePath, file.content);
+      staged.push({
+        relativePath: file.relativePath,
+        absolutePath: file.absolutePath,
+        content: file.content,
+        write,
+        prior,
+        bakPath,
+      });
     }
-    await writeFile(file.absolutePath, file.content.endsWith("\n") ? file.content : `${file.content}\n`, "utf8");
-    written.push(file.relativePath);
+  } catch (error) {
+    for (const entry of staged) {
+      try {
+        await entry.write.discard();
+      } catch {
+        // Keep original failure.
+      }
+    }
+    return {
+      written: [],
+      backups: [],
+      rejected: [error instanceof Error ? error.message : String(error)],
+      status: "rejected",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-  return { written, backups, rejected: [] };
+
+  const published: typeof staged = [];
+  try {
+    for (const entry of staged) {
+      await entry.write.publish();
+      published.push(entry);
+    }
+  } catch (error) {
+    // Rollback must not reuse publish failure-injection hooks.
+    let rollbackPolicy = policy;
+    try {
+      rollbackPolicy = await WorkspacePathPolicy.create({
+        workspaceRoot: input.workspaceRoot,
+        cwd: input.workspaceRoot,
+      });
+    } catch {
+      // Fall back to the original policy if a fresh one cannot be created.
+    }
+    const rollback = await rollbackPublished(rollbackPolicy, published);
+    for (const entry of staged.slice(published.length)) {
+      try {
+        await entry.write.discard();
+      } catch {
+        // Best-effort staging cleanup.
+      }
+    }
+    return {
+      written: [],
+      backups: [],
+      rejected: [],
+      status: rollback.ok ? "rolled_back" : "rollback_failed",
+      error: [
+        error instanceof Error ? error.message : String(error),
+        rollback.ok ? undefined : `rollback_failed: ${rollback.error}`,
+      ].filter(Boolean).join("; "),
+    };
+  }
+
+  const backups: string[] = [];
+  for (const entry of published) {
+    if (!entry.prior) continue;
+    try {
+      const bakRelative = path.relative(policy.workspaceRoot, entry.bakPath);
+      await policy.writeFileAtomic(bakRelative, entry.prior);
+      backups.push(entry.bakPath);
+    } catch (error) {
+      // Publish already succeeded; bak is best-effort retention of prior bytes.
+      return {
+        written: published.map((row) => row.relativePath),
+        backups,
+        rejected: [],
+        status: "ok",
+        error: `backup failed for ${entry.relativePath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+  }
+
+  return {
+    written: published.map((row) => row.relativePath),
+    backups,
+    rejected: [],
+    status: "ok",
+  };
+}
+
+async function rollbackPublished(
+  policy: WorkspacePathPolicy,
+  published: readonly Readonly<{
+    relativePath: string;
+    prior: Buffer | undefined;
+  }>[],
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const errors: string[] = [];
+  for (const entry of [...published].reverse()) {
+    try {
+      if (entry.prior) {
+        await policy.writeFileAtomic(entry.relativePath, entry.prior);
+      } else {
+        await policy.removeFile(entry.relativePath);
+      }
+    } catch (error) {
+      errors.push(
+        `${entry.relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (errors.length > 0) {
+    return { ok: false, error: errors.join("; ") };
+  }
+  return { ok: true };
 }
