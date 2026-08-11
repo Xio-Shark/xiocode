@@ -1,7 +1,6 @@
-import { spawn } from "node:child_process";
-
 import { withFixHint } from "../tools/error-guidance.ts";
 import { buildChildEnv } from "../secret-environment.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
 
 export type DoneCommand = Readonly<{
   name: string;
@@ -94,41 +93,28 @@ async function runCommand(
       passed: false,
     };
   }
-  return new Promise((resolve) => {
-    const child = spawn(bin, args, {
-      cwd,
-      env: env ?? buildChildEnv(process.env),
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      resolve({
-        name: command.name,
-        argv: command.argv,
-        exitCode: 1,
-        stdout,
-        stderr: error.message,
-        passed: false,
-      });
-    });
-    child.on("close", (code) => {
-      const exitCode = code ?? 1;
-      resolve({
-        name: command.name,
-        argv: command.argv,
-        exitCode,
-        stdout: stdout.slice(0, 20_000),
-        stderr: stderr.slice(0, 20_000),
-        passed: exitCode === 0,
-      });
-    });
+  const result = await runSupervisedProcess({
+    command: bin,
+    args,
+    cwd,
+    env: env ?? buildChildEnv(process.env),
+    timeoutMs: 10 * 60 * 1000,
+    output: {
+      ...OUTPUT_BUDGET_PRESETS.verify,
+      headBytes: 20_000,
+      tailBytes: 0,
+      hardCapBytes: 512 * 1024,
+    },
   });
+  const exitCode = result.code ?? 1;
+  return {
+    name: command.name,
+    argv: command.argv,
+    exitCode,
+    stdout: result.stdout.slice(0, 20_000),
+    stderr: result.stderr.slice(0, 20_000),
+    passed: exitCode === 0,
+  };
 }
 
 function formatSummary(passed: boolean, results: readonly DoneCommandResult[]): string {

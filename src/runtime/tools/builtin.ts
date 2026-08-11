@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 
@@ -8,6 +7,7 @@ import { defineTool } from "../define-tool.ts";
 import { FileReadSet } from "../file-read-set.ts";
 import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
 import { FileWriteQueue } from "../file-write-queue.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
 import { WorkspacePathPolicy, type CheckedWorkspacePath } from "../workspace-path-policy.ts";
 import { GrepSeenState, annotateGrepOutput } from "./grep-outline.ts";
 import { Type } from "../schema.ts";
@@ -479,7 +479,7 @@ function createGrepTool(
       path: Type.String({ description: "File or directory to search (optional)." }),
       glob: Type.String({ description: "Glob filter (optional)." }),
     }, { required: ["pattern"] }),
-    async execute(id, params) {
+    async execute(id, params, ctx) {
       const pattern = String(params.pattern ?? "");
       const requestedRoot = params.path ? String(params.path) : ".";
       try {
@@ -504,6 +504,7 @@ function createGrepTool(
             pattern,
             searchRoot,
             globFilter,
+            signal: ctx?.signal,
           });
           if (result.kind === "ok") {
             const filtered = await filterGrepOutput(result.text, searchCwd, searchScope, policy);
@@ -537,7 +538,7 @@ function createGlobTool(
       pattern: Type.String({ description: "Glob pattern, e.g. **/*.ts" }),
       path: Type.String({ description: "Root directory (optional)." }),
     }, { required: ["pattern"] }),
-    async execute(id, params) {
+    async execute(id, params, ctx) {
       const pattern = String(params.pattern ?? "");
       const requestedRoot = params.path ? String(params.path) : ".";
       try {
@@ -547,7 +548,12 @@ function createGlobTool(
         const searchCwd = policy.cwd;
         const engine = await resolveGlobEngine(searchOverride);
         if (engine.kind !== "node") {
-          const result = await runGlobWithEngine(engine, { cwd: searchCwd, pattern, root });
+          const result = await runGlobWithEngine(engine, {
+            cwd: searchCwd,
+            pattern,
+            root,
+            signal: ctx?.signal,
+          });
           if (result.kind === "ok") {
             return textResult(await filterGlobOutput(result.text, searchCwd, searchScope, policy));
           }
@@ -705,58 +711,33 @@ async function runArgv(
   signal?: AbortSignal,
   options?: Readonly<{ abortedMessage?: string; env?: NodeJS.ProcessEnv }>,
 ): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, [...args], {
-      cwd,
-      env: options?.env ?? buildChildEnv(process.env),
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      child.kill("SIGTERM");
-      // Escalate if the child ignores SIGTERM.
-      const escalate = setTimeout(() => {
-        if (!settled) {
-          child.kill("SIGKILL");
-        }
-      }, 1_000);
-      escalate.unref?.();
-    };
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("close", (code) => {
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      if (signal?.aborted) {
-        resolve({
-          exitCode: code ?? 1,
-          stdout,
-          stderr: stderr.length > 0 ? stderr : (options?.abortedMessage ?? "cancelled: AbortSignal aborted"),
-        });
-        return;
-      }
-      resolve({ exitCode: code ?? 1, stdout, stderr });
-    });
-    child.on("error", (error) => {
-      settled = true;
-      signal?.removeEventListener("abort", onAbort);
-      resolve({ exitCode: 1, stdout, stderr: error.message, spawnError: true });
-    });
-    if (signal?.aborted) {
-      onAbort();
-    }
+  const result = await runSupervisedProcess({
+    command,
+    args,
+    cwd,
+    env: options?.env ?? buildChildEnv(process.env),
+    signal,
+    output: OUTPUT_BUDGET_PRESETS.bash,
   });
+  if (result.termination === "spawn_error") {
+    return {
+      exitCode: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      spawnError: true,
+    };
+  }
+  const stderr = result.aborted && result.stderr.length === 0
+    ? (options?.abortedMessage ?? "cancelled: AbortSignal aborted")
+    : result.stderr;
+  const limitedNote = result.outputLimited
+    ? `${stderr.length > 0 ? `${stderr}\n` : ""}[process_output limited: aggregate hard cap]`
+    : stderr;
+  return {
+    exitCode: result.code ?? 1,
+    stdout: result.stdout,
+    stderr: limitedNote,
+  };
 }
 
 async function* walkFiles(

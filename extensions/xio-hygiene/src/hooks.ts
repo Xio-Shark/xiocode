@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +8,10 @@ import {
   readAuthorizedResourceText,
 } from "./project-resource-read.ts";
 import { buildChildEnv } from "../../../src/runtime/secret-environment.ts";
+import {
+  OUTPUT_BUDGET_PRESETS,
+  runSupervisedProcess,
+} from "../../../src/runtime/process/index.ts";
 
 export type HooksConfig = Readonly<{
   enabled: boolean;
@@ -180,13 +183,21 @@ export function registerHooksBridge(
     command: string;
     stdin: unknown;
     timeoutMs: number;
+    signal?: AbortSignal;
   }>) => runCommand({
     command: input.command,
     cwd: options.cwd,
     stdin: redactPayload(input.stdin),
     timeoutMs: input.timeoutMs,
+    signal: input.signal,
     ...(childEnv ? { env: childEnv } : {}),
   });
+
+  const readPayloadSignal = (payload: unknown): AbortSignal | undefined => {
+    const event = asRecord(payload);
+    const candidate = event?.signal;
+    return candidate instanceof AbortSignal ? candidate : undefined;
+  };
   let loaded: LoadedHooks | undefined;
   let sessionContext = "";
   const lastRuns: HookRunSummary[] = [];
@@ -302,6 +313,7 @@ export function registerHooksBridge(
         ? call.args
         : {}) as Record<string, unknown>;
 
+    const turnSignal = readPayloadSignal(payload);
     for (const group of loaded.events.PreToolUse) {
       if (!matcherMatches(group.matcher, toolName)) {
         continue;
@@ -316,6 +328,7 @@ export function registerHooksBridge(
             tool_input: toolInput,
           },
           timeoutMs: hook.timeoutMs ?? config.timeoutMs,
+          signal: turnSignal,
         });
         const parsed = interpretHookOutput("PreToolUse", result);
         record({
@@ -363,6 +376,7 @@ export function registerHooksBridge(
       ? call.args
       : {}) as Record<string, unknown>;
     const toolResult = asRecord(event.result);
+    const turnSignal = readPayloadSignal(payload);
 
     for (const group of loaded.events.PostToolUse) {
       if (!matcherMatches(group.matcher, toolName)) {
@@ -379,6 +393,7 @@ export function registerHooksBridge(
             tool_response: toolResult,
           },
           timeoutMs: hook.timeoutMs ?? config.timeoutMs,
+          signal: turnSignal,
         });
         record({
           event: "PostToolUse",
@@ -463,68 +478,28 @@ export async function runCommandHook(options: Readonly<{
   stdin: unknown;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }>): Promise<CommandHookResult> {
   const timeoutMs = Math.max(1, options.timeoutMs);
   const payload = `${JSON.stringify(options.stdin)}\n`;
 
-  return new Promise((resolve) => {
-    const child = spawn("/bin/sh", ["-c", options.command], {
-      cwd: options.cwd,
-      env: options.env ?? buildChildEnv(process.env),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-
-    const finish = (exitCode: number) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      resolve({ exitCode, stdout, stderr, timedOut });
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      const escalate = setTimeout(() => {
-        if (!settled) {
-          child.kill("SIGKILL");
-        }
-      }, 1_000);
-      escalate.unref?.();
-    }, timeoutMs);
-    timer.unref?.();
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("close", (code) => {
-      finish(code ?? (timedOut ? 124 : 1));
-    });
-    child.on("error", (error) => {
-      stderr = stderr.length > 0 ? stderr : error.message;
-      finish(1);
-    });
-
-    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-      // A hook may exit without reading stdin; the resulting EPIPE is already
-      // surfaced through the write callback and must not crash the host.
-      stderr = stderr.length > 0 ? stderr : error.message;
-    });
-    child.stdin.write(payload, (error) => {
-      if (error) {
-        stderr = stderr.length > 0 ? stderr : error.message;
-      }
-      child.stdin.end();
-    });
+  const result = await runSupervisedProcess({
+    command: "/bin/sh",
+    args: ["-c", options.command],
+    cwd: options.cwd,
+    env: options.env ?? buildChildEnv(process.env),
+    stdin: payload,
+    signal: options.signal,
+    timeoutMs,
+    output: OUTPUT_BUDGET_PRESETS.hook,
   });
+
+  return {
+    exitCode: result.code ?? (result.timedOut ? 124 : 1),
+    stdout: result.stdout,
+    stderr: result.stderr,
+    timedOut: result.timedOut,
+  };
 }
 
 export function matcherMatches(matcher: string | undefined, value: string): boolean {

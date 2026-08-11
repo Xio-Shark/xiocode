@@ -9,10 +9,11 @@
  * Declining either gate leaves the manual handoff commands as the fallback.
  */
 
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { buildChildEnv } from "../secret-environment.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
 import {
   detectTrellis,
   formatParallelPlanHandoff,
@@ -58,84 +59,71 @@ async function runTaskPy(
     timeoutMs: number;
   }>,
 ): Promise<TaskPyResult> {
-  return await new Promise((resolve) => {
-    // detached: task.py re-spawns dispatch.py as a grandchild; killing the
-    // process group on abort/timeout reaps both instead of orphaning the
-    // dispatcher mid-run (spawned workers intentionally survive in their own
-    // sessions — dispatch-ready can be re-run to pick the waves back up).
-    const child = spawn(
-      "python3",
-      [path.join(".trellis", "scripts", "task.py"), ...args],
-      {
-        cwd: options.workspaceRoot,
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-      },
-    );
-    const killTree = () => {
-      if (process.platform !== "win32" && typeof child.pid === "number") {
-        try {
-          process.kill(-child.pid, "SIGTERM");
-          return;
-        } catch {
-          // group already gone — fall through to the direct kill
-        }
-      }
-      child.kill("SIGTERM");
-    };
-    const tail: string[] = [];
-    const stdoutLines: string[] = [];
-    let settled = false;
+  const tail: string[] = [];
+  const stdoutLines: string[] = [];
+  let lineBuffer = "";
 
-    const pushLine = (line: string, fromStdout: boolean) => {
-      const trimmed = line.trimEnd();
-      if (!trimmed) return;
-      tail.push(trimmed);
-      if (tail.length > TAIL_LIMIT) tail.shift();
-      if (fromStdout) stdoutLines.push(trimmed);
-      if (FORWARD_PATTERN.test(trimmed)) {
-        options.notify?.(`[trellis] ${stripAnsi(trimmed)}`, "info");
-      }
-    };
+  const pushLine = (line: string, fromStdout: boolean) => {
+    const trimmed = line.trimEnd();
+    if (!trimmed) return;
+    tail.push(trimmed);
+    if (tail.length > TAIL_LIMIT) tail.shift();
+    if (fromStdout) {
+      stdoutLines.push(trimmed);
+      // Only the final import path line is consumed (.at(-1)); keep a small ring.
+      if (stdoutLines.length > TAIL_LIMIT) stdoutLines.shift();
+    }
+    if (FORWARD_PATTERN.test(trimmed)) {
+      options.notify?.(`[trellis] ${stripAnsi(trimmed)}`, "info");
+    }
+  };
 
-    const makeLineReader = (fromStdout: boolean) => {
-      let buffer = "";
-      return (chunk: Buffer) => {
-        buffer += chunk.toString("utf8");
-        let idx = buffer.indexOf("\n");
-        while (idx !== -1) {
-          pushLine(buffer.slice(0, idx), fromStdout);
-          buffer = buffer.slice(idx + 1);
-          idx = buffer.indexOf("\n");
-        }
-      };
-    };
-    child.stdout.on("data", makeLineReader(true));
-    child.stderr.on("data", makeLineReader(false));
+  const ingest = (text: string, fromStdout: boolean) => {
+    lineBuffer += text;
+    // Bound half-line buffer so a no-newline flood cannot grow forever.
+    if (Buffer.byteLength(lineBuffer) > 64 * 1024) {
+      pushLine(lineBuffer.slice(0, 64 * 1024), fromStdout);
+      lineBuffer = "";
+      return;
+    }
+    let idx = lineBuffer.indexOf("\n");
+    while (idx !== -1) {
+      pushLine(lineBuffer.slice(0, idx), fromStdout);
+      lineBuffer = lineBuffer.slice(idx + 1);
+      idx = lineBuffer.indexOf("\n");
+    }
+  };
 
-    const finish = (code: number, note?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      if (note) tail.push(note);
-      resolve({ code, tail: tail.map(stripAnsi).join("\n"), stdoutLines });
-    };
-
-    const timer = setTimeout(() => {
-      killTree();
-      finish(-1, `timed out after ${Math.round(options.timeoutMs / 1000)}s`);
-    }, options.timeoutMs);
-    const onAbort = () => {
-      killTree();
-      finish(-1, "aborted");
-    };
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
-    child.on("error", (error) => finish(-1, `spawn failed: ${error.message}`));
-    child.on("close", (code) => finish(code ?? -1));
+  const result = await runSupervisedProcess({
+    command: "python3",
+    args: [path.join(".trellis", "scripts", "task.py"), ...args],
+    cwd: options.workspaceRoot,
+    env: buildChildEnv(process.env),
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+    output: OUTPUT_BUDGET_PRESETS.dispatch,
+    onOutput: (chunk) => {
+      ingest(chunk.text, chunk.stream === "stdout");
+    },
   });
+
+  if (lineBuffer.trim().length > 0) {
+    pushLine(lineBuffer, true);
+    lineBuffer = "";
+  }
+  if (result.timedOut) {
+    tail.push(`timed out after ${Math.round(options.timeoutMs / 1000)}s`);
+  } else if (result.aborted) {
+    tail.push("aborted");
+  } else if (result.termination === "spawn_error") {
+    tail.push(`spawn failed: ${result.stderr}`);
+  }
+
+  return {
+    code: result.code ?? -1,
+    tail: tail.map(stripAnsi).join("\n"),
+    stdoutLines,
+  };
 }
 
 function stripAnsi(text: string): string {

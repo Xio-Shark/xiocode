@@ -624,3 +624,64 @@ describe("builtin cross-context file-shift notify", () => {
     }
   });
 });
+
+describe("builtin bash process lifecycle", () => {
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("kills descendants when AbortSignal fires", async () => {
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-bash-abort-"));
+    try {
+      const tools = createBuiltinTools({ cwd: root });
+      const bash = toolByName(tools, "bash");
+      const controller = new AbortController();
+      const running = bash.execute(
+        "t1",
+        {
+          command:
+            "node -e \"const {spawn}=require('child_process'); const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); process.stdout.write(String(c.pid)); setInterval(()=>{},1000)\"",
+        },
+        { signal: controller.signal },
+      );
+      await new Promise((r) => setTimeout(r, 250));
+      controller.abort();
+      const result = await running;
+      const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
+      const match = /(\d+)/.exec(text);
+      expect(match).toBeTruthy();
+      const descendant = Number.parseInt(match![1]!, 10);
+      expect(isAlive(descendant)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("stops unbounded yes within collect-time budget", async () => {
+    if (process.platform === "win32") return;
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-bash-yes-"));
+    try {
+      // Production bash preset hard-caps at 16MiB — flood past that and require
+      // an explicit limit marker plus bounded wall time / retained text.
+      const tools = createBuiltinTools({ cwd: root });
+      const bash = toolByName(tools, "bash");
+      const started = Date.now();
+      const result = await bash.execute("t1", {
+        command: "node -e \"setInterval(()=>process.stdout.write('y'.repeat(8192)),0)\"",
+      });
+      const elapsed = Date.now() - started;
+      const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
+      expect(elapsed).toBeLessThan(20_000);
+      expect(text).toMatch(/process_output limited|…\[truncated\]…/);
+      expect(text.length).toBeLessThan(20 * 1024 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 25_000);
+});
