@@ -1,4 +1,4 @@
-import { access, constants, readFile } from "node:fs/promises";
+import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,11 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import type { ExtensionContext } from "../../xio-evolve/src/types.ts";
 import type { JsonSchema, ToolDefinition, ToolExecuteResult } from "../../../src/runtime/types.ts";
+import {
+  createHygieneResourcePolicy,
+  isMissingResource,
+  readAuthorizedResourceText,
+} from "./project-resource-read.ts";
 
 export type McpConfig = Readonly<{
   enabled: boolean;
@@ -157,23 +162,30 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
   const sources: string[] = [];
   const merged = new Map<string, ResolvedMcpServer>();
 
+  const policy = await createHygieneResourcePolicy({
+    cwd,
+    home,
+    includeUserClaude: false,
+    includeUserCursor: config.readCursor,
+    includeUserHome: config.readClaude,
+  });
+
   const applyFile = async (
     filePath: string,
     source: McpServerSource,
     extract: (data: unknown) => Record<string, unknown> | undefined,
   ): Promise<void> => {
-    let raw: string;
-    try {
-      raw = await readFile(filePath, "utf8");
-    } catch (error) {
-      if (isNotFound(error)) {
+    const loaded = await readAuthorizedResourceText(policy, filePath);
+    if (!loaded.ok) {
+      if (isMissingResource(loaded)) {
         return;
       }
-      const message = `mcp: failed to read ${filePath}: ${errorMessage(error)}`;
+      const message = `mcp: ${loaded.code} for ${filePath}: ${loaded.message}`;
       warnings.push(message);
       options.warn?.(message);
       return;
     }
+    const raw = loaded.text;
 
     let parsed: unknown;
     try {
@@ -190,7 +202,7 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
       return;
     }
 
-    sources.push(filePath);
+    sources.push(loaded.canonicalPath);
     for (const [name, value] of Object.entries(serversTable)) {
       const parsedSpec = parseServerSpec(name, value, warnings, options.warn);
       if (!parsedSpec) {
@@ -200,7 +212,7 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
         name,
         spec: parsedSpec,
         source,
-        sourcePath: filePath,
+        sourcePath: loaded.canonicalPath,
       });
     }
   };
@@ -896,10 +908,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
   return value as Record<string, unknown>;
-}
-
-function isNotFound(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "ENOENT");
 }
 
 function errorMessage(error: unknown): string {

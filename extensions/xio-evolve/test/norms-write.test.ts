@@ -56,9 +56,83 @@ describe("norms allowlist", () => {
       files: [{ relativePath: "AGENTS.md", content: "new\n", summary: "update agents" }],
       now: () => 99,
     });
+    expect(result.status).toBe("ok");
     expect(result.written).toEqual(["AGENTS.md"]);
     expect(result.backups.some((b) => b.endsWith(".bak-99"))).toBe(true);
     expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("new\n");
+  });
+
+  it("rejects symlink targets and leaves outside canaries untouched", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-norms-link-"));
+    tempDirs.push(root);
+    const outside = path.join(root, "..", `outside-${path.basename(root)}.md`);
+    await writeFile(outside, "outside\n", "utf8");
+    tempDirs.push(outside);
+    await symlink(outside, path.join(root, "AGENTS.md"));
+    const result = await applyNormsWrites({
+      workspaceRoot: root,
+      files: [{ relativePath: "AGENTS.md", content: "pwned\n" }],
+    });
+    expect(result.written).toEqual([]);
+    expect(result.status).toBe("rejected");
+    expect(await readFile(outside, "utf8")).toBe("outside\n");
+  });
+
+  it("rejects symlink escape targets before any publish and leaves canaries untouched", async () => {
+    const { symlink, mkdir } = await import("node:fs/promises");
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-norms-rb-"));
+    tempDirs.push(root);
+    await mkdir(path.join(root, ".trellis", "spec"), { recursive: true });
+    await writeFile(path.join(root, "AGENTS.md"), "keep-agents\n", "utf8");
+    await writeFile(path.join(root, ".trellis", "spec", "ok.md"), "keep-spec\n", "utf8");
+    const outside = path.join(root, "..", `canary-${path.basename(root)}.txt`);
+    await writeFile(outside, "canary\n", "utf8");
+    tempDirs.push(outside);
+    // Second allowlisted path escapes through a symlink directory.
+    await symlink(path.dirname(outside), path.join(root, ".trellis", "spec", "linked"), "dir");
+
+    const result = await applyNormsWrites({
+      workspaceRoot: root,
+      files: [
+        { relativePath: "AGENTS.md", content: "new-agents\n" },
+        { relativePath: ".trellis/spec/linked/canary.txt", content: "pwned\n" },
+      ],
+    });
+    expect(result.written).toEqual([]);
+    expect(result.status).toBe("rejected");
+    expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("keep-agents\n");
+    expect(await readFile(outside, "utf8")).toBe("canary\n");
+  });
+
+  it("rolls back earlier publishes when a later publish validation fails", async () => {
+    const { mkdir } = await import("node:fs/promises");
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-norms-pub-rb-"));
+    tempDirs.push(root);
+    await mkdir(path.join(root, ".trellis", "spec"), { recursive: true });
+    await writeFile(path.join(root, "AGENTS.md"), "keep-agents\n", "utf8");
+    await writeFile(path.join(root, ".trellis", "spec", "ok.md"), "keep-spec\n", "utf8");
+    let publishes = 0;
+
+    const result = await applyNormsWrites({
+      workspaceRoot: root,
+      files: [
+        { relativePath: "AGENTS.md", content: "new-agents\n" },
+        { relativePath: ".trellis/spec/ok.md", content: "new-spec\n" },
+      ],
+      policyHooks: {
+        afterWritePublish: async () => {
+          publishes += 1;
+          if (publishes === 2) {
+            throw new Error("injected second publish failure");
+          }
+        },
+      },
+    });
+    expect(result.written).toEqual([]);
+    expect(result.status).toBe("rolled_back");
+    expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("keep-agents\n");
+    expect(await readFile(path.join(root, ".trellis", "spec", "ok.md"), "utf8")).toBe("keep-spec\n");
   });
 
   it("pending offer round-trips without writing workspace", async () => {

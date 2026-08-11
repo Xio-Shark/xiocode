@@ -465,7 +465,7 @@ async function maybeConfirmPendingNorms(
     workspaceRoot: pending.workspace_root,
     files: pending.files,
   });
-  if (result.rejected.length === 0 && result.written.length > 0) {
+  if (result.status === "ok" && result.rejected.length === 0 && result.written.length > 0) {
     await clearPendingNormsOffer();
   }
 }

@@ -37,6 +37,10 @@ export type PermissionCommandOptions = Readonly<{
   highRiskPolicy?: HighRiskPolicy;
   /** Project trust decision for write/exec restrictions when untrusted. */
   getTrust?: () => import("./project-trust.ts").TrustDecision;
+  /**
+   * Session workspace path policy for exact one-tool-call outside read/search grants.
+   */
+  pathPolicy?: import("./workspace-path-policy.ts").WorkspacePathPolicy;
 }>;
 
 /** @deprecated Use PermissionCommandOptions */
@@ -68,6 +72,7 @@ export function registerPermissionCommands(
     interactiveSession,
     ...(options.highRiskPolicy ? { highRiskPolicy: options.highRiskPolicy } : {}),
     ...(options.getTrust ? { getTrust: options.getTrust } : {}),
+    ...(options.pathPolicy ? { pathPolicy: options.pathPolicy } : {}),
   });
 
   const applyFilter = (): void => {

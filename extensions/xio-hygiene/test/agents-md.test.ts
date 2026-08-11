@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -55,7 +55,7 @@ describe("loadAgentsMd", () => {
     expect(bundle.text).toContain("project claude rules");
     expect(bundle.text).toContain("[agents_md]");
     expect(bundle.sources).toHaveLength(1);
-    expect(bundle.sources[0]?.path).toBe(path.join(cwd, "CLAUDE.md"));
+    expect(bundle.sources[0]?.path).toBe(await realpath(path.join(cwd, "CLAUDE.md")));
   });
 
   it("loads project AGENTS.md only", async () => {
@@ -68,7 +68,7 @@ describe("loadAgentsMd", () => {
     const bundle = await loadAgentsMd({ cwd, home, config: config() });
     expect(bundle.text).toContain("project agents rules");
     expect(bundle.sources).toHaveLength(1);
-    expect(bundle.sources[0]?.path).toBe(path.join(cwd, "AGENTS.md"));
+    expect(bundle.sources[0]?.path).toBe(await realpath(path.join(cwd, "AGENTS.md")));
   });
 
   it("loads both project CLAUDE.md and AGENTS.md in order", async () => {
@@ -193,6 +193,32 @@ describe("loadAgentsMd", () => {
     });
     expect(bundle.text).toBe("");
     expect(bundle.sources).toEqual([]);
+  });
+
+  it("rejects file and directory symlink imports without reading outside canaries", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-agents-symlink-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(outside, "secret.md"), "SECRET\n", "utf8");
+    await writeFile(path.join(cwd, "AGENTS.md"), "@linked.md\nSAFE\n", "utf8");
+    await symlink(path.join(outside, "secret.md"), path.join(cwd, "linked.md"));
+    await symlink(outside, path.join(cwd, "outdir"), "dir");
+    await writeFile(path.join(cwd, "CLAUDE.md"), "@outdir/secret.md\n", "utf8");
+
+    const warnings: string[] = [];
+    const bundle = await loadAgentsMd({
+      cwd,
+      home,
+      config: config(),
+      warn: (message) => warnings.push(message),
+    });
+    expect(bundle.text).not.toContain("SECRET");
+    expect(warnings.some((w) => w.includes("SYMLINK_COMPONENT"))).toBe(true);
   });
 });
 

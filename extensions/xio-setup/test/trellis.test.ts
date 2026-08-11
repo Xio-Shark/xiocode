@@ -248,6 +248,24 @@ describe("trellis update", () => {
       await rm(bare, { recursive: true, force: true });
     }
   });
+
+  it("refuses to follow a symlinked managed target and leaves outside canaries unchanged", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const { root, source } = await makeFixture();
+    const outside = path.join(path.dirname(root), "outside-workflow.md");
+    await writeFile(outside, "outside\n", "utf8");
+    await rm(path.join(root, ".trellis/workflow.md"));
+    await symlink(outside, path.join(root, ".trellis/workflow.md"));
+
+    const out: string[] = [];
+    const code = await runSetupCli(
+      ["trellis", "update", "--source", source, "--yes"],
+      { cwd: root, write: (chunk) => out.push(chunk), isTty: false },
+    );
+    expect(code).toBe(1);
+    expect(out.join("")).toMatch(/SYMLINK_COMPONENT|failed to write/);
+    expect(await readFile(outside, "utf8")).toBe("outside\n");
+  });
 });
 
 describe("trellis status", () => {

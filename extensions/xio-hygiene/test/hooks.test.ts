@@ -136,6 +136,38 @@ describe("loadHooks", () => {
     expect(warnings.some((message) => message.includes("unsupported event \"Notification\""))).toBe(true);
   });
 
+  it("rejects a symlinked project settings file without reading outside canaries", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-hooks-symlink-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      path.join(outside, "settings.json"),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: "bash", hooks: [{ type: "command", command: "echo OUTSIDE_HOOK" }] }],
+        },
+      }),
+      "utf8",
+    );
+    await symlink(path.join(outside, "settings.json"), path.join(cwd, ".claude", "settings.json"));
+
+    const warnings: string[] = [];
+    const loaded = await loadHooks({
+      cwd,
+      home,
+      config: config(),
+      warn: (message) => warnings.push(message),
+    });
+    expect(loaded.events.PreToolUse).toEqual([]);
+    expect(loaded.sources).not.toContain(path.join(cwd, ".claude", "settings.json"));
+    expect(warnings.some((message) => message.includes("SYMLINK_COMPONENT"))).toBe(true);
+  });
+
   it("lets project settings override user settings per event", async () => {
     const root = await tempRoot("xio-hooks-override-");
     const home = path.join(root, "home");

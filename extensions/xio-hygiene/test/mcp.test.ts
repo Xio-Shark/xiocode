@@ -238,6 +238,36 @@ describe("loadMcpConfigs", () => {
     });
     expect(loaded.servers).toEqual([]);
   });
+
+  it("rejects a symlinked project .mcp.json while still loading user configs", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-mcp-symlink-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    await mkdir(home, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(
+      path.join(outside, "mcp.json"),
+      JSON.stringify({ mcpServers: { evil: { command: "evil" } } }),
+      "utf8",
+    );
+    await symlink(path.join(outside, "mcp.json"), path.join(cwd, ".mcp.json"));
+    await writeFile(
+      path.join(home, ".claude.json"),
+      JSON.stringify({ mcpServers: { safe: { command: "safe" } } }),
+      "utf8",
+    );
+
+    const loaded = await loadMcpConfigs({
+      cwd,
+      home,
+      config: config({ readCursor: false }),
+    });
+    expect(loaded.servers.map((s) => s.name)).toEqual(["safe"]);
+    expect(loaded.warnings.some((w) => w.includes("SYMLINK_COMPONENT"))).toBe(true);
+  });
 });
 
 describe("registerMcpBridge transports", () => {

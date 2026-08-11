@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+
+import {
+  WorkspacePathError,
+  WorkspacePathPolicy,
+} from "../../../src/runtime/workspace-path-policy.ts";
 
 export type AgentsMdConfig = Readonly<{
   enabled: boolean;
@@ -47,6 +51,9 @@ const IMPORT_LINE = /^\s*@([^\s#]+)\s*$/;
  * Merge order (Claude layout): ~/.claude/CLAUDE.md → project .claude/CLAUDE.md
  * → project CLAUDE.md → project AGENTS.md (multi-agent convention at repo root).
  * No parallel ~/.xiocode/AGENTS.md — runtime state stays under ~/.xiocode only.
+ *
+ * Paths use WorkspacePathPolicy: workspace + optional ~/.claude root; symlink
+ * components below either root are rejected (including inside→inside links).
  */
 export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBundle> {
   const config = options.config;
@@ -61,9 +68,13 @@ export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBu
   const sources: SpecSource[] = [];
   const sections: string[] = [];
   let remaining = Math.max(0, config.maxBytes);
+  const includeProject = options.includeProject !== false;
 
-  const roots = allowedRoots(cwd, home, options.includeProject !== false);
-  const candidates = listCandidates(cwd, home, config.readClaudeDirs, options.includeProject !== false);
+  const policy = await createAgentsPathPolicy(cwd, home, includeProject);
+  if (!policy) {
+    return { text: "", sources: [], warnings: [] };
+  }
+  const candidates = listCandidates(cwd, home, config.readClaudeDirs, includeProject);
 
   for (const filePath of candidates) {
     if (remaining <= 0) {
@@ -77,7 +88,7 @@ export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBu
       depth: 0,
       maxDepth: config.maxImportDepth,
       remaining,
-      roots,
+      policy,
       home,
       visited: new Set(),
       warn: (message) => {
@@ -101,6 +112,30 @@ export async function loadAgentsMd(options: LoadAgentsMdOptions): Promise<SpecBu
   };
 }
 
+async function createAgentsPathPolicy(
+  cwd: string,
+  home: string,
+  includeProject: boolean,
+): Promise<WorkspacePathPolicy | undefined> {
+  const userClaude = path.resolve(home, ".claude");
+  if (includeProject) {
+    return WorkspacePathPolicy.create({
+      workspaceRoot: cwd,
+      cwd,
+      additionalRoots: [{ id: "user-claude", path: userClaude, optional: true }],
+    });
+  }
+  try {
+    return await WorkspacePathPolicy.create({
+      workspaceRoot: userClaude,
+      cwd: userClaude,
+    });
+  } catch {
+    // No ~/.claude — nothing to load when project resources are skipped.
+    return undefined;
+  }
+}
+
 function listCandidates(
   cwd: string,
   home: string,
@@ -121,14 +156,6 @@ function listCandidates(
   return paths;
 }
 
-function allowedRoots(cwd: string, home: string, includeProject: boolean): readonly string[] {
-  const roots = [path.resolve(home, ".claude")];
-  if (includeProject) {
-    roots.unshift(path.resolve(cwd));
-  }
-  return roots;
-}
-
 type LoadFileResult = Readonly<{
   text: string;
   bytes: number;
@@ -140,34 +167,42 @@ async function loadFileWithImports(options: {
   depth: number;
   maxDepth: number;
   remaining: number;
-  roots: readonly string[];
+  policy: WorkspacePathPolicy;
   home: string;
   visited: Set<string>;
   warn: (message: string) => void;
 }): Promise<LoadFileResult | undefined> {
-  const resolved = path.resolve(options.filePath);
-  if (options.visited.has(resolved)) {
-    options.warn(`agents_md: cycle detected at ${resolved}; skipping`);
-    return undefined;
-  }
-  if (!isUnderAllowedRoot(resolved, options.roots)) {
-    options.warn(`agents_md: path outside allowed roots: ${resolved}; skipping`);
-    return undefined;
-  }
-
+  let checkedPath: string;
   let raw: string;
   try {
-    raw = await readFile(resolved, "utf8");
+    const checked = await options.policy.resolve("project-resource", options.filePath);
+    if (options.visited.has(checked.canonicalPath)) {
+      options.warn(`agents_md: cycle detected at ${checked.canonicalPath}; skipping`);
+      return undefined;
+    }
+    options.visited.add(checked.canonicalPath);
+    checkedPath = checked.canonicalPath;
+    raw = (await options.policy.readProjectResource(options.filePath)).toString("utf8");
   } catch (error) {
+    if (error instanceof WorkspacePathError) {
+      if (error.code === "NOT_FOUND") {
+        return undefined;
+      }
+      options.warn(`agents_md: ${error.code} for ${options.filePath}; skipping`);
+      return undefined;
+    }
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     if (code === "ENOENT") {
       return undefined;
     }
-    options.warn(`agents_md: failed to read ${resolved}: ${error instanceof Error ? error.message : String(error)}`);
+    options.warn(
+      `agents_md: failed to read ${options.filePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
     return undefined;
   }
 
-  options.visited.add(resolved);
   const hash = shortHash(raw);
   const lines = raw.split(/\r?\n/);
   const out: string[] = [];
@@ -175,7 +210,7 @@ async function loadFileWithImports(options: {
   let used = 0;
   let truncated = false;
 
-  const header = `### [agents_md] ${resolved} · sha256:${hash}`;
+  const header = `### [agents_md] ${checkedPath} · sha256:${hash}`;
   const headerBlock = `${header}\n`;
   if (headerBlock.length > options.remaining) {
     truncated = true;
@@ -183,7 +218,7 @@ async function loadFileWithImports(options: {
     return {
       text: `${slice}\n\n…[truncated]`,
       bytes: options.remaining,
-      sources: [{ path: resolved, hash, truncated: true, bytes: options.remaining }],
+      sources: [{ path: checkedPath, hash, truncated: true, bytes: options.remaining }],
     };
   }
   out.push(header);
@@ -201,14 +236,14 @@ async function loadFileWithImports(options: {
       if (!importTarget) {
         continue;
       }
-      const importPath = resolveImportPath(resolved, importTarget, options.home);
+      const importPath = resolveImportPath(checkedPath, importTarget, options.home);
       const childBudget = options.remaining - used;
       const child = await loadFileWithImports({
         filePath: importPath,
         depth: options.depth + 1,
         maxDepth: options.maxDepth,
         remaining: childBudget,
-        roots: options.roots,
+        policy: options.policy,
         home: options.home,
         visited: options.visited,
         warn: options.warn,
@@ -223,7 +258,9 @@ async function loadFileWithImports(options: {
     }
 
     if (importMatch && options.depth >= options.maxDepth) {
-      options.warn(`agents_md: max_import_depth=${options.maxDepth} at ${resolved}; leaving @${importMatch[1]} unexpanded`);
+      options.warn(
+        `agents_md: max_import_depth=${options.maxDepth} at ${checkedPath}; leaving @${importMatch[1]} unexpanded`,
+      );
     }
 
     const next = `${line}\n`;
@@ -249,7 +286,10 @@ async function loadFileWithImports(options: {
   return {
     text,
     bytes: Math.min(used, options.remaining),
-    sources: [{ path: resolved, hash, truncated, bytes: Math.min(used, options.remaining) }, ...childSources],
+    sources: [
+      { path: checkedPath, hash, truncated, bytes: Math.min(used, options.remaining) },
+      ...childSources,
+    ],
   };
 }
 
@@ -264,11 +304,6 @@ function resolveImportPath(fromFile: string, target: string, home: string): stri
     return target;
   }
   return path.resolve(path.dirname(fromFile), target);
-}
-
-function isUnderAllowedRoot(filePath: string, roots: readonly string[]): boolean {
-  const resolved = path.resolve(filePath);
-  return roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
 }
 
 function shortHash(content: string): string {

@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 import type { CommandHandlerContext, ExtensionContext } from "../../xio-evolve/src/types.ts";
+import {
+  createHygieneResourcePolicy,
+  isMissingResource,
+  readAuthorizedResourceText,
+} from "./project-resource-read.ts";
 
 export type HooksConfig = Readonly<{
   enabled: boolean;
@@ -124,8 +128,10 @@ export async function loadHooks(options: LoadHooksOptions): Promise<LoadedHooks>
     );
   }
 
+  const policy = await createHygieneResourcePolicy({ cwd, home, includeUserClaude: true });
+
   for (const filePath of candidates) {
-    const parsed = await readSettingsHooks(filePath, warn);
+    const parsed = await readSettingsHooks(filePath, policy, warn);
     if (!parsed) {
       continue;
     }
@@ -592,21 +598,21 @@ export function interpretHookOutput(
 
 async function readSettingsHooks(
   filePath: string,
+  policy: Awaited<ReturnType<typeof createHygieneResourcePolicy>>,
   warn: (message: string) => void,
 ): Promise<{
   events: Partial<Record<SupportedHookEvent, readonly HookMatcherGroup[]>>;
   unsupported: readonly string[];
 } | undefined> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch (error) {
-    if (isNotFound(error)) {
+  const loaded = await readAuthorizedResourceText(policy, filePath);
+  if (!loaded.ok) {
+    if (isMissingResource(loaded)) {
       return undefined;
     }
-    warn(`hooks: failed to read ${filePath}: ${errorMessage(error)}`);
+    warn(`hooks: ${loaded.code} for ${filePath}: ${loaded.message}`);
     return undefined;
   }
+  const raw = loaded.text;
 
   let data: unknown;
   try {
@@ -715,10 +721,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function isNotFound(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT");
 }
 
 function errorMessage(error: unknown): string {

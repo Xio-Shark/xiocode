@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -110,6 +109,8 @@ export function hitFilesFromGrep(matchText: string): string[] {
 export type AnnotateOptions = Readonly<{
   cwd: string;
   seen: GrepSeenState;
+  /** Policy-aware reader supplied by the owning grep tool. */
+  readText: (absolutePath: string) => Promise<string>;
   maxFiles?: number;
   maxSymbolsPerFile?: number;
 }>;
@@ -143,7 +144,7 @@ export async function annotateGrepOutput(matchText: string, options: AnnotateOpt
     }
     let content: string;
     try {
-      content = await readFile(path.resolve(options.cwd, relPath), "utf8");
+      content = await options.readText(path.resolve(options.cwd, relPath));
     } catch {
       continue;
     }

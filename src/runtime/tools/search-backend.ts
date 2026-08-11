@@ -288,7 +288,8 @@ async function grepWithSystemGrep(
   input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string }>,
 ): Promise<SearchBackendResult> {
   const args = [
-    "-RIn",
+    // Lowercase -r does not follow directory symlinks; uppercase -R does.
+    "-rIn",
     "--color=never",
     "--exclude-dir=node_modules",
     "--exclude-dir=.git",

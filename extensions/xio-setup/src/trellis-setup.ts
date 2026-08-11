@@ -11,10 +11,15 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+
+import {
+  WorkspacePathError,
+  WorkspacePathPolicy,
+} from "../../../src/runtime/workspace-path-policy.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -89,12 +94,19 @@ export async function runTrellisCommand(
 
 async function runStatus(root: string, write: (chunk: string) => void): Promise<number> {
   const trellisDir = path.join(root, ".trellis");
-  if (!(await exists(trellisDir))) {
+  let policy: WorkspacePathPolicy | undefined;
+  try {
+    policy = await createWorkspacePolicy(root);
+    await policy.resolve("search", ".trellis");
+  } catch {
     write(`.trellis: missing — run trellis init (or xio-setup trellis update) in ${root}\n`);
     return 1;
   }
-  const dagScripts = await exists(path.join(trellisDir, "scripts/common/task_deps.py"));
-  const config = await readFileIfExists(path.join(trellisDir, "config.yaml"));
+  const dagScripts = await readWorkspaceTextOptional(
+    policy,
+    path.join(".trellis", "scripts/common/task_deps.py"),
+  ) !== undefined;
+  const config = await readWorkspaceTextOptional(policy, path.join(".trellis", "config.yaml"));
   const configured = config !== undefined && hasParallelSection(config);
   const mark = (ok: boolean) => (ok ? "✓" : "·");
   write(`trellis status (workspace: ${root}):\n`);
@@ -154,10 +166,23 @@ async function runDag(
     write(`xio-setup: ${flags.error}\n`);
     return 1;
   }
-  const configPath = path.join(root, ".trellis", "config.yaml");
-  const content = await readFileIfExists(configPath);
+  let policy: WorkspacePathPolicy;
+  try {
+    policy = await createWorkspacePolicy(root);
+  } catch (error) {
+    write(`xio-setup: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  const configRelative = path.join(".trellis", "config.yaml");
+  let content: string | undefined;
+  try {
+    content = await readWorkspaceText(policy, configRelative);
+  } catch (error) {
+    write(`xio-setup: cannot read ${configRelative}: ${formatPathError(error)}\n`);
+    return 1;
+  }
   if (content === undefined) {
-    write(`xio-setup: ${configPath} not found — initialize Trellis first (trellis init).\n`);
+    write(`xio-setup: ${path.join(root, configRelative)} not found — initialize Trellis first (trellis init).\n`);
     return 1;
   }
   if (hasParallelSection(content)) {
@@ -174,8 +199,13 @@ async function runDag(
     dag = answered;
   }
   const next = applyParallelSection(content, dag);
-  await writeFile(configPath, next, "utf8");
-  write(`added parallel: (auto_confirm=${dag.autoConfirm ?? false}, max_concurrency=${dag.maxConcurrency ?? 8}, worker=${dag.worker ?? "xio"}) → ${configPath}\n`);
+  try {
+    await policy.writeFileAtomic(configRelative, next);
+  } catch (error) {
+    write(`xio-setup: failed to write config: ${formatPathError(error)}\n`);
+    return 1;
+  }
+  write(`added parallel: (auto_confirm=${dag.autoConfirm ?? false}, max_concurrency=${dag.maxConcurrency ?? 8}, worker=${dag.worker ?? "xio"}) → ${path.join(root, configRelative)}\n`);
   write("dispatch waves: python3 .trellis/scripts/task.py dispatch-ready <parent-dir> [--yes]\n");
   return 0;
 }
@@ -272,11 +302,15 @@ export type UpdatePlan = Readonly<{
 export async function planTrellisUpdate(
   templateRoot: string,
   trellisDir: string,
+  policy?: WorkspacePathPolicy,
 ): Promise<UpdatePlan> {
   const entries: UpdateEntry[] = [];
   for (const relative of await listManagedFiles(templateRoot)) {
+    // Explicit external/template source remains a direct read.
     const source = await readFile(path.join(templateRoot, relative), "utf8");
-    const local = await readFileIfExists(path.join(trellisDir, relative));
+    const local = policy
+      ? await readWorkspaceTextOptional(policy, path.join(".trellis", relative))
+      : await readFileIfExists(path.join(trellisDir, relative));
     const action = local === undefined ? "add" : local === source ? "skip" : "update";
     entries.push({ relativePath: relative, action });
   }
@@ -327,8 +361,21 @@ async function runUpdate(
     return 1;
   }
   const trellisDir = path.join(root, ".trellis");
-  if (!(await exists(trellisDir))) {
-    write(`xio-setup: ${trellisDir} not found — this updater only refreshes an existing .trellis (trellis init creates one).\n`);
+  let policy: WorkspacePathPolicy;
+  try {
+    policy = await createWorkspacePolicy(root);
+  } catch (error) {
+    write(`xio-setup: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  try {
+    await policy.resolve("search", ".trellis");
+  } catch (error) {
+    write(
+      `xio-setup: ${trellisDir} not found or not a safe directory — this updater only refreshes an existing .trellis (trellis init creates one).${
+        error instanceof WorkspacePathError ? ` (${error.code})` : ""
+      }\n`,
+    );
     return 1;
   }
 
@@ -353,7 +400,7 @@ async function runUpdate(
       }
     }
 
-    const plan = await planTrellisUpdate(templateRoot, trellisDir);
+    const plan = await planTrellisUpdate(templateRoot, trellisDir, policy);
     write(formatUpdatePlan(plan));
     if (plan.pending.length === 0) {
       write("already up to date — nothing to write.\n");
@@ -381,10 +428,14 @@ async function runUpdate(
       }
     }
     for (const entry of plan.pending) {
-      const target = path.join(trellisDir, entry.relativePath);
-      await mkdir(path.dirname(target), { recursive: true });
       const content = await readFile(path.join(templateRoot, entry.relativePath), "utf8");
-      await writeFile(target, content, "utf8");
+      const targetRelative = path.join(".trellis", entry.relativePath);
+      try {
+        await policy.writeFileAtomic(targetRelative, content);
+      } catch (error) {
+        write(`xio-setup: failed to write ${targetRelative}: ${formatPathError(error)}\n`);
+        return 1;
+      }
     }
     write(`written: ${plan.pending.length} file(s) → ${trellisDir}\n`);
     write("config.yaml / tasks / workspace / spec untouched (user data).\n");
@@ -421,9 +472,55 @@ function formatUpdatePlan(plan: UpdatePlan): string {
 
 // ---------------------------------------------------------------------------
 
+async function createWorkspacePolicy(root: string): Promise<WorkspacePathPolicy> {
+  return WorkspacePathPolicy.create({
+    workspaceRoot: root,
+    cwd: root,
+  });
+}
+
+async function readWorkspaceText(
+  policy: WorkspacePathPolicy,
+  relativePath: string,
+): Promise<string | undefined> {
+  try {
+    return (await policy.readFile(relativePath)).toString("utf8");
+  } catch (error) {
+    if (error instanceof WorkspacePathError) {
+      if (error.code === "NOT_FOUND") return undefined;
+      throw error;
+    }
+    const code = error && typeof error === "object" && "code" in error
+      ? (error as { code?: string }).code
+      : undefined;
+    if (code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** Soft read for plan/status — symlink/deny looks like missing so callers fail closed on write. */
+async function readWorkspaceTextOptional(
+  policy: WorkspacePathPolicy,
+  relativePath: string,
+): Promise<string | undefined> {
+  try {
+    return await readWorkspaceText(policy, relativePath);
+  } catch (error) {
+    if (error instanceof WorkspacePathError) return undefined;
+    throw error;
+  }
+}
+
+function formatPathError(error: unknown): string {
+  if (error instanceof WorkspacePathError) {
+    return `${error.code}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function exists(target: string): Promise<boolean> {
   try {
-    await stat(target);
+    await access(target);
     return true;
   } catch {
     return false;
