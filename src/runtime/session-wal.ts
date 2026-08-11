@@ -6,11 +6,12 @@
  * and truncate the journal.
  */
 
-import { open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
+
+import { openPrivateFile, writePrivateFileAtomic } from "./private-fs.ts";
 
 import type { ChatMessage, ModelInfo } from "./types.ts";
 
@@ -216,7 +217,7 @@ export async function appendJournal(input: JournalAppendInput): Promise<number> 
   if (records.length === 0) return input.nextSeq;
   const body = `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
   const file = journalPath(input.directory);
-  const handle = await open(file, "a");
+  const handle = await openPrivateFile(file, "a");
   try {
     await handle.writeFile(body, "utf8");
     await handle.sync();
@@ -309,7 +310,7 @@ function isCompleteJson(line: string): boolean {
 }
 
 async function appendRaw(file: string, chunk: string): Promise<void> {
-  const handle = await open(file, "a");
+  const handle = await openPrivateFile(file, "a");
   try {
     await handle.writeFile(chunk, "utf8");
     await handle.sync();
@@ -319,7 +320,7 @@ async function appendRaw(file: string, chunk: string): Promise<void> {
 }
 
 async function truncateToBytes(file: string, bytes: number): Promise<void> {
-  const handle = await open(file, "r+");
+  const handle = await openPrivateFile(file, "r+");
   try {
     await handle.truncate(bytes);
     await handle.sync();
@@ -374,7 +375,7 @@ export function applyJournal(
 /** Truncate journal after a durable full snapshot (empty file + fsync). */
 export async function truncateJournal(directory: string): Promise<void> {
   const file = journalPath(directory);
-  const handle = await open(file, "w");
+  const handle = await openPrivateFile(file, "w");
   try {
     await handle.truncate(0);
     await handle.sync();
@@ -388,34 +389,7 @@ export async function truncateJournal(directory: string): Promise<void> {
  * Best-effort directory fsync after rename (may be unsupported on some FS).
  */
 export async function writeJsonAtomicDurable(filePath: string, value: unknown): Promise<void> {
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    const handle = await open(tempPath, "w");
-    try {
-      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(tempPath, filePath);
-    await fsyncDirectory(path.dirname(filePath));
-  } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function fsyncDirectory(directory: string): Promise<void> {
-  try {
-    const handle = await open(directory, "r");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    // Directory fsync is best-effort (Windows / some mounts).
-  }
+  await writePrivateFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`, { durable: true });
 }
 
 function errorCode(error: unknown): unknown {

@@ -10,10 +10,12 @@
  * is available. Product-created worktrees may use an in-memory session grant.
  */
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { writePrivateFileAtomic } from "./private-fs.ts";
 
 /** Config / CLI policy — how to treat unknown directories. */
 export type TrustMode = "ask" | "trust" | "off";
@@ -397,12 +399,11 @@ export function parseTrustStore(data: unknown): TrustStoreFile {
 }
 
 export async function saveTrustStore(filePath: string, store: TrustStoreFile): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
   const payload: TrustStoreFile = {
     version: TRUST_FILE_VERSION,
     entries: store.entries,
   };
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await writePrivateFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
 export async function grantTrust(input: Readonly<{

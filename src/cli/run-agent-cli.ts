@@ -2,6 +2,10 @@ import path from "node:path";
 
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { runSession } from "../runtime/session.ts";
+import {
+  migrateSensitiveLocalState,
+  resolveSensitiveLocalStatePaths,
+} from "../runtime/private-fs.ts";
 import { prepareLaunch } from "./launch.ts";
 import { shouldUseInk } from "./cli-args.ts";
 import { createSessionStore, resolveResume } from "./session-resume.ts";
@@ -27,6 +31,7 @@ export async function runAgentCli(
   write: (chunk: string) => void,
   options: RunAgentCliOptions = {},
 ): Promise<number> {
+  await migrateSensitiveLocalState(resolveSensitiveLocalStatePaths(process.env));
   const store = createSessionStore(process.env);
   if (xioArgs.resume?.action === "delete") {
     options.earlyBoot?.unmount();

@@ -1,7 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import { upsertDefaultThinkingLevel } from "../cli/config-mutate.ts";
 import { resolveConfigPath } from "../cli/ensure-config.ts";
+import { writePrivateFile } from "./private-fs.ts";
 import {
   availableThinkingLevels,
   clampThinkingLevel,
@@ -103,6 +104,6 @@ async function persistThinkingLevel(env: NodeJS.ProcessEnv, level: ThinkingLevel
   const content = await readFile(configPath, "utf8");
   const next = upsertDefaultThinkingLevel(content, level);
   if (next !== content) {
-    await writeFile(configPath, next, "utf8");
+    await writePrivateFile(configPath, next);
   }
 }

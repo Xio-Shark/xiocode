@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -15,6 +15,7 @@ import {
 import type { WalCompactionFact } from "./session-wal.ts";
 import type { SessionCompactionFact } from "./context-compaction.ts";
 import type { ChatMessage, ModelInfo } from "./types.ts";
+import { ensurePrivateDir, writePrivateFile } from "./private-fs.ts";
 
 export type { SessionCompactionFact } from "./context-compaction.ts";
 
@@ -219,10 +220,10 @@ export class SessionStore {
     const leaseDirectory = path.join(this.#root, ".leases");
     const leasePath = path.join(leaseDirectory, `${id}.json`);
     const token = randomUUID();
-    await mkdir(leaseDirectory, { recursive: true });
+    await ensurePrivateDir(leaseDirectory);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        await writeFile(leasePath, JSON.stringify({ pid: process.pid, token }), { encoding: "utf8", flag: "wx" });
+        await writePrivateFile(leasePath, JSON.stringify({ pid: process.pid, token }), { flag: "wx" });
         return async () => {
           const current = JSON.parse(await readFile(leasePath, "utf8")) as { token?: unknown };
           if (current.token !== token) throw new Error(`session lease ownership changed for ${id}`);
@@ -301,7 +302,7 @@ export class SessionStore {
     const workspace = workspaceSchema.parse(input.workspace ?? existing?.workspace ?? defaultWorkspace(input));
     const execution = executionSchema.parse(input.execution ?? existing?.execution ?? { phase: "idle" });
     const directory = this.#sessionDirectory(input.id);
-    await mkdir(directory, { recursive: true });
+    await ensurePrivateDir(directory);
 
     // Crash-safe order: append durable compaction fact (+ projection) to the
     // journal before rewriting state. Resume can rebuild from journal alone if
@@ -405,7 +406,7 @@ export class SessionStore {
     }
 
     const directory = this.#sessionDirectory(input.id);
-    await mkdir(directory, { recursive: true });
+    await ensurePrivateDir(directory);
     let nextSeq = this.#nextSeq.get(input.id);
     if (nextSeq === undefined) {
       const journal = await readJournal(directory);

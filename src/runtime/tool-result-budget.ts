@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
+import { ensurePrivateDir, writePrivateFile } from "./private-fs.ts";
 
 import type { ChatMessage } from "./types.ts";
 
@@ -192,9 +193,22 @@ function normalizeMaxChars(value: number | undefined): number {
 async function ensureSpillDir(explicit?: string): Promise<string> {
   const dir = explicit && explicit.trim().length > 0
     ? path.resolve(explicit)
-    : path.join(os.homedir(), ".xiocode", "spills");
-  await mkdir(dir, { recursive: true });
+    : defaultSpillsDir();
+  await ensurePrivateDir(dir);
   return dir;
+}
+
+function defaultSpillsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.XIO_HOME?.trim();
+  if (raw && raw.length > 0) {
+    const home = raw === "~"
+      ? os.homedir()
+      : raw.startsWith("~/")
+        ? path.join(os.homedir(), raw.slice(2))
+        : raw;
+    return path.join(home, "spills");
+  }
+  return path.join(os.homedir(), ".xiocode", "spills");
 }
 
 async function spillToolResultBody(input: Readonly<{
@@ -206,6 +220,6 @@ async function spillToolResultBody(input: Readonly<{
   const safeId = input.toolCallId.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "tool";
   const stamp = (input.now ?? Date.now)();
   const filePath = path.join(input.spillDir, `${safeId}-${stamp}.txt`);
-  await writeFile(filePath, input.content, "utf8");
+  await writePrivateFile(filePath, input.content);
   return filePath;
 }

@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { ensurePrivateFile, writePrivateFile } from "../runtime/private-fs.ts";
 import { DEFAULT_CONFIG_TOML } from "./default-config.ts";
 import { expandHome } from "./config-parser.ts";
 import { formatRecommendedCliToolsNotice } from "../runtime/tools/search-backend.ts";
@@ -24,13 +25,13 @@ export async function ensureConfigFile(
   const configPath = await resolveConfigPath(env);
   try {
     const content = await readFile(configPath, "utf8");
+    await ensurePrivateFile(configPath);
     return { path: configPath, created: false, content };
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     if (code !== "ENOENT") throw error;
   }
-  await mkdir(path.dirname(configPath), { recursive: true, mode: 0o700 });
-  await writeFile(configPath, DEFAULT_CONFIG_TOML, { encoding: "utf8", mode: 0o600 });
+  await writePrivateFile(configPath, DEFAULT_CONFIG_TOML);
   const write = options.write ?? writeStderr;
   write(
     `Created ${configPath}\n`

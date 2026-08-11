@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import {
   loadCredentials,
@@ -6,6 +6,7 @@ import {
 } from "../cli/credentials.ts";
 import { mutateConnectConfig } from "../cli/config-mutate.ts";
 import { resolveConfigPath } from "../cli/ensure-config.ts";
+import { writePrivateFile } from "./private-fs.ts";
 import {
   PROVIDER_PRESETS,
   findProviderPreset,
@@ -233,7 +234,7 @@ async function persistConnect(input: Readonly<{
     model: input.modelId,
     apiKeyEnv: input.apiKeyEnv,
   });
-  await writeFile(configPath, next, "utf8");
+  await writePrivateFile(configPath, next);
 
   const providerConfig: XioProviderConfig = {
     name: input.providerName,
@@ -267,7 +268,7 @@ async function persistModelDefault(
     model: modelId,
     apiKeyEnv: envName,
   });
-  await writeFile(configPath, next, "utf8");
+  await writePrivateFile(configPath, next);
 
   const existing = options.host.getProvider(providerName);
   if (existing) {

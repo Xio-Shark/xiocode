@@ -1,7 +1,8 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { expandHome } from "./config-parser.ts";
 import { targetApiKeyEnv } from "./env-setup.ts";
 
@@ -47,7 +48,6 @@ export async function saveProviderCredential(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const filePath = resolveCredentialsPath(env);
-  await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const current = await loadCredentials(env);
   const next: CredentialsFile = {
     version: 1,
@@ -61,8 +61,7 @@ export async function saveProviderCredential(
       },
     },
   };
-  await writeFile(filePath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await chmod(filePath, 0o600);
+  await writePrivateFileAtomic(filePath, `${JSON.stringify(next, null, 2)}\n`);
   return filePath;
 }
 

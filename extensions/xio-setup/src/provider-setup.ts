@@ -6,10 +6,9 @@
  * vars; only api_key_env names are ever written to config.toml.
  */
 
-import { writeFile } from "node:fs/promises";
-
 import { ensureConfigFile } from "../../../src/cli/ensure-config.ts";
 import { parseXioConfig } from "../../../src/cli/config-parser.ts";
+import { writePrivateFile } from "../../../src/runtime/private-fs.ts";
 import {
   findProviderPreset,
   PROVIDER_PRESETS,
@@ -141,7 +140,7 @@ async function writeProviderPreset(
     write(`xio-setup: refusing to write — merged config fails to parse: ${String(error)}\n`);
     return 1;
   }
-  await writeFile(path, next, { encoding: "utf8", mode: 0o600 });
+  await writePrivateFile(path, next);
   const model = options.model?.trim() || preset.defaultModel;
   write(`added provider ${preset.id} (model ${model}) → ${path}\n`);
   if (options.makeDefault) {
