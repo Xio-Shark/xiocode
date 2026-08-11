@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { git, gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
+import { ensurePrivateDir, writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
 import { XIO_VERSION } from "./version.ts";
@@ -92,8 +92,8 @@ export async function prepareLaunch(
     resumeWorkspace: options.resumeWorkspace,
   });
 
-  await mkdir(configRoot, { recursive: true });
-  await mkdir(expandHome(parsed.xio.general.runRoot), { recursive: true });
+  await ensurePrivateDir(configRoot);
+  await ensurePrivateDir(expandHome(parsed.xio.general.runRoot));
   await writeJson(runtimeConfigPath, workspace.runtimeConfig);
   // Credentials load into a session store — do not mutate the shared process.env.
   const secretEnvironment = await SecretEnvironment.create({
@@ -245,5 +245,5 @@ async function collectSourceProvenance(
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writePrivateFileAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }

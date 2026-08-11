@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+
+import { appendPrivateFile, ensurePrivateDir, writePrivateFile } from "../../../src/runtime/private-fs.ts";
 
 import type { RunMetadata } from "./types.ts";
 
@@ -32,10 +34,10 @@ export class RunStore {
   }
 
   async createRun(input: Partial<RunMetadata> = {}): Promise<RunRecord> {
-    await mkdir(this.root, { recursive: true });
+    await ensurePrivateDir(this.root);
     const metadata = this.createMetadata(input);
     const runPath = this.runPath(metadata.run_id);
-    await mkdir(runPath, { recursive: true });
+    await ensurePrivateDir(runPath);
     await this.writeJson(metadata.run_id, "metadata.json", metadata);
     return { run_id: metadata.run_id, path: runPath, metadata };
   }
@@ -55,7 +57,7 @@ export class RunStore {
   }
 
   async listRecent(limit: number): Promise<readonly RunRecord[]> {
-    await mkdir(this.root, { recursive: true });
+    await ensurePrivateDir(this.root);
     const entries = await readdir(this.root, { withFileTypes: true });
     const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => this.readRecord(entry.name)));
     return records
@@ -65,8 +67,8 @@ export class RunStore {
   }
 
   async writeJson(runId: string, fileName: string, value: unknown): Promise<void> {
-    await mkdir(this.runPath(runId), { recursive: true });
-    await writeFile(this.filePath(runId, fileName), `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await ensurePrivateDir(this.runPath(runId));
+    await writePrivateFile(this.filePath(runId, fileName), `${JSON.stringify(value, null, 2)}\n`);
   }
 
   async appendJsonl(runId: string, fileName: string, value: unknown): Promise<void> {
@@ -77,17 +79,16 @@ export class RunStore {
     if (values.length === 0) {
       return;
     }
-    await mkdir(this.runPath(runId), { recursive: true });
-    await writeFile(
+    await ensurePrivateDir(this.runPath(runId));
+    await appendPrivateFile(
       this.filePath(runId, fileName),
       values.map((value) => `${JSON.stringify(value)}\n`).join(""),
-      { encoding: "utf8", flag: "a" },
     );
   }
 
   async writeText(runId: string, fileName: string, value: string): Promise<void> {
-    await mkdir(this.runPath(runId), { recursive: true });
-    await writeFile(this.filePath(runId, fileName), value, "utf8");
+    await ensurePrivateDir(this.runPath(runId));
+    await writePrivateFile(this.filePath(runId, fileName), value);
   }
 
   runPath(runId: string): string {

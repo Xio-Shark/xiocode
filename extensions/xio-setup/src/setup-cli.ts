@@ -7,10 +7,9 @@
  * interactive menu. Never touches API keys; never rewrites existing sections.
  */
 
-import { writeFile } from "node:fs/promises";
-
 import { ensureConfigFile } from "../../../src/cli/ensure-config.ts";
 import { parseXioConfig } from "../../../src/cli/config-parser.ts";
+import { writePrivateFile } from "../../../src/runtime/private-fs.ts";
 import {
   applyConfigSections,
   CONFIG_SECTIONS,
@@ -179,7 +178,7 @@ async function runRemove(
     write(`xio-setup: refusing to write — config after removal fails to parse: ${String(error)}\n`);
     return 1;
   }
-  await writeFile(path, next, { encoding: "utf8", mode: 0o600 });
+  await writePrivateFile(path, next);
   write(`removed: ${present.join(", ")} → ${path}\n`);
   return 0;
 }
@@ -345,7 +344,7 @@ async function applyAndWrite(
     write(`xio-setup: refusing to write — merged config fails to parse: ${String(error)}\n`);
     return undefined;
   }
-  await writeFile(path, next, { encoding: "utf8", mode: 0o600 });
+  await writePrivateFile(path, next);
   write(`added: ${ids.join(", ")} → ${path}\n`);
   return next;
 }

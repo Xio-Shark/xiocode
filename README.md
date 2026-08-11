@@ -32,9 +32,9 @@
   └────────────────────────────────────┘
 ```
 
-XioCode is a **coding agent that runs on your machine**, inside the project folder you launch it from. There is no XioCode cloud, no account to create, and nothing to upload — the code stays exactly where it already is.
+XioCode's orchestration, tool execution, session storage, and file edits run on your machine. XioCode does not operate a hosted request relay or a product-usage telemetry service.
 
-The only thing that ever leaves your computer is the conversation you send to a model API — and that request goes **straight from you to the provider**, not through any middleman:
+To complete a request, XioCode sends the current model request directly to the provider endpoint you configure. That request can include your prompts, system and context instructions, tool definitions, and any file contents or tool results that have been added to the conversation. Your configured provider's data-handling terms apply.
 
 ```
   ┌────────────────────────────────────┐
@@ -48,15 +48,16 @@ The only thing that ever leaves your computer is the conversation you send to a 
   │    ▼                               │
   │  your code — now changed           │
   └───────┬────────────────────────────┘
-          │  conversation (text only)
+          │  model request context
+          │  (may include file contents and tool results)
           ▼
   ┌────────────────────────────────────┐
   │  THE MODEL (cloud)                 │
   │  DeepSeek · OpenAI ·               │
   │  Anthropic · Gemini ...            │
   │                                    │
-  │  sees only what you send —         │
-  │  never your files or secrets       │
+  │  receives the request context      │
+  │  selected for the model call       │
   └────────────────────────────────────┘
 ```
 
@@ -73,7 +74,7 @@ The only thing that ever leaves your computer is the conversation you send to a 
                 it stopped — nothing lost             
 ```
 
-2. **Local and private, with your own key.** No telemetry, no account, no middleman. Session history lives in `~/.xiocode/` and nowhere else. Any API key you already have works: DeepSeek, OpenAI, Anthropic, OpenRouter, Google Gemini, or any service that speaks the OpenAI API.
+2. **Local runtime, bring your own provider.** Resumable sessions and run artifacts are stored on your machine by default. Model requests go to the provider endpoint you configure; XioCode does not operate a request relay or product-usage telemetry service. Any API key you already have works: DeepSeek, OpenAI, Anthropic, OpenRouter, Google Gemini, or any service that speaks the OpenAI API.
 
 3. **You own the merge.** By default XioCode edits your working directory and shows each change as it lands, and known-dangerous commands stop and ask before running. Turn on worktree mode and it works in a separate git copy instead — your tree stays untouched until you type `/merge`.
 
@@ -232,13 +233,13 @@ While a turn is running: press Enter or type `!text` to steer the agent mid-task
 - Crash-safe sessions: every step is journaled and checkpointed, so `xio resume` and (in worktree mode) `/rollback` can pick up or undo cleanly
 - Reads your repo's `CLAUDE.md`, skills, hooks, and MCP servers
 - Opt-in worktree isolation with an explicit `/merge` gate
-- Everything stored locally under `~/.xiocode/`
+- Everything stored locally under `~/.xiocode/` by default
 
 Product goals: [docs/GOAL.md](./docs/GOAL.md) · delivery snapshot: [docs/STATUS.md](./docs/STATUS.md) · near-term: [ROADMAP.md](./ROADMAP.md)
 
 ---
 
-## Data Storage (all local)
+## Local state
 
 ```
 ~/.xiocode/
@@ -250,7 +251,16 @@ Product goals: [docs/GOAL.md](./docs/GOAL.md) · delivery snapshot: [docs/STATUS
 └── worktrees/           # Git worktree copies (optional)
 ```
 
-Everything stays on **your machine**. No uploads, no cloud.
+By default, XioCode stores runtime state under `~/.xiocode/`; `XIO_*` variables and config settings can select other locations. These files can contain API keys, prompts, code excerpts, commands, tool output, configured headers, and project trust decisions. Treat the configured state directories as sensitive.
+
+Local storage does not mean all processing is offline:
+
+- **Model providers:** each model call sends its request context to the provider endpoint you configured. The context can include file contents and tool results when they are present in the conversation.
+- **Update check:** normal agent startup may query npm for the latest XioCode version about once per 24-hour cache period. Set `XIO_DISABLE_UPDATE_CHECK=1` to disable it.
+- **MCP and hooks:** remote MCP servers receive MCP requests and tool arguments. Stdio MCP servers and hooks run commands you configured; those commands may perform their own network activity.
+- **Explicit checks:** `/connect`, `xio models`, and `xio doctor` may contact configured provider endpoints. Use `xio models --catalog-only` or `xio doctor --offline` for their no-network modes.
+
+XioCode sends no product-usage analytics to a XioCode-operated service. This statement does not disable model-provider traffic, configured MCP servers or hooks, or the npm update check described above.
 
 ---
 
@@ -266,9 +276,9 @@ The code you write *with* XioCode is yours, always.
 
 ## Questions / Feedback
 
-Run `xio feedback` — it opens the right form from your terminal. For bugs, attach the output of `xio doctor`: it contains everything needed to reproduce the problem, and no secrets.
+Run `xio feedback` — it opens a GitHub page in your browser; XioCode does not submit the form or attach local data automatically. For bugs, attach the output of `xio doctor`: it contains everything needed to reproduce the problem, and no secrets.
 
 - Issues: https://github.com/Xio-Shark/xiocode/issues
 - Email: xioshark.0127@gmail.com
 
-**No telemetry.** XioCode never phones home with usage data, so what you report is the only signal there is — every issue gets a reply within 48 hours. One outbound request exists and deserves naming: about once a day, XioCode asks npm whether a newer version is available. `export XIO_DISABLE_UPDATE_CHECK=1` turns that off too.
+**No XioCode product telemetry.** XioCode does not send product-usage analytics to a XioCode-operated service. Model-provider traffic, configured MCP servers or hooks, and the optional npm update check are separate outbound paths described under [Local state](#local-state).

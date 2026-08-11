@@ -4,10 +4,11 @@
  * the installed package is behind — does not auto-install.
  */
 import { createRequire } from "node:module";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { ensurePrivateDir, writePrivateFile } from "../runtime/private-fs.ts";
 import { readPackageVersion } from "./version.ts";
 
 const DEFAULT_PACKAGE = "@xioshark/xiocode";
@@ -220,8 +221,8 @@ async function readFreshCachedLatest(input: Readonly<{
 }
 
 async function writeCache(cachePath: string, cache: UpdateCheckCache): Promise<void> {
-  await mkdir(path.dirname(cachePath), { recursive: true });
-  await writeFile(cachePath, `${JSON.stringify(cache)}\n`, "utf8");
+  await ensurePrivateDir(path.dirname(cachePath));
+  await writePrivateFile(cachePath, `${JSON.stringify(cache)}\n`);
 }
 
 function expandXioHome(env: NodeJS.ProcessEnv): string {

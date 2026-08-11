@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { ensurePrivateDir } from "../../../src/runtime/private-fs.ts";
 import { git, gitOk, gitWithEnv } from "./git.ts";
 
 export type WorktreeSession = Readonly<{
@@ -93,11 +94,13 @@ export class WorktreeSandbox {
     // Capture launch-time visible tree before worktree mutation; ignored files stay out.
     const baselineTree = await WorktreeSandbox.captureVisibleTree(mainRoot, baseRef);
 
-    await mkdir(path.dirname(worktreePath), { recursive: true });
+    await ensurePrivateDir(path.dirname(worktreePath));
     const add = await git(mainRoot, ["worktree", "add", "-b", branch, worktreePath, baseRef]);
     if (add.code !== 0) {
       throw new Error(`failed to create worktree: ${add.stderr || add.stdout}`);
     }
+    // Harden the checkout root directory only — never rewrite Git file modes inside.
+    await ensurePrivateDir(worktreePath);
 
     await WorktreeSandbox.materializeBaselineTree(worktreePath, baselineTree, baseRef);
 
