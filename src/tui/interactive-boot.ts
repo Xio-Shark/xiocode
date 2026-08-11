@@ -54,6 +54,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     alternateScreen: true,
     exitOnCtrlC: false,
     incrementalRendering: true,
+    maxFps: 120,
   });
 
   let frameResolved = false;

@@ -19,19 +19,20 @@ export type RunInkSessionOptions = SessionOptions & Readonly<{
 }>;
 
 /**
- * Interactive session on the **main screen buffer** (Route B, pi-like):
- * 1. Silent early boot buffers stdin (no shell scrollback paint)
- * 2. Ink BootShell on alternate screen — logo + status under the mark
- * 3. Full App appends finalized blocks to native scrollback (`<Static>`);
- *    wheel/search stay terminal-native, per-frame cost is O(live region)
+ * Interactive session — **fullscreen alternate-screen TUI by default** (grok /
+ * Claude Code style): the brand header stays pinned at the top, the transcript
+ * is a self-managed line-granular window (PgUp/PgDn, Ctrl+J/K, Ctrl+U/D,
+ * search, mouse wheel/drag), and the composer sits at the bottom.
  *
- * Escape hatch: `XIO_TUI_FULLSCREEN=1` restores the legacy alt-screen
- * self-managed viewport (Route A).
+ * Opt-out: `XIO_TUI_FULLSCREEN=0` restores the legacy pi-like route B on the
+ * **main screen buffer** — finalized blocks append to the terminal's own
+ * scrollback (`<Static>`), wheel/search stay terminal-native, and PgUp opens
+ * the in-app review overlay for keyboard scrolling.
  */
 export async function runInkSession(options: RunInkSessionOptions): Promise<number> {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
-  const fullscreen = env.XIO_TUI_FULLSCREEN === "1";
+  const fullscreen = env.XIO_TUI_FULLSCREEN !== "0";
   const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
@@ -94,8 +95,8 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       session,
       bridge,
       cwd,
-      // Route B default: finalized blocks append to the terminal's own
-      // scrollback; only the live tail re-renders. Route A opt-in via env.
+      // Default fullscreen: self-managed window, header pinned on top.
+      // XIO_TUI_FULLSCREEN=0: Static scrollback mode (terminal owns scroll).
       appendScrollback: !fullscreen,
       initialDraft: drained.text,
       autoSubmitInitial: drained.pendingSubmit,
@@ -108,6 +109,10 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       alternateScreen: fullscreen,
       exitOnCtrlC: false,
       incrementalRendering: true,
+      // Ink throttles renders to maxFps (default 30 — visibly choppy while
+      // scrolling a full-screen window). 120 keeps wheel/key scrolls smooth;
+      // the throttle still coalesces burst input into single frames.
+      maxFps: 120,
     });
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));

@@ -8,6 +8,7 @@ import {
   searchTranscriptLines,
   transcriptFlatLines,
 } from "./transcript-search.ts";
+import { fuzzyFilter } from "./fuzzy.ts";
 
 import {
   formatExploreToolLabel,
@@ -91,7 +92,7 @@ import {
   theme,
   truncateToolDetail,
 } from "./theme.ts";
-import { composerHint } from "./shortcuts.ts";
+import { composerHint, shortcutGroups, ShortcutsOverlay } from "./shortcuts.ts";
 import { BrandHeader } from "./shark-logo.ts";
 
 const h = React.createElement;
@@ -301,6 +302,8 @@ export function App(props: AppProps): React.JSX.Element {
     palette,
     foldedBlockIds,
     escArmed,
+    shortcutsOpen,
+    shortcutsOffset,
     setReview,
   } = useSessionInteraction(
     props,
@@ -504,7 +507,14 @@ export function App(props: AppProps): React.JSX.Element {
         historyTotal: viewerHistory.length,
         onClose: () => setTranscriptViewer(undefined),
       })
-      : focusedWorker
+      : shortcutsOpen
+        ? h(ShortcutsOverlay, {
+          groups: shortcutGroups({ fullscreen: !appendScrollback }),
+          rows,
+          scrollOffset: shortcutsOffset,
+          commandCount: collectSlashCommands(props.session.host).length,
+        })
+        : focusedWorker
         ? h(SubagentDetailOverlay, {
           worker: focusedWorker,
           rows,
@@ -1049,6 +1059,12 @@ function useSessionInteraction(
   /** Esc layering: cancel turn / double-press clear draft. */
   pressEsc: () => boolean;
   escArmed: "clear-draft" | undefined;
+  /** `?` shortcuts sheet. */
+  shortcutsOpen: boolean;
+  toggleShortcuts: () => void;
+  shortcutsOffset: number;
+  shortcutsScroll: (delta: number) => void;
+  shortcutsClose: () => void;
   /** Manually folded block ids (tool/thinking/subagent collapse to title). */
   foldedBlockIds: ReadonlySet<number>;
   searchOpen: () => SearchState | undefined;
@@ -1108,6 +1124,11 @@ function useSessionInteraction(
   const [palette, setPalette] = useState<Readonly<{ query: string; index: number }> | undefined>(undefined);
   const paletteRef = useRef(palette);
   paletteRef.current = palette;
+  // `?` shortcuts sheet (was advertised in the footer but never wired up).
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const shortcutsOpenRef = useRef(shortcutsOpen);
+  shortcutsOpenRef.current = shortcutsOpen;
+  const [shortcutsOffset, setShortcutsOffset] = useState(0);
   // Esc layering (grok parity): busy → cancel (draft kept); idle non-empty
   // draft → double-press within 800ms clears it. A cancel suppresses the arm
   // for ~1s so mashing Esc to stop a turn can't wipe the draft.
@@ -1362,10 +1383,12 @@ function useSessionInteraction(
       onScroll: (direction) => {
         if (focusedSubagentIdRef.current !== undefined) return; // live overlay auto-follows
         if (transcriptViewerRef.current) {
-          scrollViewer(direction === "up" ? -3 : 3);
+          scrollViewer(direction === "up" ? -1 : 1);
           return;
         }
-        scrollTranscript(direction === "up" ? 3 : -3);
+        // One line per notch (grok parity); burst notches coalesce into a
+        // single frame by Ink's render throttle.
+        scrollTranscript(direction === "up" ? 1 : -1);
       },
       onPointer: (kind, col, row) => {
         if (transcriptViewerRef.current || focusedSubagentIdRef.current !== undefined) return;
@@ -1506,10 +1529,7 @@ function useSessionInteraction(
     }),
     paletteMove: (delta: number) => setPalette((current) => {
       if (!current) return current;
-      const entries = paletteEntries();
-      const query = current.query.trim().toLowerCase();
-      const count = entries.filter((entry) =>
-        query.length === 0 || entry.label.toLowerCase().includes(query)).length;
+      const count = filteredPalette(current.query).length;
       if (count === 0) return current;
       return { ...current, index: (current.index + delta + count) % count };
     }),
@@ -1517,6 +1537,16 @@ function useSessionInteraction(
     paletteRun,
     pressEsc,
     escArmed,
+    shortcutsOpen: () => shortcutsOpen,
+    toggleShortcuts: () => {
+      setShortcutsOpen((open) => {
+        if (!open) setShortcutsOffset(0);
+        return !open;
+      });
+    },
+    shortcutsScroll: (delta: number) =>
+      setShortcutsOffset((current) => Math.max(0, current + delta)),
+    shortcutsClose: () => setShortcutsOpen(false),
     moveSelect: (delta) => setView((current) => moveSelection(current, delta)),
     setPromptValue: (value) => setView((current) => setPromptDraft(current, value)),
     toggleExpandable: () => {
@@ -1645,13 +1675,12 @@ function useSessionInteraction(
     const commands = collectSlashCommands(props.session.host);
     return commands.map((command) => ({ label: `/${command.name}`, description: command.description }));
   };
+  const filteredPalette = (query: string) =>
+    fuzzyFilter(paletteEntries(), query, (entry) => entry.label);
   const paletteRun = () => {
     const current = paletteRef.current;
     if (!current) return;
-    const entries = paletteEntries();
-    const query = current.query.trim().toLowerCase();
-    const filtered = entries.filter((entry) =>
-      query.length === 0 || entry.label.toLowerCase().includes(query));
+    const filtered = filteredPalette(current.query);
     const picked = filtered[Math.min(current.index, filtered.length - 1)];
     setPalette(undefined);
     if (picked) void submit(`/${picked.label.slice(1).split(/\s+/)[0]}`);
@@ -1700,10 +1729,7 @@ function useSessionInteraction(
     }),
     paletteMove: (delta: number) => setPalette((current) => {
       if (!current) return current;
-      const entries = paletteEntries();
-      const query = current.query.trim().toLowerCase();
-      const count = entries.filter((entry) =>
-        query.length === 0 || entry.label.toLowerCase().includes(query)).length;
+      const count = filteredPalette(current.query).length;
       if (count === 0) return current;
       return { ...current, index: (current.index + delta + count) % count };
     }),
@@ -1711,6 +1737,17 @@ function useSessionInteraction(
     paletteRun,
     pressEsc,
     escArmed,
+    shortcutsOpen,
+    shortcutsOffset,
+    toggleShortcuts: () => {
+      setShortcutsOpen((open) => {
+        if (!open) setShortcutsOffset(0);
+        return !open;
+      });
+    },
+    shortcutsScroll: (delta: number) =>
+      setShortcutsOffset((current) => Math.max(0, current + delta)),
+    shortcutsClose: () => setShortcutsOpen(false),
   };
 }
 
@@ -1799,6 +1836,12 @@ function handleInput(options: Readonly<{
   pressEsc: () => boolean;
   /** Esc arm state for the composer hint. */
   escArmed: "clear-draft" | undefined;
+  /** `?` shortcuts sheet. */
+  shortcutsOpen?: () => boolean;
+  shortcutsScroll?: (delta: number) => void;
+  shortcutsClose?: () => void;
+  toggleShortcuts?: () => void;
+  /** Command palette (Ctrl+P). */
   paletteOpen?: () => boolean;
   paletteInput?: (chunk: string) => void;
   paletteBackspace?: () => void;
@@ -1821,6 +1864,23 @@ function handleInput(options: Readonly<{
   if (options.key.ctrl && options.character === "c") {
     if (options.busy) options.session.abortTurn();
     else void options.close(0);
+    return;
+  }
+  // `?` shortcuts sheet: while open it owns navigation; Esc closes, and the
+  // sheet itself was advertised by the footer but never wired up before.
+  if (options.shortcutsOpen?.()) {
+    if (options.key.escape) {
+      options.shortcutsClose?.();
+      return;
+    }
+    if (options.key.upArrow || options.key.pageUp) {
+      options.shortcutsScroll?.(1);
+      return;
+    }
+    if (options.key.downArrow || options.key.pageDown) {
+      options.shortcutsScroll?.(-1);
+      return;
+    }
     return;
   }
   // Command palette (Ctrl+P): while open it owns typing, navigation and Enter.
@@ -1892,6 +1952,10 @@ function handleInput(options: Readonly<{
   // reachable here).
   if (options.key.ctrl && options.character === "p") {
     options.paletteOpen?.() ? options.paletteClose?.() : options.paletteInput?.("");
+    return;
+  }
+  if (options.character === "?" && !options.key.ctrl && !options.key.meta) {
+    options.toggleShortcuts?.();
     return;
   }
   if (options.key.ctrl && options.character === "t" && !options.busy) {
@@ -3021,9 +3085,7 @@ function CommandPalette(props: Readonly<{
   selected: number;
   entries: readonly SlashCommand[];
 }>): React.JSX.Element {
-  const needle = props.query.trim().toLowerCase();
-  const filtered = props.entries.filter((entry) =>
-    needle.length === 0 || `/${entry.name}`.toLowerCase().includes(needle));
+  const filtered = fuzzyFilter(props.entries, props.query, (entry) => `/${entry.name}`);
   if (filtered.length === 0) {
     return h(Box, { flexDirection: "column", marginTop: 1 },
       h(Text, { color: theme.accent, bold: true }, `/${props.query}`),
