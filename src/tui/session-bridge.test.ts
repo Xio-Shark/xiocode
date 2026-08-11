@@ -51,6 +51,39 @@ describe("TuiSessionBridge", () => {
     expect(late.some((e) => e.kind === "status" && e.key === "workspace")).toBe(false);
   });
 
+  it("lets boot observe confirmations without consuming the startup buffer", async () => {
+    const bridge = new TuiSessionBridge();
+    const observed: TuiEvent[] = [];
+    const unobserve = bridge.observe((event) => observed.push(event));
+
+    const answer = bridge.ask("Trust this project?", "cwd: /tmp/project");
+    expect(observed).toEqual([{
+      kind: "confirm-open",
+      question: "Trust this project?",
+      detail: "cwd: /tmp/project",
+      confirmKind: "generic",
+    }]);
+    expect(bridge.preSubscriptionBufferLength).toBe(1);
+
+    bridge.answerConfirmation(false);
+    await expect(answer).resolves.toBe(false);
+    bridge.sink.setStatus?.("trust", "trust:untrusted");
+    expect(bridge.preSubscriptionBufferLength).toBe(3);
+
+    const startup: TuiEvent[] = [];
+    bridge.subscribe((event) => startup.push(event));
+    expect(startup).toEqual([
+      observed[0],
+      { kind: "confirm-close" },
+      { kind: "status", key: "trust", text: "trust:untrusted" },
+    ]);
+    expect(bridge.preSubscriptionBufferLength).toBe(0);
+
+    unobserve();
+    bridge.sink.notify?.("after boot");
+    expect(observed.some((event) => event.kind === "notice")).toBe(false);
+  });
+
   it("supports select and secret prompt without echoing the secret into notices", async () => {
     const bridge = new TuiSessionBridge();
     const events: TuiEvent[] = [];

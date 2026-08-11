@@ -8,7 +8,13 @@ import { render, type Instance } from "ink";
 
 import { XIO_VERSION } from "../cli/version.ts";
 import { getGlobalTracer } from "../runtime/perf/index.ts";
-import { BootInputBuffer, BootShell, type BootReadiness } from "./boot-shell.ts";
+import {
+  BootInputBuffer,
+  BootShell,
+  type BootConfirmation,
+  type BootReadiness,
+} from "./boot-shell.ts";
+import type { TuiSessionBridge } from "./session-bridge.ts";
 
 export type InteractiveBootHandle = Readonly<{
   buffer: BootInputBuffer;
@@ -23,6 +29,8 @@ export type StartInteractiveBootOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
   version?: string;
   captureInput?: boolean;
+  bridge?: TuiSessionBridge;
+  onInterrupt?: () => void;
 }>;
 
 /**
@@ -40,7 +48,11 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
 
   let readiness: BootReadiness = "boot";
   let status = "starting…";
+  let confirmation: BootConfirmation | undefined;
   let unmounted = false;
+  const answerConfirmation = (approved: boolean) => {
+    options.bridge?.answerConfirmation(approved);
+  };
 
   const paint = tracer?.start("tui.paint", { attrs: { phase: "boot_shell" } });
   let instance: Instance = render(React.createElement(BootShell, {
@@ -49,6 +61,9 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     status,
     readiness,
     buffer,
+    confirmation,
+    onAnswerConfirmation: answerConfirmation,
+    onInterrupt: options.onInterrupt,
     captureInput,
   }), {
     alternateScreen: true,
@@ -92,9 +107,22 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
       status,
       readiness,
       buffer,
+      confirmation,
+      onAnswerConfirmation: answerConfirmation,
+      onInterrupt: options.onInterrupt,
       captureInput,
     }));
   };
+
+  const unobserve = options.bridge?.observe((event) => {
+    if (event.kind === "confirm-open") {
+      confirmation = { question: event.question, detail: event.detail };
+      rerender();
+    } else if (event.kind === "confirm-close") {
+      confirmation = undefined;
+      rerender();
+    }
+  });
 
   return {
     buffer,
@@ -106,6 +134,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     unmount() {
       if (unmounted) return;
       unmounted = true;
+      unobserve?.();
       instance.unmount();
       if (!frameResolved) {
         resolveFrame?.();

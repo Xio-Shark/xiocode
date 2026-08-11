@@ -262,16 +262,32 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   });
 
   let currentModel = model;
-  let { client, registration } = options.llmClient
-    ? {
-      client: options.llmClient,
-      registration: host.getProvider(currentModel.provider) ?? {
+  let registration = host.getProvider(currentModel.provider)
+    ?? (options.llmClient
+      ? {
         name: currentModel.provider,
         api: "openai-completions" as const,
         models: [{ id: currentModel.id, name: currentModel.id }],
-      },
+      }
+      : requireSessionRegistration(host, currentModel));
+  let client: LlmClient | undefined = options.llmClient;
+  const getOrCreateClient = (): LlmClient => {
+    if (client) return client;
+    const created = createSessionClient({ host, model: currentModel, env });
+    client = created.client;
+    registration = created.registration;
+    return client;
+  };
+  const modelStatus = (): string => {
+    if (client) return `${currentModel.provider}/${currentModel.id}`;
+    try {
+      // Project only availability; never emit or retain the resolved secret.
+      resolveApiKey(registration, env);
+      return `${currentModel.provider}/${currentModel.id}`;
+    } catch {
+      return "not connected · /connect";
     }
-    : createSessionClient({ host, model: currentModel, env });
+  };
   let parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
   let turnAbort: AbortController | undefined;
   let currentExecution: SessionExecution = options.initialExecution ?? { phase: "idle" };
@@ -369,8 +385,10 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     onThinkingLevelChanged,
   };
   const setModel = async (next: ModelInfo) => {
+    const created = createSessionClient({ host, model: next, env });
     currentModel = next;
-    ({ client, registration } = createSessionClient({ host, model: currentModel, env }));
+    client = created.client;
+    registration = created.registration;
     parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
     await host.setModel(currentModel);
     sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
@@ -507,7 +525,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
   const contextCompaction = new ContextCompactionController({
     history,
-    getClient: () => client,
+    getClient: getOrCreateClient,
     getModel,
     maxMessages: maxSessionMessages,
     getMaxTokens: () => {
@@ -572,7 +590,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   });
 
   await history.persist();
-  sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
+  sink.setStatus?.("model", modelStatus());
   sink.setStatus?.("thinking", thinkingStatusLabel(host.getThinkingLevel()));
 
   const session: PreparedSession = {
@@ -592,7 +610,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getHarnessPhase: () => harness.phase,
     runPrompt: createPromptRunner({
       host,
-      getClient: () => client,
+      getClient: getOrCreateClient,
       getModel,
       getProviderApi: () => registration.api,
       maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
@@ -886,17 +904,20 @@ function createSessionClient(input: Readonly<{
   model: ModelInfo;
   env: NodeJS.ProcessEnv;
 }>): { client: LlmClient; registration: ProviderRegistration } {
-  const registration = input.host.getProvider(input.model.provider);
-  if (!registration) {
-    throw new Error(
-      `provider not registered: ${input.model.provider}. Run /connect or add it under [providers.*] in config.toml`,
-    );
-  }
+  const registration = requireSessionRegistration(input.host, input.model);
   const client = createLlmClient({
     registration,
     apiKey: resolveApiKey(registration, input.env),
   });
   return { client, registration };
+}
+
+function requireSessionRegistration(host: ExtensionHost, model: ModelInfo): ProviderRegistration {
+  const registration = host.getProvider(model.provider);
+  if (registration) return registration;
+  throw new Error(
+    `provider not registered: ${model.provider}. Run /connect or add it under [providers.*] in config.toml`,
+  );
 }
 
 export function toDoneContract(verify: XioVerifyConfig): DoneContract | undefined {

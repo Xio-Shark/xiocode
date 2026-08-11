@@ -164,6 +164,59 @@ describe("App", () => {
     expect(frame).toContain("ctx:42%");
   });
 
+  it("renders the buffered disconnected model status in the header", async () => {
+    const bridge = new TuiSessionBridge();
+    bridge.sink.setStatus?.("model", "not connected · /connect");
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    const frame = await waitForFrame(instance, (value) => value.includes("not connected · /connect"));
+    expect(frame).toContain("not connected · /connect");
+  });
+
+  it("stays interactive after /connect cancellation and probe failure", async () => {
+    const bridge = new TuiSessionBridge();
+    const host = new ExtensionHost();
+    let attempts = 0;
+    host.registerCommand("connect", {
+      handler: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          const selected = await bridge.select("Select a provider", [
+            { label: "DeepSeek", value: "deepseek" },
+          ]);
+          return selected ? "unexpected" : "connect cancelled";
+        }
+        throw new Error("API key validation failed (401)");
+      },
+    });
+    host.registerCommand("status", { handler: () => "status-ok-after-connect-error" });
+    const instance = render(React.createElement(App, {
+      session: createSession(host),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    instance.stdin.write("/connect\r");
+    await waitForFrame(instance, (frame) => frame.includes("Select a provider"));
+    instance.stdin.write("\x1b");
+    await waitForFrame(instance, (frame) => frame.includes("connect cancelled"));
+
+    instance.stdin.write("/connect\r");
+    await waitForFrame(instance, (frame) => frame.includes("validation failed (401)"));
+    instance.stdin.write("/status\r");
+    const recovered = await waitForFrame(
+      instance,
+      (frame) => frame.includes("status-ok-after-connect-error"),
+    );
+    expect(recovered).toContain("status-ok-after-connect-error");
+  });
+
   it("folds completed thinking while retaining it in the transcript viewer", async () => {
     const bridge = new TuiSessionBridge();
     const instance = render(React.createElement(App, {
