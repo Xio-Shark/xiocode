@@ -109,6 +109,13 @@ export {
   registerPlanCapability,
 } from "./plan/index.ts";
 export { runDoneContract, formatDoneContractFeedback } from "./verify/done-contract.ts";
+export {
+  BoundedOutputCollector,
+  OUTPUT_BUDGET_PRESETS,
+  createDeadlineSignal,
+  forceKillProcessTree,
+  runSupervisedProcess,
+} from "./process/index.ts";
 export { verifyWriteBack, hashContent } from "./verify/write-back.ts";
 export {
   EvidenceStore,

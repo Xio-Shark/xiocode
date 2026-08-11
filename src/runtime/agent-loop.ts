@@ -1273,15 +1273,16 @@ async function executeToolCall(
   const hookResults = await host.emit("tool_call", {
     ...toolCallEvent,
     call: { id: normalizedCall.id, name: normalizedCall.name, args: normalizedCall.arguments },
+    ...(signal ? { signal } : {}),
   });
   const blocked = blockedToolResult(normalizedCall, hookResults);
   if (blocked) {
-    return emitToolResult(host, normalizedCall, blocked);
+    return emitToolResult(host, normalizedCall, blocked, signal);
   }
   const result = tool
     ? await runTool(tool, normalizedCall, signal)
     : { content: [{ type: "text", text: `tool not found: ${normalizedCall.name}` }], isError: true } as ToolExecuteResult;
-  return emitToolResult(host, normalizedCall, result);
+  return emitToolResult(host, normalizedCall, result, signal);
 }
 
 /**
@@ -1348,6 +1349,7 @@ async function emitToolResult(
   host: ExtensionHost,
   call: ChatToolCall,
   result: ToolExecuteResult,
+  signal?: AbortSignal,
 ): Promise<ToolExecuteResult> {
   const processed = await host.emit("tool_result", {
     call: { id: call.id, name: call.name, args: call.arguments },
@@ -1356,6 +1358,7 @@ async function emitToolResult(
       isError: result.isError,
       metadata: result.details && typeof result.details === "object" ? result.details as Record<string, unknown> : undefined,
     },
+    ...(signal ? { signal } : {}),
   });
   const originalText = toolContentText(result.content);
   for (const item of processed) {

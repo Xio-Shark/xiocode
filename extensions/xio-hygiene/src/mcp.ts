@@ -15,6 +15,11 @@ import {
   readAuthorizedResourceText,
 } from "./project-resource-read.ts";
 import { resolveMcpEnvEntries } from "../../../src/runtime/secret-environment.ts";
+import {
+  BoundedOutputCollector,
+  OUTPUT_BUDGET_PRESETS,
+  forceKillProcessTree,
+} from "../../../src/runtime/process/index.ts";
 
 export type McpConfig = Readonly<{
   enabled: boolean;
@@ -43,9 +48,6 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
  * After this, stdio children are force-killed so Node is not held open by pipes.
  */
 export const MCP_CLOSE_TIMEOUT_MS = 1_500;
-
-/** Wait after SIGTERM before SIGKILL on force-kill. */
-const MCP_FORCE_KILL_GRACE_MS = 400;
 
 export type McpTransportKind = "stdio" | "sse" | "http";
 
@@ -581,8 +583,28 @@ export async function connectMcpServer(
   let initialPid: number | null = null;
   const forceKill = (): void => {
     const pid = readTransportPid(transport) ?? initialPid;
-    forceKillPid(pid);
+    // SDK stdio spawn is not detached; use best-effort tree kill (not -pid group).
+    forceKillProcessTree(pid, { processGroup: false });
   };
+
+  // Drain stderr so an unread pipe cannot stall the MCP child.
+  const stderrStream =
+    transport &&
+    typeof transport === "object" &&
+    "stderr" in transport
+      ? (transport as { stderr?: NodeJS.ReadableStream | null }).stderr
+      : null;
+  if (stderrStream && typeof stderrStream.on === "function") {
+    const stderrCollector = new BoundedOutputCollector(OUTPUT_BUDGET_PRESETS.mcpStderr);
+    stderrStream.on("data", (chunk: Buffer | string) => {
+      if (stderrCollector.push("stderr", chunk)) {
+        forceKill();
+      }
+    });
+    stderrStream.on("error", () => {
+      // ignore — process exit handles lifecycle
+    });
+  }
 
   const close = async (): Promise<void> => {
     try {
@@ -639,25 +661,11 @@ export function readTransportPid(transport: unknown): number | null {
 
 /**
  * Force-kill a hung MCP stdio child so open pipes do not pin the Node event loop.
- * SIGTERM then SIGKILL; errors ignored (process may already be gone).
+ * Best-effort process tree kill (SDK spawn is not detached — no POSIX process-group claim).
+ * Windows uses taskkill /T. Errors ignored (process may already be gone).
  */
 export function forceKillPid(pid: number | null | undefined): void {
-  if (pid == null || !Number.isInteger(pid) || pid <= 0) return;
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const killer = setTimeout(() => {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // already dead
-    }
-  }, MCP_FORCE_KILL_GRACE_MS);
-  // Keep the timer referenced briefly so SIGKILL still runs if this is the last work;
-  // parent ensureProcessExit is the final backstop.
-  void killer;
+  forceKillProcessTree(pid, { processGroup: false });
 }
 
 /** Fail fast when a stdio command path is missing (common Cursor leftover). */

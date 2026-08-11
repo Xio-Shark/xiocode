@@ -6,8 +6,10 @@
  *
  * Missing tools are skipped; XioCode never requires a brew install.
  */
-import { spawn } from "node:child_process";
 import path from "node:path";
+
+import { buildChildEnv } from "../secret-environment.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
 
 export type GrepEngineKind = "ugrep" | "rg" | "grep" | "node";
 export type GlobEngineKind = "ugrep" | "rg" | "bfs" | "find" | "node";
@@ -169,6 +171,7 @@ export async function runGrepWithEngine(
     pattern: string;
     searchRoot: string;
     globFilter?: string;
+    signal?: AbortSignal;
   }>,
 ): Promise<SearchBackendResult> {
   if (engine.kind === "node") {
@@ -189,6 +192,7 @@ export async function runGlobWithEngine(
     cwd: string;
     pattern: string;
     root: string;
+    signal?: AbortSignal;
   }>,
 ): Promise<SearchBackendResult> {
   if (engine.kind === "node") {
@@ -261,31 +265,31 @@ async function probeBinaryOnce(name: string): Promise<boolean> {
 
 async function grepWithUgrep(
   binary: string,
-  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string }>,
+  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   const args = ["-rn", "--color=never", "--ignore-files"];
   if (input.globFilter) {
     args.push("-g", input.globFilter);
   }
   args.push("--", input.pattern, input.searchRoot);
-  return finishLineMatches(binary, args, input.cwd, "ugrep");
+  return finishLineMatches(binary, args, input.cwd, "ugrep", input.signal);
 }
 
 async function grepWithRg(
   binary: string,
-  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string }>,
+  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   const args = ["-n", "--no-heading", "--color=never"];
   if (input.globFilter) {
     args.push("-g", input.globFilter);
   }
   args.push("--", input.pattern, input.searchRoot);
-  return finishLineMatches(binary, args, input.cwd, "rg");
+  return finishLineMatches(binary, args, input.cwd, "rg", input.signal);
 }
 
 async function grepWithSystemGrep(
   binary: string,
-  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string }>,
+  input: Readonly<{ cwd: string; pattern: string; searchRoot: string; globFilter?: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   const args = [
     // Lowercase -r does not follow directory symlinks; uppercase -R does.
@@ -298,7 +302,7 @@ async function grepWithSystemGrep(
     args.push(`--include=${input.globFilter}`);
   }
   args.push("--", input.pattern, input.searchRoot);
-  return finishLineMatches(binary, args, input.cwd, "grep");
+  return finishLineMatches(binary, args, input.cwd, "grep", input.signal);
 }
 
 async function finishLineMatches(
@@ -306,8 +310,9 @@ async function finishLineMatches(
   args: readonly string[],
   cwd: string,
   backend: string,
+  signal?: AbortSignal,
 ): Promise<SearchBackendResult> {
-  const result = await runArgv(binary, args, cwd);
+  const result = await runArgv(binary, args, cwd, signal);
   if (result.spawnError) {
     return { kind: "fallback" };
   }
@@ -336,7 +341,7 @@ async function finishLineMatches(
 
 async function globWithUgrep(
   binary: string,
-  input: Readonly<{ cwd: string; pattern: string; root: string }>,
+  input: Readonly<{ cwd: string; pattern: string; root: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   // List files matching name glob: any-line match under -g filter.
   const args = [
@@ -350,21 +355,21 @@ async function globWithUgrep(
     ".",
     input.root,
   ];
-  return finishFileList(binary, args, input.cwd, "ugrep");
+  return finishFileList(binary, args, input.cwd, "ugrep", input.signal);
 }
 
 async function globWithRg(
   binary: string,
-  input: Readonly<{ cwd: string; pattern: string; root: string }>,
+  input: Readonly<{ cwd: string; pattern: string; root: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   const args = ["--files", "-g", input.pattern, "--", input.root];
-  return finishFileList(binary, args, input.cwd, "rg");
+  return finishFileList(binary, args, input.cwd, "rg", input.signal);
 }
 
 async function globWithWalker(
   binary: string,
   kind: "bfs" | "find",
-  input: Readonly<{ cwd: string; pattern: string; root: string }>,
+  input: Readonly<{ cwd: string; pattern: string; root: string; signal?: AbortSignal }>,
 ): Promise<SearchBackendResult> {
   const args = [
     input.root,
@@ -377,7 +382,7 @@ async function globWithWalker(
     "-path",
     "*/.git/*",
   ];
-  const result = await runArgv(binary, args, input.cwd);
+  const result = await runArgv(binary, args, input.cwd, input.signal);
   if (result.spawnError) {
     return { kind: "fallback" };
   }
@@ -407,8 +412,9 @@ async function finishFileList(
   args: readonly string[],
   cwd: string,
   backend: string,
+  signal?: AbortSignal,
 ): Promise<SearchBackendResult> {
-  const result = await runArgv(binary, args, cwd);
+  const result = await runArgv(binary, args, cwd, signal);
   if (result.spawnError) {
     return { kind: "fallback" };
   }
@@ -484,27 +490,28 @@ async function runArgv(
   command: string,
   args: readonly string[],
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, [...args], { cwd });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      resolve({ exitCode: code ?? 1, stdout, stderr });
-    });
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      resolve({ exitCode: 1, stdout, stderr: error.message, spawnError: true });
-    });
+  const result = await runSupervisedProcess({
+    command,
+    args,
+    cwd,
+    env: buildChildEnv(process.env),
+    signal,
+    timeoutMs: 60_000,
+    output: OUTPUT_BUDGET_PRESETS.search,
   });
+  if (result.termination === "spawn_error") {
+    return {
+      exitCode: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      spawnError: true,
+    };
+  }
+  return {
+    exitCode: result.code ?? 1,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
