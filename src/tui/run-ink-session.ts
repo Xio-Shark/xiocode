@@ -36,13 +36,21 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
   const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
+  let bootInterrupted = false;
 
   const early = options.earlyBoot;
   early?.setStatus("loading session…");
   const earlyDraft = early?.drain() ?? { text: "", pendingSubmit: false };
   early?.unmount();
 
-  const inkBoot = startInteractiveBoot({ cwd, env });
+  const inkBoot = startInteractiveBoot({
+    cwd,
+    env,
+    bridge,
+    onInterrupt: () => {
+      bootInterrupted = true;
+    },
+  });
   if (earlyDraft.text.length > 0) {
     inkBoot.buffer.setText(earlyDraft.text);
   }
@@ -68,6 +76,12 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       uiSink: bridge.sink,
       subagentUi: bridge.createSubagentUiBridge(),
     });
+
+    if (bootInterrupted) {
+      inkBoot.unmount();
+      await session.close();
+      return 130;
+    }
 
     inkBoot.setStatus("ready", "ready");
     tracer?.mark("prompt_ready", "success", { attrs: { ui: "ink" } });
@@ -124,6 +138,9 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
     }
   } catch (error) {
     inkBoot.unmount();
+    if (bootInterrupted) {
+      return 130;
+    }
     throw error;
   }
 }

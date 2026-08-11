@@ -52,6 +52,8 @@ const PRE_SUBSCRIPTION_BUFFER_LIMIT = 64;
 
 export class TuiSessionBridge implements InteractiveIO {
   readonly #listeners = new Set<(event: TuiEvent) => void>();
+  /** Live boot observers never consume or flush the formal startup buffer. */
+  readonly #observers = new Set<(event: TuiEvent) => void>();
   /** Events emitted before the first subscriber; flushed once on first subscribe. */
   #preSubscriptionBuffer: TuiEvent[] = [];
   #preSubscriptionFlushed = false;
@@ -154,6 +156,15 @@ export class TuiSessionBridge implements InteractiveIO {
     return () => this.#listeners.delete(listener);
   }
 
+  /**
+   * Observe live boot events without becoming the first formal subscriber.
+   * Startup events remain buffered for App and still flush exactly once.
+   */
+  observe(listener: (event: TuiEvent) => void): () => void {
+    this.#observers.add(listener);
+    return () => this.#observers.delete(listener);
+  }
+
   answerConfirmation(approved: boolean): void {
     const resolve = this.#pendingAnswer;
     if (!resolve) return;
@@ -223,6 +234,9 @@ export class TuiSessionBridge implements InteractiveIO {
   }
 
   private emit(event: TuiEvent): void {
+    for (const observer of this.#observers) {
+      observer(event);
+    }
     if (this.#listeners.size === 0) {
       if (!this.#preSubscriptionFlushed) {
         this.#preSubscriptionBuffer.push(event);
