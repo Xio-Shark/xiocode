@@ -13,6 +13,7 @@ import {
 import {
   highRiskPolicyForMode,
   registerToolPermissionGate,
+  SHELL_COMMAND_POLICY,
   type HighRiskPolicy,
   type ToolPermissionGate,
 } from "./tool-permission.ts";
@@ -124,6 +125,29 @@ export function registerPermissionCommands(
     description: "Alias for /permission (auto|full|strict).",
     handler,
   });
+  options.host.registerCommand("bypass", {
+    description:
+      "Alias for /permission full; unsafe shell and merge/rollback still confirm. /bypass off → auto.",
+    handler: async (args?: unknown) => {
+      const raw = typeof args === "string" ? args.trim().toLowerCase() : "";
+      if (raw === "off") {
+        setMode("auto");
+        return [
+          formatPermissionModeHelp("auto"),
+          "Note: /bypass off restored auto permission mode.",
+        ].join("\n");
+      }
+      if (raw.length > 0 && raw !== "on") {
+        throw new Error("usage: /bypass [off]  (alias for /permission full)");
+      }
+      setMode("full");
+      return [
+        formatPermissionModeHelp("full"),
+        "Note: /bypass sets permission full (idempotent). It does not skip unsafe/complex shell,",
+        "merge, rollback, trust, or path-grant confirms. Restore with /permission auto or /bypass off.",
+      ].join("\n");
+    },
+  });
 
   const existing = options.host.getCommand("status");
   if (existing) {
@@ -176,6 +200,7 @@ function statusEnrichment(
     risks: allowedRiskClasses(mode),
     write_exec: mode === "strict" ? "denied" : "allowed",
     high_risk_policy: highRiskPolicy,
+    shell_command_policy: SHELL_COMMAND_POLICY,
     host_isolation: "unsupported",
     ...(trust ? { project_trust: trust } : {}),
   };

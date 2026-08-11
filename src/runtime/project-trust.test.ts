@@ -166,7 +166,7 @@ describe("TrustStore", () => {
   });
 });
 
-describe("worktree trust inheritance", () => {
+describe("worktree trust (no common-dir inheritance)", () => {
   function git(cwd: string, ...args: string[]): void {
     execFileSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
   }
@@ -181,7 +181,7 @@ describe("worktree trust inheritance", () => {
     return { main, worktree };
   }
 
-  it("worktree of a trusted main repo inherits trust (non-interactive)", async () => {
+  it("worktree of a trusted main repo does not inherit trust (non-interactive)", async () => {
     const home = await tempRoot("xio-trust-wt-home-");
     const storePath = defaultTrustStorePath(home);
     const { main, worktree } = await makeRepoWithWorktree();
@@ -197,8 +197,8 @@ describe("worktree trust inheritance", () => {
       storePath,
       interactiveSession: false,
     });
-    expect(state.decision).toBe("trusted");
-    expect(state.persisted).toBe(true);
+    expect(state.decision).toBe("untrusted");
+    expect(state.persisted).toBe(false);
   });
 
   it("worktree of an untrusted main repo stays untrusted", async () => {
@@ -230,7 +230,7 @@ describe("worktree trust inheritance", () => {
     expect(state.decision).toBe("untrusted");
   });
 
-  it("decideTrust inherits only explicit trusted grants for the worktree root", () => {
+  it("decideTrust ignores worktree inheritance input", () => {
     const updatedAt = new Date(0).toISOString();
     const store: TrustStoreFile = {
       version: 1,
@@ -240,10 +240,9 @@ describe("worktree trust inheritance", () => {
       },
     };
     const worktree = { mainPath: "/trusted-main", worktreeRoot: "/wt" };
-    expect(decideTrust({ cwd: "/wt", mode: "ask", store, worktree }).decision).toBe("trusted");
-    // Subdirectories inherit only when the main grant covers children.
+    // Common-dir inheritance removed: worktree path stays untrusted.
+    expect(decideTrust({ cwd: "/wt", mode: "ask", store, worktree }).decision).toBe("untrusted");
     expect(decideTrust({ cwd: "/wt/sub", mode: "ask", store, worktree }).decision).toBe("untrusted");
-    // Denied main repos grant nothing.
     expect(
       decideTrust({
         cwd: "/wt",
@@ -252,7 +251,7 @@ describe("worktree trust inheritance", () => {
         worktree: { mainPath: "/denied-main", worktreeRoot: "/wt" },
       }).decision,
     ).toBe("untrusted");
-    // An explicit denial of the worktree path itself wins over inheritance.
+    // Exact denial of the worktree path itself still wins.
     const denyWorktree: TrustStoreFile = {
       version: 1,
       entries: {
@@ -262,7 +261,7 @@ describe("worktree trust inheritance", () => {
     };
     expect(decideTrust({ cwd: "/wt", mode: "ask", store: denyWorktree, worktree }).decision)
       .toBe("untrusted");
-    // coverChildren on the main grant extends to worktree subdirectories.
+    // coverChildren on the main grant must not cross into a linked worktree path.
     const coverStore: TrustStoreFile = {
       version: 1,
       entries: {
@@ -270,7 +269,115 @@ describe("worktree trust inheritance", () => {
       },
     };
     expect(decideTrust({ cwd: "/wt/sub", mode: "ask", store: coverStore, worktree }).decision)
-      .toBe("trusted");
+      .toBe("untrusted");
+  });
+
+  it("identity-bound trust mismatches after HEAD changes", async () => {
+    const home = await tempRoot("xio-trust-id-home-");
+    const storePath = defaultTrustStorePath(home);
+    const repo = await tempRoot("xio-trust-id-repo-");
+    git(repo, "init");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "a");
+    await grantTrust({ cwd: repo, storePath, home });
+    const before = await ensureProjectTrust({
+      cwd: repo,
+      mode: "ask",
+      home,
+      storePath,
+      interactiveSession: false,
+    });
+    expect(before.decision).toBe("trusted");
+
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "b");
+    const after = await ensureProjectTrust({
+      cwd: repo,
+      mode: "ask",
+      home,
+      storePath,
+      interactiveSession: false,
+    });
+    expect(after.decision).toBe("untrusted");
+  });
+
+  it("structured session grant yields session_only without persisting", async () => {
+    const home = await tempRoot("xio-trust-sg-home-");
+    const storePath = defaultTrustStorePath(home);
+    const { WorktreeSandbox } = await import("../../extensions/xio-sandbox/src/worktree-sandbox.ts");
+    const main = await tempRoot("xio-trust-sg-main-");
+    git(main, "init");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init");
+    const session = await WorktreeSandbox.create({
+      mainRoot: main,
+      baseDir: path.join(home, "worktrees"),
+    });
+    const { sessionGrantFromWorktree } = await import("./project-trust.ts");
+    const grant = sessionGrantFromWorktree(session);
+    const state = await ensureProjectTrust({
+      cwd: session.worktreePath,
+      mode: "ask",
+      home,
+      storePath,
+      interactiveSession: false,
+      sessionGrant: grant,
+    });
+    expect(state.decision).toBe("session_only");
+    expect(state.persisted).toBe(false);
+    const store = await loadTrustStore(storePath);
+    expect(Object.keys(store.entries)).toHaveLength(0);
+  });
+
+  it("persisted denial wins over an otherwise valid session grant", async () => {
+    const home = await tempRoot("xio-trust-deny-sg-");
+    const storePath = defaultTrustStorePath(home);
+    const { WorktreeSandbox } = await import("../../extensions/xio-sandbox/src/worktree-sandbox.ts");
+    const main = await tempRoot("xio-trust-deny-main-");
+    git(main, "init");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init");
+    const session = await WorktreeSandbox.create({
+      mainRoot: main,
+      baseDir: path.join(home, "worktrees"),
+    });
+    const store: TrustStoreFile = {
+      version: 1,
+      entries: {
+        [normalizeTrustPath(session.worktreePath)]: {
+          level: "denied",
+          updatedAt: new Date(0).toISOString(),
+        },
+      },
+    };
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(path.dirname(storePath), { recursive: true });
+    await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+    const { sessionGrantFromWorktree } = await import("./project-trust.ts");
+    const state = await ensureProjectTrust({
+      cwd: session.worktreePath,
+      mode: "ask",
+      home,
+      storePath,
+      interactiveSession: false,
+      sessionGrant: sessionGrantFromWorktree(session),
+    });
+    expect(state.decision).toBe("untrusted");
+  });
+
+  it("bare sessionGranted boolean is insufficient", () => {
+    const cwd = "/tmp/xio-trust-bare-bool";
+    expect(decideTrust({ cwd, mode: "ask", sessionGranted: true }).decision).toBe("untrusted");
+  });
+
+  it("decideTrust ignores sessionGrant that fails live validation", () => {
+    const cwd = "/tmp/xio-trust-invalid-grant";
+    const grant = {
+      issuer: "xio-worktree-launch" as const,
+      canonicalRoot: cwd,
+      mainRoot: "/tmp/xio-trust-main",
+      sessionId: "sess",
+      repoId: "repo",
+      headCommit: "0".repeat(40),
+      baselineTree: "1".repeat(40),
+    };
+    expect(decideTrust({ cwd, mode: "ask", sessionGrant: grant }).decision).toBe("untrusted");
   });
 });
 

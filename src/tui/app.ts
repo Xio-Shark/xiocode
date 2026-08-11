@@ -130,7 +130,6 @@ export type ViewState = Readonly<{
   confirm?: Readonly<{ question: string; detail: string; scroll: number }>;
   select?: Readonly<{ question: string; choices: readonly SelectChoice[]; selected: number }>;
   prompt?: Readonly<{ question: string; secret: boolean; value: string }>;
-  bypass: boolean;
 }>;
 
 export type AppProps = Readonly<{
@@ -153,7 +152,10 @@ export type SlashCommand = Readonly<{ name: string; description: string }>;
 
 const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "help", description: "Show available commands." },
-  { name: "bypass", description: "Toggle merge/rollback auto-approve for this session." },
+  {
+    name: "bypass",
+    description: "Alias for /permission full; unsafe shell and merge/rollback still confirm.",
+  },
   { name: "exit", description: "End the session." },
   { name: "quit", description: "Alias for /exit." },
 ];
@@ -178,7 +180,7 @@ export function App(props: AppProps): React.JSX.Element {
   const { columns, rows } = useWindowSize();
   const appendScrollback = props.appendScrollback === true;
   const [view, setView] = useState<ViewState>(() =>
-    ({ entries: [], statuses: {}, widgets: {}, bypass: false }),
+    ({ entries: [], statuses: {}, widgets: {} }),
   );
   // Canonical transcript for Static (route B) and windowed fullscreen (route A).
   const [scrollback, setScrollback] = useState<ScrollbackState>(() =>
@@ -199,7 +201,6 @@ export function App(props: AppProps): React.JSX.Element {
         || event.kind === "select-close"
         || event.kind === "prompt-open"
         || event.kind === "prompt-close"
-        || event.kind === "bypass"
         || event.kind === "context-compaction"
       ) {
         setView((current) => reduceEvent(current, event));
@@ -582,7 +583,6 @@ export function App(props: AppProps): React.JSX.Element {
       })
       : null,
     h(FooterHints, {
-      bypass: view.bypass || Boolean(view.statuses.bypass),
       permissionMode,
       cwd: props.cwd,
       context: view.statuses.clipboard ?? view.statuses.context,
@@ -2276,13 +2276,23 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
       );
       return;
     }
-    if (value === "/bypass") {
-      bridge.toggleBypass();
-      return;
-    }
     if (value.startsWith("/")) {
       const [name, ...args] = value.slice(1).split(/\s+/);
       if (!name) return;
+      // /bypass is registered as a permission-full alias on the host when
+      // prepareSession ran; fall back for test stubs without that command.
+      if (name === "bypass" && !session.host.getCommand("bypass")) {
+        const arg = args.join(" ").trim().toLowerCase();
+        const next = arg === "off" ? "auto" : "full";
+        session.setPermissionMode(next);
+        bridge.sink.notify?.(
+          next === "full"
+            ? "权限模式: 完全 (full) — unsafe/complex shell and merge/rollback still confirm. Restore: /permission auto"
+            : "权限模式: 自动 (auto)",
+          next === "full" ? "warning" : "info",
+        );
+        return;
+      }
       const result = await session.host.runCommand(name, args.join(" "));
       if (result !== undefined) bridge.sink.notify?.(formatResult(result), "info");
       return;
@@ -2324,7 +2334,6 @@ export function reduceEvent(state: ViewState, event: TuiEvent): ViewState {
     };
   }
   if (event.kind === "prompt-close") return { ...state, prompt: undefined };
-  if (event.kind === "bypass") return { ...state, bypass: event.enabled };
   if (event.kind === "context-compaction") return reduceContextCompaction(state, event.event);
   if (event.kind === "status") {
     const statuses = { ...state.statuses };
@@ -2925,7 +2934,6 @@ function TasklistPanel(props: Readonly<{ lines: readonly string[] }>): React.JSX
  * always show path + context/usage; workspace/mcp stay dim on the right.
  */
 function FooterHints(props: Readonly<{
-  bypass: boolean;
   permissionMode: string;
   cwd: string;
   context?: string;
@@ -2938,10 +2946,8 @@ function FooterHints(props: Readonly<{
   /** Completed user turns (grok status-bar parity). */
   turn?: number;
 }>): React.JSX.Element {
-  const elevated = props.bypass || !isDefaultPermissionMode(props.permissionMode);
-  const modeLabel = props.bypass
-    ? "bypass permissions on"
-    : `permissions ${props.permissionMode} on`;
+  const elevated = !isDefaultPermissionMode(props.permissionMode);
+  const modeLabel = `permissions ${props.permissionMode} on`;
   const path = formatShortCwd(props.cwd);
   const contextLabel = props.context ?? props.usage;
   const exploreLabel = props.explore ? formatExploreFooter(props.explore) : undefined;
@@ -3237,5 +3243,5 @@ function createInitialView(messages: readonly ChatMessage[]): ViewState {
     const kind = message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "tool";
     return [{ id: nextEntryId(), kind, text: message.content }];
   });
-  return { entries, statuses: {}, widgets: {}, bypass: false };
+  return { entries, statuses: {}, widgets: {} };
 }

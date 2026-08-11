@@ -1,14 +1,13 @@
 /**
- * Command-level risk for `bash`, layered *under* the G7 tool risk classes.
+ * Command-level policy for `bash`, layered *under* the G7 tool risk classes.
  *
- * The tool gate answers "may this session run shell commands at all"; it is
- * approved once and then stays approved. That is the right granularity for
- * `npm test`, and the wrong granularity for `rm -rf ~`. This layer re-asks for
- * the specific commands that destroy data, execute remote code, or rewrite
- * shared history — every time, with the matched command shown.
+ * The tool gate answers "may this session run shell tools at all". That is not
+ * the same as approving every shell string. Auto-execution is reserved for a
+ * conservative proven-safe subset (no quotes/operators/expansions + fixed
+ * argv allowlist). The denylist only explains *why* a command looks dangerous;
+ * unknown, complex, and known-risk commands always confirm (or deny under `-p`).
  *
- * Deliberately a pattern layer, not a shell parser: it is a speed bump on the
- * known-catastrophic set, not a sandbox. Host isolation stays `unsupported`.
+ * Host isolation stays `unsupported`.
  */
 export type CommandRiskSeverity =
   | "destructive"
@@ -120,9 +119,9 @@ const RULES: readonly Rule[] = [
 ];
 
 /**
- * Classify one shell command. Returns the first matching rule, or undefined
- * when nothing matched — undefined means "not on the known-dangerous list",
- * never "proven safe".
+ * Classify one shell command against the denylist. Returns the first matching
+ * rule, or undefined when nothing matched — undefined means "not on the
+ * known-dangerous list", never "proven safe".
  */
 export function classifyCommandRisk(command: string): CommandRisk | undefined {
   const text = command.trim();
@@ -141,6 +140,117 @@ export function classifyCommandRisk(command: string): CommandRisk | undefined {
   return undefined;
 }
 
+/** Alias: denylist is explanation-only. */
+export const explainDangerousCommand = classifyCommandRisk;
+
+export type CommandExecutionDecision =
+  | Readonly<{ kind: "safe"; argv: readonly string[]; allowRule: string }>
+  | Readonly<{
+    kind: "confirm";
+    reason: "known-risk" | "unknown-command" | "complex-shell";
+    risk?: CommandRisk;
+    detail: string;
+  }>;
+
+/**
+ * Characters that change shell tokenization/expansion. Presence of any one
+ * disqualifies the command from the proven-safe auto path.
+ */
+const SHELL_METACHAR = /['"`\\;&|<>$(){}*!?#~\n\r\t]/;
+
+/** Literal argv tokens allowed in the proven-safe grammar (no quotes/escapes). */
+const SAFE_TOKEN = /^[A-Za-z0-9_./:@%=+,\[\]-]+$/;
+
+const LS_FLAGS = new Set(["-l", "-a", "-1", "-la", "-al", "-lh", "-hl"]);
+
+/**
+ * Decide whether a raw bash command may auto-run or must confirm.
+ * Only a tiny allowlist of simple commands returns `safe`.
+ */
+export function classifyCommandExecution(command: string): CommandExecutionDecision {
+  const raw = command;
+  const text = command.trim();
+  if (text.length === 0) {
+    return {
+      kind: "confirm",
+      reason: "unknown-command",
+      detail: describeCommandConfirm("unknown-command", raw),
+    };
+  }
+
+  const risk = classifyCommandRisk(text);
+  const argv = tokenizeProvenSafe(text);
+  if (!argv) {
+    return {
+      kind: "confirm",
+      reason: risk ? "known-risk" : "complex-shell",
+      ...(risk ? { risk } : {}),
+      detail: describeCommandConfirm(risk ? "known-risk" : "complex-shell", raw, risk),
+    };
+  }
+
+  const allowRule = matchAllowlist(argv);
+  if (allowRule) {
+    return { kind: "safe", argv, allowRule };
+  }
+
+  return {
+    kind: "confirm",
+    reason: risk ? "known-risk" : "unknown-command",
+    ...(risk ? { risk } : {}),
+    detail: describeCommandConfirm(risk ? "known-risk" : "unknown-command", raw, risk),
+  };
+}
+
+/** True when the command is in the proven-safe allowlist. */
+export function isProvenSafeCommand(command: string): boolean {
+  return classifyCommandExecution(command).kind === "safe";
+}
+
+/**
+ * Conservative tokenizer: exactly one simple command, whitespace-separated
+ * literal tokens, no shell metacharacters.
+ */
+export function tokenizeProvenSafe(command: string): string[] | undefined {
+  const text = command.trim();
+  if (text.length === 0) return undefined;
+  if (SHELL_METACHAR.test(text)) return undefined;
+  // Reject empty-quote style splices that somehow lack the quote chars above
+  // (defensive — the metachar class already covers quotes).
+  if (/\s{2,}/.test(text.replace(/^\s+|\s+$/g, ""))) {
+    // Multiple spaces are fine; keep splitting.
+  }
+  const tokens = text.split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return undefined;
+  if (tokens.some((token) => !SAFE_TOKEN.test(token))) return undefined;
+  // Leading env assignments (FOO=bar cmd) are not proven-safe.
+  if (tokens[0]?.includes("=")) return undefined;
+  return tokens;
+}
+
+function matchAllowlist(argv: readonly string[]): string | undefined {
+  const cmd = argv[0];
+  if (!cmd) return undefined;
+  if (cmd === "pwd" && argv.length === 1) return "pwd";
+  if (cmd === "true" && argv.length === 1) return "true";
+  if (cmd === "false" && argv.length === 1) return "false";
+  if (cmd === "ls") {
+    const rest = argv.slice(1);
+    for (const arg of rest) {
+      if (arg.startsWith("-")) {
+        if (!LS_FLAGS.has(arg)) return undefined;
+        continue;
+      }
+      // Relative path only; no parent traversal, no absolute paths.
+      if (arg.startsWith("/") || arg === "~" || arg.startsWith("~/") || arg.split("/").includes("..")) {
+        return undefined;
+      }
+    }
+    return "ls";
+  }
+  return undefined;
+}
+
 /** Extract the shell command from a `bash` tool_call payload, if present. */
 export function commandFromToolArgs(args: unknown): string | undefined {
   if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
@@ -150,12 +260,25 @@ export function commandFromToolArgs(args: unknown): string | undefined {
 
 /** Confirm-prompt detail block; shows the real command, never a paraphrase. */
 export function describeCommandRisk(risk: CommandRisk, command: string): string {
-  return [
-    `command: ${truncate(command, 400)}`,
-    `matched: ${risk.match}`,
-    `risk: ${risk.severity} (${risk.id})`,
-    `why: ${risk.reason}`,
-  ].join("\n");
+  return describeCommandConfirm("known-risk", command, risk);
+}
+
+export function describeCommandConfirm(
+  reason: "known-risk" | "unknown-command" | "complex-shell",
+  command: string,
+  risk?: CommandRisk,
+): string {
+  const lines = [`command: ${truncate(command, 400)}`, `policy: ${reason}`];
+  if (risk) {
+    lines.push(`matched: ${risk.match}`);
+    lines.push(`risk: ${risk.severity} (${risk.id})`);
+    lines.push(`why: ${risk.reason}`);
+  } else if (reason === "complex-shell") {
+    lines.push("why: quotes, operators, redirects, or expansions require one-time confirmation.");
+  } else {
+    lines.push("why: command is outside the proven-safe allowlist.");
+  }
+  return lines.join("\n");
 }
 
 function truncate(value: string, max: number): string {

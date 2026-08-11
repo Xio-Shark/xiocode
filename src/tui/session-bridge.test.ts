@@ -105,24 +105,17 @@ describe("TuiSessionBridge", () => {
     expect(events.filter((event) => event.kind === "notice")).toHaveLength(0);
   });
 
-  it("keeps bypass session-local and audits auto-approval", async () => {
+  it("never auto-approves ask; confirmations wait for an explicit answer", async () => {
     const bridge = new TuiSessionBridge();
-    const notices: string[] = [];
-    bridge.subscribe((event) => {
-      if (event.kind === "notice") notices.push(event.text);
-    });
-
-    expect(bridge.bypass).toBe(false);
-    expect(bridge.toggleBypass()).toBe(true);
-    await expect(bridge.ask("Merge changes?")).resolves.toBe(true);
-    expect(notices.join("\n")).toContain("Bypass enabled");
-    expect(notices.join("\n")).toContain("Bypass auto-approved");
-    expect(bridge.toggleBypass()).toBe(false);
-    const confirmation = bridge.ask("Merge after disable?");
+    const confirmation = bridge.ask("Merge changes?");
     expect(bridge.confirmPending).toBe(true);
     bridge.answerConfirmation(false);
     await expect(confirmation).resolves.toBe(false);
-    expect(new TuiSessionBridge().bypass).toBe(false);
+
+    const next = bridge.ask("Another confirm?");
+    expect(bridge.confirmPending).toBe(true);
+    bridge.answerConfirmation(true);
+    await expect(next).resolves.toBe(true);
   });
 
   it("emits thinking-delta and tool-end output from the sink", () => {

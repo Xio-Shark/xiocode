@@ -22,6 +22,7 @@ import { createReadlineInteractiveIO } from "./readline-interactive.ts";
 import {
   allowsProjectResources,
   ensureProjectTrust,
+  sessionGrantFromWorktree,
   type ProjectTrustState,
   type TrustMode,
 } from "./project-trust.ts";
@@ -144,6 +145,8 @@ export type PreparedSession = Readonly<{
   getThinkingLevel: () => ThinkingLevel;
   cycleThinkingLevel: () => Promise<ThinkingLevel>;
   getPermissionMode: () => PermissionMode;
+  /** Set permission mode explicitly (e.g. /bypass → full). */
+  setPermissionMode: (mode: PermissionMode) => PermissionMode;
   /** Cycle auto → full → strict → auto (Shift+Tab). */
   cyclePermissionMode: () => PermissionMode;
   compact: (focus?: string) => Promise<ContextCompactionResult>;
@@ -220,12 +223,17 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const interactive = options.interactive ?? createReadlineInteractiveIO(ask);
   const interactiveSession = options.promptOnce === undefined;
   const trustMode: TrustMode = options.runtimeConfig.trust?.mode ?? "ask";
+  const worktreeSession = options.runtimeConfig.worktree?.session;
+  const sessionGrant = worktreeSession
+    ? sessionGrantFromWorktree(worktreeSession)
+    : undefined;
   const projectTrust = options.projectTrust ?? await ensureProjectTrust({
     cwd,
     mode: trustMode,
     interactiveSession,
     ask: (question, detail) => interactive.ask(question, detail),
     notify: (message) => sink.notify?.(message, "info"),
+    ...(sessionGrant ? { sessionGrant } : {}),
   });
   // Hygiene loaders (session_start) honor this for the remainder of the session.
   process.env.XIO_INCLUDE_PROJECT = allowsProjectResources(projectTrust.decision) ? "1" : "0";
@@ -607,6 +615,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getThinkingLevel: () => host.getThinkingLevel(),
     cycleThinkingLevel: () => cycleSessionThinkingLevel(thinkingOpts),
     getPermissionMode: () => permission.getMode(),
+    setPermissionMode: (mode) => permission.setMode(mode),
     cyclePermissionMode: () => permission.cycleMode(),
     compact: (focus) => compact("manual", focus),
     workspacePerception,

@@ -127,4 +127,27 @@ describe("registerPermissionCommands", () => {
     expect(host.getActiveTools()).toContain("mcp__x__y");
     expect(statuses.permission).toBe("perm:full");
   });
+
+  it("/bypass aliases permission full idempotently; off restores auto", async () => {
+    const host = new ExtensionHost();
+    host.registerTool(defineTool({
+      name: "bash",
+      description: "bash",
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    }));
+    const controller = registerPermissionCommands({
+      host,
+      sink: {},
+      interactive: fakeIo(),
+    });
+    expect(controller.getMode()).toBe("auto");
+    const first = await host.runCommand("bypass");
+    expect(controller.getMode()).toBe("full");
+    expect(String(first)).toContain("does not skip");
+    await host.runCommand("bypass");
+    expect(controller.getMode()).toBe("full");
+    await host.runCommand("bypass", "off");
+    expect(controller.getMode()).toBe("auto");
+  });
 });

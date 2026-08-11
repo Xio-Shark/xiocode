@@ -158,9 +158,12 @@ export {
   revokeTrust,
   allowsProjectResources,
   normalizeTrustPath,
+  sessionGrantFromWorktree,
   type TrustDecision,
   type TrustMode,
   type ProjectTrustState,
+  type ProjectTrustIdentity,
+  type ProjectTrustSessionGrant,
 } from "./project-trust.ts";
 export type { ContextCompactionResult, SessionCompactionFact } from "./context-compaction.ts";
 export type { AgentLoopCheckpoint } from "./agent-loop.ts";

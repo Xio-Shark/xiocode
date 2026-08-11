@@ -143,6 +143,7 @@ describe("registerToolPermissionGate", () => {
     expect(status).toMatchObject({
       permission: "full",
       high_risk_policy: "allow",
+      shell_command_policy: "safe_allowlist_else_confirm",
       host_isolation: "unsupported",
     });
   });
@@ -172,7 +173,8 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
 
   it("blocks rm -rf ~ in the default mode when the user declines", async () => {
     const host = new ExtensionHost();
-    const io = fakeIo([false]);
+    // 1: approve bash tool, 2: deny the destructive command.
+    const io = fakeIo([true, false]);
     registerToolPermissionGate({
       host,
       interactive: io,
@@ -182,12 +184,12 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
 
     const result = await host.emit("tool_call", bashCall("rm -rf ~"));
     expect(blocked(result)).toBe(true);
-    expect(io.asks[0]).toContain("destructive");
+    expect(io.asks[1]).toContain("destructive");
   });
 
-  it("re-asks for every dangerous command even after bash is approved", async () => {
+  it("asks again for unproven commands even after bash is approved", async () => {
     const host = new ExtensionHost();
-    // 1: approve the bash tool, 2: approve the first rm, 3: approve the second.
+    // 1: approve the bash tool, 2: approve the first command, 3: approve the second.
     const io = fakeIo([true, true, true]);
     registerToolPermissionGate({
       host,
@@ -197,15 +199,15 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
     });
 
     await host.emit("tool_call", bashCall("npm test"));
-    expect(io.asks).toHaveLength(1);
+    expect(io.asks).toHaveLength(2);
 
     await host.emit("tool_call", bashCall("rm -rf build"));
     await host.emit("tool_call", bashCall("rm -rf dist"));
-    // Tool approval is remembered; the command layer is not.
-    expect(io.asks).toHaveLength(3);
+    // Tool approval is remembered; unproven commands are not.
+    expect(io.asks).toHaveLength(4);
   });
 
-  it("leaves everyday commands alone once bash is approved", async () => {
+  it("auto-runs proven-safe allowlist commands after bash tool approval", async () => {
     const host = new ExtensionHost();
     const io = fakeIo([true]);
     registerToolPermissionGate({
@@ -215,19 +217,36 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
       getMode: () => "auto",
     });
 
-    await host.emit("tool_call", bashCall("npm test"));
-    const result = await host.emit("tool_call", bashCall("git status"));
+    await host.emit("tool_call", bashCall("pwd"));
+    expect(io.asks).toHaveLength(1);
+    const result = await host.emit("tool_call", bashCall("ls -la"));
     expect(blocked(result)).toBe(false);
     expect(io.asks).toHaveLength(1);
   });
 
-  it("denies dangerous commands non-interactively with an actionable reason", async () => {
+  it("asks for quote/pipeline bypass attempts and blocks when declined", async () => {
+    const host = new ExtensionHost();
+    const io = fakeIo([true, false]);
+    registerToolPermissionGate({
+      host,
+      interactive: io,
+      sink: {},
+      getMode: () => "auto",
+    });
+
+    const result = await host.emit("tool_call", bashCall('r""m -rf build'));
+    expect(blocked(result)).toBe(true);
+    expect(io.asks.length).toBeGreaterThanOrEqual(2);
+    expect(io.asks.some((q) => q.includes("complex") || q.includes("command"))).toBe(true);
+  });
+
+  it("denies unproven commands non-interactively without suggesting --allow-high-risk bypass", async () => {
     const host = new ExtensionHost();
     registerToolPermissionGate({
       host,
       interactive: fakeIo(),
       sink: {},
-      getMode: () => "auto",
+      getMode: () => "full",
       interactiveSession: false,
     });
 
@@ -235,23 +254,25 @@ describe("registerToolPermissionGate — dangerous command layer", () => {
     expect(blocked(result)).toBe(true);
     const reason = (result as readonly { block?: boolean; reason?: string }[])
       .find((item) => item?.block)?.reason ?? "";
-    expect(reason).toContain("remote-exec");
-    expect(reason).toContain("--allow-high-risk");
+    expect(reason).toContain("interactive one-time approval");
+    expect(reason).not.toMatch(/re-run with --allow-high-risk/);
   });
 
-  it("auto-allows under full permission but announces the match", async () => {
+  it("full mode still asks for unsafe commands (never auto-allows shell text)", async () => {
     const host = new ExtensionHost();
     const notices: string[] = [];
+    const io = fakeIo([false]);
     registerToolPermissionGate({
       host,
-      interactive: fakeIo(),
+      interactive: io,
       sink: { notify: (message) => notices.push(message) },
       getMode: () => "full",
     });
 
     const result = await host.emit("tool_call", bashCall("rm -rf build"));
-    expect(blocked(result)).toBe(false);
-    expect(notices.some((notice) => notice.includes("Dangerous command auto-allowed"))).toBe(true);
+    expect(blocked(result)).toBe(true);
+    expect(io.asks.some((q) => q.includes("destructive") || q.includes("command"))).toBe(true);
+    expect(notices.some((notice) => notice.includes("Dangerous command auto-allowed"))).toBe(false);
   });
 });
 
