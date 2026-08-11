@@ -104,6 +104,7 @@ describe("App", () => {
       getThinkingLevel: () => "off",
       cycleThinkingLevel: async () => "off",
       getPermissionMode: () => "auto",
+      setPermissionMode: (mode) => mode,
       cyclePermissionMode: () => "full",
       compact: async () => emptyCompaction(),
       runPrompt: async () => ({
@@ -449,10 +450,11 @@ describe("App", () => {
     await expect(answer).resolves.toBe("fast");
   });
 
-  it("toggles session bypass from the slash command", async () => {
+  it("maps /bypass to permission full and shows the profile footer", async () => {
     const bridge = new TuiSessionBridge();
+    const session = createSession(new ExtensionHost());
     const instance = render(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
+      session,
       bridge,
       cwd: "/tmp/project",
       async onExit() {},
@@ -461,8 +463,15 @@ describe("App", () => {
     instance.stdin.write("/bypass\r");
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(bridge.bypass).toBe(true);
-    expect(instance.lastFrame()).toContain("bypass permissions on");
+    expect(session.getPermissionMode()).toBe("full");
+    expect(instance.lastFrame()).toContain("permissions full on");
+    expect(instance.lastFrame()).not.toContain("bypass permissions on");
+
+    // Merge/rollback confirms are not short-circuited.
+    const merge = bridge.ask("Merge changes?");
+    expect(bridge.confirmPending).toBe(true);
+    bridge.answerConfirmation(false);
+    await expect(merge).resolves.toBe(false);
   });
 
   it("masks secret prompt input and does not append the secret to the transcript", async () => {
@@ -911,7 +920,7 @@ describe("App", () => {
 });
 
 function emptyView(): ViewState {
-  return { entries: [] as ViewState["entries"], statuses: {}, widgets: {}, bypass: false };
+  return { entries: [] as ViewState["entries"], statuses: {}, widgets: {} };
 }
 
 /**
@@ -947,6 +956,10 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
       return next;
     },
     getPermissionMode: () => permission,
+    setPermissionMode: (mode) => {
+      permission = mode;
+      return permission;
+    },
     cyclePermissionMode: () => {
       permission = permission === "auto" ? "full" : permission === "full" ? "strict" : "auto";
       return permission;

@@ -64,15 +64,17 @@ export function formatPermissionModeHelp(mode: PermissionMode): string {
   const detail = mode === "strict"
     ? "read/search only — write/exec/MCP denied"
     : mode === "full"
-      ? "all tools; high-risk auto-allowed"
+      ? "all tools; high-risk tools auto-allowed — unsafe/complex shell and merge/rollback still confirm"
       : "all tools; high-risk asks once per tool (non-interactive: deny)";
   return [
     `permission mode: ${mode} (${label})`,
     detail,
     `risks: ${allowedRiskClasses(mode).join(",")}`,
+    "shell: proven-safe allowlist auto; other commands confirm each time",
     "usage: /permission [auto|full|strict]  ·  Shift+Tab cycles",
-    "aliases: a/f/s · 自动/完全/严格",
-  ].join("\n");
+    "aliases: a/f/s · 自动/完全/严格 · /bypass → full (not a global ask bypass)",
+    mode === "full" ? "restore: /permission auto" : undefined,
+  ].filter(Boolean).join("\n");
 }
 
 /** Derive allowed risks from active tool names (for status enrichment). */

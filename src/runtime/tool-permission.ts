@@ -4,9 +4,8 @@ import {
 } from "./permission-mode.ts";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
 import {
-  classifyCommandRisk,
+  classifyCommandExecution,
   commandFromToolArgs,
-  describeCommandRisk,
 } from "./command-risk.ts";
 import {
   allowsProjectResources,
@@ -23,6 +22,9 @@ import type { SessionUiSink } from "./session-ui.ts";
 
 /** How to treat high-risk (exec/network) tools under auto mode. */
 export type HighRiskPolicy = "ask" | "deny" | "allow";
+
+/** Status field: bash auto-runs only proven-safe allowlist commands. */
+export const SHELL_COMMAND_POLICY = "safe_allowlist_else_confirm" as const;
 
 export type ToolPermissionGateOptions = Readonly<{
   host: ExtensionHost;
@@ -55,7 +57,7 @@ export type ToolPermissionGateOptions = Readonly<{
    * Session workspace path policy. When set, lexical outside read/search paths
    * may receive an exact one-tool-call grant (interactive only). Outside
    * write/edit, non-interactive sessions, and explore workers never get a grant.
-   * Approvals are never cached across calls or promoted by `/bypass` / full mode.
+   * Approvals are never cached across calls or promoted by full mode.
    */
   pathPolicy?: WorkspacePathPolicy;
 }>;
@@ -126,58 +128,50 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     });
     if (pathBlock) return pathBlock;
 
-    // Command-level layer: session tool approval does not carry over to the
-    // commands that destroy data or run remote code. Re-asked every time.
-    const commandBlock = await enforceCommandRisk({
+    // Tool-level high-risk (bash/MCP session approval) before command-level.
+    if (toolNeedsHighRiskGate(name) && !approved.has(name)) {
+      const risk = toolRisk(name) ?? "exec";
+      const policy = resolvePolicy();
+
+      if (policy === "allow") {
+        approved.add(name);
+        options.sink.notify?.(
+          `High-risk auto-allowed: ${name} (${risk})`,
+          "warning",
+        );
+      } else if (policy === "deny") {
+        return {
+          block: true,
+          reason:
+            `high-risk tool denied: ${name} (${risk}). Switch to full permission (Shift+Tab) `
+            + "or pass --allow-high-risk / [permissions] allow_high_risk = true.",
+        };
+      } else {
+        const ok = await options.interactive.ask(
+          `Allow high-risk ${risk} tool "${name}" for this session? [y/N] `,
+          `tool: ${name}\nrisk: ${risk}\nscope: session`,
+        );
+        if (!ok) {
+          return {
+            block: true,
+            reason: `user denied high-risk tool: ${name} (${risk})`,
+          };
+        }
+        approved.add(name);
+        options.sink.notify?.(`Approved ${name} (${risk}) for this session.`, "info");
+      }
+    }
+
+    // Command-level: session bash approval never carries over to unproven shell.
+    // full / allowHighRisk auto-allow the bash *tool*, not unsafe command text.
+    const commandBlock = await enforceCommandExecution({
       name,
       args: toolArgsFromEvent(record),
-      policy: resolvePolicy(),
+      interactiveSession,
       interactive: options.interactive,
       sink: options.sink,
     });
     if (commandBlock) return commandBlock;
-
-    if (!toolNeedsHighRiskGate(name)) {
-      return;
-    }
-
-    if (approved.has(name)) {
-      return;
-    }
-
-    const risk = toolRisk(name) ?? "exec";
-    const policy = resolvePolicy();
-
-    if (policy === "allow") {
-      approved.add(name);
-      options.sink.notify?.(
-        `High-risk auto-allowed: ${name} (${risk})`,
-        "warning",
-      );
-      return;
-    }
-
-    if (policy === "deny") {
-      return {
-        block: true,
-        reason:
-          `high-risk tool denied: ${name} (${risk}). Switch to full permission (Shift+Tab) `
-          + "or pass --allow-high-risk / [permissions] allow_high_risk = true.",
-      };
-    }
-
-    const ok = await options.interactive.ask(
-      `Allow high-risk ${risk} tool "${name}" for this session? [y/N] `,
-      `tool: ${name}\nrisk: ${risk}\nscope: session`,
-    );
-    if (!ok) {
-      return {
-        block: true,
-        reason: `user denied high-risk tool: ${name} (${risk})`,
-      };
-    }
-    approved.add(name);
-    options.sink.notify?.(`Approved ${name} (${risk}) for this session.`, "info");
   });
 
   return {
@@ -267,60 +261,74 @@ async function enforceUntrustedTool(input: Readonly<{
 }
 
 /**
- * Strong confirm for known-catastrophic shell commands. Runs beneath the tool
- * risk classes: an already-approved `bash` still stops here, because approving
- * "the agent may run commands" is not approving `rm -rf ~`.
- *
- * `full` / `/bypass` still auto-allow — the user opted into that explicitly —
- * but the match is announced so the action is never silent.
+ * Command-level gate for bash. Proven-safe allowlist auto-runs; everything else
+ * asks once per raw command (interactive) or denies (non-interactive).
+ * `full` / `--allow-high-risk` never auto-approve unproven shell text.
  */
-async function enforceCommandRisk(input: Readonly<{
+async function enforceCommandExecution(input: Readonly<{
   name: string;
   args: unknown;
-  policy: HighRiskPolicy;
+  interactiveSession: boolean;
   interactive: InteractiveIO;
   sink: SessionUiSink;
 }>): Promise<{ block: true; reason: string } | undefined> {
   if (input.name !== "bash") return undefined;
   const command = commandFromToolArgs(input.args);
-  if (!command) return undefined;
-  const risk = classifyCommandRisk(command);
-  if (!risk) return undefined;
-
-  if (input.policy === "allow") {
-    input.sink.notify?.(
-      `Dangerous command auto-allowed (${risk.severity}): ${risk.match} — ${risk.reason}`,
-      "warning",
-    );
+  if (command === undefined) {
+    // Missing command string — fail closed at command layer.
+    if (!input.interactiveSession) {
+      return {
+        block: true,
+        reason: "bash command missing; requires interactive one-time approval.",
+      };
+    }
     return undefined;
   }
 
-  if (input.policy === "deny") {
+  const decision = classifyCommandExecution(command);
+  if (decision.kind === "safe") {
+    return undefined;
+  }
+
+  if (!input.interactiveSession) {
+    const riskBit = decision.risk
+      ? `${decision.risk.severity}/${decision.risk.id}`
+      : decision.reason;
     return {
       block: true,
       reason:
-        `dangerous command blocked (${risk.severity}/${risk.id}): ${risk.match}. ${risk.reason} `
-        + "Run it yourself, or re-run with --allow-high-risk / full permission mode if you meant it.",
+        `command blocked (${riskBit}): requires interactive one-time approval. `
+        + "Unsafe/complex shell is never auto-allowed by --allow-high-risk or full mode.",
     };
   }
 
-  const ok = await input.interactive.ask(
-    `Run this ${risk.severity} command? [y/N] `,
-    describeCommandRisk(risk, command),
-  );
+  const question = decision.reason === "known-risk" && decision.risk
+    ? `Run this ${decision.risk.severity} command? [y/N] `
+    : decision.reason === "complex-shell"
+      ? "Run this complex shell command? [y/N] "
+      : "Run this shell command? [y/N] ";
+
+  const ok = await input.interactive.ask(question, decision.detail);
   if (!ok) {
     return {
       block: true,
-      reason: `user denied dangerous command (${risk.id}): ${risk.match}`,
+      reason: decision.risk
+        ? `user denied command (${decision.risk.id}): ${decision.risk.match}`
+        : `user denied command (${decision.reason})`,
     };
   }
-  input.sink.notify?.(`Approved once: ${risk.match} (${risk.severity}).`, "warning");
+  input.sink.notify?.(
+    decision.risk
+      ? `Approved once: ${decision.risk.match} (${decision.risk.severity}).`
+      : `Approved once (${decision.reason}).`,
+    "warning",
+  );
   return undefined;
 }
 
 /**
  * Exact one-tool-call grant for lexical outside read/search paths.
- * Never session-cached; never opened by high-risk allow / `/bypass`.
+ * Never session-cached; never opened by high-risk allow / full mode.
  */
 async function enforceExternalPathAccess(input: Readonly<{
   name: string;

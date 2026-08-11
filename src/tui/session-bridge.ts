@@ -44,8 +44,7 @@ export type TuiEvent =
   | Readonly<{ kind: "select-open"; question: string; choices: readonly SelectChoice[] }>
   | Readonly<{ kind: "select-close" }>
   | Readonly<{ kind: "prompt-open"; question: string; secret?: boolean; placeholder?: string }>
-  | Readonly<{ kind: "prompt-close" }>
-  | Readonly<{ kind: "bypass"; enabled: boolean }>;
+  | Readonly<{ kind: "prompt-close" }>;
 
 /** Bound pre-subscription buffer so prepareSession notices are not lost before Ink mounts. */
 const PRE_SUBSCRIPTION_BUFFER_LIMIT = 64;
@@ -60,7 +59,6 @@ export class TuiSessionBridge implements InteractiveIO {
   #pendingAnswer: ((approved: boolean) => void) | undefined;
   #pendingSelect: ((value: string | undefined) => void) | undefined;
   #pendingPrompt: ((value: string | undefined) => void) | undefined;
-  #bypass = false;
 
   readonly sink: SessionUiSink = {
     notify: (message, level) => {
@@ -102,10 +100,6 @@ export class TuiSessionBridge implements InteractiveIO {
     detail?: string,
   ): Promise<boolean> => {
     const request = normalizeConfirmationRequest(question, detail);
-    if (this.#bypass) {
-      this.sink.notify?.(`Bypass auto-approved: ${request.question}`, "warning");
-      return true;
-    }
     this.assertIdle();
     this.emit({
       kind: "confirm-open",
@@ -187,18 +181,6 @@ export class TuiSessionBridge implements InteractiveIO {
     this.#pendingPrompt = undefined;
     this.emit({ kind: "prompt-close" });
     resolve(value);
-  }
-
-  toggleBypass(): boolean {
-    this.#bypass = !this.#bypass;
-    this.emit({ kind: "bypass", enabled: this.#bypass });
-    this.emit({ kind: "status", key: "bypass", text: this.#bypass ? "BYPASS" : undefined });
-    this.sink.notify?.(`Bypass ${this.#bypass ? "enabled" : "disabled"} for this session.`, "warning");
-    return this.#bypass;
-  }
-
-  get bypass(): boolean {
-    return this.#bypass;
   }
 
   get confirmPending(): boolean {

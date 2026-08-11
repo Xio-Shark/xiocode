@@ -22,9 +22,10 @@ Release cadence: **every 1–2 weeks** while the project is young.
   for private gateways or negotiated pricing.
 - **Dangerous commands ask before running.** `rm -rf`, `curl … | sh`,
   `git push --force`, `git reset --hard`, raw disk writes and reads of secret
-  files now trigger a confirm showing the exact command — every time, even after
-  you have approved the `bash` tool for the session. `full` permission mode and
-  `/bypass` still auto-approve, but announce the match.
+  files — and any shell text outside a tiny proven-safe allowlist — now trigger
+  a confirm showing the exact command. Session approval of the `bash` tool never
+  carries over. `full` permission mode (and `/bypass` as its alias) auto-allow
+  high-risk *tools*, not unproven shell text; merge/rollback still confirm.
 - **`xio doctor`.** One command that checks Node version, config, provider keys
   and connectivity, and prints a paste-ready report with no secrets in it. Node
   version is checked first, since that is the most common install failure.
