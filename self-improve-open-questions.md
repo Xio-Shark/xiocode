@@ -5,6 +5,9 @@
 >
 > **2026-07-31 更新**：经任务 `07-31-self-improve-verification-gaps` 核实/落地，
 > 部分疑问已有结论，见文末「结论」与 `docs/self-improve.md` §Verification boundary。
+> 同日第二次核实（全仓搜索）：阈值 2/3 次从未实现，已在「结论」中关闭该问。
+> 同日第三次处置：剩余三项悬置（题型覆盖面 / 人审复核清单 / infra 归类边界）
+> 全部落文档关闭，见文末「2026-07-31 第三次处置结果」。
 
 ---
 
@@ -79,7 +82,8 @@
 
 ## 5. 其他悬而未决
 
-- 同一种失败要出现 2 次警告、3 次才允许改进——这个阈值是怎么定的？合理吗？
+- ~~同一种失败要出现 2 次警告、3 次才允许改进——这个阈值是怎么定的？合理吗？~~
+  **已核实关闭（2026-07-31）：该阈值从未在代码中实现**，见文末处置结果。
 - 基础设施错误（网络/超时）单独归类不进能力池——归类规则在哪，会不会误判？
 - 改进"开发规范"和"改 xicode 代码"的验证方式是否应该不同？规范影响 prompt 层，行为变化是间接的，现有 fixture 能捕获吗？
 - 门禁全过后是"人审合并"——人对机器验证结果的信任边界在哪？人怎么复核？
@@ -105,5 +109,36 @@
   loader 成对校验即入库门禁，永不自动合入。improve 流程在 FIXED 时会提示该命令。
 - **规范类改动验证（疑问 3/5）——声明为设计边界**：grader 只测代码行为；规范类改动走
   私有回归 FIXED + 人审，不走 fixture（见 docs/self-improve.md §Verification boundary）。
-- **仍悬而未决**：holdout 题型覆盖面评估（疑问 2）、阈值 2/3 次的合理性（疑问 5，建议先记录后调参）、
-  人审复核清单（疑问 5）。
+- **阈值 2 次警告/3 次改进（疑问 5）——全仓核实：从未实现，关闭此问**：
+  `src/runtime/failure-capture-offer.ts` 仅按 turnId 做会话内去重（`offeredTurns` Set，内存态），
+  无任何跨会话失败计数；git 历史亦无此设计。实际防噪靠人工触发（`/regress`、`xio improve`
+  runLoop 不自动跑）+ `offerOnFailure` kill-switch。若未来要自动化触发，需先持久化失败签名计数。
+- **仍悬而未决**：holdout 题型覆盖面评估（疑问 2）、人审复核清单（疑问 5）、
+  基础设施错误归类规则的判定细节（疑问 5，`run-ledger` 已有 `infra_error` 类型但边界未文档化）。
+
+### 2026-07-31 第三次处置结果（关闭剩余三项）
+
+三项核实结论一致：**代码行为已就位，缺的只是文档**，故全部以文档落地关闭，不改代码。
+
+- **holdout 题型覆盖面（疑问 2）——已评估并落文档**：五类 family（local-bug /
+  cross-file-contract / cli-behavior / test-and-repair / scope-safety）的
+  「family → 能力维度 → grader kind」映射表 + 已知未覆盖清单（大仓导航、多轮交互、
+  并发异步、性能、依赖配置、prompt 层规范）已写入 docs/self-improve.md
+  §Verification boundary。题型由五个模板函数定义（fixtures.ts），依据是「换皮同题」
+  防记答案；明确声明「4 张 holdout 全绿 ≠ 通用能力证明」，扩面靠 draft 换皮入库。
+- **人审复核清单（疑问 5）——已落文档**：docs/self-improve.md §Merge policy 新增
+  「MergeGate 人审复核清单」：门禁状态行 → 看 diff 本体（扫吞错/mock/无关重构）→
+  冻结面检查（diff 不碰 extensions/xio-eval/src/**，否则评分标准漂移）→ 证据新鲜度
+  （checkMergeEligibility 已机器保证，人用 `xio improve status` 复核）→ 拒绝无成本。
+  信任边界一句话：grader 只回答代码行为，diff 的意图正当性与冻结面完整性归人。
+- **infra_error 归类边界（疑问 5）——已文档化**：判定是结构性状态匹配（执行状态 /
+  worktree 信任校验 / 无可评分 worktree / grader 不可运行四来源），不做错误文案正则；
+  infra 不入分母（summarizeCandidate）、任一侧 infra → 整体 INFRA_ERROR 拒绝比较
+  （exit 3）；ledger 侧 terminal `infra_error` 是另一层。误判方向 fail-closed。
+  已写入 docs/self-improve.md §Verification boundary。
+- **补充澄清（防误读）**：run-ledger 存在 `FAILURE_SIGNATURE_WARN_AT=2 / STOP_AT=3`
+  （run-ledger/types.ts R6），但那是 improve 运行**重复失败的刹车**（同签名失败 2 次警告、
+  3 次强停须 override），与本清单疑问 5 所问「失败出现 2/3 次才**触发**改进」方向相反，
+  互不矛盾；「触发侧阈值从未实现」的结论维持不变。
+
+至此本清单所有疑问均已关闭或声明为设计边界，无悬置项。
