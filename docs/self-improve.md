@@ -46,6 +46,24 @@ Self-improve is the differentiated flywheel; **speed and alignment** are the def
 - Private `FIXED` alone never authorizes merge; with `--private-case`, trusted `PASS` alone does not either.
 - External-eval failures may become Goals; external repo patches are never merged into xiocode.
 
+### MergeGate 人审复核清单
+
+机器门禁全绿只保证「可以问」，不替人判断。ask 出现时逐条过：
+
+1. **门禁状态行**：`Private regression gate: FIXED (case=<id>)` 的 case 就是本次目标；
+   `Trusted capability gate: PASS (<evalId>)` 且无 `Capability concern` 行。
+   非 PASS/FIXED 时根本不该出现 ask——出现即 harness bug，拒绝并报告。
+2. **看 diff 本体**：`git -C ~/.xiocode/worktrees/<repoId>/<sessionId> diff`。每一行改动
+   能追溯到 goal；扫禁项：吞错 fallback、mock 成功、无关重构、顺手清理。
+3. **冻结面**：diff 不触及 `extensions/xio-eval/src/**`（评分器与 fixtures 属冻结面；
+   `evaluator_sha` 参与 suite 身份，合并后即评分标准漂移，影响后续所有门禁）。
+4. **证据新鲜度**：`checkMergeEligibility` 已在 ask 前校验 revision 一致（漂移退回
+   `verifying`，不带旧证据问人）；人只需用 `xio improve status` 确认 ask 与 diff 属同一次运行。
+5. **拒绝无成本**：`n` → main 不变、worktree 保留可复查、ledger 记 `rejected`。拿不准就拒。
+
+机器与人的信任边界：grader 只回答「代码行为过没过」（typecheck / f2p / p2p / 禁区）；
+diff 的**意图正当性**与**冻结面完整性**归人，机器不背书。
+
 ## Private regression joint gate
 
 `xio regress` cases are **not** `ImproveGoal` inputs. Capture/preflight/compare remain separate. When improving:
@@ -87,6 +105,33 @@ MergeGate ask may fire only when **both** hold:
 `xio eval draft --private-case <id|last>` 生成模板函数草稿（dev+holdout 成对）到
 `~/.xiocode/evals/fixture-drafts/<case>/`（repo 外）。草稿仅供人审：脱敏、缩减、定稿后
 手工入 `fixtures.ts`；suite loader 的 dev/holdout 成对校验是入库门禁，永不自动合入。
+
+**题型 ↔ 能力维度（覆盖面清单，2026-07-31 评估）**：五类 family 各 1 dev + 1 holdout
+（`extensions/xio-eval/src/fixtures.ts`，同模板换皮实例化；loader `assertSuiteShape` 强制成对）：
+
+| family | 能力维度 | grader kind |
+|--------|---------|-------------|
+| `local-bug` | 局部逻辑修复且不破坏导出 API（clamp 边界） | `clamp` |
+| `cross-file-contract` | 跨文件类型契约一致性（contracts/producer/consumer） | `contract` |
+| `cli-behavior` | CLI 行为契约（stdout/stderr/exit code） | `cli` |
+| `test-and-repair` | 先跑可见测试再修复 + 输入校验 | `parser` |
+| `scope-safety` | 改动范围纪律（只改 src/，禁区 + canary） | `scope` |
+
+**已知未覆盖**（评估结论，非门禁承诺）：大仓导航/长上下文、多轮澄清交互、并发与异步
+bug、性能类任务、依赖/构建配置修改、prompt 层规范行为（最后一项是上面声明的设计边界）。
+覆盖以 family 为单位——每类仅 1 张 holdout，单张 PASS/FAIL 统计力有限：用 `--repeat`
+看分布，用 draft 换皮补题让题库跟真实失败生长；不把「4 张 holdout 全绿」解读为通用能力证明。
+
+**INFRA_ERROR 归类边界（判定规则）**：判定是结构性状态匹配，不做错误文案正则。trial 级
+（`trial-runner.ts` → `eval-support.ts:classifyOutcome`）四个来源：① 执行状态本身为
+`infra_error` / `timeout`；② candidate 汇报的 worktree 路径未通过信任校验（必须位于 trial
+root 受控 `worktrees/` 下，`trustCandidateWorktree`）；③ 无 `worktree_path` 可评分；
+④ grader 进程无法运行。infra 在 `classifyOutcome` 里优先于 safety/capability 短路；grader
+infra 时禁区/canary 判定回退为 true（infra 不算 safety 硬失败）。分母规则：
+`summarizeCandidate` 的 completed 排除 infra trial；任一侧 infra_errors > 0 → 整体
+`INFRA_ERROR` 拒绝做能力比较（CLI exit 3，区别于 FAIL 的 2）。ledger 侧 terminal outcome
+的 `infra_error`（agent spawn 失败、merge 执行失败等）是另一层，与 trial 级不混用。误判
+方向 fail-closed：宁可判 infra 不下能力结论，也不把基础设施故障算成能力回退或改进。
 
 ## CLI
 
