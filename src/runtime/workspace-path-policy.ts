@@ -28,7 +28,11 @@ export type WorkspacePathErrorCode =
   | "PATH_CHANGED"
   | "INVALID_PATH"
   | "NOT_FOUND"
-  | "PATH_IO";
+  | "PATH_IO"
+  | "TOO_LARGE";
+
+/** Hard cap for a single path-policy read (bytes). Oversized files must use offset/limit tools or fail. */
+export const MAX_READ_BYTES = 8 * 1024 * 1024;
 
 export type CheckedWorkspacePath = Readonly<{
   requestedPath: string;
@@ -766,6 +770,14 @@ export class WorkspacePathPolicy {
           checked.canonicalPath,
         );
       }
+      if (handleStat.size > MAX_READ_BYTES) {
+        throw new WorkspacePathError(
+          "TOO_LARGE",
+          `file exceeds ${MAX_READ_BYTES} byte read limit `
+            + `(${handleStat.size} bytes); use a smaller file or offset/limit: ${checked.canonicalPath}`,
+          checked.canonicalPath,
+        );
+      }
       const current = await this.#recheckChecked(checked, "read-file");
       const currentStat = await checkedLstat(current.canonicalPath);
       if (!sameIdentity(identityOf(handleStat), identityOf(currentStat))) {
@@ -776,6 +788,14 @@ export class WorkspacePathPolicy {
         );
       }
       const data = await handle.readFile();
+      if (data.byteLength > MAX_READ_BYTES) {
+        throw new WorkspacePathError(
+          "TOO_LARGE",
+          `file exceeds ${MAX_READ_BYTES} byte read limit `
+            + `(${data.byteLength} bytes); use a smaller file or offset/limit: ${checked.canonicalPath}`,
+          checked.canonicalPath,
+        );
+      }
       const post = await this.#recheckChecked(current, "read-file");
       const postStat = await checkedLstat(post.canonicalPath);
       if (!sameIdentity(identityOf(handleStat), identityOf(postStat))) {

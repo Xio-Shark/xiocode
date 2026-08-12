@@ -1266,6 +1266,12 @@ async function executeToolCall(
       isError: true,
     };
   }
+  if (call.argumentError) {
+    return emitToolResult(host, call, {
+      content: [{ type: "text", text: `tool arguments rejected: ${call.argumentError}` }],
+      isError: true,
+    }, signal);
+  }
   const tool = host.getTool(call.name);
   const args = tool ? stripUnknownToolArgs(tool, call.arguments) : call.arguments;
   const normalizedCall: ChatToolCall = args === call.arguments ? call : { ...call, arguments: args };

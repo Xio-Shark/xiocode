@@ -75,7 +75,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     const toolCalls: ChatToolCall[] = (message?.tool_calls ?? []).map((call) => ({
       id: call.id,
       name: call.function?.name ?? "",
-      arguments: parseArguments(call.function?.arguments),
+      ...toolCallArguments(call.function?.arguments),
     }));
     return {
       content: message?.content ?? "",
@@ -166,7 +166,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
       .map(([, value]) => ({
         id: value.id,
         name: value.name,
-        arguments: parseArguments(value.arguments),
+        ...toolCallArguments(value.arguments),
       }));
     if (toolCalls.length > 0) {
       yield { type: "tool_calls_done", toolCalls };
@@ -342,7 +342,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
       .map(([, value]) => ({
         id: value.id,
         name: value.name,
-        arguments: parseArguments(value.inputJson || "{}"),
+        ...toolCallArguments(value.inputJson || "{}"),
       }));
     if (toolCalls.length > 0) {
       yield { type: "tool_calls_done", toolCalls };
@@ -614,18 +614,34 @@ function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   };
 }
 
-function parseArguments(value: string | undefined): Record<string, unknown> {
-  if (!value) {
-    return {};
+function toolCallArguments(value: string | undefined): Pick<ChatToolCall, "arguments" | "argumentError"> {
+  const parsed = parseArguments(value);
+  if (parsed.ok) {
+    return { arguments: parsed.value };
+  }
+  return { arguments: {}, argumentError: parsed.error };
+}
+
+/**
+ * Parse provider tool-call JSON. Empty/missing becomes `{}` (valid no-arg call).
+ * Malformed JSON or non-object values fail closed — callers must not execute.
+ */
+function parseArguments(value: string | undefined):
+  | Readonly<{ ok: true; value: Record<string, unknown> }>
+  | Readonly<{ ok: false; error: string }> {
+  if (!value || value.trim().length === 0) {
+    return { ok: true, value: {} };
   }
   try {
     const parsed = JSON.parse(value) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return { ok: true, value: parsed as Record<string, unknown> };
     }
-    return {};
-  } catch {
-    return {};
+    const kind = Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed;
+    return { ok: false, error: `tool arguments must be a JSON object, got ${kind}` };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `invalid tool arguments JSON: ${detail}` };
   }
 }
 

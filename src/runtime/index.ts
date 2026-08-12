@@ -76,6 +76,7 @@ export { createBuiltinTools } from "./tools/builtin.ts";
 export {
   WorkspacePathError,
   WorkspacePathPolicy,
+  MAX_READ_BYTES,
   type CheckedWorkspacePath,
   type ExternalPathRequest,
   type PathDecision,

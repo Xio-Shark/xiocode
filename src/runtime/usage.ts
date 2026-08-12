@@ -52,7 +52,15 @@ function normalizeOpenAiUsage(usage: Record<string, unknown>): TokenUsage {
   return {
     inputTokens: numberOrNull(usage.prompt_tokens ?? usage.input_tokens),
     outputTokens: numberOrNull(usage.completion_tokens ?? usage.output_tokens),
-    cacheTokens: numberOrNull(promptDetails.cached_tokens ?? usage.cached_tokens),
+    // Cache-read field differs per provider: OpenAI/OpenRouter nest it under
+    // prompt_tokens_details, Kimi-style gateways use top-level cached_tokens,
+    // DeepSeek reports prompt_cache_hit_tokens, Gemini cachedContentTokenCount.
+    cacheTokens: numberOrNull(
+      promptDetails.cached_tokens
+        ?? usage.cached_tokens
+        ?? usage.prompt_cache_hit_tokens
+        ?? usage.cachedContentTokenCount,
+    ),
     reasoningTokens: numberOrNull(completionDetails.reasoning_tokens ?? usage.reasoning_tokens),
   };
 }

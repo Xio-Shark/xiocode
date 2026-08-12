@@ -51,7 +51,7 @@
   "license": "MIT",
   "preferGlobal": true,
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "diff": "9.0.0",
     "fzf": "0.5.2",
     "ink": "7.1.0",

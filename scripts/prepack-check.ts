@@ -11,8 +11,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [
   "bin/xio",
   "bin/xio-improve",
+  "bin/xio-setup",
   "dist/xio.js",
   "dist/xio-improve.js",
+  "dist/xio-setup.js",
   "package.json",
   "LICENSE",
 ];

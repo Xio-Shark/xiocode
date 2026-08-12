@@ -19,11 +19,13 @@ describe("parseBenchArgs", () => {
     expect(args.command).toBe("run");
     expect(args.iterations).toBe(2);
     expect(args.fixtures.length).toBeGreaterThan(3);
+    expect(args.autoSelected).toBe(true);
   });
 
   it("accepts a single fixture", () => {
     const args = parseBenchArgs(["run", "--fixture", "cli.version", "-n", "1"]);
     expect(args.fixtures).toEqual(["cli.version"]);
+    expect(args.autoSelected).toBe(false);
   });
 });
 
