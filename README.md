@@ -1,6 +1,6 @@
 # XioCode
 
-> A coding agent that lives in your terminal, survives any crash, and never merges a line without you. Your key, your machine, your code — nothing leaves.
+> A coding agent that lives in your terminal, survives any crash, and never merges a line without you. Your key, your machine — orchestration stays local; only the context you send reaches the model you choose.
 
 **中文版 → [README.zh-CN.md](./README.zh-CN.md)**
 

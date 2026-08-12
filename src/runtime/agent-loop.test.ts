@@ -98,6 +98,49 @@ describe("runAgentLoop context wiring", () => {
 });
 
 describe("runAgentLoop tool_result hooks", () => {
+  it("does not execute tools when argumentError is set (malformed provider JSON)", async () => {
+    const host = new ExtensionHost();
+    let executed = 0;
+    host.registerTool(defineTool({
+      name: "write",
+      description: "write",
+      parameters: Type.Object({ path: Type.String(), content: Type.String() }, { required: ["path", "content"] }),
+      async execute() {
+        executed += 1;
+        return { content: [{ type: "text", text: "wrote" }] };
+      },
+    }));
+
+    const toolBodies: string[] = [];
+    let calls = 0;
+    const client: LlmClient = {
+      async complete(request) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{
+              id: "bad-1",
+              name: "write",
+              arguments: {},
+              argumentError: "invalid tool arguments JSON: Unexpected end of JSON input",
+            }],
+          };
+        }
+        for (const message of request.messages) {
+          if (message.role === "tool" && typeof message.content === "string") {
+            toolBodies.push(message.content);
+          }
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+
+    await runAgentLoop("write something", { host, client, model: "stub" });
+    expect(executed).toBe(0);
+    expect(toolBodies.some((body) => /tool arguments rejected/i.test(body))).toBe(true);
+  });
+
   it("does not let empty hook content wipe real tool output", async () => {
     const host = new ExtensionHost();
     host.registerTool(defineTool({

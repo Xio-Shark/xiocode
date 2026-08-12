@@ -240,6 +240,11 @@ export type ChatToolCall = Readonly<{
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Set when the provider tool-call JSON could not be parsed as an object.
+   * Agent loop must fail closed (isError tool_result) and must not execute.
+   */
+  argumentError?: string;
 }>;
 
 export type ChatMessage = Readonly<{

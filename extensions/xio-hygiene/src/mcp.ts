@@ -1,4 +1,5 @@
 import { access, constants } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -20,6 +21,17 @@ import {
   OUTPUT_BUDGET_PRESETS,
   forceKillProcessTree,
 } from "../../../src/runtime/process/index.ts";
+
+/** Prefer package.json over a hardcoded wire version so MCP identify stays in sync with releases. */
+function readXioPackageVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("../../../package.json") as { version?: string };
+    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 export type McpConfig = Readonly<{
   enabled: boolean;
@@ -573,7 +585,7 @@ export async function connectMcpServer(
     await assertStdioCommandExists(server.spec.command);
   }
 
-  const client = new Client({ name: "xiocode", version: "1.1.0" });
+  const client = new Client({ name: "xiocode", version: readXioPackageVersion() });
   const transport = createTransport(server.spec, options.cwd, {
     resolveEnvReference: options.resolveEnvReference,
     registerSecretValue: options.registerSecretValue,

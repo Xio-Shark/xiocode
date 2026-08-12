@@ -25,6 +25,11 @@ export type BenchCliArgs = Readonly<{
   iterations: number;
   json: boolean;
   outRoot?: string;
+  /**
+   * True when the fixture list came from `--all` or the default (no `--fixture`).
+   * Used to soft-skip `tui.ink_render` on published installs that lack ink-testing-library.
+   */
+  autoSelected?: boolean;
 }>;
 
 export async function runBenchCli(
@@ -75,14 +80,27 @@ export async function runBenchCli(
     "explore.workers_* default explore_mode=mock (set XIO_BENCH_EXPLORE_REAL=1 for real provider)",
   ];
 
+  // Published npm installs omit ink-testing-library; soft-skip on --all/default so acceptance stays green.
+  const inkRenderAvailable = await canImportInkTestingLibrary();
+  let fixtures = [...args.fixtures];
+  if (!inkRenderAvailable && fixtures.includes("tui.ink_render")) {
+    if (args.autoSelected) {
+      fixtures = fixtures.filter((fixture) => fixture !== "tui.ink_render");
+      notes.push(
+        "skipped tui.ink_render: ink-testing-library not installed "
+          + "(devDependency; available in a source checkout, omitted from the published package)",
+      );
+    }
+  }
+
   // Isolated home for interactive boot so we never touch the operator's real sessions.
   let tempHome: string | undefined;
-  if (args.fixtures.some((fixture) => fixture === "startup.interactive")) {
+  if (fixtures.some((fixture) => fixture === "startup.interactive")) {
     tempHome = await mkdtemp(path.join(os.tmpdir(), "xio-bench-home-"));
     notes.push(`startup.interactive used XIO_HOME=${tempHome}`);
   }
 
-  for (const fixture of args.fixtures) {
+  for (const fixture of fixtures) {
     for (let iteration = 0; iteration < args.iterations; iteration += 1) {
       try {
         const sample = await runFixture(fixture, {
@@ -122,7 +140,7 @@ export async function runBenchCli(
   const { report, dir, evidenceDir } = await store.writeReport({
     benchId,
     iterations: args.iterations,
-    fixtures: args.fixtures,
+    fixtures,
     samples,
     overhead,
     notes,
@@ -191,12 +209,14 @@ export function parseBenchArgs(argv: readonly string[]): BenchCliArgs {
   }
 
   const selected = all || fixtures.length === 0 ? [...ALL_FIXTURES] : fixtures;
+  const autoSelected = all || fixtures.length === 0;
   return {
     command: "run",
     fixtures: selected,
     iterations,
     json,
     outRoot,
+    autoSelected,
   };
 }
 
@@ -216,6 +236,7 @@ export function benchHelp(): string {
     "",
     "Acceptance command:",
     "  xio bench run --all --iterations 5 --json",
+    "  (tui.ink_render is skipped automatically when ink-testing-library is not installed)",
     "",
     "Env:",
     "  XIO_PERF_ROOT                 Override bench report root (default: $XIO_HOME/perf)",
@@ -269,6 +290,16 @@ function reportHasHardFailure(report: PerfReport): boolean {
     }
   }
   return false;
+}
+
+/** True when the ink-testing-library devDependency can be resolved (source checkout). */
+async function canImportInkTestingLibrary(): Promise<boolean> {
+  try {
+    await import("ink-testing-library");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readPackageVersion(): string {

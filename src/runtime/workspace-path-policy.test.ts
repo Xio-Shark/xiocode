@@ -112,6 +112,15 @@ describe("WorkspacePathPolicy authorization", () => {
 });
 
 describe("WorkspacePathPolicy safe reads and atomic writes", () => {
+  it("rejects reads that exceed the byte budget before loading the file", async () => {
+    const { root } = await fixture();
+    const big = path.join(root, "big.bin");
+    const { MAX_READ_BYTES } = await import("./workspace-path-policy.ts");
+    await writeFile(big, Buffer.alloc(MAX_READ_BYTES + 1, 0x61));
+    const policy = await WorkspacePathPolicy.create({ workspaceRoot: root });
+    await expect(policy.readFile("big.bin")).rejects.toSatisfy(expectPathCode("TOO_LARGE"));
+  });
+
   it("fails closed when the target identity changes before read bytes are returned", async () => {
     const { root, outside } = await fixture();
     const target = path.join(root, "target.txt");

@@ -73,6 +73,97 @@ describe("provider usage normalization", () => {
     });
   });
 
+  it("normalizes DeepSeek prompt_cache_hit_tokens as cache usage", async () => {
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => jsonResponse({
+        choices: [{ message: { content: "done", tool_calls: [] } }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          prompt_cache_hit_tokens: 60,
+          prompt_cache_miss_tokens: 40,
+        },
+      }),
+    });
+    const response = await client.complete({ model: "test", messages: [] });
+    expect(response.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheTokens: 60,
+      reasoningTokens: null,
+    });
+  });
+
+  it("normalizes Gemini cachedContentTokenCount as cache usage", async () => {
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => jsonResponse({
+        choices: [{ message: { content: "done", tool_calls: [] } }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          cachedContentTokenCount: 30,
+        },
+      }),
+    });
+    const response = await client.complete({ model: "test", messages: [] });
+    expect(response.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheTokens: 30,
+      reasoningTokens: null,
+    });
+  });
+
+  it("marks malformed tool-call JSON with argumentError instead of inventing {}", async () => {
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => jsonResponse({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              function: { name: "write", arguments: "{\"path\":\"a.ts\"" },
+            }],
+          },
+        }],
+      }),
+    });
+    const response = await client.complete({ model: "test", messages: [] });
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls[0]).toMatchObject({
+      id: "call_1",
+      name: "write",
+      arguments: {},
+    });
+    expect(response.toolCalls[0]?.argumentError).toMatch(/invalid tool arguments JSON/i);
+  });
+
+  it("marks non-object tool-call JSON with argumentError", async () => {
+    const client = createLlmClient({
+      registration: registration("openai-completions"),
+      apiKey: "test",
+      fetchImpl: async () => jsonResponse({
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "call_2",
+              function: { name: "bash", arguments: "[\"ls\"]" },
+            }],
+          },
+        }],
+      }),
+    });
+    const response = await client.complete({ model: "test", messages: [] });
+    expect(response.toolCalls[0]?.argumentError).toMatch(/must be a JSON object/i);
+  });
+
   it("throws provider network failures instead of inventing a completion", async () => {
     const client = createLlmClient({
       registration: registration("openai-completions"),
