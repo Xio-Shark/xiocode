@@ -1,6 +1,6 @@
 {
   "name": "@xioshark/xiocode",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "A local-first AI coding agent for your terminal with self-owned runtime.",
   "type": "module",
   "bin": {
