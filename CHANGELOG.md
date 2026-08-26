@@ -14,6 +14,16 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-26
+
+### Added
+- **Web Console & Settings Panel (`xio web`).** Added a zero-dependency browser-based workbench with real-time SSE trajectory streaming, working tree diff viewer, and a 4-tab Settings modal (Models & Thinking ladder, AGENTS.md hot-editing with rule presets, Extensions & MCP monitoring, and safety boundaries).
+
+### Fixed
+- **PreToolUse hooks fail closed.** Timeout, crash, or any non-zero exit blocks the tool instead of letting it run. SessionStart / PostToolUse / Stop still continue after a timeout.
+- **Session list/load no longer rewrite a live journal.** Torn WAL tails are ignored in memory; only the session that holds the lease heals the file before the next append.
+- **Oversized `read` tells the model what to do.** Files over 8MiB already fail; the error now includes a `Fix:` line so the agent does not retry the whole file.
+
 ## [1.2.1] - 2026-08-12
 
 ### Security

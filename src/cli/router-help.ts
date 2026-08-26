@@ -25,6 +25,7 @@ export function xioHelp(): string {
     "",
     "Usage:",
     "  xio                 Start the interactive Ink TUI",
+    "  xio web             Launch the modern Web Console (default: http://127.0.0.1:3080)",
     "  xio init            Create ~/.xiocode/config.toml if missing; print recommended CLI tools",
     "  xio \"prompt\"        Run a single prompt (same as -p)",
     "  xio -p \"prompt\"     Run a single prompt",

@@ -211,6 +211,15 @@ export function encodeWalRecords(input: JournalAppendInput): WalRecord[] {
   return records;
 }
 
+export type ReadJournalOptions = Readonly<{
+  /**
+   * Persist torn-tail healing (restore a missing newline / drop a partial record).
+   * Default false: load/list stay read-only so they cannot race an active writer.
+   * Exclusive session writers pass true after acquiring the lease, before append.
+   */
+  repair?: boolean;
+}>;
+
 /** Append WAL lines with fsync. Returns the next available seq. */
 export async function appendJournal(input: JournalAppendInput): Promise<number> {
   const records = encodeWalRecords(input);
@@ -227,11 +236,14 @@ export async function appendJournal(input: JournalAppendInput): Promise<number> 
   return records[records.length - 1]!.seq + 1;
 }
 
-export async function readJournal(directory: string): Promise<Readonly<{
+export async function readJournal(
+  directory: string,
+  options: ReadJournalOptions = {},
+): Promise<Readonly<{
   records: readonly WalRecord[];
   /** Next seq to write (1 when empty). Accounts for skipped unknown ops. */
   nextSeq: number;
-  /** Non-fatal self-repairs (torn tail from a crash mid-append). */
+  /** Non-fatal self-repairs or deferred-heal notices (torn tail from a crash mid-append). */
   warnings: readonly string[];
 }>> {
   const file = journalPath(directory);
@@ -244,22 +256,32 @@ export async function readJournal(directory: string): Promise<Readonly<{
   }
   const warnings: string[] = [];
   // A crash mid-append leaves a torn, newline-less tail — the one failure mode
-  // an append-only journal exists to absorb. Heal it here instead of poisoning
-  // every load: a complete record that only lost its newline gets the boundary
-  // restored (so the next append cannot concatenate onto it); a partial record
-  // is truncated away with a warning. Corruption inside newline-terminated
-  // lines stays fail-closed below.
+  // an append-only journal exists to absorb. Parse it in memory always. Persist
+  // the heal only when `repair` is set (lease-holding writer): a complete record
+  // that only lost its newline gets the boundary restored so the next append
+  // cannot concatenate onto it; a partial record is truncated away. Load/list
+  // must not write — they can race a live append. Corruption inside
+  // newline-terminated lines stays fail-closed below.
   if (text.length > 0 && !text.endsWith("\n")) {
     const cut = text.lastIndexOf("\n") + 1;
     const tail = text.slice(cut);
+    const repair = options.repair === true;
     if (isCompleteJson(tail)) {
       text = `${text}\n`;
-      await appendRaw(file, "\n");
-      warnings.push("session journal: restored missing newline after last record");
+      if (repair) {
+        await appendRaw(file, "\n");
+        warnings.push("session journal: restored missing newline after last record");
+      } else {
+        warnings.push("session journal: missing trailing newline (not repaired; exclusive writer will heal)");
+      }
     } else {
       text = text.slice(0, cut);
-      await truncateToBytes(file, Buffer.byteLength(text, "utf8"));
-      warnings.push("session journal: dropped torn tail record (crash mid-append)");
+      if (repair) {
+        await truncateToBytes(file, Buffer.byteLength(text, "utf8"));
+        warnings.push("session journal: dropped torn tail record (crash mid-append)");
+      } else {
+        warnings.push("session journal: ignored torn tail record (not repaired; exclusive writer will heal)");
+      }
     }
   }
   if (text.trim().length === 0) return { records: [], nextSeq: 1, warnings };

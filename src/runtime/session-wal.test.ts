@@ -141,6 +141,22 @@ describe("appendJournal / readJournal", () => {
     expect(await readJournal(directory)).toEqual({ records: [], nextSeq: 1, warnings: [] });
   });
 
+  it("ignores a torn tail in memory without rewriting the file", async () => {
+    const directory = await tempDir();
+    await appendJournal({ directory, nextSeq: 1, now: NOW, appendMessages: [userMessage("a")] });
+    const intact = await readFile(journalPath(directory), "utf8");
+    const torn = `${intact}{"schema_version":"${WAL_SCHEMA}","seq":2,"t":"20`;
+    await writeFile(journalPath(directory), torn, "utf8");
+
+    const first = await readJournal(directory);
+    expect(first.records.map((record) => record.seq)).toEqual([1]);
+    expect(first.nextSeq).toBe(2);
+    expect(first.warnings).toEqual([
+      "session journal: ignored torn tail record (not repaired; exclusive writer will heal)",
+    ]);
+    expect(await readFile(journalPath(directory), "utf8")).toBe(torn);
+  });
+
   it("drops a torn newline-less tail and heals the file for the next append", async () => {
     const directory = await tempDir();
     await appendJournal({ directory, nextSeq: 1, now: NOW, appendMessages: [userMessage("a")] });
@@ -148,7 +164,7 @@ describe("appendJournal / readJournal", () => {
     // Crash mid-append: half a JSON record, no trailing newline.
     await writeFile(journalPath(directory), `${intact}{"schema_version":"${WAL_SCHEMA}","seq":2,"t":"20`, "utf8");
 
-    const first = await readJournal(directory);
+    const first = await readJournal(directory, { repair: true });
     expect(first.records.map((record) => record.seq)).toEqual([1]);
     expect(first.nextSeq).toBe(2);
     expect(first.warnings).toEqual([
@@ -169,7 +185,7 @@ describe("appendJournal / readJournal", () => {
     // Crash after the record bytes but before the newline.
     await writeFile(journalPath(directory), intact.slice(0, -1), "utf8");
 
-    const result = await readJournal(directory);
+    const result = await readJournal(directory, { repair: true });
     expect(result.records.map((record) => record.seq)).toEqual([1]);
     expect(result.warnings).toEqual([
       "session journal: restored missing newline after last record",

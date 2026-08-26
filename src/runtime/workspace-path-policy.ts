@@ -31,7 +31,7 @@ export type WorkspacePathErrorCode =
   | "PATH_IO"
   | "TOO_LARGE";
 
-/** Hard cap for a single path-policy read (bytes). Oversized files must use offset/limit tools or fail. */
+/** Hard cap for a single path-policy read (bytes). Oversized files fail closed. */
 export const MAX_READ_BYTES = 8 * 1024 * 1024;
 
 export type CheckedWorkspacePath = Readonly<{
@@ -774,7 +774,7 @@ export class WorkspacePathPolicy {
         throw new WorkspacePathError(
           "TOO_LARGE",
           `file exceeds ${MAX_READ_BYTES} byte read limit `
-            + `(${handleStat.size} bytes); use a smaller file or offset/limit: ${checked.canonicalPath}`,
+            + `(${handleStat.size} bytes); grep or split instead of reading it whole: ${checked.canonicalPath}`,
           checked.canonicalPath,
         );
       }
@@ -792,7 +792,7 @@ export class WorkspacePathPolicy {
         throw new WorkspacePathError(
           "TOO_LARGE",
           `file exceeds ${MAX_READ_BYTES} byte read limit `
-            + `(${data.byteLength} bytes); use a smaller file or offset/limit: ${checked.canonicalPath}`,
+            + `(${data.byteLength} bytes); grep or split instead of reading it whole: ${checked.canonicalPath}`,
           checked.canonicalPath,
         );
       }
