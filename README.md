@@ -7,7 +7,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.1-informational.svg)](./package.json)
+[![Version](https://img.shields.io/badge/version-1.3.0-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
 
 ---
@@ -112,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh |
 Pin a version:
 
 ```bash
-export XIO_INSTALL_VERSION=1.2.1
+export XIO_INSTALL_VERSION=1.3.0
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
