@@ -66,3 +66,9 @@ coverage/
 Agent_Harness_*.md
 Agent工程教程*.md
 *.tgz
+
+# Audit and inspection reports
+audit-report-*
+xiocode-audit-*
+*-audit-*
+

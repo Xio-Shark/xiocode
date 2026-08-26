@@ -74,6 +74,33 @@ describe("interpretHookOutput", () => {
     })).toEqual({ block: true, reason: "nope" });
   });
 
+  it("blocks PreToolUse on timeout", () => {
+    expect(interpretHookOutput("PreToolUse", {
+      exitCode: 1,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+    })).toEqual({ block: true, reason: "PreToolUse timed out; tool blocked" });
+  });
+
+  it("blocks PreToolUse on unexpected non-zero exit", () => {
+    expect(interpretHookOutput("PreToolUse", {
+      exitCode: 1,
+      stdout: "",
+      stderr: "scanner crashed",
+      timedOut: false,
+    })).toEqual({ block: true, reason: "scanner crashed" });
+  });
+
+  it("does not block SessionStart on timeout", () => {
+    expect(interpretHookOutput("SessionStart", {
+      exitCode: 1,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+    })).toEqual({});
+  });
+
   it("blocks PreToolUse on JSON deny", () => {
     expect(interpretHookOutput("PreToolUse", {
       exitCode: 0,
@@ -459,6 +486,55 @@ exit 2
       return record?.block === true;
     })).toBe(true);
     expect(reg.getHooks()?.getLastRuns().some((run) => run.blocked)).toBe(true);
+  });
+
+  it("blocks PreToolUse when the hook times out", async () => {
+    const root = await tempRoot("xio-hooks-pre-timeout-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const script = await writeHookScript(
+      cwd,
+      "slow.sh",
+      `#!/bin/sh
+cat >/dev/null
+sleep 2
+exit 0
+`,
+    );
+    await writeSettings(cwd, path.join(".claude", "settings.json"), {
+      PreToolUse: [
+        {
+          matcher: "bash",
+          hooks: [{ type: "command", command: script, timeout: 0.05 }],
+        },
+      ],
+    });
+
+    const warnings: string[] = [];
+    const host = new ExtensionHost();
+    registerXioHygiene(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home,
+        agentsMd: { enabled: false },
+        skills: { enabled: false },
+        hooks: config(),
+        warn: (message) => warnings.push(message),
+      },
+    );
+
+    await host.emit("session_start", {});
+    const results = await host.emit("tool_call", {
+      toolName: "bash",
+      input: { command: "true" },
+      call: { id: "1", name: "bash", args: { command: "true" } },
+    });
+    expect(results.some((item) => {
+      const record = item && typeof item === "object" ? item as Record<string, unknown> : undefined;
+      return record?.block === true;
+    })).toBe(true);
+    expect(warnings.some((message) => message.includes("PreToolUse timed out (blocked)"))).toBe(true);
   });
 
   it("does not register hooks when disabled", async () => {

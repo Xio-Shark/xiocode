@@ -76,6 +76,11 @@ async function main(): Promise<void> {
     });
     return;
   }
+  if (head === "web") {
+    const { runWebCli } = await import("./web-cli.ts");
+    process.exitCode = await runWebCli(rawArgs.slice(1));
+    return;
+  }
 
   try {
     const { parseXioArgs } = await import("./cli-args.ts");

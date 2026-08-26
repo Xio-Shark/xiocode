@@ -765,4 +765,36 @@ describe("SessionStore", () => {
     expect(loaded.messages).toHaveLength(2);
     expect(loaded.execution?.phase).toBe("awaiting_provider");
   });
+
+  it("does not rewrite a torn journal on list or load", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-sessions-"));
+    roots.push(root);
+    const store = new SessionStore({ root });
+    const base = {
+      id: "tornlist",
+      model: { provider: "test", id: "model-a" },
+      cwd: "/tmp/worktree",
+      mainRoot: "/tmp/main",
+      messages: [{ role: "user" as const, content: "hello" }],
+    };
+    await store.save(base);
+    await store.save({
+      ...base,
+      messages: [...base.messages, { role: "assistant", content: "hi" }],
+      execution: { phase: "awaiting_provider", turn_id: "t1" },
+      durability: "journal",
+    });
+    const journalPath = path.join(root, "tornlist", JOURNAL_FILE);
+    const intact = await readFile(journalPath, "utf8");
+    const torn = `${intact}{"schema_version":"xio-session-wal.v1","seq":99,"t":"20`;
+    await writeFile(journalPath, torn, "utf8");
+
+    const listed = await store.list();
+    expect(listed.some((item) => item.id === "tornlist")).toBe(true);
+    expect(await readFile(journalPath, "utf8")).toBe(torn);
+
+    const loaded = await store.load("tornlist");
+    expect(loaded.messages).toHaveLength(2);
+    expect(await readFile(journalPath, "utf8")).toBe(torn);
+  });
 });

@@ -340,8 +340,7 @@ export function registerHooksBridge(
           reason: parsed.reason,
         });
         if (result.timedOut) {
-          warn(`hooks: PreToolUse timed out (continue): ${hook.command}`);
-          continue;
+          warn(`hooks: PreToolUse timed out (blocked): ${hook.command}`);
         }
         if (parsed.block) {
           return {
@@ -527,6 +526,12 @@ export function interpretHookOutput(
   additionalContext?: string;
 }> {
   if (result.timedOut) {
+    if (event === "PreToolUse") {
+      return {
+        block: true,
+        reason: result.stderr.trim() || "PreToolUse timed out; tool blocked",
+      };
+    }
     return {};
   }
 
@@ -538,6 +543,12 @@ export function interpretHookOutput(
   }
 
   if (result.exitCode !== 0) {
+    if (event === "PreToolUse") {
+      return {
+        block: true,
+        reason: result.stderr.trim() || `PreToolUse hook failed (exit ${result.exitCode}); tool blocked`,
+      };
+    }
     return {};
   }
 

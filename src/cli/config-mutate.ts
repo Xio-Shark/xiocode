@@ -31,14 +31,14 @@ export function upsertProviderBlock(content: string, provider: ProviderUpsert): 
 
 export function upsertGeneralDefaults(content: string, defaults: GeneralDefaultsUpsert): string {
   let next = ensureGeneralSection(content);
-  next = upsertTomlKey(next, "general", "default_provider", defaults.defaultProvider);
-  next = upsertTomlKey(next, "general", "default_model", defaults.defaultModel);
+  next = upsertSectionValue(next, "general", "default_provider", defaults.defaultProvider);
+  next = upsertSectionValue(next, "general", "default_model", defaults.defaultModel);
   return next;
 }
 
 export function upsertDefaultThinkingLevel(content: string, level: string): string {
   let next = ensureGeneralSection(content);
-  next = upsertTomlKey(next, "general", "default_thinking_level", level);
+  next = upsertSectionValue(next, "general", "default_thinking_level", level);
   return next;
 }
 
@@ -72,25 +72,33 @@ function ensureGeneralSection(content: string): string {
   return `[general]\n\n${trimmed}`;
 }
 
-function upsertTomlKey(
+export function upsertSectionValue(
   content: string,
   section: string,
   key: string,
-  value: string,
+  value: string | number | boolean,
 ): string {
   const sectionRe = new RegExp(
     `((?<=^|\\n)[ \\t]*\\[${escapeRegExp(section)}\\][\\s\\S]*?)(?=\\n\\[|$)`,
   );
   const match = content.match(sectionRe);
+  const valStr = tomlValue(value);
   if (!match) {
-    return `${content.replace(/\s*$/, "")}\n\n[${section}]\n${key} = ${tomlString(value)}\n`;
+    return `${content.replace(/\s*$/, "")}\n\n[${section}]\n${key} = ${valStr}\n`;
   }
   const sectionBody = match[1] ?? "";
   const keyRe = new RegExp(`^(\\s*${escapeRegExp(key)}\\s*=\\s*).*$`, "m");
   const updatedBody = keyRe.test(sectionBody)
-    ? sectionBody.replace(keyRe, `$1${tomlString(value)}`)
-    : `${sectionBody.replace(/\s*$/, "")}\n${key} = ${tomlString(value)}\n`;
+    ? sectionBody.replace(keyRe, `$1${valStr}`)
+    : `${sectionBody.replace(/\s*$/, "")}\n${key} = ${valStr}\n`;
   return content.replace(sectionRe, () => updatedBody);
+}
+
+function tomlValue(value: string | number | boolean): string {
+  if (typeof value === "boolean" || typeof value === "number") {
+    return String(value);
+  }
+  return tomlString(value);
 }
 
 function tomlString(value: string): string {
@@ -100,3 +108,4 @@ function tomlString(value: string): string {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+

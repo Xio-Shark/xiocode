@@ -37,6 +37,15 @@ describe("error-guidance", () => {
     expect(out.toLowerCase()).toMatch(/workspace|worktree/);
   });
 
+  it("adds Fix for oversized read", () => {
+    const out = withFixHint(
+      "read",
+      "file exceeds 8388608 byte read limit (8388609 bytes); use a smaller file or offset/limit: /ws/huge.log",
+    );
+    expect(out).toMatch(/Fix:/);
+    expect(out.toLowerCase()).toMatch(/grep|split|trim|multi-megabyte/);
+  });
+
   it("does not double-append Fix", () => {
     const once = withFixHint("edit", "edit failed: old_string not found in f.ts");
     const twice = withFixHint("edit", once);

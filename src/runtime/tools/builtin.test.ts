@@ -569,6 +569,22 @@ describe("builtin workspace path boundary", () => {
       await rm(base, { recursive: true, force: true });
     }
   });
+
+  it("rejects files over the read byte limit without loading them as success", async () => {
+    const { MAX_READ_BYTES } = await import("../workspace-path-policy.ts");
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-read-cap-"));
+    try {
+      await writeFile(path.join(root, "huge.bin"), Buffer.alloc(MAX_READ_BYTES + 1, 0x61));
+      const result = await textOf(toolByName(createBuiltinTools({ cwd: root }), "read"), {
+        path: "huge.bin",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.text).toMatch(/byte read limit/i);
+      expect(result.text).toMatch(/Fix:/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("builtin cross-context file-shift notify", () => {

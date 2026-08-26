@@ -311,7 +311,7 @@ export class SessionStore {
     // watermark below can tell stale journal leftovers from fresh records.
     let nextSeq = this.#nextSeq.get(input.id);
     if (nextSeq === undefined) {
-      const journal = await readJournal(directory);
+      const journal = await readJournal(directory, { repair: true });
       for (const warning of journal.warnings) this.#onWarning(`session ${input.id}: ${warning}`);
       nextSeq = Math.max(journal.nextSeq, (existing?.journalAppliedSeq ?? 0) + 1);
     }
@@ -409,7 +409,7 @@ export class SessionStore {
     await ensurePrivateDir(directory);
     let nextSeq = this.#nextSeq.get(input.id);
     if (nextSeq === undefined) {
-      const journal = await readJournal(directory);
+      const journal = await readJournal(directory, { repair: true });
       for (const warning of journal.warnings) this.#onWarning(`session ${input.id}: ${warning}`);
       nextSeq = Math.max(journal.nextSeq, (existing.journalAppliedSeq ?? 0) + 1);
     }

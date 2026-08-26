@@ -71,8 +71,13 @@ export function fixHintFor(tool: string, message: string): string | undefined {
     return "Simplify the pattern/path, check the search root exists, or fall back to a broader glob then read.";
   }
 
-  if (name === "read" && (m.includes("enoent") || m.includes("no such file"))) {
-    return "glob/grep for the real path, then read again. Do not invent file contents.";
+  if (name === "read") {
+    if (m.includes("byte read limit") || m.includes("too_large") || m.includes("exceeds")) {
+      return "Do not read multi-megabyte files whole. grep for the relevant section, or split/trim the file first.";
+    }
+    if (m.includes("enoent") || m.includes("no such file")) {
+      return "glob/grep for the real path, then read again. Do not invent file contents.";
+    }
   }
 
   if (name === "done" || m.includes("done contract")) {
