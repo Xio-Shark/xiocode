@@ -86,6 +86,24 @@ describe("Web Console & Server", () => {
     expect(detailRes.status).toBe(200);
     const detailData = await detailRes.json();
     expect(detailData.metadata.id).toBe(postData.id);
+    expect(Array.isArray(detailData.trajectory)).toBe(true);
+    expect(detailData.stats).toBeDefined();
+
+    // 4b. Test GET /api/sessions/:id/trajectory
+    const trajRes = await fetch(`${handle.url}/api/sessions/${postData.id}/trajectory`);
+    expect(trajRes.status).toBe(200);
+    const trajData = await trajRes.json();
+    expect(trajData.id).toBe(postData.id);
+    expect(trajData.stats).toBeDefined();
+    expect(Array.isArray(trajData.steps)).toBe(true);
+
+    // 4c. Test GET /api/sessions/:id/log
+    const logRes = await fetch(`${handle.url}/api/sessions/${postData.id}/log`);
+    expect(logRes.status).toBe(200);
+    expect(logRes.headers.get("content-disposition")).toContain("attachment");
+    const logData = await logRes.json();
+    expect(logData.id).toBe(postData.id);
+    expect(logData.exported_at).toBeDefined();
 
     // 5. Test POST /api/sessions/:id/prompt
     const promptRes = await fetch(`${handle.url}/api/sessions/${postData.id}/prompt`, {

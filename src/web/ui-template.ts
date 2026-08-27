@@ -263,6 +263,479 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       background: var(--bg-surface-hover);
     }
 
+    /* Session Log Download Button */
+    .btn-session-log {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border: 1px solid var(--border-subtle);
+      background: #ffffff;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.15s ease;
+    }
+    .btn-session-log:hover {
+      border-color: var(--border-medium);
+      color: var(--text-primary);
+      background: var(--bg-surface-hover);
+    }
+
+    /* Subhead Navigation & Session Title */
+    .main-subhead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      background: var(--bg-sidebar);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .subhead-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+    }
+    .subhead-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 460px;
+    }
+    .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      background: #ffffff;
+      border: 1px solid var(--border-subtle);
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+
+    /* DeepSeek Harness Style Trajectory View */
+    .trajectory-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--bg-base);
+      overflow: hidden;
+    }
+
+    .trajectory-ribbon {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 20px;
+      background: #ffffff;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+      gap: 16px;
+    }
+
+    .ribbon-stats {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      white-space: nowrap;
+    }
+
+    .ribbon-stat-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .ribbon-stat-item .stat-icon {
+      color: var(--text-tertiary);
+      font-size: 13px;
+    }
+
+    .trajectory-search-wrap {
+      position: relative;
+      width: 240px;
+      flex-shrink: 0;
+    }
+
+    .trajectory-search-input {
+      width: 100%;
+      background: #f8f8f7;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-full);
+      padding: 5px 12px 5px 30px;
+      font-size: 12px;
+      color: var(--text-primary);
+      outline: none;
+      transition: all 0.15s ease;
+    }
+    .trajectory-search-input:focus {
+      background: #ffffff;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px rgba(26, 26, 24, 0.05);
+    }
+    .trajectory-search-wrap .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 7px;
+      width: 13px;
+      height: 13px;
+      fill: var(--text-tertiary);
+      pointer-events: none;
+    }
+
+    /* Multi-Track Timeline Waterfall */
+    .timeline-waterfall {
+      display: flex;
+      background: #fafaf9;
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 20px;
+      gap: 12px;
+      align-items: center;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .track-labels {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 52px;
+      width: 46px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-align: right;
+      padding-right: 8px;
+      border-right: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .track-label {
+      line-height: 14px;
+    }
+
+    .track-bars-container {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 52px;
+      flex-grow: 1;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 1px 0;
+      position: relative;
+    }
+
+    .track-row {
+      display: flex;
+      align-items: center;
+      height: 14px;
+      position: relative;
+      width: 100%;
+      min-width: 320px;
+    }
+
+    .timeline-block {
+      height: 10px;
+      border-radius: 2px;
+      cursor: pointer;
+      position: absolute;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+      min-width: 6px;
+    }
+    .timeline-block:hover {
+      transform: translateY(-2px) scaleY(1.3);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+      z-index: 10;
+    }
+
+    .timeline-block.block-input {
+      background: #3b82f6; /* Blue for user prompt */
+    }
+    .timeline-block.block-model {
+      background: #8b5cf6; /* Purple for assistant reasoning/text */
+    }
+    .timeline-block.block-tool {
+      background: #f59e0b; /* Amber for tool execution */
+    }
+    .timeline-block.block-tool.error {
+      background: #ef4444; /* Red if tool failed */
+    }
+
+    /* Trajectory Stream List */
+    .trajectory-stream-wrapper {
+      flex: 1;
+      overflow-y: auto;
+      background: var(--bg-base);
+    }
+
+    .trajectory-stream {
+      padding: 14px 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+    }
+
+    .trajectory-empty {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+    }
+
+    .traj-item {
+      display: flex;
+      flex-direction: column;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .traj-item:hover {
+      background: #f4f4f2;
+      border-color: var(--border-subtle);
+    }
+    .traj-item.highlighted {
+      background: #eff6ff;
+      border-color: #93c5fd;
+    }
+
+    .traj-row-summary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      cursor: pointer;
+      min-height: 32px;
+      width: 100%;
+      user-select: none;
+    }
+
+    .traj-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #94a3b8;
+      flex-shrink: 0;
+      margin-left: 2px;
+    }
+    .traj-dot.error {
+      background: #ef4444;
+      box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25);
+    }
+
+    .traj-badge {
+      font-family: var(--font-sans);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      line-height: 14px;
+    }
+    .traj-badge.tool {
+      background: #fef3c7;
+      color: #b45309;
+    }
+    .traj-badge.assistant {
+      background: #ede9fe;
+      color: #6d28d9;
+    }
+    .traj-badge.user {
+      background: #e0f2fe;
+      color: #0369a1;
+    }
+    .traj-badge.thinking {
+      background: #f1f5f9;
+      color: #475569;
+    }
+
+    .traj-content-preview {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-grow: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: var(--text-primary);
+    }
+
+    .traj-tool-name {
+      font-weight: 700;
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+
+    .traj-tool-args {
+      color: #374151;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 45%;
+      flex-shrink: 1;
+    }
+
+    .traj-arrow {
+      color: #9ca3af;
+      flex-shrink: 0;
+    }
+
+    .traj-tool-output {
+      color: #6b7280;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-grow: 1;
+    }
+
+    .traj-assistant-text {
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .traj-assistant-toolonly {
+      color: var(--text-tertiary);
+      font-style: italic;
+    }
+
+    /* Accordion Details */
+    .traj-detail-panel {
+      display: none;
+      padding: 12px 14px 14px 26px;
+      background: #ffffff;
+      border-top: 1px dashed var(--border-subtle);
+      border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+      margin-top: 2px;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
+    }
+    .traj-item.expanded .traj-detail-panel {
+      display: block;
+    }
+
+    .traj-detail-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-family: var(--font-sans);
+    }
+    .detail-status-pill {
+      font-size: 10.5px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .detail-status-pill.success {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .detail-status-pill.error {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .traj-section-title {
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+
+    .traj-code-block {
+      background: #18181b;
+      color: #e4e4e7;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-x: auto;
+      max-height: 240px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      position: relative;
+    }
+    .traj-code-block.output-block {
+      background: #09090b;
+      color: #a1a1aa;
+      border: 1px solid #27272a;
+    }
+
+    .traj-btn-copy {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #ffffff;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      transition: background 0.15s ease;
+    }
+    .traj-btn-copy:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    .traj-thought-box {
+      background: #f5f3ff;
+      border: 1px solid #ddd6fe;
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #5b21b6;
+      font-size: 12.5px;
+      line-height: 1.55;
+      margin-bottom: 8px;
+      white-space: pre-wrap;
+    }
+    .traj-thought-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #7c3aed;
+      margin-bottom: 4px;
+    }
+
+    /* Composer Status Bar */
+    .composer-statusbar {
+      max-width: 780px;
+      width: 100%;
+      margin: 6px auto 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+      padding: 0 4px;
+    }
+    .meta-sep {
+      color: var(--border-medium);
+    }
+
     /* Settings Modal */
     .settings-modal-overlay {
       position: fixed;
@@ -1298,13 +1771,18 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     </div>
 
     <nav class="nav-tabs">
-      <button class="nav-tab-btn active" data-view="chat">Chat</button>
-      <button class="nav-tab-btn" data-view="trajectory">Trajectory</button>
-      <button class="nav-tab-btn" data-view="metrics">Metrics</button>
+      <button class="nav-tab-btn active" data-view="chat">对话</button>
+      <button class="nav-tab-btn" data-view="trajectory">轨迹</button>
       <button class="nav-tab-btn" data-view="diff">Diff</button>
+      <button class="nav-tab-btn" data-view="metrics">指标</button>
     </nav>
 
     <div class="header-right">
+      <button id="btn-export-log" class="btn-session-log" title="导出完整轨迹日志 (Session Log)">
+        <span>Session log</span>
+        <span>📥</span>
+      </button>
+
       <button id="btn-open-settings" class="btn-settings-trigger" title="设置 / Settings">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         <span>设置</span>
@@ -1331,7 +1809,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
           New Session
         </button>
         <div class="search-input-wrap">
-          <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
           <input type="text" id="session-search" class="search-input" placeholder="Search sessions...">
         </div>
       </div>
@@ -1347,106 +1825,156 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     </aside>
 
     <main>
-      <!-- Chat View -->
-      <section id="view-chat" class="view-panel active">
-        <div id="chat-messages" class="chat-messages">
-          <div class="chat-inner-wrap" id="chat-flow-container">
-            <!-- Hero State -->
-            <div class="hero-state" id="hero-state">
-              <h1 class="hero-title">What would you like to build?</h1>
-              <p class="hero-subtitle">XioCode runs as an autonomous agent in your workspace with verified safety boundaries.</p>
+      <!-- Subhead with Session Title & Mode Badge -->
+      <div class="main-subhead">
+        <div class="subhead-left">
+          <h2 id="current-session-title" class="subhead-title">新会话 · New Session</h2>
+          <span id="current-mode-badge" class="mode-badge">极简模式</span>
+        </div>
+      </div>
 
-              <div class="starter-grid">
-                <div class="starter-item" onclick="insertPrompt('Run the full test suite and verify current workspace integrity')">
-                  <span class="starter-title">Run test suite</span>
-                  <span class="starter-desc">Execute unit tests and regression assertions</span>
-                </div>
-                <div class="starter-item" onclick="insertPrompt('Inspect git diff and check for unstaged changes')">
-                  <span class="starter-title">Inspect git diff</span>
-                  <span class="starter-desc">Review working tree modifications</span>
-                </div>
-                <div class="starter-item" onclick="insertPrompt('Run xio doctor to check system health and keys')">
-                  <span class="starter-title">Doctor check</span>
-                  <span class="starter-desc">Verify local config, keys, and provider status</span>
-                </div>
-                <div class="starter-item" onclick="insertPrompt('Audit codebase performance and execution overhead')">
-                  <span class="starter-title">Performance audit</span>
-                  <span class="starter-desc">Check latency, token estimate, and tracer</span>
+      <!-- Views Container -->
+      <div class="view-content-wrapper" style="flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative;">
+        <!-- Chat View -->
+        <section id="view-chat" class="view-panel active">
+          <div id="chat-messages" class="chat-messages">
+            <div class="chat-inner-wrap" id="chat-flow-container">
+              <!-- Hero State -->
+              <div class="hero-state" id="hero-state">
+                <h1 class="hero-title">What would you like to build?</h1>
+                <p class="hero-subtitle">XioCode runs as an autonomous agent in your workspace with verified safety boundaries.</p>
+
+                <div class="starter-grid">
+                  <div class="starter-item" onclick="insertPrompt('Run the full test suite and verify current workspace integrity')">
+                    <span class="starter-title">Run test suite</span>
+                    <span class="starter-desc">Execute unit tests and regression assertions</span>
+                  </div>
+                  <div class="starter-item" onclick="insertPrompt('Inspect git diff and check for unstaged changes')">
+                    <span class="starter-title">Inspect git diff</span>
+                    <span class="starter-desc">Review working tree modifications</span>
+                  </div>
+                  <div class="starter-item" onclick="insertPrompt('Run xio doctor to check system health and keys')">
+                    <span class="starter-title">Doctor check</span>
+                    <span class="starter-desc">Verify local config, keys, and provider status</span>
+                  </div>
+                  <div class="starter-item" onclick="insertPrompt('Audit codebase performance and execution overhead')">
+                    <span class="starter-title">Performance audit</span>
+                    <span class="starter-desc">Check latency, token estimate, and tracer</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="composer-section">
-          <div class="composer-card">
-            <textarea id="composer-input" class="composer-input" placeholder="Ask XioCode to build, fix, refactor, or test..."></textarea>
-            <div class="composer-bar">
-              <div class="chip-list">
-                <span class="filter-chip" onclick="insertPrompt('Run tests')">Tests</span>
-                <span class="filter-chip" onclick="insertPrompt('Git diff')">Diff</span>
-                <span class="filter-chip" onclick="insertPrompt('Doctor')">Doctor</span>
+        <!-- Trajectory View -->
+        <section id="view-trajectory" class="view-panel">
+          <div class="trajectory-container">
+            <!-- Ribbon Stats -->
+            <div class="trajectory-ribbon">
+              <div class="ribbon-stats">
+                <span class="ribbon-stat-item"><span class="stat-icon">⏱</span> <span id="traj-stat-duration">0s</span></span>
+                <span class="ribbon-stat-item"><span class="stat-icon">🔄</span> <span id="traj-stat-turns">0 轮 · 0 步</span></span>
+                <span class="ribbon-stat-item"><span class="stat-icon">⚙</span> <span id="traj-stat-calls">0 Calls</span></span>
               </div>
-              <div class="action-group">
-                <span class="key-tip">↵ Send · ⇧↵ Line</span>
-                <button id="btn-abort" class="btn-abort">Abort</button>
-                <button id="btn-send" class="btn-send">Send</button>
+              <div class="trajectory-search-wrap">
+                <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
+                <input type="text" id="trajectory-search-input" class="trajectory-search-input" placeholder="搜索轨迹 / Search...">
+              </div>
+            </div>
+
+            <!-- Waterfall Timeline Chart -->
+            <div class="timeline-waterfall" id="timeline-waterfall">
+              <div class="track-labels">
+                <span class="track-label">Input</span>
+                <span class="track-label">Model</span>
+                <span class="track-label">Tools</span>
+              </div>
+              <div class="track-bars-container" id="track-bars-container">
+                <div class="track-row" id="track-row-input"></div>
+                <div class="track-row" id="track-row-model"></div>
+                <div class="track-row" id="track-row-tools"></div>
+              </div>
+            </div>
+
+            <!-- Steps Stream -->
+            <div class="trajectory-stream-wrapper">
+              <div class="trajectory-stream" id="trajectory-stream">
+                <div class="trajectory-empty" id="trajectory-empty">
+                  <span>暂无运行轨迹数据。请选择左侧会话或在对话中发起任务。</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Trajectory View -->
-      <section id="view-trajectory" class="view-panel">
-        <div class="clean-deck">
-          <div class="diff-panel">
-            <div class="diff-panel-header"><span>Execution Trace</span></div>
-            <div class="diff-panel-body" id="trajectory-log">No execution trace recorded yet. Start a session in the chat view.</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Metrics View -->
-      <section id="view-metrics" class="view-panel">
-        <div class="clean-deck">
-          <div class="metrics-row">
-            <div class="metric-box">
-              <span class="metric-heading">Total Tokens</span>
-              <span class="metric-digit" id="val-tokens">0</span>
-              <span class="metric-foot">Prompt + Completion</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-heading">Cache Hit</span>
-              <span class="metric-digit" id="val-cache">94.2%</span>
-              <span class="metric-foot">Cold-start aware</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-heading">Est. Cost</span>
-              <span class="metric-digit" id="val-cost">$0.00</span>
-              <span class="metric-foot">Standard rate table</span>
-            </div>
-            <div class="metric-box">
-              <span class="metric-heading">Tool Calls</span>
-              <span class="metric-digit" id="val-turns">0</span>
-              <span class="metric-foot">Executed in turn</span>
+        <!-- Metrics View -->
+        <section id="view-metrics" class="view-panel">
+          <div class="clean-deck">
+            <div class="metrics-row">
+              <div class="metric-box">
+                <span class="metric-heading">Total Tokens</span>
+                <span class="metric-digit" id="val-tokens">0</span>
+                <span class="metric-foot">Prompt + Completion</span>
+              </div>
+              <div class="metric-box">
+                <span class="metric-heading">Cache Hit</span>
+                <span class="metric-digit" id="val-cache">94.2%</span>
+                <span class="metric-foot">Cold-start aware</span>
+              </div>
+              <div class="metric-box">
+                <span class="metric-heading">Est. Cost</span>
+                <span class="metric-digit" id="val-cost">$0.00</span>
+                <span class="metric-foot">Standard rate table</span>
+              </div>
+              <div class="metric-box">
+                <span class="metric-heading">Tool Calls</span>
+                <span class="metric-digit" id="val-turns">0</span>
+                <span class="metric-foot">Executed in turn</span>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Diff View -->
-      <section id="view-diff" class="view-panel">
-        <div class="clean-deck">
-          <div class="diff-panel">
-            <div class="diff-panel-header">
-              <span>Working Tree Changes</span>
-              <button class="filter-chip" onclick="fetchDiff()">Refresh</button>
+        <!-- Diff View -->
+        <section id="view-diff" class="view-panel">
+          <div class="clean-deck">
+            <div class="diff-panel">
+              <div class="diff-panel-header">
+                <span>Working Tree Changes</span>
+                <button class="filter-chip" onclick="fetchDiff()">Refresh</button>
+              </div>
+              <div class="diff-panel-body" id="diff-output-body">Loading workspace diff...</div>
             </div>
-            <div class="diff-panel-body" id="diff-output-body">Loading workspace diff...</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Shared Floating Composer at Bottom -->
+      <div class="composer-section">
+        <div class="composer-card">
+          <textarea id="composer-input" class="composer-input" placeholder="给智能体发消息 / Ask XioCode to build, fix, refactor..."></textarea>
+          <div class="composer-bar">
+            <div class="chip-list">
+              <span class="filter-chip" onclick="insertPrompt('Run tests')">Tests</span>
+              <span class="filter-chip" onclick="insertPrompt('Git diff')">Diff</span>
+              <span class="filter-chip" onclick="insertPrompt('Doctor')">Doctor</span>
+            </div>
+            <div class="action-group">
+              <span class="key-tip">↵ Send · ⇧↵ Line</span>
+              <button id="btn-abort" class="btn-abort">Abort</button>
+              <button id="btn-send" class="btn-send">Send</button>
+            </div>
           </div>
         </div>
-      </section>
+        <div class="composer-statusbar" id="composer-statusbar">
+          <span id="meta-turns-info">0 轮 · 0 步</span>
+          <span class="meta-sep">|</span>
+          <span id="meta-tools-info">工具调用 0 次</span>
+          <span class="meta-sep">|</span>
+          <span id="meta-session-cwd">工作区: local</span>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -1652,6 +2180,8 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     let currentSettingsData = null;
     let selectedThinkingLevel = "high";
     let selectedPermMode = "auto";
+    let currentTrajectorySteps = [];
+    let currentStats = {};
 
     const chatFlowContainer = document.getElementById("chat-flow-container");
     const chatScrollArea = document.getElementById("chat-messages");
@@ -1670,6 +2200,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       initTabs();
       initSidebar();
       initComposer();
+      initTrajectoryControls();
       initSettingsModal();
       await fetchStatus();
       await loadSessions();
@@ -1687,7 +2218,11 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
           const viewId = "view-" + btn.dataset.view;
           const target = document.getElementById(viewId);
           if (target) target.classList.add("active");
-          if (btn.dataset.view === "diff") fetchDiff();
+          if (btn.dataset.view === "trajectory") {
+            renderTrajectory(currentTrajectorySteps, currentStats);
+          } else if (btn.dataset.view === "diff") {
+            fetchDiff();
+          }
         });
       });
     }
@@ -2098,7 +2633,31 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
         const res = await fetch("/api/sessions/" + id);
         if (!res.ok) return;
         const detail = await res.json();
+
+        // Update header session title & badge
+        const sessItem = allSessions.find(s => (s.metadata?.id || s.id) === id);
+        const firstUserPrompt = detail.messages?.find(m => m.role === "user")?.content;
+        const title = sessItem?.first_prompt || (firstUserPrompt ? firstUserPrompt.slice(0, 40) : ("Session " + id.slice(0, 8)));
+        const titleEl = document.getElementById("current-session-title");
+        if (titleEl) titleEl.textContent = title;
+        const modeBadge = document.getElementById("current-mode-badge");
+        if (modeBadge) {
+          modeBadge.textContent = detail.metadata?.model?.id || "极简模式";
+        }
+
         renderMessages(detail.messages || []);
+
+        currentTrajectorySteps = detail.trajectory || [];
+        currentStats = detail.stats || {};
+        renderTrajectory(currentTrajectorySteps, currentStats);
+
+        // Update composer statusbar
+        const metaTurns = document.getElementById("meta-turns-info");
+        if (metaTurns) metaTurns.textContent = (currentStats.totalTurns || 1) + " 轮 · " + (currentStats.totalSteps || currentTrajectorySteps.length) + " 步";
+        const metaTools = document.getElementById("meta-tools-info");
+        if (metaTools) metaTools.textContent = "工具调用 " + (currentStats.totalToolCalls || 0) + " 次";
+        const metaCwd = document.getElementById("meta-session-cwd");
+        if (metaCwd) metaCwd.textContent = "工作区: " + (detail.metadata?.cwd ? detail.metadata.cwd.split("/").pop() : "local");
       } catch (err) {
         console.error("loadSessionDetail err", err);
       }
@@ -2256,14 +2815,35 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       const type = event.event;
       const payload = event.payload || {};
 
-      // Trajectory record
-      addTrajectoryRow(event);
-
       if (type === "run.start") {
         setRunningState(true);
+        if (payload.prompt) {
+          const stepNum = currentTrajectorySteps.length + 1;
+          currentTrajectorySteps.push({
+            id: "step-live-" + stepNum + "-user",
+            stepNumber: stepNum,
+            turnNumber: Math.max(1, currentStats.totalTurns || 1),
+            type: "input",
+            role: "user",
+            content: payload.prompt,
+          });
+          currentStats.totalSteps = currentTrajectorySteps.length;
+          renderTrajectory(currentTrajectorySteps, currentStats);
+        }
       } else if (type === "run.end" || type === "cancel") {
         setRunningState(false);
         currentAssistantBox = null;
+        if (activeSessionId) {
+          fetch("/api/sessions/" + activeSessionId + "/trajectory")
+            .then(res => res.json())
+            .then(data => {
+              if (data && data.steps) {
+                currentTrajectorySteps = data.steps;
+                currentStats = data.stats;
+                renderTrajectory(currentTrajectorySteps, currentStats);
+              }
+            }).catch(() => {});
+        }
       } else if (type === "thinking.delta") {
         appendThinkingDelta(payload.delta || "");
       } else if (type === "text.delta") {
@@ -2271,23 +2851,258 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       } else if (type === "tool.call") {
         appendToolCall(payload);
         metricsState.turns++;
-        document.getElementById("val-turns").textContent = metricsState.turns;
+        const valTurns = document.getElementById("val-turns");
+        if (valTurns) valTurns.textContent = metricsState.turns;
+
+        const stepNum = currentTrajectorySteps.length + 1;
+        currentTrajectorySteps.push({
+          id: "step-live-" + stepNum + "-tool",
+          stepNumber: stepNum,
+          turnNumber: Math.max(1, currentStats.totalTurns || 1),
+          type: "tool",
+          role: "tool",
+          name: payload.tool || "tool",
+          args: payload.args || {},
+          argsPreview: JSON.stringify(payload.args || {}).slice(0, 80),
+          output: "",
+          outputPreview: "running...",
+          isError: false,
+          callId: payload.call_id,
+        });
+        currentStats.totalSteps = currentTrajectorySteps.length;
+        currentStats.totalToolCalls = (currentStats.totalToolCalls || 0) + 1;
+        renderTrajectory(currentTrajectorySteps, currentStats);
       } else if (type === "tool.result") {
         updateToolResult(payload);
+        const matched = currentTrajectorySteps.find(s => s.callId === payload.call_id);
+        if (matched) {
+          matched.output = payload.result || "";
+          matched.outputPreview = (payload.result || "").replace(/\\s+/g, " ").slice(0, 100);
+          matched.isError = Boolean(payload.is_error);
+          if (matched.isError) currentStats.totalErrors = (currentStats.totalErrors || 0) + 1;
+          renderTrajectory(currentTrajectorySteps, currentStats);
+        }
       }
     }
 
-    function addTrajectoryRow(event) {
-      const traceTable = document.getElementById("trajectory-body");
-      if (!traceTable) return;
-      const row = document.createElement("tr");
-      row.className = "trace-row";
-      row.innerHTML = \`
-        <td class="trace-seq">#\${event.seq ?? "-"}</td>
-        <td class="trace-event">\${escapeHtml(event.event || "unknown")}</td>
-        <td class="trace-payload">\${escapeHtml(JSON.stringify(event.payload || {}))}</td>
-      \`;
-      traceTable.appendChild(row);
+    function renderTrajectory(steps, stats) {
+      const durEl = document.getElementById("traj-stat-duration");
+      if (durEl) {
+        let durText = "0s";
+        if (stats && stats.createdAt && stats.updatedAt) {
+          const ms = Math.max(1000, new Date(stats.updatedAt).getTime() - new Date(stats.createdAt).getTime());
+          const sec = Math.round(ms / 1000);
+          const m = Math.floor(sec / 60);
+          const s = sec % 60;
+          durText = (m > 0 ? m + "m" : "") + (s > 0 ? s + "s" : (m === 0 ? "1s" : ""));
+        }
+        durEl.textContent = stats && stats.totalToolCalls > 0 ? ("LLM " + durText + " · 工具调用 " + stats.totalToolCalls + " 次") : durText;
+      }
+
+      const turnsEl = document.getElementById("traj-stat-turns");
+      if (turnsEl) {
+        turnsEl.textContent = (stats?.totalTurns || 1) + " 轮 · " + (stats?.totalSteps || steps.length) + " 步";
+      }
+
+      const callsEl = document.getElementById("traj-stat-calls");
+      if (callsEl) {
+        callsEl.textContent = (stats?.totalToolCalls || 0) + " Calls" + (stats?.totalErrors ? (" (" + stats.totalErrors + " 异常)") : "");
+      }
+
+      renderTimelineWaterfall(steps);
+
+      const searchInput = document.getElementById("trajectory-search-input");
+      const q = searchInput ? searchInput.value.trim() : "";
+      renderTrajectoryList(steps, q);
+    }
+
+    function renderTimelineWaterfall(steps) {
+      const inputRow = document.getElementById("track-row-input");
+      const modelRow = document.getElementById("track-row-model");
+      const toolsRow = document.getElementById("track-row-tools");
+      if (!inputRow || !modelRow || !toolsRow) return;
+
+      inputRow.innerHTML = "";
+      modelRow.innerHTML = "";
+      toolsRow.innerHTML = "";
+
+      if (!steps || steps.length === 0) return;
+
+      const N = steps.length;
+      const blockWidth = Math.max(2, Math.min(8, 92 / N));
+
+      steps.forEach((s, idx) => {
+        const leftPct = (idx / N) * 98;
+        const block = document.createElement("div");
+        block.style.left = leftPct + "%";
+        block.style.width = blockWidth + "%";
+
+        if (s.type === "input") {
+          block.className = "timeline-block block-input";
+          block.title = "[USER] #" + s.stepNumber + ": " + (s.content ? s.content.slice(0, 80) : "");
+          inputRow.appendChild(block);
+        } else if (s.type === "assistant" || s.type === "thinking") {
+          block.className = "timeline-block block-model";
+          block.title = "[MODEL] #" + s.stepNumber + ": " + ((s.content || s.thought || "").slice(0, 80));
+          modelRow.appendChild(block);
+        } else if (s.type === "tool") {
+          block.className = "timeline-block block-tool" + (s.isError ? " error" : "");
+          block.title = "[TOOL " + (s.name || "") + "] #" + s.stepNumber + ": " + (s.argsPreview || "");
+          toolsRow.appendChild(block);
+        }
+
+        block.addEventListener("click", () => {
+          const target = document.getElementById("traj-step-" + s.id);
+          if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.classList.add("highlighted");
+            setTimeout(() => target.classList.remove("highlighted"), 1500);
+          }
+        });
+      });
+    }
+
+    function renderTrajectoryList(steps, query = "") {
+      const stream = document.getElementById("trajectory-stream");
+      if (!stream) return;
+      stream.innerHTML = "";
+
+      const q = (query || "").trim().toLowerCase();
+      const filtered = q
+        ? steps.filter(s => {
+            const str = (s.name || "") + " " + (s.argsPreview || "") + " " + (s.outputPreview || "") + " " + (s.content || "") + " " + (s.thought || "");
+            return str.toLowerCase().includes(q);
+          })
+        : steps;
+
+      if (filtered.length === 0) {
+        stream.innerHTML = '<div class="trajectory-empty">' + (query ? '未找到包含 "' + escapeHtml(query) + '" 的轨迹步骤' : '暂无运行轨迹数据。请在对话中发起任务。') + '</div>';
+        return;
+      }
+
+      filtered.forEach(s => {
+        const item = document.createElement("div");
+        item.className = "traj-item";
+        item.id = "traj-step-" + s.id;
+
+        let badgeClass = s.type;
+        let badgeLabel = s.type.toUpperCase();
+        if (s.type === "input") { badgeClass = "user"; badgeLabel = "USER"; }
+        else if (s.type === "thinking") { badgeClass = "thinking"; badgeLabel = "THINKING"; }
+        else if (s.type === "assistant") { badgeClass = "assistant"; badgeLabel = "ASSISTANT"; }
+        else if (s.type === "tool") { badgeClass = "tool"; badgeLabel = "TOOL"; }
+
+        let summaryHtml = "";
+        if (s.type === "tool") {
+          summaryHtml = \`
+            <span class="traj-tool-name">\${escapeHtml(s.name || "tool")}</span>
+            <span class="traj-tool-args">\${escapeHtml(s.argsPreview || "{}")}</span>
+            <span class="traj-arrow">→</span>
+            <span class="traj-tool-output">\${escapeHtml(s.outputPreview || "")}</span>
+          \`;
+        } else if (s.type === "assistant") {
+          const isOnly = s.content === "(tool call only)";
+          summaryHtml = \`<span class="traj-assistant-text \${isOnly ? 'traj-assistant-toolonly' : ''}">\${escapeHtml(s.content || "")}</span>\`;
+        } else if (s.type === "thinking") {
+          summaryHtml = \`<span class="traj-assistant-text" style="color: #64748b;">\${escapeHtml((s.thought || s.content || "").slice(0, 140))}</span>\`;
+        } else if (s.type === "input") {
+          summaryHtml = \`<span class="traj-content-preview" style="font-weight: 600; color: #1e293b;">\${escapeHtml(s.content || "")}</span>\`;
+        }
+
+        let detailHtml = \`
+          <div class="traj-detail-meta">
+            <span>Step #\${s.stepNumber} · Turn \${s.turnNumber}</span>
+            <div>
+              <span class="detail-status-pill \${s.isError ? 'error' : 'success'}">\${s.isError ? 'Error / Failed' : 'Success'}</span>
+              \${s.callId ? '<span style="margin-left: 8px; font-family: var(--font-mono); font-size: 11px;">ID: ' + escapeHtml(s.callId) + '</span>' : ''}
+            </div>
+          </div>
+        \`;
+
+        if (s.type === "tool") {
+          detailHtml += \`
+            <div class="traj-section-title">Arguments (调用参数)</div>
+            <div class="traj-code-block">
+              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">Copy</button>
+              <code>\${escapeHtml(JSON.stringify(s.args || {}, null, 2))}</code>
+            </div>
+            <div class="traj-section-title" style="margin-top: 10px;">Output (执行结果)</div>
+            <div class="traj-code-block output-block">
+              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">Copy</button>
+              <code>\${escapeHtml(s.output || "(empty output)")}</code>
+            </div>
+          \`;
+        } else if (s.type === "assistant") {
+          if (s.thought) {
+            detailHtml += \`
+              <div class="traj-thought-box">
+                <div class="traj-thought-label">Reasoning / 思考过程</div>
+                <div>\${escapeHtml(s.thought)}</div>
+              </div>
+            \`;
+          }
+          detailHtml += \`
+            <div class="traj-section-title">Response Content (回复内容)</div>
+            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "(tool call only)")}</div>
+          \`;
+        } else if (s.type === "thinking") {
+          detailHtml += \`
+            <div class="traj-thought-box">
+              <div class="traj-thought-label">Reasoning / 思考过程</div>
+              <div>\${escapeHtml(s.thought || s.content || "")}</div>
+            </div>
+          \`;
+        } else if (s.type === "input") {
+          detailHtml += \`
+            <div class="traj-section-title">User Prompt (用户指令)</div>
+            <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "")}</div>
+          \`;
+        }
+
+        item.innerHTML = \`
+          <div class="traj-row-summary" onclick="this.parentElement.classList.toggle('expanded')">
+            <span class="traj-dot \${s.isError ? 'error' : ''}"></span>
+            <span class="traj-badge \${badgeClass}">\${badgeLabel}</span>
+            <div class="traj-content-preview">
+              \${summaryHtml}
+            </div>
+          </div>
+          <div class="traj-detail-panel">
+            \${detailHtml}
+          </div>
+        \`;
+        stream.appendChild(item);
+      });
+    }
+
+    function initTrajectoryControls() {
+      const searchInput = document.getElementById("trajectory-search-input");
+      if (searchInput) {
+        searchInput.addEventListener("input", (e) => {
+          renderTrajectoryList(currentTrajectorySteps, e.target.value);
+        });
+      }
+
+      const btnExport = document.getElementById("btn-export-log");
+      if (btnExport) {
+        btnExport.addEventListener("click", () => {
+          if (!activeSessionId) {
+            showToast("请先选择一个会话", "error");
+            return;
+          }
+          window.open("/api/sessions/" + activeSessionId + "/log", "_blank");
+        });
+      }
+    }
+
+    function copyCode(btn) {
+      const code = btn.parentElement.querySelector("code");
+      if (!code) return;
+      navigator.clipboard.writeText(code.innerText).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      });
     }
 
     function appendThinkingDelta(delta) {

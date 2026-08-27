@@ -12,6 +12,7 @@ import { upsertSectionValue, upsertProviderBlock } from "../cli/config-mutate.ts
 import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { renderWebUiHtml } from "./ui-template.ts";
+import { buildSessionTrajectory } from "./trajectory.ts";
 import type { SessionStore } from "../runtime/session-store.ts";
 import type { RuntimeEventV1 } from "../runtime/events/types.ts";
 
@@ -119,15 +120,65 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         }
       }
 
-      // 4. Session Detail & Delete (/api/sessions/:id)
+      // 4. Session Trajectory & Export Log (/api/sessions/:id/trajectory and /api/sessions/:id/log)
+      const trajectoryMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/trajectory$/);
+      if (trajectoryMatch && req.method === "GET") {
+        const id = trajectoryMatch[1]!;
+        try {
+          const session = await store.load(id);
+          const traj = buildSessionTrajectory(session);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(traj));
+        } catch {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session not found" }));
+        }
+        return;
+      }
+
+      const logMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/log$/);
+      if (logMatch && req.method === "GET") {
+        const id = logMatch[1]!;
+        try {
+          const session = await store.load(id);
+          const traj = buildSessionTrajectory(session);
+          const exportPayload = {
+            schema_version: "xio-session-log.v1",
+            id: session.metadata.id,
+            metadata: session.metadata,
+            workspace: session.workspace,
+            execution: session.execution,
+            stats: traj.stats,
+            trajectory: traj.steps,
+            messages: session.messages,
+            exported_at: new Date().toISOString(),
+          };
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": `attachment; filename="session-${id}-log.json"`,
+          });
+          res.end(JSON.stringify(exportPayload, null, 2));
+        } catch {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session not found" }));
+        }
+        return;
+      }
+
+      // 5. Session Detail & Delete (/api/sessions/:id)
       const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
       if (sessionMatch) {
         const id = sessionMatch[1]!;
         if (req.method === "GET") {
           try {
             const session = await store.load(id);
+            const traj = buildSessionTrajectory(session);
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(session));
+            res.end(JSON.stringify({
+              ...session,
+              trajectory: traj.steps,
+              stats: traj.stats,
+            }));
           } catch {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Session not found" }));
