@@ -101,8 +101,23 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
       if (pathname === "/api/sessions") {
         if (req.method === "GET") {
           const sessions = await store.list();
+          const enhanced = await Promise.all(
+            sessions.map(async (s) => {
+              try {
+                const full = await store.load(s.id);
+                const firstUser = full.messages.find((m) => m.role === "user");
+                return {
+                  ...s,
+                  firstPrompt: firstUser ? firstUser.content.slice(0, 120) : undefined,
+                  messageCount: full.messages.length,
+                };
+              } catch {
+                return { ...s, messageCount: 0 };
+              }
+            })
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(sessions));
+          res.end(JSON.stringify(enhanced));
           return;
         }
         if (req.method === "POST") {

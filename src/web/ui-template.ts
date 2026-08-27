@@ -6,46 +6,48 @@
 
 export function renderWebUiHtml(options: { version: string; defaultSessionId?: string }): string {
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>XioCode Web</title>
+  <title>XioCode 控制台</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-base: #fbfbfa;
-      --bg-sidebar: #f1f1ef;
+      --bg-base: #ffffff;
+      --bg-sidebar: #f8f9fa;
       --bg-surface: #ffffff;
       --bg-surface-elevated: #ffffff;
-      --bg-surface-hover: #ebebe9;
+      --bg-surface-hover: #f1f3f5;
       
-      --border-subtle: #e5e5e3;
-      --border-medium: #d4d4d0;
-      --border-focus: #1a1a18;
+      --border-subtle: #f0f2f5;
+      --border-medium: #e5e7eb;
+      --border-focus: #2563eb;
       
-      --text-primary: #1a1a18;
-      --text-secondary: #64645f;
-      --text-tertiary: #93938c;
+      --text-primary: #111827;
+      --text-secondary: #4b5563;
+      --text-tertiary: #9ca3af;
       
-      --accent-primary: #1a1a18;
-      --accent-status: #15803d;
+      --accent-primary: #2563eb;
+      --accent-status: #10b981;
       --accent-running: #2563eb;
-      --accent-error: #b91c1c;
+      --accent-error: #ef4444;
+      --accent-highlight: #eff6ff;
       
-      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
       
       --radius-sm: 6px;
       --radius-md: 10px;
       --radius-lg: 14px;
+      --radius-xl: 18px;
       --radius-full: 9999px;
       
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.05);
-      --shadow-lg: 0 10px 25px -3px rgba(0, 0, 0, 0.06), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
+      --shadow-lg: 0 12px 28px -4px rgba(0, 0, 0, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.03);
     }
 
     * {
@@ -61,7 +63,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       height: 100vh;
       overflow: hidden;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       -webkit-font-smoothing: antialiased;
     }
 
@@ -74,49 +76,20 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       background: transparent;
     }
     ::-webkit-scrollbar-thumb {
-      background: #d4d4d0;
+      background: #e2e8f0;
       border-radius: var(--radius-full);
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: #b8b8b3;
+      background: #cbd5e1;
     }
 
-    /* Top Navigation Bar */
-    header {
-      height: 54px;
-      background: var(--bg-sidebar);
-      border-bottom: 1px solid var(--border-subtle);
+    /* Sidebar Brand Row (DeepSeek Harness style) */
+    .sidebar-brand-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 20px;
-      z-index: 40;
-      flex-shrink: 0;
-    }
-
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .btn-toggle-sidebar {
-      background: transparent;
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-      width: 30px;
-      height: 30px;
-      border-radius: var(--radius-sm);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .btn-toggle-sidebar:hover {
-      background: var(--bg-surface-hover);
-      color: var(--text-primary);
-      border-color: var(--border-medium);
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid var(--border-subtle);
     }
 
     .brand-link {
@@ -128,93 +101,195 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     }
 
     .brand-logo-icon {
-      width: 24px;
-      height: 24px;
-      background: #1a1a18;
+      width: 22px;
+      height: 22px;
+      background: #1e293b;
       border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     .brand-logo-icon svg {
-      width: 14px;
-      height: 14px;
+      width: 13px;
+      height: 13px;
       fill: #ffffff;
     }
 
     .brand-name {
-      font-size: 14px;
+      font-size: 14.5px;
       font-weight: 700;
       letter-spacing: -0.02em;
+      color: #0f172a;
+    }
+
+    .harness-badge {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: #ffffff;
+      background: #0f172a;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+
+    .btn-toggle-sidebar {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-tertiary);
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-toggle-sidebar:hover {
+      background: #ffffff;
+      color: var(--text-primary);
+      border-color: var(--border-medium);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .sidebar-action-box {
+      padding: 12px 12px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btn-expand-sidebar {
+      background: #ffffff;
+      border: 1px solid var(--border-medium);
+      color: var(--text-secondary);
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      margin-right: 8px;
+      transition: all 0.15s ease;
+    }
+    .btn-expand-sidebar:hover {
+      background: var(--bg-surface-hover);
       color: var(--text-primary);
     }
 
-    .version-tag {
-      font-size: 11px;
-      font-family: var(--font-mono);
-      color: var(--text-tertiary);
-      background: rgba(0, 0, 0, 0.04);
-      border: 1px solid var(--border-subtle);
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-weight: 500;
+    /* Main Area Top Subhead (Merged single-tier header) */
+    .main-subhead {
+      display: flex;
+      flex-direction: column;
+      background: #ffffff;
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+      z-index: 30;
     }
 
-    /* Tabs */
+    .subhead-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      min-height: 48px;
+    }
+
+    .subhead-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    .subhead-title {
+      font-size: 14.5px;
+      font-weight: 600;
+      color: #0f172a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 420px;
+    }
+
+    .mode-badge {
+      font-size: 11px;
+      font-weight: 500;
+      color: #3b82f6;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .subhead-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    /* DeepSeek Flat Nav Tabs */
     .nav-tabs {
       display: flex;
       align-items: center;
-      gap: 2px;
-      background: rgba(0, 0, 0, 0.04);
-      padding: 3px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--border-subtle);
+      gap: 26px;
+      padding: 0 24px;
+      background: #ffffff;
     }
 
     .nav-tab-btn {
       background: transparent;
       border: none;
-      color: var(--text-secondary);
-      padding: 5px 14px;
-      font-size: 12.5px;
+      color: #64748b;
+      padding: 8px 2px 10px;
+      font-size: 13.5px;
       font-weight: 500;
-      border-radius: 4px;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: color 0.15s ease;
+      position: relative;
     }
     .nav-tab-btn:hover {
-      color: var(--text-primary);
+      color: #0f172a;
     }
     .nav-tab-btn.active {
-      color: var(--text-primary);
-      background: #ffffff;
+      color: #2563eb;
       font-weight: 600;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+    .nav-tab-btn.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2.5px;
+      background: #2563eb;
+      border-radius: 2px 2px 0 0;
     }
 
     /* Right Controls */
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
     .permission-select {
       background: #ffffff;
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
+      border: 1px solid var(--border-medium);
+      color: #374151;
       padding: 5px 10px;
       border-radius: var(--radius-sm);
       font-size: 12px;
       font-weight: 500;
       outline: none;
       cursor: pointer;
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
       transition: border-color 0.15s ease;
     }
     .permission-select:hover {
-      border-color: var(--border-medium);
-      color: var(--text-primary);
+      border-color: #cbd5e1;
+      color: #0f172a;
     }
 
     .status-badge {
@@ -223,12 +298,12 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       gap: 6px;
       font-size: 12px;
       font-weight: 500;
-      color: var(--text-secondary);
+      color: #374151;
       padding: 4px 10px;
       border-radius: var(--radius-sm);
       background: #ffffff;
-      border: 1px solid var(--border-subtle);
-      box-shadow: var(--shadow-sm);
+      border: 1px solid var(--border-medium);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
 
     .status-dot {
@@ -242,71 +317,27 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       background: var(--accent-running);
     }
 
-    .btn-settings-trigger {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 12px;
-      border: 1px solid var(--border-subtle);
-      background: #ffffff;
-      border-radius: var(--radius-sm);
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-secondary);
-      cursor: pointer;
-      box-shadow: var(--shadow-sm);
-      transition: all 0.15s ease;
-    }
-    .btn-settings-trigger:hover {
-      border-color: var(--border-medium);
-      color: var(--text-primary);
-      background: var(--bg-surface-hover);
-    }
-
-    /* Session Log Download Button */
+    /* Session Log Download Button (DeepSeek style) */
     .btn-session-log {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 5px 12px;
-      border: 1px solid var(--border-subtle);
+      border: 1px solid var(--border-medium);
       background: #ffffff;
       border-radius: var(--radius-sm);
       font-size: 12px;
       font-weight: 500;
-      color: var(--text-secondary);
+      color: #374151;
       cursor: pointer;
-      box-shadow: var(--shadow-sm);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
       transition: all 0.15s ease;
     }
     .btn-session-log:hover {
-      border-color: var(--border-medium);
-      color: var(--text-primary);
-      background: var(--bg-surface-hover);
+      border-color: #cbd5e1;
+      color: #0f172a;
+      background: #f8fafc;
     }
-
-    /* Subhead Navigation & Session Title */
-    .main-subhead {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 20px;
-      background: var(--bg-sidebar);
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-    .subhead-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      overflow: hidden;
-    }
-    .subhead-title {
-      font-size: 13.5px;
-      font-weight: 600;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
       text-overflow: ellipsis;
       max-width: 460px;
     }
@@ -1197,21 +1228,24 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
+      gap: 8px;
       width: 100%;
-      padding: 8px 12px;
-      background: #1a1a18;
-      color: #ffffff;
-      border: none;
-      border-radius: var(--radius-sm);
-      font-size: 12.5px;
+      padding: 9px 12px;
+      background: #ffffff;
+      color: #1f2937;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-      transition: background 0.15s ease;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .btn-new-session:hover {
-      background: #2e2e2a;
+      background: #f8fafc;
+      border-color: #cbd5e1;
+      color: #0f172a;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
     }
 
     .search-input-wrap {
@@ -1220,8 +1254,8 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     .search-input {
       width: 100%;
       background: #ffffff;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
       padding: 6px 8px 6px 28px;
       font-size: 12px;
       color: var(--text-primary);
@@ -1244,28 +1278,90 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     .session-list-container {
       flex: 1;
       overflow-y: auto;
-      padding: 8px;
+      padding: 6px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 2px;
+    }
+
+    .sidebar-section-title {
+      padding: 8px 10px 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      letter-spacing: 0.02em;
+    }
+
+    .ws-group {
+      margin-bottom: 6px;
+    }
+
+    .ws-group-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all 0.12s ease;
+      user-select: none;
+    }
+    .ws-group-header:hover {
+      background: var(--bg-surface-hover);
+      color: var(--text-primary);
+    }
+    .ws-arrow {
+      font-size: 10px;
+      transition: transform 0.15s ease;
+      display: inline-block;
+      width: 12px;
+      color: var(--text-tertiary);
+    }
+    .ws-group.collapsed .ws-arrow {
+      transform: rotate(-90deg);
+    }
+    .ws-group.collapsed .ws-group-items {
+      display: none;
+    }
+    .ws-group-items {
+      padding-left: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 2px;
     }
 
     .session-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 10px;
-      border-radius: var(--radius-sm);
+      padding: 7px 10px;
+      border-radius: 6px;
       background: transparent;
       cursor: pointer;
       transition: all 0.12s ease;
+      gap: 6px;
     }
     .session-item:hover {
-      background: var(--bg-surface-hover);
+      background: #f1f3f5;
     }
     .session-item.active {
-      background: #ffffff;
-      box-shadow: var(--shadow-sm);
+      background: #eff6ff;
+    }
+
+    .session-item-text {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex: 1;
+      overflow: hidden;
     }
 
     .session-title {
@@ -1278,11 +1374,22 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       flex: 1;
     }
     .session-item.active .session-title {
-      color: var(--text-primary);
+      color: #1d4ed8;
       font-weight: 600;
     }
 
-    .btn-delete-session {
+    .session-time {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-family: var(--font-sans);
+    }
+    .session-item.active .session-time {
+      color: #3b82f6;
+    }
+
+    .session-del-btn {
       opacity: 0;
       background: transparent;
       border: none;
@@ -1291,11 +1398,12 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       padding: 2px 4px;
       border-radius: 3px;
       font-size: 11px;
+      transition: opacity 0.12s ease, color 0.12s ease;
     }
-    .session-item:hover .btn-delete-session {
+    .session-item:hover .session-del-btn {
       opacity: 1;
     }
-    .btn-delete-session:hover {
+    .session-del-btn:hover {
       color: var(--accent-error);
     }
 
@@ -1307,7 +1415,25 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(0, 0, 0, 0.01);
+      background: #ffffff;
+    }
+    .sidebar-footer-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: none;
+      color: #4b5563;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      transition: all 0.12s ease;
+    }
+    .sidebar-footer-btn:hover {
+      background: #f1f3f5;
+      color: #0f172a;
     }
 
     /* Main Area */
@@ -1356,60 +1482,80 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 50px 16px 20px;
+      padding: 60px 16px 20px;
       text-align: center;
-      gap: 24px;
+      gap: 20px;
     }
 
     .hero-title {
-      font-size: 22px;
+      font-size: 26px;
       font-weight: 700;
-      letter-spacing: -0.02em;
-      color: var(--text-primary);
+      letter-spacing: -0.025em;
+      color: #0f172a;
     }
 
     .hero-subtitle {
-      font-size: 13.5px;
-      color: var(--text-secondary);
-      max-width: 500px;
-      line-height: 1.55;
+      font-size: 14px;
+      color: #64748b;
+      max-width: 540px;
+      line-height: 1.6;
     }
 
     .starter-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
+      gap: 14px;
       width: 100%;
-      max-width: 640px;
+      max-width: 720px;
+      margin-top: 10px;
     }
 
     .starter-item {
       background: #ffffff;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 14px 16px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px 18px;
       text-align: left;
       cursor: pointer;
-      box-shadow: var(--shadow-sm);
-      transition: all 0.15s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+      transition: all 0.16s ease;
       display: flex;
-      flex-direction: column;
-      gap: 4px;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 12px;
     }
     .starter-item:hover {
-      border-color: var(--border-medium);
-      box-shadow: var(--shadow-md);
-      transform: translateY(-1px);
+      border-color: #3b82f6;
+      box-shadow: 0 6px 18px rgba(59, 130, 246, 0.08);
+      transform: translateY(-2px);
+    }
+    .starter-icon-wrap {
+      font-size: 18px;
+      line-height: 1.2;
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      background: #f8fafc;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .starter-text-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      flex: 1;
     }
     .starter-title {
-      font-size: 13px;
+      font-size: 13.5px;
       font-weight: 600;
-      color: var(--text-primary);
+      color: #1e293b;
     }
     .starter-desc {
       font-size: 12px;
-      color: var(--text-secondary);
-      line-height: 1.4;
+      color: #64748b;
+      line-height: 1.45;
     }
 
     /* Message Bubbles */
@@ -1562,37 +1708,41 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       color: #1a1a18;
     }
 
-    /* Composer */
+    /* Composer (DeepSeek Harness style centered floating card) */
     .composer-section {
-      padding: 14px 20px 20px;
+      padding: 10px 24px 18px;
       display: flex;
-      justify-content: center;
-      background: var(--bg-base);
+      flex-direction: column;
+      align-items: center;
+      background: transparent;
+      position: relative;
+      z-index: 20;
+      flex-shrink: 0;
     }
 
     .composer-card {
-      max-width: 780px;
+      max-width: 800px;
       width: 100%;
       background: #ffffff;
-      border: 1px solid var(--border-medium);
-      border-radius: var(--radius-lg);
-      padding: 12px 16px;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 14px 16px 12px;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      box-shadow: var(--shadow-md);
-      transition: all 0.15s ease;
+      box-shadow: 0 10px 25px -4px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
     .composer-card:focus-within {
-      border-color: var(--border-focus);
-      box-shadow: var(--shadow-lg);
+      border-color: #3b82f6;
+      box-shadow: 0 12px 30px -4px rgba(59, 130, 246, 0.12), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
     }
 
     .composer-input {
       background: transparent;
       border: none;
       outline: none;
-      color: var(--text-primary);
+      color: #0f172a;
       font-family: var(--font-sans);
       font-size: 14px;
       line-height: 1.55;
@@ -1601,7 +1751,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       max-height: 180px;
     }
     .composer-input::placeholder {
-      color: var(--text-tertiary);
+      color: #94a3b8;
     }
 
     .composer-bar {
@@ -1609,7 +1759,32 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       align-items: center;
       justify-content: space-between;
       padding-top: 8px;
-      border-top: 1px solid var(--border-subtle);
+      border-top: 1px solid #f1f5f9;
+    }
+
+    .composer-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .composer-add-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: #f1f5f9;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .composer-add-btn:hover {
+      background: #e2e8f0;
+      color: #0f172a;
     }
 
     .chip-list {
@@ -1619,20 +1794,20 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     }
 
     .filter-chip {
-      background: #f8f8f6;
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      color: #475569;
       padding: 3px 10px;
-      border-radius: var(--radius-sm);
+      border-radius: 6px;
       font-size: 12px;
       font-weight: 500;
       cursor: pointer;
       transition: all 0.12s ease;
     }
     .filter-chip:hover {
-      color: var(--text-primary);
-      background: #f1f1ef;
-      border-color: var(--border-medium);
+      color: #0f172a;
+      background: #f1f5f9;
+      border-color: #cbd5e1;
     }
 
     .action-group {
@@ -1643,40 +1818,55 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
 
     .key-tip {
       font-size: 11.5px;
-      color: var(--text-tertiary);
-      font-family: var(--font-mono);
+      color: #94a3b8;
+      font-family: var(--font-sans);
     }
 
     .btn-abort {
       background: transparent;
-      border: 1px solid var(--border-subtle);
-      color: var(--accent-error);
-      padding: 6px 14px;
-      border-radius: var(--radius-sm);
-      font-size: 12.5px;
+      border: 1px solid #fecaca;
+      color: #ef4444;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       display: none;
     }
 
     .btn-send {
-      background: #1a1a18;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #2563eb;
       color: #ffffff;
       border: none;
-      padding: 6px 16px;
-      border-radius: var(--radius-sm);
-      font-size: 12.5px;
-      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-      transition: background 0.15s ease;
+      box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+      transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .btn-send:hover {
-      background: #2e2e2a;
+      background: #1d4ed8;
+      transform: scale(1.06);
     }
     .btn-send:disabled {
       opacity: 0.4;
       cursor: not-allowed;
+      transform: none;
+    }
+
+    .composer-statusbar {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: #94a3b8;
+      font-family: var(--font-sans);
     }
 
     /* Views: Metrics & Diff */
@@ -1756,61 +1946,29 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
   </style>
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <button id="btn-toggle-sidebar" class="btn-toggle-sidebar" title="Toggle Sidebar">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-      </button>
-      <a href="#" class="brand-link">
-        <div class="brand-logo-icon">
-          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-        </div>
-        <span class="brand-name">XioCode Web</span>
-      </a>
-      <span class="version-tag">v${options.version}</span>
-    </div>
-
-    <nav class="nav-tabs">
-      <button class="nav-tab-btn active" data-view="chat">对话</button>
-      <button class="nav-tab-btn" data-view="trajectory">轨迹</button>
-      <button class="nav-tab-btn" data-view="diff">Diff</button>
-      <button class="nav-tab-btn" data-view="metrics">指标</button>
-    </nav>
-
-    <div class="header-right">
-      <button id="btn-export-log" class="btn-session-log" title="导出完整轨迹日志 (Session Log)">
-        <span>Session log</span>
-        <span>📥</span>
-      </button>
-
-      <button id="btn-open-settings" class="btn-settings-trigger" title="设置 / Settings">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-        <span>设置</span>
-      </button>
-
-      <select id="permission-select" class="permission-select">
-        <option value="auto">Permission: Auto</option>
-        <option value="strict">Permission: Strict</option>
-        <option value="full">Permission: Full</option>
-      </select>
-
-      <div id="status-pill" class="status-badge">
-        <span class="status-dot"></span>
-        <span id="status-text">Ready</span>
-      </div>
-    </div>
-  </header>
-
   <div class="app-layout">
     <aside id="sidebar">
-      <div class="sidebar-header">
+      <div class="sidebar-brand-row">
+        <div class="brand-link">
+          <div class="brand-logo-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          </div>
+          <span class="brand-name">XioCode Web</span>
+          <span class="harness-badge">HARNESS</span>
+        </div>
+        <button id="btn-toggle-sidebar" class="btn-toggle-sidebar" title="收起边栏">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        </button>
+      </div>
+
+      <div class="sidebar-action-box">
         <button id="btn-new-session" class="btn-new-session">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          New Session
+          <span>新会话</span>
         </button>
         <div class="search-input-wrap">
           <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
-          <input type="text" id="session-search" class="search-input" placeholder="Search sessions...">
+          <input type="text" id="session-search" class="search-input" placeholder="搜索会话...">
         </div>
       </div>
 
@@ -1819,18 +1977,49 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       </div>
 
       <div class="sidebar-footer">
-        <span id="active-workspace-chip">Workspace: local</span>
-        <span id="session-count-badge">0 sessions</span>
+        <button id="btn-open-settings" class="sidebar-footer-btn" title="控制台设置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <span>设置</span>
+        </button>
+        <span id="session-count-badge" class="sidebar-count-text">0 个会话</span>
       </div>
     </aside>
 
     <main>
-      <!-- Subhead with Session Title & Mode Badge -->
+      <!-- DeepSeek Harness Merged Top Bar -->
       <div class="main-subhead">
-        <div class="subhead-left">
-          <h2 id="current-session-title" class="subhead-title">新会话 · New Session</h2>
-          <span id="current-mode-badge" class="mode-badge">极简模式</span>
+        <div class="subhead-top-row">
+          <div class="subhead-left">
+            <button id="btn-expand-sidebar" class="btn-expand-sidebar" title="展开侧边栏" style="display: none;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+            </button>
+            <h2 id="current-session-title" class="subhead-title">新会话 · 准备就绪</h2>
+            <span id="current-mode-badge" class="mode-badge">⚖️ 极简模式</span>
+          </div>
+
+          <div class="subhead-right">
+            <button id="btn-export-log" class="btn-session-log" title="导出完整轨迹日志 (Session Log)">
+              <span>Session log</span>
+              <span>📥</span>
+            </button>
+            <select id="permission-select" class="permission-select">
+              <option value="auto">权限: 自动 (Auto)</option>
+              <option value="strict">权限: 严格 (Strict)</option>
+              <option value="full">权限: 完全 (Full)</option>
+            </select>
+            <div id="status-pill" class="status-badge">
+              <span class="status-dot"></span>
+              <span id="status-text">就绪</span>
+            </div>
+          </div>
         </div>
+
+        <nav class="nav-tabs">
+          <button class="nav-tab-btn active" data-view="chat">对话</button>
+          <button class="nav-tab-btn" data-view="trajectory">轨迹</button>
+          <button class="nav-tab-btn" data-view="diff">代码差异</button>
+          <button class="nav-tab-btn" data-view="metrics">运行指标</button>
+        </nav>
       </div>
 
       <!-- Views Container -->
@@ -1841,25 +2030,37 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
             <div class="chat-inner-wrap" id="chat-flow-container">
               <!-- Hero State -->
               <div class="hero-state" id="hero-state">
-                <h1 class="hero-title">What would you like to build?</h1>
-                <p class="hero-subtitle">XioCode runs as an autonomous agent in your workspace with verified safety boundaries.</p>
+                <h1 class="hero-title">今天想构建什么？</h1>
+                <p class="hero-subtitle">XioCode 是基于当前工作区自主运行的智能体，具备严格的安全审查与可观测轨迹。</p>
 
                 <div class="starter-grid">
-                  <div class="starter-item" onclick="insertPrompt('Run the full test suite and verify current workspace integrity')">
-                    <span class="starter-title">Run test suite</span>
-                    <span class="starter-desc">Execute unit tests and regression assertions</span>
+                  <div class="starter-item" onclick="insertPrompt('运行完整测试套件并验证当前工作区完整性')">
+                    <div class="starter-icon-wrap">⚡</div>
+                    <div class="starter-text-wrap">
+                      <span class="starter-title">运行测试套件</span>
+                      <span class="starter-desc">执行单元测试与代码完整性断言</span>
+                    </div>
                   </div>
-                  <div class="starter-item" onclick="insertPrompt('Inspect git diff and check for unstaged changes')">
-                    <span class="starter-title">Inspect git diff</span>
-                    <span class="starter-desc">Review working tree modifications</span>
+                  <div class="starter-item" onclick="insertPrompt('检查 git diff 并分析未暂存的改动')">
+                    <div class="starter-icon-wrap">📋</div>
+                    <div class="starter-text-wrap">
+                      <span class="starter-title">检查代码差异</span>
+                      <span class="starter-desc">审查工作树修改与改动影响面</span>
+                    </div>
                   </div>
-                  <div class="starter-item" onclick="insertPrompt('Run xio doctor to check system health and keys')">
-                    <span class="starter-title">Doctor check</span>
-                    <span class="starter-desc">Verify local config, keys, and provider status</span>
+                  <div class="starter-item" onclick="insertPrompt('运行 xio doctor 检查系统健康度与密钥状态')">
+                    <div class="starter-icon-wrap">🩺</div>
+                    <div class="starter-text-wrap">
+                      <span class="starter-title">系统体检 (Doctor)</span>
+                      <span class="starter-desc">检测本地环境、配置及模型供应商凭据</span>
+                    </div>
                   </div>
-                  <div class="starter-item" onclick="insertPrompt('Audit codebase performance and execution overhead')">
-                    <span class="starter-title">Performance audit</span>
-                    <span class="starter-desc">Check latency, token estimate, and tracer</span>
+                  <div class="starter-item" onclick="insertPrompt('分析代码库架构与核心模块分层约定')">
+                    <div class="starter-icon-wrap">🧭</div>
+                    <div class="starter-text-wrap">
+                      <span class="starter-title">分析代码库架构</span>
+                      <span class="starter-desc">梳理依赖链路与设计规范</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1875,11 +2076,11 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
               <div class="ribbon-stats">
                 <span class="ribbon-stat-item"><span class="stat-icon">⏱</span> <span id="traj-stat-duration">0s</span></span>
                 <span class="ribbon-stat-item"><span class="stat-icon">🔄</span> <span id="traj-stat-turns">0 轮 · 0 步</span></span>
-                <span class="ribbon-stat-item"><span class="stat-icon">⚙</span> <span id="traj-stat-calls">0 Calls</span></span>
+                <span class="ribbon-stat-item"><span class="stat-icon">⚙</span> <span id="traj-stat-calls">0 次调用</span></span>
               </div>
               <div class="trajectory-search-wrap">
                 <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
-                <input type="text" id="trajectory-search-input" class="trajectory-search-input" placeholder="搜索轨迹 / Search...">
+                <input type="text" id="trajectory-search-input" class="trajectory-search-input" placeholder="搜索轨迹 (工具/参数/输出/推理)...">
               </div>
             </div>
 
@@ -1913,24 +2114,24 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
           <div class="clean-deck">
             <div class="metrics-row">
               <div class="metric-box">
-                <span class="metric-heading">Total Tokens</span>
+                <span class="metric-heading">总 Token 消耗</span>
                 <span class="metric-digit" id="val-tokens">0</span>
-                <span class="metric-foot">Prompt + Completion</span>
+                <span class="metric-foot">提示词 + 生成 Tokens</span>
               </div>
               <div class="metric-box">
-                <span class="metric-heading">Cache Hit</span>
+                <span class="metric-heading">缓存命中率</span>
                 <span class="metric-digit" id="val-cache">94.2%</span>
-                <span class="metric-foot">Cold-start aware</span>
+                <span class="metric-foot">冷启动感知加速</span>
               </div>
               <div class="metric-box">
-                <span class="metric-heading">Est. Cost</span>
+                <span class="metric-heading">预估费用</span>
                 <span class="metric-digit" id="val-cost">$0.00</span>
-                <span class="metric-foot">Standard rate table</span>
+                <span class="metric-foot">标准模型费率核算</span>
               </div>
               <div class="metric-box">
-                <span class="metric-heading">Tool Calls</span>
+                <span class="metric-heading">工具调用次数</span>
                 <span class="metric-digit" id="val-turns">0</span>
-                <span class="metric-foot">Executed in turn</span>
+                <span class="metric-foot">执行总计次数</span>
               </div>
             </div>
           </div>
@@ -1941,10 +2142,10 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
           <div class="clean-deck">
             <div class="diff-panel">
               <div class="diff-panel-header">
-                <span>Working Tree Changes</span>
-                <button class="filter-chip" onclick="fetchDiff()">Refresh</button>
+                <span>工作区代码变更 (Working Tree Changes)</span>
+                <button class="filter-chip" onclick="fetchDiff()">刷新变更</button>
               </div>
-              <div class="diff-panel-body" id="diff-output-body">Loading workspace diff...</div>
+              <div class="diff-panel-body" id="diff-output-body">正在加载工作区 diff...</div>
             </div>
           </div>
         </section>
@@ -1953,17 +2154,22 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       <!-- Shared Floating Composer at Bottom -->
       <div class="composer-section">
         <div class="composer-card">
-          <textarea id="composer-input" class="composer-input" placeholder="给智能体发消息 / Ask XioCode to build, fix, refactor..."></textarea>
+          <textarea id="composer-input" class="composer-input" placeholder="给智能体发消息... (Enter 发送，Shift+Enter 换行)"></textarea>
           <div class="composer-bar">
-            <div class="chip-list">
-              <span class="filter-chip" onclick="insertPrompt('Run tests')">Tests</span>
-              <span class="filter-chip" onclick="insertPrompt('Git diff')">Diff</span>
-              <span class="filter-chip" onclick="insertPrompt('Doctor')">Doctor</span>
+            <div class="composer-bar-left">
+              <span class="composer-add-btn" title="快捷指令">+</span>
+              <div class="chip-list">
+                <span class="filter-chip" onclick="insertPrompt('运行测试套件')">运行测试</span>
+                <span class="filter-chip" onclick="insertPrompt('检查代码差异')">查看Diff</span>
+                <span class="filter-chip" onclick="insertPrompt('运行 xio doctor 体检')">系统体检</span>
+              </div>
             </div>
             <div class="action-group">
-              <span class="key-tip">↵ Send · ⇧↵ Line</span>
-              <button id="btn-abort" class="btn-abort">Abort</button>
-              <button id="btn-send" class="btn-send">Send</button>
+              <span class="key-tip">↵ 发送 · ⇧↵ 换行</span>
+              <button id="btn-abort" class="btn-abort">中止</button>
+              <button id="btn-send" class="btn-send" title="发送消息">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+              </button>
             </div>
           </div>
         </div>
@@ -2206,6 +2412,10 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       await loadSessions();
       if (activeSessionId) {
         selectSession(activeSessionId);
+      } else if (allSessions.length > 0) {
+        const withMsgs = allSessions.find(s => (s.messageCount && s.messageCount > 0) || s.firstPrompt);
+        const target = withMsgs || allSessions[0];
+        selectSession(target.id || target.metadata?.id);
       }
     });
 
@@ -2228,12 +2438,24 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
     }
 
     function initSidebar() {
-      btnToggleSidebar.addEventListener("click", () => {
-        sidebar.classList.toggle("collapsed");
-      });
-      sessionSearch.addEventListener("input", (e) => {
-        renderSessionList(e.target.value.trim().toLowerCase());
-      });
+      const btnExpandSidebar = document.getElementById("btn-expand-sidebar");
+      if (btnToggleSidebar) {
+        btnToggleSidebar.addEventListener("click", () => {
+          sidebar.classList.add("collapsed");
+          if (btnExpandSidebar) btnExpandSidebar.style.display = "inline-flex";
+        });
+      }
+      if (btnExpandSidebar) {
+        btnExpandSidebar.addEventListener("click", () => {
+          sidebar.classList.remove("collapsed");
+          btnExpandSidebar.style.display = "none";
+        });
+      }
+      if (sessionSearch) {
+        sessionSearch.addEventListener("input", (e) => {
+          renderSessionList(e.target.value.trim().toLowerCase());
+        });
+      }
     }
 
     function initComposer() {
@@ -2536,8 +2758,9 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       try {
         const res = await fetch("/api/status");
         const data = await res.json();
-        const wsName = data.cwd ? data.cwd.split("/").pop() : "Workspace";
-        document.getElementById("active-workspace-chip").textContent = "Workspace: " + wsName;
+        const wsName = data.cwd ? data.cwd.split("/").pop() : "工作区";
+        const wsChip = document.getElementById("active-workspace-chip");
+        if (wsChip) wsChip.textContent = "工作区: " + wsName;
       } catch (err) {
         console.error("fetchStatus err", err);
       }
@@ -2547,52 +2770,126 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       try {
         const res = await fetch("/api/sessions");
         allSessions = await res.json();
-        document.getElementById("session-count-badge").textContent = allSessions.length + " sessions";
+        const badge = document.getElementById("session-count-badge");
+        if (badge) badge.textContent = allSessions.length + " 个会话";
         renderSessionList();
       } catch (err) {
         console.error("loadSessions err", err);
       }
     }
 
-    function formatSessionTitle(sess, index) {
-      if (sess.first_prompt) return sess.first_prompt.slice(0, 30);
-      if (sess.metadata && sess.metadata.id) {
-        return "Session " + sess.metadata.id.slice(0, 8);
+    function formatRelativeTime(dateStr) {
+      if (!dateStr) return "";
+      try {
+        const diffMs = Date.now() - new Date(dateStr).getTime();
+        if (diffMs < 0) return "刚刚";
+        const sec = Math.floor(diffMs / 1000);
+        if (sec < 60) return "刚刚";
+        const min = Math.floor(sec / 60);
+        if (min < 60) return min + "分钟前";
+        const hr = Math.floor(min / 60);
+        if (hr < 24) return hr + "小时前";
+        const day = Math.floor(hr / 24);
+        if (day < 30) return day + "天前";
+        const d = new Date(dateStr);
+        return (d.getMonth() + 1) + "月" + d.getDate() + "日";
+      } catch {
+        return "";
       }
-      return "Session #" + (index + 1);
+    }
+
+    function formatSessionTitle(sess, index) {
+      if (sess.firstPrompt) return sess.firstPrompt.slice(0, 32);
+      if (sess.first_prompt) return sess.first_prompt.slice(0, 32);
+      const id = sess.id || sess.metadata?.id || "";
+      if (id) {
+        return (sess.messageCount === 0 ? "新会话 · " : "会话 ") + id.slice(0, 8);
+      }
+      return "会话 #" + (index + 1);
     }
 
     function renderSessionList(query = "") {
       sessionList.innerHTML = "";
-      const filtered = query
+      const q = (query || "").trim().toLowerCase();
+      const filtered = q
         ? allSessions.filter(s => {
-            const title = formatSessionTitle(s, 0).toLowerCase();
-            const id = (s.metadata?.id || "").toLowerCase();
-            return title.includes(query) || id.includes(query);
+            const title = (s.firstPrompt || s.first_prompt || formatSessionTitle(s, 0)).toLowerCase();
+            const id = (s.id || s.metadata?.id || "").toLowerCase();
+            const rawCwd = (s.cwd || s.main_root || "").toLowerCase();
+            return title.includes(q) || id.includes(q) || rawCwd.includes(q);
           })
         : allSessions;
 
       if (filtered.length === 0) {
-        sessionList.innerHTML = \`<div class="empty-state-list">No sessions found</div>\`;
+        sessionList.innerHTML = \`<div class="empty-state-list">未找到相关会话</div>\`;
         return;
       }
 
-      filtered.forEach((sess, idx) => {
-        const id = sess.metadata?.id || sess.id;
-        const item = document.createElement("div");
-        item.className = "session-item" + (id === activeSessionId ? " active" : "");
-        item.innerHTML = \`
-          <div class="session-item-text">
-            <span class="session-title">\${escapeHtml(formatSessionTitle(sess, idx))}</span>
-            <span class="session-time">\${id.slice(0, 8)}</span>
-          </div>
-          <button class="session-del-btn" title="Delete Session" onclick="event.stopPropagation(); deleteSession('\${id}')">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-          </button>
-        \`;
-        item.addEventListener("click", () => selectSession(id));
-        sessionList.appendChild(item);
+      // Group sessions by workspace directory name (e.g. bff, xiocode, 未分组)
+      const groups = new Map();
+      filtered.forEach(sess => {
+        const rawCwd = sess.cwd || sess.main_root || "";
+        let wsName = "未分组";
+        if (rawCwd) {
+          const parts = rawCwd.split("/").filter(Boolean);
+          wsName = parts[parts.length - 1] || "未分组";
+        }
+        if (!groups.has(wsName)) {
+          groups.set(wsName, []);
+        }
+        groups.get(wsName).push(sess);
       });
+
+      // Render workspace header
+      const wsHeader = document.createElement("div");
+      wsHeader.className = "sidebar-section-title";
+      wsHeader.innerHTML = \`<span>工作区</span><span style="font-size: 10.5px; font-weight: normal; color: var(--text-tertiary);">\${filtered.length} 个会话</span>\`;
+      sessionList.appendChild(wsHeader);
+
+      for (const [wsName, sessList] of groups.entries()) {
+        const groupEl = document.createElement("div");
+        groupEl.className = "ws-group";
+        groupEl.id = "ws-group-" + wsName;
+
+        const headerEl = document.createElement("div");
+        headerEl.className = "ws-group-header";
+        headerEl.innerHTML = \`
+          <span class="ws-arrow">▾</span>
+          <span class="ws-icon">📁</span>
+          <span class="ws-name">\${escapeHtml(wsName)}</span>
+          <span class="ws-count" style="font-size: 11px; color: var(--text-tertiary); margin-left: auto;">\${sessList.length}</span>
+        \`;
+        headerEl.onclick = () => {
+          groupEl.classList.toggle("collapsed");
+        };
+        groupEl.appendChild(headerEl);
+
+        const itemsEl = document.createElement("div");
+        itemsEl.className = "ws-group-items";
+
+        sessList.forEach((sess, idx) => {
+          const id = sess.id || sess.metadata?.id;
+          const isActive = id === activeSessionId;
+          const item = document.createElement("div");
+          item.className = "session-item" + (isActive ? " active" : "");
+          const timeText = formatRelativeTime(sess.updated_at || sess.created_at);
+          const fullTitle = sess.firstPrompt || sess.first_prompt || formatSessionTitle(sess, idx);
+          item.innerHTML = \`
+            <div class="session-item-text">
+              <span class="session-title" title="\${escapeHtml(fullTitle)}">\${escapeHtml(formatSessionTitle(sess, idx))}</span>
+              <span class="session-time">\${timeText}</span>
+            </div>
+            <button class="session-del-btn" title="删除会话" onclick="event.stopPropagation(); deleteSession('\${id}')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            </button>
+          \`;
+          item.addEventListener("click", () => selectSession(id));
+          itemsEl.appendChild(item);
+        });
+
+        groupEl.appendChild(itemsEl);
+        sessionList.appendChild(groupEl);
+      }
     }
 
     async function handleNewSession() {
@@ -2672,24 +2969,36 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       if (messages.length === 0) {
         chatFlowContainer.innerHTML = \`
           <div class="hero-state" id="hero-state">
-            <h1 class="hero-title">What would you like to build?</h1>
-            <p class="hero-subtitle">XioCode runs as an autonomous agent in your workspace with verified safety boundaries.</p>
+            <h1 class="hero-title">今天想构建什么？</h1>
+            <p class="hero-subtitle">XioCode 是基于当前工作区自主运行的智能体，具备严格的安全审查与可观测轨迹。</p>
             <div class="starter-grid">
-              <div class="starter-item" onclick="insertPrompt('Run the full test suite and verify current workspace integrity')">
-                <span class="starter-title">Run test suite</span>
-                <span class="starter-desc">Execute unit tests and regression assertions</span>
+              <div class="starter-item" onclick="insertPrompt('运行完整测试套件并验证当前工作区完整性')">
+                <div class="starter-icon-wrap">⚡</div>
+                <div class="starter-text-wrap">
+                  <span class="starter-title">运行测试套件</span>
+                  <span class="starter-desc">执行单元测试与代码完整性断言</span>
+                </div>
               </div>
-              <div class="starter-item" onclick="insertPrompt('Inspect git diff and check for unstaged changes')">
-                <span class="starter-title">Inspect git diff</span>
-                <span class="starter-desc">Review working tree modifications</span>
+              <div class="starter-item" onclick="insertPrompt('检查 git diff 并分析未暂存的改动')">
+                <div class="starter-icon-wrap">📋</div>
+                <div class="starter-text-wrap">
+                  <span class="starter-title">检查代码差异</span>
+                  <span class="starter-desc">审查工作树修改与改动影响面</span>
+                </div>
               </div>
-              <div class="starter-item" onclick="insertPrompt('Run xio doctor to check system health and keys')">
-                <span class="starter-title">Doctor check</span>
-                <span class="starter-desc">Inspect environment and API keys</span>
+              <div class="starter-item" onclick="insertPrompt('运行 xio doctor 检查系统健康度与密钥状态')">
+                <div class="starter-icon-wrap">🩺</div>
+                <div class="starter-text-wrap">
+                  <span class="starter-title">系统体检 (Doctor)</span>
+                  <span class="starter-desc">检测本地环境、配置及模型凭据</span>
+                </div>
               </div>
-              <div class="starter-item" onclick="insertPrompt('Explain repository architecture and project conventions')">
-                <span class="starter-title">Explore codebase</span>
-                <span class="starter-desc">Analyze module hierarchy and patterns</span>
+              <div class="starter-item" onclick="insertPrompt('分析代码库架构与核心模块分层约定')">
+                <div class="starter-icon-wrap">🧭</div>
+                <div class="starter-text-wrap">
+                  <span class="starter-title">分析代码库架构</span>
+                  <span class="starter-desc">梳理依赖链路与设计规范</span>
+                </div>
               </div>
             </div>
           </div>
@@ -2939,15 +3248,15 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
 
         if (s.type === "input") {
           block.className = "timeline-block block-input";
-          block.title = "[USER] #" + s.stepNumber + ": " + (s.content ? s.content.slice(0, 80) : "");
+          block.title = "[用户输入] #" + s.stepNumber + ": " + (s.content ? s.content.slice(0, 80) : "");
           inputRow.appendChild(block);
         } else if (s.type === "assistant" || s.type === "thinking") {
           block.className = "timeline-block block-model";
-          block.title = "[MODEL] #" + s.stepNumber + ": " + ((s.content || s.thought || "").slice(0, 80));
+          block.title = "[模型推理] #" + s.stepNumber + ": " + ((s.content || s.thought || "").slice(0, 80));
           modelRow.appendChild(block);
         } else if (s.type === "tool") {
           block.className = "timeline-block block-tool" + (s.isError ? " error" : "");
-          block.title = "[TOOL " + (s.name || "") + "] #" + s.stepNumber + ": " + (s.argsPreview || "");
+          block.title = "[工具执行 " + (s.name || "") + "] #" + s.stepNumber + ": " + (s.argsPreview || "");
           toolsRow.appendChild(block);
         }
 
@@ -2976,7 +3285,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
         : steps;
 
       if (filtered.length === 0) {
-        stream.innerHTML = '<div class="trajectory-empty">' + (query ? '未找到包含 "' + escapeHtml(query) + '" 的轨迹步骤' : '暂无运行轨迹数据。请在对话中发起任务。') + '</div>';
+        stream.innerHTML = '<div class="trajectory-empty">' + (query ? '未找到包含 "' + escapeHtml(query) + '" 的轨迹步骤' : '暂无运行轨迹数据。请选择左侧会话或在对话中发起任务。') + '</div>';
         return;
       }
 
@@ -3001,7 +3310,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
             <span class="traj-tool-output">\${escapeHtml(s.outputPreview || "")}</span>
           \`;
         } else if (s.type === "assistant") {
-          const isOnly = s.content === "(tool call only)";
+          const isOnly = s.content === "(仅工具调用)" || s.content === "(tool call only)";
           summaryHtml = \`<span class="traj-assistant-text \${isOnly ? 'traj-assistant-toolonly' : ''}">\${escapeHtml(s.content || "")}</span>\`;
         } else if (s.type === "thinking") {
           summaryHtml = \`<span class="traj-assistant-text" style="color: #64748b;">\${escapeHtml((s.thought || s.content || "").slice(0, 140))}</span>\`;
@@ -3011,9 +3320,9 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
 
         let detailHtml = \`
           <div class="traj-detail-meta">
-            <span>Step #\${s.stepNumber} · Turn \${s.turnNumber}</span>
+            <span>步骤 #\${s.stepNumber} · 轮次 \${s.turnNumber}</span>
             <div>
-              <span class="detail-status-pill \${s.isError ? 'error' : 'success'}">\${s.isError ? 'Error / Failed' : 'Success'}</span>
+              <span class="detail-status-pill \${s.isError ? 'error' : 'success'}">\${s.isError ? '异常 / 失败' : '执行成功'}</span>
               \${s.callId ? '<span style="margin-left: 8px; font-family: var(--font-mono); font-size: 11px;">ID: ' + escapeHtml(s.callId) + '</span>' : ''}
             </div>
           </div>
@@ -3021,40 +3330,40 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
 
         if (s.type === "tool") {
           detailHtml += \`
-            <div class="traj-section-title">Arguments (调用参数)</div>
+            <div class="traj-section-title">调用参数 (Arguments)</div>
             <div class="traj-code-block">
-              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">Copy</button>
+              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
               <code>\${escapeHtml(JSON.stringify(s.args || {}, null, 2))}</code>
             </div>
-            <div class="traj-section-title" style="margin-top: 10px;">Output (执行结果)</div>
+            <div class="traj-section-title" style="margin-top: 10px;">执行结果 (Output)</div>
             <div class="traj-code-block output-block">
-              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">Copy</button>
-              <code>\${escapeHtml(s.output || "(empty output)")}</code>
+              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
+              <code>\${escapeHtml(s.output || "(无输出)")}</code>
             </div>
           \`;
         } else if (s.type === "assistant") {
           if (s.thought) {
             detailHtml += \`
               <div class="traj-thought-box">
-                <div class="traj-thought-label">Reasoning / 思考过程</div>
+                <div class="traj-thought-label">思考推理过程 (Thinking)</div>
                 <div>\${escapeHtml(s.thought)}</div>
               </div>
             \`;
           }
           detailHtml += \`
-            <div class="traj-section-title">Response Content (回复内容)</div>
-            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "(tool call only)")}</div>
+            <div class="traj-section-title">模型回复</div>
+            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "(仅工具调用)")}</div>
           \`;
         } else if (s.type === "thinking") {
           detailHtml += \`
             <div class="traj-thought-box">
-              <div class="traj-thought-label">Reasoning / 思考过程</div>
+              <div class="traj-thought-label">思考推理过程 (Thinking)</div>
               <div>\${escapeHtml(s.thought || s.content || "")}</div>
             </div>
           \`;
         } else if (s.type === "input") {
           detailHtml += \`
-            <div class="traj-section-title">User Prompt (用户指令)</div>
+            <div class="traj-section-title">用户指令 (User Prompt)</div>
             <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "")}</div>
           \`;
         }
@@ -3100,7 +3409,7 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
       if (!code) return;
       navigator.clipboard.writeText(code.innerText).then(() => {
         const orig = btn.textContent;
-        btn.textContent = "Copied!";
+        btn.textContent = "已复制!";
         setTimeout(() => { btn.textContent = orig; }, 1500);
       });
     }
@@ -3113,8 +3422,8 @@ export function renderWebUiHtml(options: { version: string; defaultSessionId?: s
         card.className = "thought-drawer";
         card.innerHTML = \`
           <div class="thought-drawer-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <span class="thought-badge">Thinking</span>
-            <span class="thought-expand-hint">Click to fold</span>
+            <span class="thought-badge">思考推理</span>
+            <span class="thought-expand-hint">点击折叠/展开</span>
           </div>
           <div class="thought-drawer-body"></div>
         \`;
