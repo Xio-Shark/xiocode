@@ -1,33 +1,19 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-08-03** (v1.2.0; **grok-parity TUI upgrade** — **fullscreen alternate-screen TUI is now the default** (`XIO_TUI_FULLSCREEN=0` restores the pi-like main-buffer scrollback; logo/header pinned on top), word/kill editing keys, Ctrl+J/K/U/D line+half-page scroll, Ctrl+F transcript search with highlighting, y block copy, Ctrl+R fold, Ctrl+P fuzzy command palette (fzf), Ctrl+T model switch, real Esc cancel/double-press-clear layering, single-click drill-in, `?` shortcuts sheet wired up, footer turn counter, **groknight default palette** (`XIO_THEME=claude` opt-out); **audit-2026-07-31 fixes landed** — fullscreen line-granular scroll window reserves hint rows; compact-subagent test de-flaked; `npm run release:patch|minor|major` bumps + tags + syncs README version pins; missing `v1.1.1`/`v1.1.2` tags backfilled; **Route B Phase 1 code complete** — cost table wired, dangerous-command layer, `xio doctor` / `xio feedback`, first-run onboarding, provider error guidance, real-Ink bench axis; CI workflow — typecheck + vitest + build on push/PR; **07-22-tui-interaction-polish in progress** — P1–P4 streaming tools / spill / session-end retrospective; performance **8/8 archived**; **Agent Runtime Event suite 5/5 done**; **07-16 harness design-gaps 6/6 completed**; **Trellis parallel A→B→C→Integrate archived**; **07-21 ultra parallel DAG pipeline 5/5 archived**).
-> Active plan: [ROUTE-B-PRODUCT-PLAN.md](./ROUTE-B-PRODUCT-PLAN.md) (Phase 1 done; Phase 2 = users, not code).
+> Single delivery snapshot. Updated **2026-08-27** (v1.3.0; **Web Console (`xio web`) & DeepSeek Harness-grade Trajectory View** — built-in web server with real-time SSE streaming, DeepSeek Harness (`dsh web`) aligned 3-track timeline waterfall (`Input`, `Model`, `Tools`), metrics ribbon with duration / turns / tool calls / errors / search filter, chronological event stream with error indicators and pill badges, accordion inspector with structured JSON args and dark terminal output card with one-click clipboard copy, shared bottom docked composer, session log JSON export endpoint & download button (`Session log 📥`), Claude Warm Paper style Web Settings modal; **TUI Visual Refresh** — 4-row high-definition dorsal fin shark ASCII logo (`src/tui/shark-logo.ts`), dual horizontal divider lines replacing 4-sided rounded boxes for `InputCandidateRegion`, Chinese LLM providers (DeepSeek, etc.) first-class citizen support + fetch-retry network resilience; **grok-parity TUI upgrade** — fullscreen alternate-screen TUI default, word/kill editing keys, Ctrl+J/K/U/D line+half-page scroll, Ctrl+F transcript search with highlighting, y block copy, Ctrl+R fold, Ctrl+P fuzzy command palette (fzf), Ctrl+T model switch, real Esc cancel/double-press-clear layering, `?` shortcuts sheet, footer turn counter, **groknight default palette** (`XIO_THEME=claude` opt-out); **Full test suite** — **128 test files, 1312 unit tests passing**; TUI test suite **17 test files, 205 tests passing**).
+> Active plan: [ROUTE-B-PRODUCT-PLAN.md](./ROUTE-B-PRODUCT-PLAN.md) (Phase 1 code complete; TUI & Web parity achieved).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md). Self-improve loop: [self-improve.md](./self-improve.md).
-> Boards (internal Trellis workflow; not part of the published tree): performance · audit · runtime events.
-> Recently completed: trellis-parallel-task-orchestration (P2, A→B→C→Integrate **archived**) · agent-harness-design-gaps (P1, **6/6**) · ultra-parallel-dag-pipeline (P1, **5/5 archived**).
+> Archive index: [archive/INDEX.md](./archive/INDEX.md) (historical audits & design proposals archived).
 
-## Active Trellis (honest — not shipped)
+## Active Deliveries & Capabilities (v1.3.0)
 
-| Tree | Pri | Progress | What it closes |
-|------|-----|----------|----------------|
-| 07-22-tui-interaction-polish | P1 | **S1–S8 code landed** (S9 docs); 2b overflow-retry **deferred** | Streaming tools flag; tool_result spill/microcompact; session-end retrospective + norms confirm |
-
-## Agent harness ↔ tutorial alignment (2026-07-20)
-
-Semantic parity with the local Agent engineering tutorial (not shipped in the public tree) — **not** a file-format / API clone. Closed by `07-16-agent-harness-design-gaps`.
-
-| Tutorial | Status | XioCode shape |
-|----------|--------|---------------|
-| ch08/09 session fact vs projection | **aligned** | WAL/state `compaction` fact + `compaction_log`; projection via `SessionHistory`; resume rebuilds, no tool replay |
-| ch15 turn snapshot / admission / save-point | **aligned** | `TurnSnapshot` + `HarnessController`; busy → `SessionBusyError`; persist → save_point → settle/`waitForIdle` |
-| ch03/10 write queue + edit-before-read | **aligned** | `FileWriteQueue` (realpath) + `FileReadSet`; `[tools] require_read_before_edit` (default true) |
-| ch07 steer + follow-up | **aligned** | soft/hard steer kept; follow-up drains at natural end; abort clears with `follow_up.discarded`; TUI `>>text` |
-| ch12 project trust | **aligned** | `TrustStore` (`~/.xiocode/trust.json`) + `[trust] mode=ask\|trust\|off`; untrusted skips project hooks/skills/MCP |
-| ch13 SDK/RPC | **deferred** | stream-json + TUI + `-p` only |
-| JSONL parentId session tree | **deferred** | enhance existing WAL; no dual fact source |
-| Operations SSH/container | **deferred** | interface shape only; not productized |
-
-Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[trust] mode`.
+| Capability | Status | Highlights |
+|------------|--------|------------|
+| **Web Console & Trajectory** | **Shipped (v1.3.0)** | `xio web` local server; DeepSeek Harness 3-track waterfall (`Input`, `Model`, `Tools`); summary ribbon; expandable monospace terminal inspection cards; copy button; `Session log 📥` export; Claude Warm Paper settings modal |
+| **TUI Interaction & Visuals** | **Shipped (v1.3.0)** | HD 4-row shark ASCII mark; dual horizontal divider lines for candidate region; grok-parity fullscreen TUI; fzf command palette (`Ctrl+P`); transcript search (`Ctrl+F`) |
+| **Provider Resilience** | **Shipped (v1.3.0)** | First-class DeepSeek & Chinese providers support; fetch-retry exponential backoff for transient errors; schema cache & stable prefix |
+| **Agent Harness Core** | **Shipped** | WAL cursor journal; turn snapshot/admission; same-path write queue + edit-before-read; direct-cwd default (no git/worktree requirement on daily path) |
+| **Verification & Tests** | **Green** | 128 test files / 1312 unit tests passing (`npm test`); 17 test files / 205 unit tests in TUI passing |
 
 ## Product priorities (north star)
 
@@ -40,7 +26,7 @@ Flags for rollback: `[harness] snapshot`, `[tools] require_read_before_edit`, `[
 
 ## Shipping
 
-- Self-owned TypeScript runtime (`src/runtime`); package version **1.1.2**; GitHub Actions CI (`.github/workflows/ci.yml`: `npm ci` → typecheck → vitest → build); releases via `npm run release:patch|minor|major` — bumps `package.json`, syncs README version badge + pinned-install example (`scripts/sync-version.mjs`), commits and tags `vX.Y.Z`
+- Self-owned TypeScript runtime (`src/runtime`); package version **1.3.0**; GitHub Actions CI (`.github/workflows/ci.yml`: `npm ci` → typecheck → vitest → build); releases via `npm run release:patch|minor|major` — bumps `package.json`, syncs README version badge + pinned-install example (`scripts/sync-version.mjs`), commits and tags `vX.Y.Z`
 - CLI + TOML config (`providers`, `worktree`, extension on/off); `curl | bash` installer + slim npm payload (`files` excludes tests/docs/scripts); **`prepack` runs `npm run check` then payload existence checks**
 - **Performance suite (Trellis 07-15) — 8/8 archived** (see board):
   - **Observability (archived)**: trusted fixtures (reducer/coalescer + SessionStore WAL + runs mirror); `xio bench run --all --json` → `~/.xiocode/perf/`. Explore mock labeled; real-provider explore opt-in only.
