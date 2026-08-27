@@ -120,6 +120,8 @@ export type TokenUsage = Readonly<{
   inputTokens: number | null;
   outputTokens: number | null;
   cacheTokens: number | null;
+  cacheCreationTokens?: number | null;
+  cacheReadTokens?: number | null;
   reasoningTokens: number | null;
 }>;
 

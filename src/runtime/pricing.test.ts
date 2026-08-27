@@ -42,6 +42,24 @@ describe("estimateUsageCostUsd", () => {
     expect(estimateUsageCostUsd(usage(1_000_000, 0, 800_000), price)).toBeCloseTo(0.28, 10);
   });
 
+  it("bills cache creation at 1.25x base input rate and cache reads at cache rate", () => {
+    const price = { inputPerMTok: 3, outputPerMTok: 15, cachePerMTok: 0.3 };
+    // 1M total input: 200k fresh input, 300k cache creation, 500k cache read
+    // Fresh: 200k * $3 = $0.60
+    // Creation: 300k * ($3 * 1.25) = 300k * $3.75 = $1.125
+    // Read: 500k * $0.3 = $0.15
+    // Sum = $1.875
+    const testUsage: TokenUsage = {
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheTokens: 800_000,
+      cacheCreationTokens: 300_000,
+      cacheReadTokens: 500_000,
+      reasoningTokens: null,
+    };
+    expect(estimateUsageCostUsd(testUsage, price)).toBeCloseTo(1.875, 10);
+  });
+
   it("falls back to the input rate when no cache rate is set", () => {
     const price = { inputPerMTok: 2, outputPerMTok: 0 };
     expect(estimateUsageCostUsd(usage(1_000_000, 0, 500_000), price)).toBeCloseTo(2, 10);

@@ -18,11 +18,13 @@ import {
 } from "../thinking.ts";
 import { resolveRequestControls } from "./request-controls.ts";
 import { withProviderGuidance } from "./error-guidance.ts";
+import { fetchWithRetry, type FetchRetryOptions } from "./fetch-retry.ts";
 
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
   apiKey: string;
   fetchImpl?: typeof fetch;
+  fetchRetryOptions?: FetchRetryOptions;
 }>;
 
 export function createLlmClient(options: ProviderClientOptions): LlmClient {
@@ -46,7 +48,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     request: ChatCompletionRequest,
     completeOptions?: LlmCompleteOptions,
   ): Promise<ChatCompletionResponse> {
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify(openAiBody(
@@ -56,7 +58,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
         options.registration,
       )),
       signal: completeOptions?.signal,
-    });
+    }, { fetchImpl, ...options.fetchRetryOptions });
     if (!response.ok) {
       throw await httpStatusError(response);
     }
@@ -89,7 +91,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
     request: ChatCompletionRequest,
     completeOptions?: LlmCompleteOptions,
   ): AsyncIterable<StreamEvent> {
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify(openAiBody(
@@ -99,7 +101,7 @@ function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient
         options.registration,
       )),
       signal: completeOptions?.signal,
-    });
+    }, { fetchImpl, ...options.fetchRetryOptions });
     if (!response.ok) {
       throw await httpStatusError(response);
     }
@@ -206,11 +208,6 @@ function openAiBody(
   if (controls.toolChoiceWire.kind === "openai") {
     body.tool_choice = controls.toolChoiceWire.value;
   }
-  // Official OpenAI prompt-cache passthrough only when explicitly configured.
-  const cacheKey = model?.compat?.prompt_cache_key;
-  if (typeof cacheKey === "string" && cacheKey.length > 0 && controls.promptCache) {
-    body.prompt_cache_key = cacheKey;
-  }
   const effort = openAiReasoningEffort(request.thinkingLevel, model);
   if (effort !== undefined) {
     body.reasoning_effort = effort;
@@ -246,6 +243,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
       model: modelConfig(options.registration, request.model),
       thinkingDisplay: options.registration.thinkingDisplay,
       registration: options.registration,
+      fetchRetryOptions: options.fetchRetryOptions,
     });
   }
 
@@ -253,7 +251,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
     request: ChatCompletionRequest,
     completeOptions?: LlmCompleteOptions,
   ): AsyncIterable<StreamEvent> {
-    const response = await fetchImpl(`${baseUrl}/v1/messages`, {
+    const response = await fetchWithRetry(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify(anthropicBody(
@@ -264,7 +262,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
         options.registration,
       )),
       signal: completeOptions?.signal,
-    });
+    }, { fetchImpl, ...options.fetchRetryOptions });
     if (!response.ok) {
       throw await httpStatusError(response);
     }
@@ -364,9 +362,10 @@ async function completeAnthropic(
     model?: ProviderModelConfig;
     thinkingDisplay?: ProviderRegistration["thinkingDisplay"];
     registration?: ProviderRegistration;
+    fetchRetryOptions?: FetchRetryOptions;
   }>,
 ): Promise<ChatCompletionResponse> {
-  const response = await options.fetchImpl(`${options.baseUrl}/v1/messages`, {
+  const response = await fetchWithRetry(`${options.baseUrl}/v1/messages`, {
     method: "POST",
     headers: options.headers,
     body: JSON.stringify(anthropicBody(
@@ -377,7 +376,7 @@ async function completeAnthropic(
       options.registration,
     )),
     signal: options.signal,
-  });
+  }, { fetchImpl: options.fetchImpl, ...options.fetchRetryOptions });
   if (!response.ok) {
     throw await httpStatusError(response);
   }
@@ -416,7 +415,7 @@ function anthropicBody(
     model: request.model,
     max_tokens: request.maxTokens ?? controls.maxTokens ?? 8192,
     system,
-    messages: request.messages.filter((message) => message.role !== "system").map(toAnthropicMessage),
+    messages: buildAnthropicMessages(request.messages, controls.promptCache),
     tools,
     stream,
   };
@@ -489,22 +488,63 @@ function modelConfig(
   return registration.models.find((model) => model.id === modelId);
 }
 
-function toAnthropicMessage(message: ChatMessage): Record<string, unknown> {
+function buildAnthropicMessages(
+  messages: readonly ChatMessage[],
+  promptCache: boolean,
+): Array<Record<string, unknown>> {
+  const nonSystem = messages.filter((message) => message.role !== "system");
+  if (nonSystem.length === 0) return [];
+  // When prompt caching is enabled, place a sliding cache breakpoint on the
+  // second-to-last message (end of prior turn) so that all accumulated history
+  // up to that point is kept in cache across subsequent turns.
+  const breakpointIndex = promptCache && nonSystem.length >= 2
+    ? nonSystem.length - 2
+    : -1;
+
+  return nonSystem.map((message, index) =>
+    toAnthropicMessage(message, index === breakpointIndex),
+  );
+}
+
+function toAnthropicMessage(message: ChatMessage, withBreakpoint = false): Record<string, unknown> {
+  const cacheControl = withBreakpoint ? { type: "ephemeral" } : undefined;
   if (message.role === "tool") {
+    const resultBlock: Record<string, unknown> = {
+      type: "tool_result",
+      tool_use_id: message.toolCallId,
+      content: message.content,
+      ...(cacheControl ? { cache_control: cacheControl } : {}),
+    };
     return {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: message.toolCallId, content: message.content }],
+      content: [resultBlock],
     };
   }
   if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+    const blocks: Array<Record<string, unknown>> = [
+      ...(message.content ? [{ type: "text", text: message.content }] : []),
+      ...message.toolCalls.map((call) => ({
+        type: "tool_use",
+        id: call.id,
+        name: call.name,
+        input: call.arguments,
+      })),
+    ];
+    if (cacheControl && blocks.length > 0) {
+      blocks[blocks.length - 1] = {
+        ...blocks[blocks.length - 1]!,
+        cache_control: cacheControl,
+      };
+    }
     return {
       role: "assistant",
-      content: [
-        ...(message.content ? [{ type: "text", text: message.content }] : []),
-        ...message.toolCalls.map((call) => ({
-          type: "tool_use", id: call.id, name: call.name, input: call.arguments,
-        })),
-      ],
+      content: blocks,
+    };
+  }
+  if (cacheControl) {
+    return {
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: [{ type: "text", text: message.content, cache_control: cacheControl }],
     };
   }
   return { role: message.role === "assistant" ? "assistant" : "user", content: message.content };

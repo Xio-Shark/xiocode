@@ -15,10 +15,14 @@ export function sumTokenUsage(values: readonly TokenUsage[]): TokenUsage {
   if (values.length === 0) {
     return emptyTokenUsage();
   }
+  const hasCreation = values.some((v) => typeof v.cacheCreationTokens === "number");
+  const hasRead = values.some((v) => typeof v.cacheReadTokens === "number");
   return {
     inputTokens: sumComplete(values.map((value) => value.inputTokens)),
     outputTokens: sumComplete(values.map((value) => value.outputTokens)),
     cacheTokens: sumComplete(values.map((value) => value.cacheTokens)),
+    ...(hasCreation ? { cacheCreationTokens: sumComplete(values.map((value) => value.cacheCreationTokens ?? 0)) } : {}),
+    ...(hasRead ? { cacheReadTokens: sumComplete(values.map((value) => value.cacheReadTokens ?? 0)) } : {}),
     reasoningTokens: sumComplete(values.map((value) => value.reasoningTokens)),
   };
 }
@@ -42,6 +46,8 @@ export function decodeProviderUsageEvent(value: unknown): TokenUsage {
     inputTokens: nullableNumber(usage.inputTokens, "inputTokens"),
     outputTokens: nullableNumber(usage.outputTokens, "outputTokens"),
     cacheTokens: nullableNumber(usage.cacheTokens, "cacheTokens"),
+    ...(usage.cacheCreationTokens !== undefined ? { cacheCreationTokens: nullableNumber(usage.cacheCreationTokens, "cacheCreationTokens") } : {}),
+    ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: nullableNumber(usage.cacheReadTokens, "cacheReadTokens") } : {}),
     reasoningTokens: nullableNumber(usage.reasoningTokens, "reasoningTokens"),
   };
 }
@@ -66,15 +72,16 @@ function normalizeOpenAiUsage(usage: Record<string, unknown>): TokenUsage {
 }
 
 function normalizeAnthropicUsage(usage: Record<string, unknown>): TokenUsage {
-  const cacheTokens = sumComplete([
-    optionalNumberOrZero(usage.cache_read_input_tokens),
-    optionalNumberOrZero(usage.cache_creation_input_tokens),
-  ]);
+  const cacheCreation = optionalNumberOrZero(usage.cache_creation_input_tokens);
+  const cacheRead = optionalNumberOrZero(usage.cache_read_input_tokens);
+  const cacheTokens = sumComplete([cacheRead, cacheCreation]);
   const uncachedInput = numberOrNull(usage.input_tokens);
   return {
     inputTokens: uncachedInput === null || cacheTokens === null ? null : uncachedInput + cacheTokens,
     outputTokens: numberOrNull(usage.output_tokens),
     cacheTokens,
+    ...(cacheCreation !== null && cacheCreation !== undefined ? { cacheCreationTokens: cacheCreation } : {}),
+    ...(cacheRead !== null && cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
     reasoningTokens: numberOrNull(usage.reasoning_tokens),
   };
 }

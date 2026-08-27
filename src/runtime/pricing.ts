@@ -67,8 +67,24 @@ export function resolveModelPrice(
 export function estimateUsageCostUsd(usage: TokenUsage, price: ModelPrice): number | null {
   if (usage.inputTokens === null || usage.outputTokens === null) return null;
   const cacheTokens = Math.min(usage.cacheTokens ?? 0, usage.inputTokens);
-  const freshInput = usage.inputTokens - cacheTokens;
   const cacheRate = price.cachePerMTok ?? price.inputPerMTok;
+
+  // Fine-grained Anthropic-style creation vs read:
+  // cache_creation is billed at 1.25x base input cost, cache_read at cacheRate.
+  if (usage.cacheCreationTokens != null && usage.cacheCreationTokens > 0) {
+    const creationTokens = Math.min(usage.cacheCreationTokens, usage.inputTokens);
+    const readTokens = Math.min(
+      usage.cacheReadTokens ?? Math.max(0, cacheTokens - creationTokens),
+      usage.inputTokens - creationTokens,
+    );
+    const regularInput = Math.max(0, usage.inputTokens - creationTokens - readTokens);
+    return (regularInput * price.inputPerMTok
+      + creationTokens * (price.inputPerMTok * 1.25)
+      + readTokens * cacheRate
+      + usage.outputTokens * price.outputPerMTok) / 1_000_000;
+  }
+
+  const freshInput = usage.inputTokens - cacheTokens;
   return (freshInput * price.inputPerMTok
     + cacheTokens * cacheRate
     + usage.outputTokens * price.outputPerMTok) / 1_000_000;

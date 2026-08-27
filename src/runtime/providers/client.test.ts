@@ -69,6 +69,8 @@ describe("provider usage normalization", () => {
       inputTokens: 110,
       outputTokens: 20,
       cacheTokens: 30,
+      cacheCreationTokens: 5,
+      cacheReadTokens: 25,
       reasoningTokens: null,
     });
   });
@@ -168,6 +170,7 @@ describe("provider usage normalization", () => {
     const client = createLlmClient({
       registration: registration("openai-completions"),
       apiKey: "test",
+      fetchRetryOptions: { maxRetries: 0 },
       fetchImpl: async () => {
         throw new TypeError("fetch failed");
       },
@@ -524,6 +527,46 @@ describe("provider usage normalization", () => {
     expect(systemBlocks[2]?.cache_control).toBeUndefined();
     const wireMessages = body?.messages as Array<Record<string, unknown>>;
     expect(wireMessages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+  });
+
+  it("places sliding Anthropic cache_control on the second-to-last turn message in multi-turn history", async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = createLlmClient({
+      registration: {
+        ...registration("anthropic-messages"),
+        models: [{ id: "test", name: "test", maxTokens: 4096 }],
+      },
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+
+    await client.complete({
+      model: "test",
+      messages: [
+        { role: "user", content: "turn 1 prompt" },
+        { role: "assistant", content: "turn 1 reply" },
+        { role: "tool", toolCallId: "call_1", content: "tool output" },
+        { role: "assistant", content: "turn 1 final" },
+        { role: "user", content: "turn 2 prompt" },
+      ],
+      promptCache: true,
+    });
+
+    const wireMessages = body?.messages as Array<Record<string, unknown>>;
+    expect(wireMessages).toHaveLength(5);
+    // Breakpoint should be on message index 3 (second-to-last message: turn 1 final)
+    expect(wireMessages[0]?.cache_control).toBeUndefined();
+    expect(wireMessages[1]?.cache_control).toBeUndefined();
+    expect(wireMessages[2]?.cache_control).toBeUndefined();
+    // Assistant message block has cache_control
+    const assistantContent = wireMessages[3]?.content as Array<Record<string, unknown>>;
+    expect(assistantContent).toBeDefined();
+    expect(assistantContent[assistantContent.length - 1]?.cache_control).toEqual({ type: "ephemeral" });
+    // Latest user message has no cache_control
+    expect(wireMessages[4]?.cache_control).toBeUndefined();
   });
 
   it("does not invent tool_choice for unsupported provider APIs", async () => {

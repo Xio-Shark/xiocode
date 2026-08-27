@@ -5,18 +5,34 @@ import type { ModelInfo, ProviderRegistration } from "./types.ts";
 export function resolveDefaultModel(config: XioRuntimeConfig): ModelInfo {
   const provider = config.general.defaultProvider;
   const model = config.general.defaultModel;
-  if (!provider || !model) {
-    const first = Object.values(config.providers)[0];
-    if (!first?.model) throw new Error("no default provider/model configured");
-    return { provider: first.name, id: first.model, name: first.model, api: providerApi(first.kind) };
+  if (provider && model && config.providers[provider]?.model) {
+    const configured = config.providers[provider]!;
+    return {
+      provider,
+      id: model,
+      name: model,
+      api: providerApi(configured.kind),
+    };
   }
-  const configured = config.providers[provider];
-  return {
-    provider,
-    id: model,
-    name: model,
-    api: configured ? providerApi(configured.kind) : "openai-completions",
-  };
+  const first = Object.values(config.providers).find((p) => p.model);
+  if (first?.model) {
+    return {
+      provider: first.name,
+      id: first.model,
+      name: first.model,
+      api: providerApi(first.kind),
+    };
+  }
+  if (provider && model) {
+    const configured = config.providers[provider];
+    return {
+      provider,
+      id: model,
+      name: model,
+      api: configured ? providerApi(configured.kind) : "openai-completions",
+    };
+  }
+  throw new Error("no default provider/model configured");
 }
 
 export function registerConfiguredProviders(host: ExtensionHost, config: XioRuntimeConfig): void {

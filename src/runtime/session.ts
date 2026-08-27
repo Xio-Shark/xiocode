@@ -292,7 +292,21 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         api: "openai-completions" as const,
         models: [{ id: currentModel.id, name: currentModel.id }],
       }
-      : requireSessionRegistration(host, currentModel));
+      : (interactiveSession
+        ? (() => {
+          const placeholder: ProviderRegistration = {
+            name: currentModel.provider,
+            api: "openai-completions" as const,
+            models: [{ id: currentModel.id, name: currentModel.id }],
+          };
+          host.registerProvider(currentModel.provider, placeholder);
+          sink.notify?.(
+            `Provider "${currentModel.provider}" is not configured. Run /connect or /model to set up credentials.`,
+            "warning",
+          );
+          return placeholder;
+        })()
+        : requireSessionRegistration(host, currentModel)));
   let client: LlmClient | undefined = options.llmClient;
   const getOrCreateClient = (): LlmClient => {
     if (client) return client;
