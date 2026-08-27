@@ -230,6 +230,64 @@ function assistantBlockLines(text: string): readonly string[] {
   return [`${theme.sym.answer} ${rendered[0]!}`, ...rendered.slice(1)];
 }
 
+/**
+ * Detect purely internal notices that should not pollute the user transcript.
+ * MCP readiness is surfaced in the footer; subagent and draft fallback details
+ * are handled by their dedicated lifecycles/metrics.
+ */
+export function isInternalNotice(text: string): boolean {
+  if (text.startsWith("mcp:")) return true;
+  if (text.startsWith("LLM draft skipped")) return true;
+  if (text.startsWith("Regression capture failed")) return true;
+  if (text.startsWith("xio status:")) return true;
+  if (/^subagent #\d+ (started|done|failed|cancelled)/.test(text)) return true;
+  return false;
+}
+
+/** Match known error patterns to structured title and actionable remedy hints. */
+export function resolveRemedyHint(message: string): { title: string; hint?: string } {
+  const lower = message.toLowerCase();
+  if (lower.includes("404") || lower.includes("not found") || lower.includes("model") || lower.includes("provider unavailable")) {
+    return {
+      title: "Provider Error",
+      hint: "Check base_url or run /model to pick an available model",
+    };
+  }
+  if (lower.includes("compact") || lower.includes("compaction") || lower.includes("context window")) {
+    return {
+      title: "Compaction Error",
+      hint: "Run /compact or inspect context window",
+    };
+  }
+  if (lower.includes("permission") || lower.includes("denied") || lower.includes("unauthorized")) {
+    return {
+      title: "Permission Notice",
+      hint: "Run /bypass or adjust permission mode",
+    };
+  }
+  if (lower.includes("connect") || lower.includes("credential") || lower.includes("api key") || lower.includes("token")) {
+    return {
+      title: "Connection Error",
+      hint: "Run /connect to verify provider credentials",
+    };
+  }
+  return { title: "Error" };
+}
+
+/** Formats an error into a clean, boxed callout card. */
+export function buildCalloutLines(title: string, message: string, hint?: string, minWidth = 56): string[] {
+  const cleanMsg = message.trim();
+  const titlePart = `─ ${title} `;
+  const width = Math.max(minWidth, titlePart.length + 6, cleanMsg.length + 4, (hint?.length ?? 0) + 6);
+  const top = `┌${titlePart}`.padEnd(width - 1, "─") + "┐";
+  const bottom = "└" + "─".repeat(width - 2) + "┘";
+  const rows = [
+    `│ ${cleanMsg}`,
+    ...(hint ? [`│ ${theme.sym.arrow} ${hint}`] : []),
+  ];
+  return [top, ...rows, bottom];
+}
+
 export function reduceScrollback(state: ScrollbackState, event: TuiEvent): ScrollbackState {
   if (event.kind === "thinking-delta") {
     let next = state;
@@ -349,15 +407,26 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
   }
 
   if (event.kind === "notice") {
+    if (isInternalNotice(event.text)) {
+      return state;
+    }
     let next = commitLive(state.live?.kind === "thinking" ? collapseThinking(state) : state);
     next = commitLive(next);
+    const isError = event.level === "error";
+    const lines = isError
+      ? (() => {
+          const { title, hint } = resolveRemedyHint(event.text);
+          return buildCalloutLines(title, event.text, hint);
+        })()
+      : [`${theme.sym.meta} ${event.text}`];
     return {
       ...next,
       blocks: [...next.blocks, {
         id: next.nextId,
         kind: "notice",
-        lines: [`${event.level === "error" ? "!" : theme.sym.meta} ${event.text}`],
-        error: event.level === "error",
+        lines,
+        error: isError,
+        output: event.text,
       }],
       live: undefined,
       nextId: next.nextId + 1,
@@ -614,7 +683,9 @@ export function buildToolHistoryBlock(input: Readonly<{
       ? reportStatus
       : "done";
   const title = explore ? `subagent ${exploreLabel}` : input.name;
-  const mark = explore ? theme.sym.explore : theme.sym.tool;
+  const mark = explore
+    ? theme.sym.explore
+    : (input.error ? theme.sym.failure : theme.sym.success);
   const detailPart = input.detail.trim().length > 0 ? ` ${truncateToolDetail(input.detail)}` : "";
   const statusPart = explore ? "" : (input.error ? " failed" : " done");
   const lineCount = display.length === 0 ? 0 : display.split("\n").length;
@@ -874,7 +945,7 @@ export function formatLiveLines(
   for (const tool of inFlightTools) {
     const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";
     const explore = isExploreToolName(tool.name);
-    const mark = explore ? theme.sym.explore : theme.sym.tool;
+    const mark = explore ? theme.sym.explore : (spin ? theme.sym.running : theme.sym.tool);
     const title = explore ? formatExploreToolLabel({ running: true }) : tool.name;
     lines.push(`${mark} ${title}${detail}${spin ? ` ${spin}` : ""}${elapsedSuffix(tool.startedAt, now)}`);
   }

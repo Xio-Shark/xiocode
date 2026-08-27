@@ -1,5 +1,5 @@
 import React from "react";
-import { renderToString } from "ink";
+import { renderToString, Text } from "ink";
 import { cleanup, render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -8,6 +8,8 @@ import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
 import {
   App,
+  InputCandidateRegion,
+  ComposerChrome,
   busyPhaseLabel,
   collectSlashCommands,
   composePhaseChrome,
@@ -30,6 +32,7 @@ import {
   type ViewState,
 } from "./app.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
+import { emptyComposer, setComposerText } from "./composer.ts";
 import { theme, truncateToolDetail } from "./theme.ts";
 
 import { WorkspacePerceptionService } from "../runtime/workspace/index.ts";
@@ -135,7 +138,7 @@ describe("App", () => {
     expect(output).toContain("XioCode v");
     expect(output).toContain("test/model-a");
     expect(output).toContain("think:off");
-    expect(output).toContain(">");
+    expect(output).toContain(theme.sym.prompt);
     expect(output).not.toContain("idle");
     expect(output).not.toMatch(/\|\s*think:off\s*\|/);
     // Header: model · think — no path / perm / usage dump.
@@ -850,6 +853,8 @@ describe("App", () => {
     expect(frame).toContain("help");
     expect(frame).toContain("Set thinking effort.");
     expect(frame).toMatch(/\d+\/\d+/);
+    // Slash menu portal renders floating above the composer input box
+    expect(frame.indexOf("effort")).toBeLessThan(frame.lastIndexOf(theme.sym.prompt));
   });
 
   it("busy Enter soft-steers and ! hard-steers via session.steer (not queue-only)", async () => {
@@ -916,6 +921,60 @@ describe("App", () => {
 
     releasePrompt();
     await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+});
+
+describe("InputCandidateRegion & ComposerChrome", () => {
+  it("renders two horizontal lines without enclosing boxes in idle state", () => {
+    const output = renderToString(React.createElement(InputCandidateRegion, {
+      active: false,
+      busy: false,
+      composer: React.createElement(ComposerChrome, {
+        composer: emptyComposer(),
+        busy: false,
+        noBorder: true,
+      }),
+    }));
+    // Has horizontal border lines
+    expect(output).toContain("─");
+    expect(output).toContain(theme.sym.prompt);
+    expect(output).toContain("Ask a question");
+    // No enclosing box borders
+    expect(output).not.toContain("╭");
+    expect(output).not.toContain("╰");
+    expect(output).not.toContain("│");
+  });
+
+  it("renders candidate suggestions cleanly within the two horizontal lines", () => {
+    const candidateMenu = React.createElement(Text, null, "› /help        Show help");
+    const output = renderToString(React.createElement(InputCandidateRegion, {
+      active: true,
+      busy: false,
+      candidateMenu,
+      composer: React.createElement(ComposerChrome, {
+        composer: setComposerText(emptyComposer(), "/h"),
+        busy: false,
+        noBorder: true,
+      }),
+    }));
+    expect(output).toContain("─");
+    expect(output).toContain("› /help");
+    expect(output).toContain(theme.sym.prompt);
+    expect(output).not.toContain("╭");
+    expect(output).not.toContain("╰");
+    expect(output).not.toContain("│");
+  });
+
+  it("renders standalone ComposerChrome with horizontal borders", () => {
+    const output = renderToString(React.createElement(ComposerChrome, {
+      composer: setComposerText(emptyComposer(), "hello"),
+      busy: false,
+    }));
+    expect(output).toContain("─");
+    expect(output).toContain("hello");
+    expect(output).not.toContain("╭");
+    expect(output).not.toContain("╰");
+    expect(output).not.toContain("│");
   });
 });
 

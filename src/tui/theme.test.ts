@@ -17,8 +17,8 @@ describe("theme helpers", () => {
   });
 
   it("defaults to the groknight palette (XIO_THEME unset or unknown)", () => {
-    expect(resolveTheme(undefined).accent).toBe("#7dcfff");
-    expect(resolveTheme("groknight").brand).toBe("#bb9af7");
+    expect(resolveTheme(undefined).accent).toBe("#7aa2f7");
+    expect(resolveTheme("groknight").brand).toBe("#e2e8f0");
     expect(resolveTheme("bogus").tool).toBe("#e0af68");
   });
 
@@ -26,6 +26,17 @@ describe("theme helpers", () => {
     const claude = resolveTheme("claude");
     expect(claude.accent).toBe("cyan");
     expect(claude.userBar).toBe("#303030");
+  });
+
+  it("supports minimal and nord themes inspired by awesome-tui-design", () => {
+    const minimal = resolveTheme("minimal");
+    expect(minimal.brand).toBe("#ededed");
+    expect(minimal.userBar).toBe("#1a1a1a");
+
+    const nord = resolveTheme("nord");
+    expect(nord.brand).toBe("#eceff4");
+    expect(nord.accent).toBe("#88c0d0");
+    expect(nord.userBar).toBe("#3b4252");
   });
 
   it("shortens home paths and middle-ellipsis long paths", () => {

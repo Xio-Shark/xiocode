@@ -5,19 +5,19 @@ import { describe, expect, it } from "vitest";
 import { BrandHeader, XioMark } from "./shark-logo.ts";
 
 describe("XioMark", () => {
-  it("renders a three-row X I O lettermark with a trailing fin", () => {
+  it("renders a four-row X I O lettermark with a trailing shark fin", () => {
     const frame = renderToString(React.createElement(XioMark));
-    // X pillars and open crossing
-    expect(frame).toContain("█ █");
-    // I stem with serifs
-    expect(frame).toContain("▄█▄");
-    expect(frame).toContain("▀█▀");
-    // Rounded O ring (4 cols)
-    expect(frame).toContain("▄▀▀▄");
-    expect(frame).toContain("█  █");
-    expect(frame).toContain("▀▄▄▀");
+    // X glyph
+    expect(frame).toContain("█   █");
+    expect(frame).toContain("▀▄▀");
+    // I stem
+    expect(frame).toContain("███");
+    // Rounded O ring
+    expect(frame).toContain("▄██▄");
+    expect(frame).toContain("█▀  ▀█");
+    expect(frame).toContain("▀██▀");
     // Shark fin
-    expect(frame).toContain("▄██");
+    expect(frame).toContain("▄▄█████");
   });
 });
 
@@ -32,6 +32,6 @@ describe("BrandHeader", () => {
     expect(frame).toContain("v1.1.0");
     expect(frame).toContain("test/model · think:off");
     expect(frame).toContain("~/proj");
-    expect(frame).toContain("▄█▄");
+    expect(frame).toContain("███");
   });
 });

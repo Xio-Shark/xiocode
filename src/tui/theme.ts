@@ -42,20 +42,24 @@ export type Theme = Readonly<{
     busy: string;
     select: string;
     nest: string;
+    success: string;
+    failure: string;
+    running: string;
+    arrow: string;
   }>;
 }>;
 
-/** grok-build `groknight` palette: neutral gray base + TokyoNight accents. */
+/** Modern minimalist palette: neutral platinum/slate base with subtle slate-blue accents. */
 const GROKNIGHT: Theme = {
-  brand: "#bb9af7",
-  accent: "#7dcfff",
-  userBar: "#242424",
+  brand: "#e2e8f0",
+  accent: "#7aa2f7",
+  userBar: "#1a1b26",
   tool: "#e0af68",
-  think: "#7aa2f7",
-  explore: "#9ece6a",
+  think: "#565f89",
+  explore: "#73daca",
   error: "#f7768e",
-  shark: "#bb9af7",
-  sharkEyeBg: "#111111",
+  shark: "#c0caf5",
+  sharkEyeBg: "#16161e",
   pathMax: 42,
   toolDetailMax: 72,
   slashNameWidth: 16,
@@ -67,10 +71,14 @@ const GROKNIGHT: Theme = {
     think: "▸",
     explore: "⊹",
     brand: "◆",
-    prompt: ">",
+    prompt: "❯",
     busy: "·",
     select: "›",
     nest: "└",
+    success: "✔",
+    failure: "✖",
+    running: "✢",
+    arrow: "→",
   },
 };
 
@@ -88,14 +96,47 @@ const CLAUDE: Theme = {
   sharkEyeBg: "#1a1a1a",
 };
 
-export const THEME_NAMES = ["groknight", "claude"] as const;
+/** Minimal palette: clean, focused, zero noise (inspired by Vercel/Linear). */
+const MINIMAL: Theme = {
+  ...GROKNIGHT,
+  brand: "#ededed",
+  accent: "#7aa2f7",
+  userBar: "#1a1a1a",
+  tool: "#f5a623",
+  think: "#555555",
+  explore: "#00c853",
+  error: "#ee0000",
+  shark: "#ededed",
+  sharkEyeBg: "#0a0a0a",
+};
+
+/** Nord palette: arctic, serene clean aesthetic (inspired by Nord Theme). */
+const NORD: Theme = {
+  ...GROKNIGHT,
+  brand: "#eceff4",
+  accent: "#88c0d0",
+  userBar: "#3b4252",
+  tool: "#ebcb8b",
+  think: "#4c566a",
+  explore: "#a3be8c",
+  error: "#bf616a",
+  shark: "#81a1c1",
+  sharkEyeBg: "#2e3440",
+};
+
+export const THEME_NAMES = ["groknight", "claude", "minimal", "nord"] as const;
 export type ThemeName = (typeof THEME_NAMES)[number];
 
-const THEMES: Readonly<Record<ThemeName, Theme>> = { groknight: GROKNIGHT, claude: CLAUDE };
+const THEMES: Readonly<Record<ThemeName, Theme>> = {
+  groknight: GROKNIGHT,
+  claude: CLAUDE,
+  minimal: MINIMAL,
+  nord: NORD,
+};
 
 /** Resolve a named theme; unknown names fall back to the default. */
 export function resolveTheme(name: string | undefined): Theme {
-  if (name === "claude") return CLAUDE;
+  if (name && name in THEMES) return THEMES[name as ThemeName];
   return GROKNIGHT;
 }
 

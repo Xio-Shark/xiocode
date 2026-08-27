@@ -6,12 +6,16 @@ import {
   adjacentExpandableHistoryBlock,
   appendUserBlock,
   blocksFromRestoredMessages,
+  buildCalloutLines,
+  buildToolHistoryBlock,
   emptyScrollbackState,
   expandableHistoryBlocks,
   formatLiveLines,
+  isInternalNotice,
   latestExpandableToolBlock,
   liveTextString,
   reduceScrollback,
+  resolveRemedyHint,
   sliceTranscriptLineWindow,
   type HistoryBlock,
 } from "./transcript-log.ts";
@@ -587,5 +591,85 @@ describe("sliceTranscriptLineWindow", () => {
     const folded = sliceTranscriptLineWindow(blocks, 10, 0, new Set([1]));
     expect(folded.lines).toHaveLength(1);
     expect(folded.lines[0]!.text).toBe("");
+  });
+});
+
+describe("TUI noise filtering & callout cards (1.md optimization)", () => {
+  it("detects internal noise notices correctly", () => {
+    expect(isInternalNotice("mcp: 5 ready")).toBe(true);
+    expect(isInternalNotice("mcp: ready a (1 tool)")).toBe(true);
+    expect(isInternalNotice("LLM draft skipped (missing credentials)")).toBe(true);
+    expect(isInternalNotice("Regression capture failed: error")).toBe(true);
+    expect(isInternalNotice("xio status: run=run-123")).toBe(true);
+    expect(isInternalNotice("subagent #0 started → test/model")).toBe(true);
+    expect(isInternalNotice("subagent #1 done (3 tool calls)")).toBe(true);
+
+    // User-facing notices must NOT be filtered
+    expect(isInternalNotice("Context compacted: 10 -> 4 messages.")).toBe(false);
+    expect(isInternalNotice("Turn cancelled.")).toBe(false);
+    expect(isInternalNotice("Earlier context was compacted.")).toBe(false);
+  });
+
+  it("drops internal noise from transcript blocks in reduceScrollback", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "notice", text: "mcp: 5 ready" });
+    expect(state.blocks).toHaveLength(0);
+
+    state = reduceScrollback(state, { kind: "notice", text: "LLM draft skipped" });
+    expect(state.blocks).toHaveLength(0);
+
+    state = reduceScrollback(state, { kind: "notice", text: "subagent #1 started" });
+    expect(state.blocks).toHaveLength(0);
+
+    state = reduceScrollback(state, { kind: "notice", text: "Turn cancelled." });
+    expect(state.blocks).toHaveLength(1);
+    expect(state.blocks[0]?.lines[0]).toContain("Turn cancelled.");
+  });
+
+  it("formats error notices as structured CalloutCard boxes with remedy hints", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, {
+      kind: "notice",
+      text: "Request failed (404 Not Found): model not found",
+      level: "error",
+    });
+    expect(state.blocks).toHaveLength(1);
+    const block = state.blocks[0]!;
+    expect(block.error).toBe(true);
+    expect(block.lines[0]).toMatch(/^┌─ Provider Error ─/);
+    expect(block.lines.some((l) => l.includes("Request failed (404 Not Found)"))).toBe(true);
+    expect(block.lines.some((l) => l.includes("/model"))).toBe(true);
+    expect(block.lines.at(-1)).toMatch(/^└─/);
+  });
+
+  it("resolves appropriate remedy hints for various error types", () => {
+    expect(resolveRemedyHint("404 Not Found").title).toBe("Provider Error");
+    expect(resolveRemedyHint("404 Not Found").hint).toContain("/model");
+    expect(resolveRemedyHint("context compaction failed").title).toBe("Compaction Error");
+    expect(resolveRemedyHint("permission denied for shell").title).toBe("Permission Notice");
+    expect(resolveRemedyHint("missing api key credential").title).toBe("Connection Error");
+    expect(resolveRemedyHint("generic unknown glitch").title).toBe("Error");
+  });
+
+  it("builds tool badges with ✔ on success and ✖ on failure", () => {
+    const successBlock = buildToolHistoryBlock({
+      id: 1,
+      name: "read_file",
+      detail: "src/tui/app.ts",
+      error: false,
+      output: "content",
+    });
+    expect(successBlock.lines[0]).toContain("✔");
+    expect(successBlock.lines[0]).toContain("read_file");
+
+    const failBlock = buildToolHistoryBlock({
+      id: 2,
+      name: "bash",
+      detail: "npm test",
+      error: true,
+      output: "failed",
+    });
+    expect(failBlock.lines[0]).toContain("✖");
+    expect(failBlock.lines[0]).toContain("failed");
   });
 });

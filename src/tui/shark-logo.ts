@@ -1,11 +1,13 @@
 /**
- * Header lettermark — “XIO” in block glyphs plus a shark fin (Claude
- * CondensedLogo slot). X + O in brand magenta; the I spine and the fin in
- * accent cyan, so the mark reads as one animal: letters up front, fin behind.
+ * Header lettermark — “XIO” in modern geometric block glyphs with an iconic
+ * trailing shark dorsal fin. X + O in brand/shark color; the I spine and the
+ * fin in accent color, so the mark reads as one creature: letters up front,
+ * fin trailing behind.
  *
- *   █ █ ▄█▄ ▄▀▀▄   ▄
- *    █   █  █  █  ▄█
- *   █ █ ▀█▀ ▀▄▄▀ ▄██
+ *   █   █  ███   ▄██▄          ▄▄
+ *    ▀▄▀    █   █▀  ▀█       ▄███
+ *    ▄▀▄    █   █▄  ▄█    ▄▄█████
+ *   █   █  ███   ▀██▀   ▀▀▀██████
  */
 
 import React from "react";
@@ -15,41 +17,49 @@ import { theme } from "./theme.ts";
 
 const h = React.createElement;
 
-/** Three-row XIO wordmark with trailing fin (~16 cols). */
+/** Four-row high-definition XIO wordmark with trailing shark dorsal fin (~29 cols). */
 export function XioMark(): React.JSX.Element {
   const letters = theme.shark;
   const accent = theme.accent;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
     h(Text, null,
-      h(Text, { color: letters }, "█ █"),
-      h(Text, null, " "),
-      h(Text, { color: accent }, "▄█▄"),
-      h(Text, null, " "),
-      h(Text, { color: letters }, "▄▀▀▄"),
-      h(Text, null, " "),
-      h(Text, { color: accent }, "  ▄")),
+      h(Text, { color: letters }, "█   █"),
+      h(Text, null, "  "),
+      h(Text, { color: accent }, "███"),
+      h(Text, null, "   "),
+      h(Text, { color: letters }, "▄██▄"),
+      h(Text, null, "          "),
+      h(Text, { color: accent }, "▄▄")),
     h(Text, null,
-      h(Text, { color: letters }, " █ "),
-      h(Text, null, " "),
-      h(Text, { color: accent }, " █ "),
-      h(Text, null, " "),
-      h(Text, { color: letters }, "█  █"),
-      h(Text, null, " "),
-      h(Text, { color: accent }, " ▄█")),
+      h(Text, { color: letters }, " ▀▄▀ "),
+      h(Text, null, "   "),
+      h(Text, { color: accent }, "█"),
+      h(Text, null, "   "),
+      h(Text, { color: letters }, "█▀  ▀█"),
+      h(Text, null, "       "),
+      h(Text, { color: accent }, "▄███")),
     h(Text, null,
-      h(Text, { color: letters }, "█ █"),
-      h(Text, null, " "),
-      h(Text, { color: accent }, "▀█▀"),
-      h(Text, null, " "),
-      h(Text, { color: letters }, "▀▄▄▀"),
-      h(Text, null, " "),
-      h(Text, { color: accent }, "▄██")));
+      h(Text, { color: letters }, " ▄▀▄ "),
+      h(Text, null, "   "),
+      h(Text, { color: accent }, "█"),
+      h(Text, null, "   "),
+      h(Text, { color: letters }, "█▄  ▄█"),
+      h(Text, null, "    "),
+      h(Text, { color: accent }, "▄▄█████")),
+    h(Text, null,
+      h(Text, { color: letters }, "█   █"),
+      h(Text, null, "  "),
+      h(Text, { color: accent }, "███"),
+      h(Text, null, "   "),
+      h(Text, { color: letters }, "▀██▀"),
+      h(Text, null, "   "),
+      h(Text, { color: accent }, "▀▀▀██████")));
 }
 
 /** @deprecated Alias — kept for older imports; the mark carries the fin now. */
 export const SharkLogo = XioMark;
 
-/** Condensed Claude-style brand row: lettermark + title column. */
+/** Condensed brand header: prominent lettermark + title column. */
 export function BrandHeader(props: Readonly<{
   version: string;
   /** Dim second line (model · think · …). */
@@ -66,7 +76,7 @@ export function BrandHeader(props: Readonly<{
     h(XioMark),
     h(Box, { flexDirection: "column", flexGrow: 1 },
       h(Text, null,
-        h(Text, { bold: true }, "XioCode"),
+        h(Text, { bold: true, color: theme.brand }, "XioCode"),
         h(Text, { dimColor: true }, ` v${props.version}`)),
       props.meta
         ? h(Text, { dimColor: true, wrap: "truncate-end" }, props.meta)

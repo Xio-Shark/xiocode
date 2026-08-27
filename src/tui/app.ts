@@ -359,11 +359,13 @@ export function App(props: AppProps): React.JSX.Element {
       };
     }
     const tasklistRows = tasklist && tasklist.length > 0 ? Math.min(tasklist.length, 10) + 3 : 0;
-    const menuRows = slashOpen
-      ? Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 1
-      : atOpen
-        ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 1
-        : 0;
+    const menuRows = palette
+      ? Math.min(SLASH_MENU_VISIBLE, 8) + 2
+      : slashOpen
+        ? Math.min(SLASH_MENU_VISIBLE, slashItems?.length ?? 0) + 2
+        : atOpen
+          ? Math.min(SLASH_MENU_VISIBLE, atItems?.length ?? 0) + 2
+          : 0;
     // Live preview is screen-bounded; count wrapped rows so history + live +
     // chrome never exceed the terminal (overflow = un-erasable residue).
     const liveExtra = formatLiveLines(
@@ -375,7 +377,7 @@ export function App(props: AppProps): React.JSX.Element {
       sum + (line.startsWith(`${theme.sym.answer} `)
         ? wrappedLineCount(line, Math.max(20, columns))
         : 1), 0);
-    // Brand header (4 incl. margin) + composer border (5) + footer (2) = 11
+    // Brand header (5 incl. margin) + composer/candidate border (4) + footer (2) = 11
     // chrome rows. The ↑ above / ↓ to latest hints render inside the content
     // band, so reserve their rows when scrolled: without this the window + hints
     // overflow the band and ink drops children (a visible line disappears).
@@ -392,6 +394,7 @@ export function App(props: AppProps): React.JSX.Element {
     rows,
     columns,
     scrollOffset,
+    palette,
     slashOpen,
     slashItems,
     atOpen,
@@ -558,30 +561,33 @@ export function App(props: AppProps): React.JSX.Element {
     tasklist && tasklist.length > 0
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
-    h(ComposerChrome, {
-      busy,
-      spinnerFrame,
-      composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
-      hint: composerHint({
+    h(InputCandidateRegion, {
+      candidateMenu: palette
+        ? h(CommandPalette, {
+          query: palette.query,
+          selected: palette.index,
+          entries: collectSlashCommands(props.session.host),
+        })
+        : slashOpen
+          ? h(SlashMenu, { items: slashItems ?? [], selected: safeSlashIndex })
+          : atOpen
+            ? h(FileMenu, { items: atItems ?? [], selected: safeAtIndex })
+            : null,
+      composer: h(ComposerChrome, {
         busy,
-        armed: escArmed,
-        queued: composer.queue !== undefined,
-        canSteer: typeof props.session.steer === "function",
+        spinnerFrame,
+        composer: view.prompt ? { ...composer, text: maskPromptDisplay(view.prompt), cursor: maskPromptDisplay(view.prompt).length } : composer,
+        hint: composerHint({
+          busy,
+          armed: escArmed,
+          queued: composer.queue !== undefined,
+          canSteer: typeof props.session.steer === "function",
+        }),
+        noBorder: true,
       }),
+      active: composer.text.length > 0 || slashOpen || atOpen || Boolean(palette),
+      busy,
     }),
-    slashOpen
-      ? h(SlashMenu, { items: slashItems ?? [], selected: safeSlashIndex })
-      : null,
-    atOpen
-      ? h(FileMenu, { items: atItems ?? [], selected: safeAtIndex })
-      : null,
-    palette
-      ? h(CommandPalette, {
-        query: palette.query,
-        selected: palette.index,
-        entries: collectSlashCommands(props.session.host),
-      })
-      : null,
     h(FooterHints, {
       permissionMode,
       cwd: props.cwd,
@@ -599,56 +605,84 @@ export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
   live: ScrollbackState["live"];
   inFlightTools: ScrollbackState["inFlightTools"];
   inFlightSubagents: ScrollbackState["inFlightSubagents"];
-  /** Screen-bounded preview budget (rows × columns) — see livePreviewCharBudget. */
-  charBudget: number;
+  charBudget?: number;
   now: number;
-  /** Current spinner frame; undefined = reduced motion (static chrome). */
   spinnerFrame?: string;
 }>): React.JSX.Element | null {
-  const liveLines = formatLiveLines(props.live, props.inFlightTools, props.inFlightSubagents, {
-    charBudget: props.charBudget,
-    now: props.now,
-    spinnerFrame: props.spinnerFrame,
+  const { live, inFlightTools, inFlightSubagents, charBudget, now, spinnerFrame } = props;
+  const lines = formatLiveLines(live, inFlightTools, inFlightSubagents, {
+    charBudget,
+    now,
+    spinnerFrame,
   });
-  if (liveLines.length === 0) return null;
-  return h(Box, { flexDirection: "column", marginY: 0 },
-    ...liveLines.map((line, index) =>
+  if (lines.length === 0) return null;
+  return h(Box, { flexDirection: "column", flexShrink: 0, marginTop: 1 },
+    ...lines.map((line, index) =>
       h(Text, {
         key: `live-${index}`,
-        dimColor: true,
-        // Activity rows are deliberately one terminal row; only answer text wraps.
-        wrap: line.startsWith(`${theme.sym.answer} `) ? "wrap" : "truncate-end",
-        // Nested `└` rows in the live region are the thinking-tail echo.
-        color: line.includes(theme.sym.think) || line.trimStart().startsWith(theme.sym.nest)
-          ? theme.think
-          : line.includes(theme.sym.explore)
-            ? theme.explore
-            : line.includes(theme.sym.tool)
-              ? theme.tool
-              : undefined,
+        wrap: "truncate-end",
+        dimColor: !line.startsWith(`${theme.sym.answer} `),
+        bold: line.startsWith(`${theme.sym.answer} `),
+        color: line.startsWith(`${theme.sym.answer} `)
+          ? theme.accent
+          : line.startsWith(`  ${theme.sym.tool} `)
+            ? theme.tool
+            : undefined,
       }, line)));
 });
 
-/** Composer with block cursor and multiline draft (pi Editor-style subset). */
-const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
+/**
+ * Unified input and candidate region bounded by two horizontal lines (top and bottom).
+ * Eliminates enclosing boxes for a sleek, modern, boundary-free terminal aesthetic.
+ */
+export function InputCandidateRegion(props: Readonly<{
+  candidateMenu?: React.JSX.Element | null;
+  composer: React.JSX.Element;
+  active: boolean;
   busy: boolean;
-  /** Current spinner frame; undefined = reduced motion (static busy dot). */
-  spinnerFrame?: string;
+}>): React.JSX.Element {
+  return h(Box, {
+    flexDirection: "column",
+    borderStyle: "single",
+    borderTop: true,
+    borderBottom: true,
+    borderLeft: false,
+    borderRight: false,
+    borderColor: props.busy ? "gray" : (props.active ? theme.accent : "gray"),
+    paddingX: 1,
+    marginTop: 0,
+    marginBottom: 0,
+  },
+    props.candidateMenu ?? null,
+    props.composer);
+}
+
+/** Composer with block cursor and multiline draft (pi Editor-style subset). */
+export const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
   composer: ComposerState;
+  busy: boolean;
+  spinnerFrame?: string;
   /** Contextual hint line (esc cancel / double-esc clear / steer / queued). */
   hint?: string;
+  /** When true, omits outer box borders (delegated to InputCandidateRegion). */
+  noBorder?: boolean;
 }>): React.JSX.Element {
   const { text, cursor } = props.composer;
   const lines = text.length === 0 ? [""] : text.split("\n");
   let offset = 0;
+  const promptSymbol = props.busy ? (props.spinnerFrame ?? theme.sym.busy) : theme.sym.prompt;
   const rows = lines.map((line, rowIndex) => {
     const lineStart = offset;
     const lineEnd = offset + line.length;
     if (rowIndex < lines.length - 1) offset = lineEnd + 1;
     else offset = lineEnd;
     const onCursorLine = cursor >= lineStart && cursor <= lineEnd;
+    const prefix = rowIndex === 0 ? `${promptSymbol} ` : "  ";
+    const prefixElement = h(Text, { color: props.busy ? "gray" : theme.accent, bold: true }, prefix);
     if (!onCursorLine) {
-      return h(Text, { key: `composer-${rowIndex}`, wrap: "wrap" }, ` ${line}`);
+      return h(Text, { key: `composer-${rowIndex}`, wrap: "wrap" },
+        prefixElement,
+        line);
     }
     const col = cursor - lineStart;
     const before = line.slice(0, col);
@@ -656,23 +690,42 @@ const ComposerChrome = memo(function ComposerChrome(props: Readonly<{
     const cursorChar = after.length > 0 ? after.charAt(0) : " ";
     const rest = after.length > 1 ? after.slice(1) : "";
     return h(Text, { key: `composer-${rowIndex}`, wrap: "wrap" },
-      " ",
+      prefixElement,
       before,
       h(Text, { inverse: true, color: theme.accent }, cursorChar),
-      rest);
+      rest,
+      text.length === 0 && !props.busy
+        ? h(Text, { dimColor: true }, " Ask a question, / for commands, or paste code…")
+        : null);
   });
-  return h(Box, {
-    marginTop: 1,
-    flexDirection: "column",
-    borderStyle: "round",
-    borderColor: "gray",
-    paddingX: 1,
-  },
-    h(Text, { dimColor: props.busy }, props.busy ? (props.spinnerFrame ?? theme.sym.busy) : theme.sym.prompt),
+
+  const content = [
     ...rows,
     props.hint
       ? h(Text, { dimColor: true }, `${theme.sym.nest} ${props.hint}`)
-      : null);
+      : null,
+  ];
+
+  if (props.noBorder) {
+    return h(Box, {
+      marginTop: 0,
+      marginBottom: 0,
+      flexDirection: "column",
+    }, ...content);
+  }
+
+  return h(Box, {
+    marginTop: 0,
+    marginBottom: 0,
+    flexDirection: "column",
+    borderStyle: "single",
+    borderTop: true,
+    borderBottom: true,
+    borderLeft: false,
+    borderRight: false,
+    borderColor: props.busy ? "gray" : (text.length > 0 ? theme.accent : "gray"),
+    paddingX: 1,
+  }, ...content);
 });
 
 export const HistoryBlockRow = memo(function HistoryBlockRow(
@@ -694,10 +747,10 @@ export const HistoryBlockRow = memo(function HistoryBlockRow(
           ? theme.think
           : undefined;
   const bold = props.block.kind === "assistant";
-  const dim = props.block.kind === "tool"
+  const dim = !props.block.error && (props.block.kind === "tool"
     || props.block.kind === "thinking"
     || props.block.kind === "notice"
-    || props.block.kind === "subagent";
+    || props.block.kind === "subagent");
   const compact = props.block.kind === "tool"
     || props.block.kind === "thinking"
     || props.block.kind === "subagent";
@@ -844,10 +897,10 @@ const RenderLineRow = memo(function RenderLineRow(props: Readonly<{
         : line.kind === "thinking"
           ? theme.think
           : undefined;
-  const dim = line.kind === "tool"
+  const dim = !line.error && (line.kind === "tool"
     || line.kind === "thinking"
     || line.kind === "notice"
-    || line.kind === "subagent";
+    || line.kind === "subagent");
   const wrap = line.compact ? "truncate-end" as const : "wrap" as const;
   if (props.match || props.matchCurrent) {
     return h(Text, {
@@ -2968,8 +3021,8 @@ function FooterHints(props: Readonly<{
     h(Text, { wrap: "truncate-end" },
       elevated
         ? h(React.Fragment, null,
-          h(Text, { color: theme.brand }, ">> "),
-          h(Text, { color: theme.brand }, modeLabel),
+          h(Text, { color: theme.accent, bold: true }, `[${props.permissionMode}] `),
+          h(Text, null, modeLabel),
           h(Text, { dimColor: true }, " (shift+tab to cycle)"))
         : h(Text, { dimColor: true }, "? for shortcuts"),
       h(Text, { dimColor: true }, ` ${theme.sym.meta} ${path}`),
@@ -3027,14 +3080,20 @@ function SlashMenu(props: Readonly<{
   selected: number;
 }>): React.JSX.Element {
   if (props.items.length === 0) {
-    return h(Text, { dimColor: true }, "No matching commands");
+    return h(Box, {
+      flexDirection: "column",
+      marginBottom: 1,
+    }, h(Text, { dimColor: true }, "No matching commands"));
   }
   const start = Math.min(
     Math.max(0, props.selected - SLASH_MENU_VISIBLE + 1),
     Math.max(0, props.items.length - SLASH_MENU_VISIBLE),
   );
   const visible = props.items.slice(start, start + SLASH_MENU_VISIBLE);
-  return h(Box, { flexDirection: "column", marginTop: 1 },
+  return h(Box, {
+    flexDirection: "column",
+    marginBottom: 1,
+  },
     ...visible.map((item, index) => {
       const absolute = start + index;
       const active = absolute === props.selected;
@@ -3044,6 +3103,7 @@ function SlashMenu(props: Readonly<{
       return h(Text, {
         key: item.name,
         color: active ? theme.accent : undefined,
+        bold: active,
         dimColor: !active,
         wrap: "truncate-end",
       }, `${marker}${label}`);
@@ -3052,20 +3112,26 @@ function SlashMenu(props: Readonly<{
       `(${props.selected + 1}/${props.items.length}) ↑↓ · Tab · Enter`));
 }
 
-/** `@` file picker rendered below the composer (same window size as SlashMenu). */
+/** `@` file picker rendered above the composer (same window size as SlashMenu). */
 function FileMenu(props: Readonly<{
   items: readonly string[];
   selected: number;
 }>): React.JSX.Element {
   if (props.items.length === 0) {
-    return h(Text, { dimColor: true }, "No matching files");
+    return h(Box, {
+      flexDirection: "column",
+      marginBottom: 1,
+    }, h(Text, { dimColor: true }, "No matching files"));
   }
   const start = Math.min(
     Math.max(0, props.selected - SLASH_MENU_VISIBLE + 1),
     Math.max(0, props.items.length - SLASH_MENU_VISIBLE),
   );
   const visible = props.items.slice(start, start + SLASH_MENU_VISIBLE);
-  return h(Box, { flexDirection: "column", marginTop: 1 },
+  return h(Box, {
+    flexDirection: "column",
+    marginBottom: 1,
+  },
     ...visible.map((item, index) => {
       const absolute = start + index;
       const active = absolute === props.selected;
@@ -3073,6 +3139,7 @@ function FileMenu(props: Readonly<{
       return h(Text, {
         key: item,
         color: active ? theme.accent : undefined,
+        bold: active,
         dimColor: !active,
         wrap: "truncate-end",
       }, `${marker}${item}`);
@@ -3093,7 +3160,10 @@ function CommandPalette(props: Readonly<{
 }>): React.JSX.Element {
   const filtered = fuzzyFilter(props.entries, props.query, (entry) => `/${entry.name}`);
   if (filtered.length === 0) {
-    return h(Box, { flexDirection: "column", marginTop: 1 },
+    return h(Box, {
+      flexDirection: "column",
+      marginBottom: 1,
+    },
       h(Text, { color: theme.accent, bold: true }, `/${props.query}`),
       h(Text, { dimColor: true }, "No matching commands · esc close"));
   }
@@ -3103,7 +3173,10 @@ function CommandPalette(props: Readonly<{
     Math.max(0, filtered.length - SLASH_MENU_VISIBLE),
   );
   const visible = filtered.slice(start, start + SLASH_MENU_VISIBLE);
-  return h(Box, { flexDirection: "column", marginTop: 1 },
+  return h(Box, {
+    flexDirection: "column",
+    marginBottom: 1,
+  },
     h(Text, { color: theme.accent, bold: true }, `/${props.query}`),
     ...visible.map((item, index) => {
       const absolute = start + index;
@@ -3114,6 +3187,7 @@ function CommandPalette(props: Readonly<{
       return h(Text, {
         key: item.name,
         color: active ? theme.accent : undefined,
+        bold: active,
         dimColor: !active,
         wrap: "truncate-end",
       }, `${marker}${label}`);
