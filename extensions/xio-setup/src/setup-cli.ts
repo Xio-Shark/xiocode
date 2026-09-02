@@ -19,6 +19,7 @@ import {
   removeConfigSections,
   type ConfigSectionId,
 } from "./sections.ts";
+import { runFlowSetupCommand } from "./flow-setup.ts";
 import { runProviderCommand } from "./provider-setup.ts";
 import { runTrellisCommand } from "./trellis-setup.ts";
 import {
@@ -51,6 +52,7 @@ Usage:
   xio-setup provider [id]   Add a provider from presets (keys stay in env vars)
   xio-setup templates       Show project starter templates (AGENTS.md, .trellis/spec)
   xio-setup templates add [id...] [--yes]  Write missing starters (confirm first)
+  xio-setup flow            Native Task Flow (DAG) orchestration & validation (see: xio-setup flow help)
   xio-setup trellis         Trellis DAG config & update (see: xio-setup trellis help)
   xio-setup path         Print the config.toml path
   xio-setup help         This help
@@ -93,6 +95,12 @@ export async function runSetupCli(
   }
   if (command === "templates") {
     return runTemplates(rest, write, options);
+  }
+  if (command === "flow") {
+    return runFlowSetupCommand(rest, {
+      write,
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    });
   }
   if (command === "trellis") {
     const isTty = options.isTty ?? process.stdin.isTTY === true;
