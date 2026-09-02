@@ -70,6 +70,13 @@ describe("Web Console & Server", () => {
     expect(statusData.status).toBe("ok");
     expect(statusData.version).toBeDefined();
 
+    // 2b. Test GET /api/events (SSE)
+    const eventsRes = await fetch(`${handle.url}/api/events`);
+    expect(eventsRes.status).toBe(200);
+    expect(eventsRes.headers.get("content-type")).toContain("text/event-stream");
+    // close SSE stream
+    await eventsRes.body?.cancel();
+
     // 3. Test POST & GET /api/sessions
     const postRes = await fetch(`${handle.url}/api/sessions`, { method: "POST" });
     expect(postRes.status).toBe(201);

@@ -97,6 +97,23 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         return;
       }
 
+      // 2b. SSE Real-time Events Stream
+      if (pathname === "/api/events" && req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          "Connection": "keep-alive",
+        });
+        res.write(`data: ${JSON.stringify({ type: "init", version: XIO_VERSION, timestamp: Date.now() })}\n\n`);
+        const heartbeat = setInterval(() => {
+          res.write(`data: ${JSON.stringify({ type: "ping", timestamp: Date.now() })}\n\n`);
+        }, 15000);
+        req.on("close", () => {
+          clearInterval(heartbeat);
+        });
+        return;
+      }
+
       // 3. Sessions List & Create
       if (pathname === "/api/sessions") {
         if (req.method === "GET") {
