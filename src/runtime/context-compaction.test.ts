@@ -5,6 +5,7 @@ import {
   ContextCompactionController,
   SessionHistory,
   compactSessionMessages,
+  formatMessage,
 } from "./context-compaction.ts";
 import { registerContextCommands } from "./context-commands.ts";
 import { ExtensionHost } from "./extension-host.ts";
@@ -290,6 +291,38 @@ describe("ContextCompactionController", () => {
       maxTokens: 50_000,
     });
     expect(controller.needsAutomaticCompaction()).toBe(false);
+  });
+
+  it("triggers automatic compaction when token high watermark is reached", () => {
+    const history = new SessionHistory({
+      initialMessages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "hello world ".repeat(100) },
+      ],
+    });
+    // With maxTokens=1000, 85% watermark is 850
+    // The history has ~300 tokens, if we set maxTokens to 320, watermark is 272
+    const controller = new ContextCompactionController({
+      history,
+      getClient: () => ({ async complete() { return { content: "summary", toolCalls: [] }; } }),
+      getModel: () => ({ provider: "test", id: "stub" }),
+      maxMessages: 80,
+      maxTokens: 320,
+    });
+    expect(controller.needsAutomaticCompaction(0, 0, 0.85)).toBe(true);
+  });
+
+  it("folds oversized tool output during formatMessage to bound tokens", () => {
+    const hugeOutput = "x".repeat(5000);
+    const toolMsg: ChatMessage = {
+      role: "tool",
+      name: "grep",
+      toolCallId: "call-1",
+      content: hugeOutput,
+    };
+    const formatted = formatMessage(toolMsg, 1);
+    expect(formatted.length).toBeLessThan(2500);
+    expect(formatted).toContain("characters of verbose tool output folded for compaction");
   });
 });
 

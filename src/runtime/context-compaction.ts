@@ -133,12 +133,17 @@ export class ContextCompactionController {
     this.#redactOutbound = options.redactOutbound;
   }
 
-  needsAutomaticCompaction(incomingMessages = 2, incomingTokenEstimate = 256): boolean {
+  needsAutomaticCompaction(
+    incomingMessages = 2,
+    incomingTokenEstimate = 256,
+    watermarkRatio = 0.85,
+  ): boolean {
     if (this.#history.length + incomingMessages > this.#maxMessages) return true;
     const tokenBudget = this.#getMaxTokens?.() ?? this.#maxTokens;
     if (tokenBudget === undefined) return false;
     const current = estimateMessagesTokens(this.#history.getMessages());
-    return current + incomingTokenEstimate > tokenBudget;
+    const watermark = Math.floor(tokenBudget * watermarkRatio);
+    return current >= watermark || current + incomingTokenEstimate > tokenBudget;
   }
 
   async compact(
@@ -409,14 +414,25 @@ function formatSummaryRequest(messages: readonly ChatMessage[], focus?: string):
   ].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
-function formatMessage(message: ChatMessage, index: number): string {
+export const MAX_TOOL_CONTENT_LENGTH_FOR_SUMMARY = 2000;
+
+export function formatMessage(message: ChatMessage, index: number): string {
   const toolCalls = message.toolCalls?.length
     ? `\ntool_calls: ${JSON.stringify(message.toolCalls)}`
     : "";
   const toolIdentity = message.role === "tool"
     ? ` tool_call_id=${message.toolCallId ?? "unknown"} name=${message.name ?? "unknown"}`
     : "";
-  return `[${index}] ${message.role}${toolIdentity}\n${message.content}${toolCalls}`;
+
+  let content = message.content;
+  if (message.role === "tool" && content.length > MAX_TOOL_CONTENT_LENGTH_FOR_SUMMARY) {
+    const head = content.slice(0, 1000);
+    const tail = content.slice(-600);
+    const omitted = content.length - 1600;
+    content = `${head}\n[... ${omitted} characters of verbose tool output folded for compaction ...]\n${tail}`;
+  }
+
+  return `[${index}] ${message.role}${toolIdentity}\n${content}${toolCalls}`;
 }
 
 function errorMessage(error: unknown): string {
