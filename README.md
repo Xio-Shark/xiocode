@@ -1,9 +1,9 @@
 # XioCode 🦈
 
-> A coding assistant in your terminal: **interrupt anytime, roll back edits cleanly, and keep your workspace intact**.  
-> Direct official provider endpoints, 100% local execution. No hosted relay, no data harvesting, transparent real-time cost tracking.
+> A local-first terminal coding agent engineered for safety, recoverability, and cost transparency.  
+> Direct official LLM endpoints, turn-by-turn file rollbacks, and crash-resilient session persistence.
 
-**中文版 → [README.zh-CN.md](./README.zh-CN.md)**
+[English](./README.md) | [简体中文](./README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
@@ -13,64 +13,24 @@
 
 ---
 
-## Why XioCode?
+## Features
 
-Most coding agents make promises about speed, but in day-to-day engineering, the real friction points are:
-- **Fear of uncontrolled edits**: When an agent modifies multiple files unexpectedly, unwinding changes manually is painful;
-- **Vulnerable sessions**: Terminal exits, laptop sleep, or accidental interrupts destroy context and force you to start over;
-- **Tedious provider setups & hidden costs**: Juggling custom proxy configs with no real-time visibility into actual spending.
-
-**XioCode is designed to provide a safe, disciplined, and recoverable coding workflow:**
-
-```
-┌────────────────────────────────────────────────────────┐
-│                     Your Terminal                      │
-│                                                        │
-│  $ xio "refactor the payment module and add Stripe"    │
-│                                                        │
-│  XioCode:                                              │
-│    · Takes an automated workspace state snapshot       │
-│    · Analyzes project structure and dependencies       │
-│    · Applies file edits with clear diffs               │
-│    · Stops and asks before dangerous commands          │
-│                                                        │
-│  Want to undo? Run /rollback turn to revert the turn   │
-│  Session interrupted? Run xio resume to continue       │
-└────────────────────────────────────────────────────────┘
-```
+- **Granular Workspace Rollbacks**: Automatically captures lightweight workspace snapshots before edits. Revert changes turn-by-turn (`/rollback turn`) or to the session baseline (`/rollback`) without disturbing unrelated uncommitted local diffs.
+- **Crash-Resilient State Persistence**: Conversations, task graphs, and execution states are incrementally journaled locally. Resume any interrupted session seamlessly via `xio resume`.
+- **Native Multi-Model Integration**: Connects directly to official provider APIs including DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), Anthropic Claude, OpenAI, and Google Gemini. No proxy servers required.
+- **Real-Time Token & Cost Metering**: Precise turn-by-turn expenditure calculation based on actual token usage and provider pricing, displayed continuously in the status bar.
+- **Dual Interface Modes**: Full-featured terminal TUI with syntax highlighting, fuzzy search, and command palette, alongside a zero-dependency local Web console (`xio web`) for visual timeline inspections.
+- **Built-in Execution Guardrails**: Intercepts destructive shell commands and unsafe file mutations, requiring explicit user authorization before execution.
 
 ---
 
-## Key Features
+## Requirements
 
-### 1. Granular Rollback: Safe, Turn-by-Turn Revert
-When code changes across multiple files do not match expectations, manual reversion is slow and error-prone.  
-XioCode captures lightweight snapshots before every modification:
-- **Revert the latest turn**: Run `/rollback turn` to instantly revert files changed in that specific prompt, leaving your other uncommitted work untouched;
-- **Revert the entire session**: Run `/rollback` to reset workspace files back to the state when the session began.
-
-### 2. Session Persistence: Resume Interrupted Work Seamlessly
-If your laptop sleeps, the terminal is accidentally closed, or a long-running process is stopped, you do not need to reconstruct your context.  
-XioCode journals each execution step incrementally:
-```bash
-$ xio resume        # Reloads the session with conversation history, tool state, and context intact
-```
-
-### 3. Native Model Integration & Real-Time Cost Tracking
-Directly connects to leading LLM providers through their official APIs without requiring intermediary proxies:
-- **Domestic & Open APIs**: DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), etc.
-- **Global APIs**: Anthropic Claude, OpenAI, Google Gemini, etc.
-
-The terminal status bar displays live cost calculations based on exact token usage (accurate to the cent) on every turn.
-
----
-
-## Quick Install
-
-Requires **Node.js 22.6+** (the installer will guide you if needed).
+- **Node.js**: 22.6.0 or higher
+- **OS**: macOS, Linux, Windows (WSL)
 
 ```bash
-# Recommended: one-line installer
+# Recommended: Automated installer
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 
 # Or install globally via npm
@@ -83,76 +43,93 @@ export XIO_INSTALL_VERSION=1.3.0
 curl -fsSL https://raw.githubusercontent.com/Xio-Shark/xiocode/main/install.sh | bash
 ```
 
-Once installed, you get both `xio` and `xiocode` commands.
+Once installed, use either `xio` or `xiocode`.
 
 ---
 
-## Quickstart in 3 Minutes
+## Quickstart
 
-### 1. Open your project
+### 1. Launch a Session
+Run inside any project directory:
 ```bash
-cd your-project
 xio
 ```
 
-### 2. Connect your API Key
-If you don't have a key set up yet, type:
+### 2. Connect Your Provider
+On first launch, run:
 ```text
 /connect
 ```
-Select your provider (DeepSeek, SiliconFlow, OpenAI, etc.) and paste your key. It's stored securely on your machine — no need to fiddle with `.env` or shell configs again.
+Select your provider and input your API key. Credentials are encrypted and stored locally under `~/.xiocode/`—never transmitted to third-party relays.
 
-### 3. Tell it what to build
+### 3. Assign Tasks
+Describe your requirements directly in the prompt:
 ```text
-> Add an authentication middleware with JWT verification, input validation, and unit tests
+> Implement a JWT authentication middleware with refresh token rotation and write comprehensive unit tests.
 ```
 
-Helpful tips:
-- **Interrupt & steer**: Press Enter or type `!your text` while the agent is writing to steer it mid-turn.
-- **Mention files**: Type `@filename` to fuzzy-search and feed files into context.
-- **Shortcuts**: Press `?` on an empty line to view the full cheat sheet.
+**Workflow Tips**:
+- **Interrupt & Steer**: Press Enter or prefix with `!message` during generation to adjust instructions mid-flight.
+- **Context Pinning**: Type `@` to fuzzy-search and inject relevant files into context.
+- **Help Sheet**: Press `?` on an empty line to view keybindings.
 
 ---
 
-## Terminal TUI + Web Console
+## Core Workflows
 
-- **Fullscreen Terminal TUI** (`xio`): Markdown highlights, smooth mouse scrolling, `Ctrl+P` command palette, `Ctrl+F` search.
-- **Local Web Console** (`xio web`): Opens a lightweight, zero-dependency timeline dashboard at `http://localhost:3000` to review turns, tools, and trajectories in a clean visual waterfall.
+### Reverting Changes (Rollback)
+| Command | Scope | Description |
+| :--- | :--- | :--- |
+| `/rollback turn` | Single Turn | Reverts only files modified in the latest prompt, preserving existing local diffs |
+| `/rollback` | Entire Session | Reverts all files modified throughout the session back to the initial baseline |
+
+### Resuming Work (Resume)
+If a session terminates unexpectedly due to battery drain, terminal closure, or `SIGINT`:
+```bash
+xio resume        # Restores the session with full context, task lists, and history
+```
+
+### Local Web Console
+```bash
+xio web           # Launches the lightweight visual console at http://localhost:3000
+```
+Inspect model interactions, tool call arguments, execution output, and timeline progression.
 
 ---
 
-## Common Commands
+## Command Reference
 
 ### CLI Commands
-| Command | What it does |
-|---------|--------------|
-| `xio` | Interactive terminal coding session |
-| `xio "task description"` | One-shot prompt (runs and exits) |
-| `xio resume` | Resume previous session |
-| `xio web` | Launch local web console (`http://localhost:3000`) |
-| `xio doctor` | Self-check Node version, keys, config, and provider connectivity |
-| `xio models` | View provider catalog and model pricing table |
+| Command | Description |
+| :--- | :--- |
+| `xio` | Launch the interactive terminal coding environment |
+| `xio "task description"` | Execute a one-shot task and exit upon completion |
+| `xio resume` | Resume the most recent active or interrupted session |
+| `xio web` | Launch the local web timeline console (`http://localhost:3000`) |
+| `xio doctor` | Diagnose environment, configuration, and API connectivity |
+| `xio models` | Display supported providers, models, and real-time pricing |
 
-### In-Session Commands (Type `/`)
-| Slash Command | What it does |
-|---------------|--------------|
-| `/connect` | Setup or switch provider API key |
-| `/model` | Switch model on the fly |
-| `/rollback turn` | **Undo turn**: revert files modified in the latest prompt |
-| `/rollback` | **Full rollback**: revert all workspace files back to session baseline |
-| `/compact` | Compress conversation history when context gets large |
-| `/help` | Open shortcut sheet (or press `?`) |
+### In-Session Slash Commands
+| Command | Description |
+| :--- | :--- |
+| `/connect` | Configure or switch provider API credentials |
+| `/model` | Change active model on the fly |
+| `/rollback turn` | Undo file changes made during the latest turn |
+| `/rollback` | Undo all file changes made in the current session |
+| `/compact` | Compress conversation history to optimize context window |
+| `/clear` | Clear screen buffer and redraw active turn |
+| `/help` | Display shortcuts and command manual |
 
 ---
 
-## Privacy & Safety
+## Security & Privacy
 
-1. **No Cloud Relay**: XioCode does not run a hosted relay. API calls go directly from your machine to your configured provider.
-2. **Zero Telemetry**: No background tracking of your code, prompts, or keystrokes. State stays under `~/.xiocode/`.
-3. **Dangerous Command Safeguard**: Commands like `rm -rf` are intercepted and require your explicit confirmation before running.
+1. **Local-First Architecture**: API requests are dispatched directly from your machine to official provider endpoints. There are no proprietary relays or intermediary gateways.
+2. **Zero Telemetry**: We do not collect or transmit source code, prompts, or interaction telemetry. All states remain strictly in `~/.xiocode/`.
+3. **Execution Guardrails**: Unsafe file modifications and destructive shell commands (e.g., recursive removals) are paused for explicit human-in-the-loop approval.
 
 ---
 
 ## License
 
-**[MIT](./LICENSE)** — Free and open source. Code written with XioCode is 100% yours forever.
+Distributed under the [MIT License](./LICENSE). All code generated using XioCode belongs entirely to you.
