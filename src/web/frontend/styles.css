@@ -1,8 +1,4 @@
-/**
- * XioCode Web Console - Styles
- */
-export const UI_STYLES = `
-    :root {
+:root {
       --bg-base: #ffffff;
       --bg-sidebar: #f8f9fa;
       --bg-surface: #ffffff;
@@ -1930,4 +1926,3 @@ export const UI_STYLES = `
       background: #fdfdfc;
       color: #374151;
     }
-`;

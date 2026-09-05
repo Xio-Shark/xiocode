@@ -65,6 +65,7 @@ export async function defaultAsk(question: string): Promise<boolean> {
 }
 
 export { MergeGate } from "./merge-gate.ts";
+export { DirectRollbackGate } from "./direct-gate.ts";
 export { WorktreeSandbox, DEFAULT_WORKTREE_CONFIG } from "./worktree-sandbox.ts";
 export type { DiffSummary, MergeResult, RollbackResult, AskFn } from "./merge-gate.ts";
 export type {

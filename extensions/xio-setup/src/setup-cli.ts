@@ -19,7 +19,6 @@ import {
   removeConfigSections,
   type ConfigSectionId,
 } from "./sections.ts";
-import { runFlowSetupCommand } from "./flow-setup.ts";
 import { runProviderCommand } from "./provider-setup.ts";
 import { runTrellisCommand } from "./trellis-setup.ts";
 import {
@@ -97,10 +96,8 @@ export async function runSetupCli(
     return runTemplates(rest, write, options);
   }
   if (command === "flow") {
-    return runFlowSetupCommand(rest, {
-      write,
-      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-    });
+    write("xio-setup: flow subcommand has been archived into archive/extensions/xio-flow (Route B: focus on core coding agent resilience).\n");
+    return 0;
   }
   if (command === "trellis") {
     const isTty = options.isTty ?? process.stdin.isTTY === true;

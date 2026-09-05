@@ -37,7 +37,6 @@ await esbuild.build({
   ...common,
   entryPoints: {
     xio: path.join(root, "src/cli/entry.ts"),
-    "xio-improve": path.join(root, "src/cli/improve-entry.ts"),
     "xio-setup": path.join(root, "src/cli/setup-entry.ts"),
   },
   outdir: dist,
@@ -46,4 +45,4 @@ await esbuild.build({
 });
 
 await writeFile(path.join(dist, ".build-stamp"), `${new Date().toISOString()}\n`, "utf8");
-console.log("build-cli: wrote dist/xio.js, dist/xio-improve.js and dist/xio-setup.js (ESM split, packages external)");
+console.log("build-cli: wrote dist/xio.js and dist/xio-setup.js (ESM split, packages external)");

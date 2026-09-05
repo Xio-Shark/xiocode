@@ -9,7 +9,8 @@ import type { HarnessController } from "./harness/admission.ts";
 import type { XioVerifyConfig } from "../cli/config-parser.ts";
 import type { PreparedSession } from "./session.ts";
 import type { SessionUiSink } from "./session-ui.ts";
-import type { WorktreeDisposition } from "../../extensions/xio-sandbox/src/merge-gate.ts";
+import type { WorktreeDisposition, AskFn, RollbackResult } from "../../extensions/xio-sandbox/src/merge-gate.ts";
+import type { DurableTurnCheckpoint, TurnCheckpoint } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import type { DoneContract } from "./verify/done-contract.ts";
 import type { AgentLoopCheckpoint } from "./agent-loop.ts";
 import type { ChatMessage, LlmClient, ModelInfo, TokenUsage } from "./types.ts";
@@ -84,30 +85,36 @@ export function registerSandboxFallbackCommand(host: ExtensionHost): void {
   });
 }
 
+export type RollbackGate = Readonly<{
+  captureTurnCheckpoint?: () => Promise<DurableTurnCheckpoint>;
+  promptRollback: (ask: AskFn, notify?: (message: string) => void) => Promise<RollbackResult>;
+  promptRollbackTurn: (ask: AskFn, notify?: (message: string) => void) => Promise<RollbackResult>;
+}>;
+
 export function registerRollbackCommand(
   host: ExtensionHost,
-  mergeGate: MergeGate | undefined,
+  rollbackGate: RollbackGate | undefined,
   ask: (question: string) => Promise<boolean>,
   sink: SessionUiSink = createStdoutSessionUiSink(),
   onRollbackSuccess?: (input: Readonly<{ kind: "session" | "turn"; summary: string }>) => Promise<void> | void,
 ): void {
   host.registerCommand("rollback", {
-    description: "Discard session worktree changes and restore its starting commit (worktree mode).",
+    description: "Discard session or turn file changes (worktree or direct git mode).",
     handler: async (args) => {
-      if (!mergeGate) {
+      if (!rollbackGate) {
         return directModeHint(
           "rollback",
-          "In direct mode, review or revert with git (e.g. `git diff`, `git checkout -- <file>`).",
+          "In direct mode without a git repository, file rollback is unavailable. Initialize git to enable turn and session checkpoints.",
         );
       }
       if (String(args ?? "").trim() === "turn") {
-        const result = await mergeGate.promptRollbackTurn(ask, (message) => sink.notify?.(message));
+        const result = await rollbackGate.promptRollbackTurn(ask, (message) => sink.notify?.(message));
         if (result.ok && result.skipped !== true) {
           await onRollbackSuccess?.({ kind: "turn", summary: result.summary ?? "turn rollback" });
         }
         return result.summary;
       }
-      const result = await mergeGate.promptRollback(ask, (message) => sink.notify?.(message));
+      const result = await rollbackGate.promptRollback(ask, (message) => sink.notify?.(message));
       if (result.ok && result.skipped !== true) {
         await onRollbackSuccess?.({ kind: "session", summary: result.summary ?? "session rollback" });
       }

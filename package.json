@@ -6,7 +6,6 @@
   "bin": {
     "xio": "bin/xio",
     "xiocode": "bin/xio",
-    "xio-improve": "bin/xio-improve",
     "xio-setup": "bin/xio-setup"
   },
   "publishConfig": {
@@ -31,11 +30,13 @@
     "node": ">=22.6.0"
   },
   "scripts": {
-    "build": "node ./scripts/build-cli.mjs",
+    "build": "node ./scripts/build-cli.mjs && node ./scripts/build-web.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run check && npm run build && node --experimental-strip-types ./scripts/prepack-check.ts",
     "test": "vitest run",
-    "test:unit": "vitest run extensions/xio-eval/test extensions/xio-evolve/test extensions/xio-hygiene/test extensions/xio-improve/test extensions/xio-regress/test extensions/xio-sandbox/test src/cli/regress-cli.test.ts",
+    "test:unit": "vitest run src/runtime src/cli src/tui src/web extensions/xio-evolve extensions/xio-hygiene extensions/xio-setup extensions/xio-sandbox --exclude \"**/*.pty.test.ts\"",
+    "test:fast": "vitest run src/ extensions/ --exclude \"**/*.pty.test.ts\"",
+    "test:e2e": "vitest run extensions/xio-sandbox/test src/cli/boot-state-machine.pty.test.ts",
     "version": "node ./scripts/sync-version.mjs && git add README.md README.zh-CN.md",
     "release:patch": "npm version patch -m \"chore: bump version to %s\"",
     "release:minor": "npm version minor -m \"chore: bump version to %s\"",

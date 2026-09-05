@@ -9,8 +9,6 @@ import { registerConfiguredProviders, resolveDefaultModel } from "./provider-reg
 import { registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
 import { registerPermissionCommands } from "./agent-commands.ts";
-import { registerRegressCommands } from "./regress-commands.ts";
-import { createFailureCaptureOffer, createLiveFailureStatementDrafter } from "./failure-capture-offer.ts";
 import { registerContextCommands } from "./context-commands.ts";
 import { ContextCompactionController, SessionHistory, isContextCompactionError } from "./context-compaction.ts";
 import { resolveSessionTokenBudget } from "./providers/token-estimate.ts";
@@ -49,7 +47,7 @@ import {
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
 import { noopSubagentUiBridge } from "./explore/subagent-ui.ts";
 import { registerPlanCapability } from "./plan/index.ts";
-import { MergeGate, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
+import { MergeGate, DirectRollbackGate, WorktreeSandbox, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 import { expandHome } from "../cli/config-parser.ts";
 import { createRuntimeEventEmitter } from "./events/emitter.ts";
 import {
@@ -264,7 +262,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const fileShift = new FileShiftRegistry();
   const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
   const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot, cwd });
-  const { host, mergeGate, ensureExploreForUltra } = await createConfiguredHost({
+  const { host, mergeGate, rollbackGate, ensureExploreForUltra } = await createConfiguredHost({
     options,
     model,
     sink,
@@ -478,88 +476,16 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     }
     return undefined;
   };
-  const runRoot = expandHome(options.runtimeConfig.general.runRoot);
-  const regressCapture = {
-    host,
-    interactive,
-    sink,
-    runRoot,
-    env,
-    getRunId,
-  };
-  registerRegressCommands(regressCapture);
-
-  const resolveFailureDraftIdentity = (): Readonly<{
-    provider: string;
-    model: string;
-  }> => {
-    const explore = resolveExploreConfig(
-      options.runtimeConfig.explore,
-      options.runtimeConfig.general,
-      {
-        forceEnable: true,
-        fallbackModel: exploreFallbackModelRef({
-          exploreModel: options.runtimeConfig.explore.model,
-          sessionProvider: currentModel.provider,
-          sessionModel: currentModel.id,
-          defaultProvider: options.runtimeConfig.general.defaultProvider,
-          defaultModel: options.runtimeConfig.general.defaultModel,
-        }),
-      },
-    );
-    return {
-      provider: explore?.provider ?? currentModel.provider,
-      model: explore?.model ?? currentModel.id,
-    };
-  };
-
-  const failureCapture = interactiveSession
-    ? createFailureCaptureOffer({
-      offerOnFailure: options.runtimeConfig.regress.offerOnFailure,
-      interactive,
-      sink,
-      capture: regressCapture,
-      draftTimeoutMs: 25_000,
-      draftFailureStatement: createLiveFailureStatementDrafter({
-        cwd,
-        workspaceRoot,
-        runRoot,
-        workspacePerception,
-        subagentUi,
-        timeoutMs: 25_000,
-        onDegrade: (message) => sink.notify?.(message, "warning"),
-        getRegistration: () => {
-          const identity = resolveFailureDraftIdentity();
-          return host.getProvider(identity.provider) ?? registration;
-        },
-        resolveApiKey: () => {
-          try {
-            const identity = resolveFailureDraftIdentity();
-            const reg = host.getProvider(identity.provider) ?? registration;
-            return secretEnvironment.resolveProvider(reg);
-          } catch {
-            return undefined;
-          }
-        },
-        getModelId: () => resolveFailureDraftIdentity().model,
-      }),
-    })
-    : undefined;
+  host.registerCommand("regress", {
+    description: "Regression capture tool (archived).",
+    handler: async () => "/regress has been archived into archive/extensions/xio-regress (Route B: focus on core coding agent resilience).",
+  });
 
   registerRollbackCommand(
     host,
-    mergeGate,
+    rollbackGate,
     ask,
     sink,
-    failureCapture
-      ? async ({ kind }) => {
-        await failureCapture.maybeOfferFailureCapture({
-          turnId: `rollback-${kind}-${Date.now().toString(36)}`,
-          signal: "rollback",
-          runId: await getRunId(),
-        });
-      }
-      : undefined,
   );
 
   const contextCompaction = new ContextCompactionController({
@@ -673,12 +599,11 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       getToolResultSpillDir: async () => {
         const runId = await getRunId();
         if (!runId) return undefined;
+        const runRoot = expandHome(options.runtimeConfig.general.runRoot);
         return path.join(runRoot, runId, "tool-results");
       },
       getRunId,
-      failureCapture: failureCapture
-        ? { maybeOffer: (input) => failureCapture.maybeOfferFailureCapture(input) }
-        : undefined,
+      failureCapture: undefined,
       beforePrompt: async () => {
         // New user turn: reset read discipline so prior-turn reads do not authorize edits.
         // Abort / hard-steer hops within the same runPrompt do not hit this path.
@@ -687,13 +612,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         grepSeen.clear();
         // Fresh prompt resets the cross-context read landscape for file-shift detection.
         fileShift.clear();
-        if (mergeGate) {
-          const checkpoint = await mergeGate.captureTurnCheckpoint();
-          currentExecution = {
-            phase: "turn_started",
-            turn_id: randomUUID().replaceAll("-", ""),
-            checkpoint,
-          };
+        if (rollbackGate?.captureTurnCheckpoint) {
+          try {
+            const checkpoint = await rollbackGate.captureTurnCheckpoint();
+            if (checkpoint) {
+              currentExecution = {
+                phase: "turn_started",
+                turn_id: randomUUID().replaceAll("-", ""),
+                checkpoint,
+              };
+            }
+          } catch {
+            // Ignore checkpoint capture failure on non-git trees
+          }
         }
       },
       onCheckpoint: async (checkpoint) => {
@@ -835,6 +766,8 @@ async function createConfiguredHost(input: Readonly<{
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
+  directGate?: DirectRollbackGate;
+  rollbackGate?: import("./session-lifecycle.ts").RollbackGate;
   ensureExploreForUltra: () => Promise<unknown>;
 }> {
   const host = createSessionHost(
@@ -870,6 +803,15 @@ async function createConfiguredHost(input: Readonly<{
   const worktreeSession = input.options.runtimeConfig.worktree?.session;
   const restoredCheckpoint = input.options.initialExecution?.checkpoint;
   const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
+  let directGate: DirectRollbackGate | undefined;
+  if (!mergeGate) {
+    const gitRoot = await WorktreeSandbox.tryResolveMainRoot(input.workspaceRoot);
+    if (gitRoot) {
+      directGate = new DirectRollbackGate(gitRoot, restoredCheckpoint);
+      await directGate.initSessionBaseline();
+    }
+  }
+  const rollbackGate = mergeGate ?? directGate;
   await input.options.registerExtensions?.(host);
   // After extensions so explore prompt addendum and tool sit on the full host surface.
   // Ultra auto-enables explore even when [explore] enabled = false.
@@ -896,7 +838,13 @@ async function createConfiguredHost(input: Readonly<{
   }
   // Rollback is registered in prepareSession after failure-capture offer is wired.
   // session_start is emitted from prepareSession after /agent filter is installed.
-  return { host, mergeGate, ensureExploreForUltra: () => explore.ensure("ultra") };
+  return {
+    host,
+    mergeGate,
+    directGate,
+    rollbackGate,
+    ensureExploreForUltra: () => explore.ensure("ultra"),
+  };
 }
 
 /**

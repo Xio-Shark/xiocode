@@ -50,18 +50,18 @@ async function main(): Promise<void> {
     return;
   }
   if (head === "improve") {
-    const { runImproveCli } = await import("./improve-cli.ts");
-    process.exitCode = await runImproveCli(rawArgs.slice(1));
+    writeStdout("xio improve has been archived to archive/extensions/xio-improve (Route B: focus on core coding agent resilience).\n");
+    process.exitCode = 0;
     return;
   }
   if (head === "eval") {
-    const { runEvalCli } = await import("./eval-cli.ts");
-    process.exitCode = await runEvalCli(rawArgs.slice(1));
+    writeStdout("xio eval has been archived to archive/extensions/xio-eval (Route B: focus on core coding agent resilience).\n");
+    process.exitCode = 0;
     return;
   }
   if (head === "regress") {
-    const { runRegressCli } = await import("./regress-cli.ts");
-    process.exitCode = await runRegressCli(rawArgs.slice(1));
+    writeStdout("xio regress has been archived to archive/extensions/xio-regress (Route B: focus on core coding agent resilience).\n");
+    process.exitCode = 0;
     return;
   }
   if (head === "bench") {

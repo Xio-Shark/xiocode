@@ -193,7 +193,7 @@ function openAiBody(
   const maxTokens = request.maxTokens ?? controls.maxTokens;
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages.map(toOpenAiMessage),
+    messages: buildOpenAiMessages(request.messages),
     tools: request.tools,
     max_tokens: maxTokens,
     temperature: request.temperature,
@@ -624,6 +624,35 @@ function openAiReasoningText(
     return delta.reasoning;
   }
   return undefined;
+}
+
+function buildOpenAiMessages(messages: readonly ChatMessage[]): Array<Record<string, unknown>> {
+  if (messages.length === 0) return [];
+  // For DeepSeek and OpenAI-compatible providers, consolidate consecutive leading system messages
+  // into a single canonical system prompt at index 0. This ensures maximum KV cache / prefix-cache
+  // reuse and prevents multi-system message fragmentation.
+  let leadingSystemCount = 0;
+  const leadingTexts: string[] = [];
+  while (leadingSystemCount < messages.length && messages[leadingSystemCount]!.role === "system") {
+    const text = messages[leadingSystemCount]!.content.trim();
+    if (text.length > 0) {
+      leadingTexts.push(text);
+    }
+    leadingSystemCount += 1;
+  }
+
+  const result: Array<Record<string, unknown>> = [];
+  if (leadingTexts.length > 0) {
+    result.push({
+      role: "system",
+      content: leadingTexts.join("\n\n"),
+    });
+  }
+
+  for (let i = leadingSystemCount; i < messages.length; i += 1) {
+    result.push(toOpenAiMessage(messages[i]!));
+  }
+  return result;
 }
 
 function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {

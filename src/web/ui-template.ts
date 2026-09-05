@@ -1,31 +1,18 @@
 /**
  * XioCode Web Console - Modern Minimalist Warm Light UI.
- * Modular entry combining styles, markup, and client script.
+ * Backed by modular frontend sources in src/web/frontend/ and compiled bundle.
  */
 
-import { UI_STYLES } from "./ui-styles.ts";
-import { renderUiMarkup } from "./ui-markup.ts";
-import { renderUiScript } from "./ui-script.ts";
+import { getWebUiHtml, getClientScript } from "./ui-bundle.ts";
 
 export function renderWebUiHtml(options: { version: string; defaultSessionId?: string }): string {
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>XioCode 控制台</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-${UI_STYLES}
-  </style>
-</head>
-<body>
-${renderUiMarkup()}
-  <script>
-${renderUiScript(options)}
-  </script>
-</body>
-</html>`;
+  return getWebUiHtml(options);
+}
+
+export function renderUiScript(options?: { defaultSessionId?: string }): string {
+  const script = getClientScript();
+  if (options?.defaultSessionId) {
+    return script.replace(/const DEFAULT_SESSION_ID = "";/, `const DEFAULT_SESSION_ID = "${options.defaultSessionId}";`);
+  }
+  return script;
 }

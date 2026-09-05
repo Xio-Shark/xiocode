@@ -22,6 +22,11 @@ export type PricingOverrides = Readonly<Record<string, ModelPrice>>;
 const BUILTIN_PRICES: readonly (readonly [pattern: string, price: ModelPrice])[] = [
   ["deepseek-chat", { inputPerMTok: 0.27, outputPerMTok: 1.1, cachePerMTok: 0.07 }],
   ["deepseek-reasoner", { inputPerMTok: 0.55, outputPerMTok: 2.19, cachePerMTok: 0.14 }],
+  ["qwen-max", { inputPerMTok: 2.8, outputPerMTok: 8.4, cachePerMTok: 0.7 }],
+  ["qwen-plus", { inputPerMTok: 0.56, outputPerMTok: 1.68, cachePerMTok: 0.14 }],
+  ["qwen-turbo", { inputPerMTok: 0.04, outputPerMTok: 0.28, cachePerMTok: 0.01 }],
+  ["glm-4-plus", { inputPerMTok: 1.4, outputPerMTok: 1.4, cachePerMTok: 0.35 }],
+  ["glm-4-flash", { inputPerMTok: 0.01, outputPerMTok: 0.01, cachePerMTok: 0.005 }],
   ["gpt-4.1-mini", { inputPerMTok: 0.4, outputPerMTok: 1.6, cachePerMTok: 0.1 }],
   ["gpt-4.1-nano", { inputPerMTok: 0.1, outputPerMTok: 0.4, cachePerMTok: 0.025 }],
   ["gpt-4.1", { inputPerMTok: 2, outputPerMTok: 8, cachePerMTok: 0.5 }],

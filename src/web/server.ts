@@ -495,10 +495,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         const extensions = [
           { id: "xio-setup", name: "环境配置诊断 (Setup & Doctor)", description: "检测系统环境、依赖工具与 API Key 凭据状态", enabled: true, category: "core" },
           { id: "xio-hygiene", name: "代码异味扫描 (Hygiene & Audit)", description: "自动化静态扫描代码异味、坏味道与死代码", enabled: true, category: "audit" },
-          { id: "xio-improve", name: "自进化循环 (Self-Improve Agent)", description: "基于反馈日志和题库自动演进提示词与工作流", enabled: true, category: "evolution" },
-          { id: "xio-regress", name: "失败用例回归 (Regression Runner)", description: "私有题库可复跑的行为对照回归套件", enabled: true, category: "testing" },
-          { id: "xio-eval", name: "行为基准评估 (Behavior Eval)", description: "最小 diff (T6)、危险操作门闩 (T7)、发布约束 (T9) 评测", enabled: true, category: "evaluation" },
-          { id: "xio-sandbox", name: "安全隔离沙箱 (Worktree Sandbox)", description: "基于 Git Worktree 和容器的只读/隔离执行环境", enabled: true, category: "security" },
+          { id: "xio-sandbox", name: "安全隔离沙箱 (Worktree & Direct Rollback)", description: "基于 Git 临时对象快照与 Worktree 的安全执行环境", enabled: true, category: "security" },
           { id: "xio-evolve", name: "规则演进器 (Rules Evolver)", description: "自动化更新与维护 AGENTS.md 约束守卫", enabled: true, category: "rules" },
         ];
         res.writeHead(200, { "Content-Type": "application/json" });

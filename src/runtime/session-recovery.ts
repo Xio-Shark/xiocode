@@ -27,8 +27,9 @@ export function recoverStoredSession(stored: StoredSession | undefined, now = ne
       filesRecoverable: false,
     };
   }
-  const filesRecoverable = workspace?.mode === "worktree"
-    && (workspace.lifecycle === "active" || workspace.lifecycle === "retained");
+  const filesRecoverable = (workspace?.mode === "worktree"
+    && (workspace.lifecycle === "active" || workspace.lifecycle === "retained"))
+    || (workspace?.mode === "main" && Boolean(execution?.checkpoint?.tree));
   if (!execution || execution.phase === "idle") {
     const messages = workspace?.mode === "worktree" && !filesRecoverable
       ? [...stored.messages, {
@@ -62,7 +63,9 @@ export function recoverStoredSession(stored: StoredSession | undefined, now = ne
     role: "system",
     name: SESSION_RECOVERY_NAME,
     content: filesRecoverable
-      ? `Recovered interrupted session state. ${pending.length} tool call(s) had unknown completion.`
+      ? (workspace?.mode === "main"
+          ? `Recovered interrupted session state. ${pending.length} tool call(s) had unknown completion. Turn checkpoint is available for /rollback turn.`
+          : `Recovered interrupted session state. ${pending.length} tool call(s) had unknown completion.`)
       : `Recovered chat only. ${pending.length} tool call(s) had unknown completion; prior file state is unavailable.`,
   });
   return {

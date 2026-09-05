@@ -58,3 +58,17 @@ export async function gitOk(cwd: string, args: readonly string[]): Promise<strin
   }
   return result.stdout;
 }
+
+export async function gitWithEnvOk(
+  cwd: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+): Promise<string> {
+  const result = await gitWithEnv(cwd, args, env);
+  if (result.code !== 0) {
+    const detail = result.stderr || result.stdout || `git ${args.join(" ")} failed`;
+    throw new Error(detail);
+  }
+  return result.stdout;
+}
+

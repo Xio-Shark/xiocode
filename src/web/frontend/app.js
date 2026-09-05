@@ -1,9 +1,4 @@
-/**
- * XioCode Web Console - Client Script
- */
-export function renderUiScript(options: { defaultSessionId?: string }): string {
-  return `
-    let activeSessionId = "${options.defaultSessionId || ''}";
+let activeSessionId = "";
     let isRunning = false;
     let eventSource = null;
     let allSessions = [];
@@ -267,15 +262,15 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
         const container = document.getElementById("plugins-container");
         if (!container || !data.extensions) return;
 
-        container.innerHTML = data.extensions.map(ext => \`
+        container.innerHTML = data.extensions.map(ext => `
           <div class="plugin-card">
             <div class="plugin-card-header">
-              <span class="plugin-name">\${escapeHtml(ext.name)}</span>
-              <span class="plugin-tag">\${escapeHtml(ext.category || 'plugin')}</span>
+              <span class="plugin-name">${escapeHtml(ext.name)}</span>
+              <span class="plugin-tag">${escapeHtml(ext.category || 'plugin')}</span>
             </div>
-            <p class="plugin-desc">\${escapeHtml(ext.description)}</p>
+            <p class="plugin-desc">${escapeHtml(ext.description)}</p>
           </div>
-        \`).join("");
+        `).join("");
       } catch (err) {
         console.error("loadExtensions error", err);
       }
@@ -285,13 +280,13 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       const editor = document.getElementById("setting-rules-editor");
       let snippet = "";
       if (type === "Surgical") {
-        snippet = "\\n## Surgical Diff 最小修改原则\\n- 只改动实现意图所必需的文件与代码行。\\n- 严禁无关格式化、顺手重构或清理已有代码。\\n";
+        snippet = "\n## Surgical Diff 最小修改原则\n- 只改动实现意图所必需的文件与代码行。\n- 严禁无关格式化、顺手重构或清理已有代码。\n";
       } else if (type === "TestFirst") {
-        snippet = "\\n## Test-First 严格测试交付\\n- 交付前须执行并通过受影响模块的单元测试。\\n- 输出中必须附带明确的测试执行状态证据。\\n";
+        snippet = "\n## Test-First 严格测试交付\n- 交付前须执行并通过受影响模块的单元测试。\n- 输出中必须附带明确的测试执行状态证据。\n";
       } else if (type === "Security") {
-        snippet = "\\n## A3 凭据安全基线\\n- 源码与日志中绝不硬编码任何 API Key 或敏感凭据。\\n- 数据库与命令调用一律强制参数化。\\n";
+        snippet = "\n## A3 凭据安全基线\n- 源码与日志中绝不硬编码任何 API Key 或敏感凭据。\n- 数据库与命令调用一律强制参数化。\n";
       }
-      editor.value = (editor.value.trim() + snippet).trim() + "\\n";
+      editor.value = (editor.value.trim() + snippet).trim() + "\n";
       showToast("已插入规则预设模板", "success");
     }
 
@@ -446,7 +441,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
         : allSessions;
 
       if (filtered.length === 0) {
-        sessionList.innerHTML = \`<div class="empty-state-list">未找到相关会话</div>\`;
+        sessionList.innerHTML = `<div class="empty-state-list">未找到相关会话</div>`;
         return;
       }
 
@@ -468,7 +463,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       // Render workspace header
       const wsHeader = document.createElement("div");
       wsHeader.className = "sidebar-section-title";
-      wsHeader.innerHTML = \`<span>工作区</span><span style="font-size: 10.5px; font-weight: normal; color: var(--text-tertiary);">\${filtered.length} 个会话</span>\`;
+      wsHeader.innerHTML = `<span>工作区</span><span style="font-size: 10.5px; font-weight: normal; color: var(--text-tertiary);">${filtered.length} 个会话</span>`;
       sessionList.appendChild(wsHeader);
 
       for (const [wsName, sessList] of groups.entries()) {
@@ -478,12 +473,12 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
 
         const headerEl = document.createElement("div");
         headerEl.className = "ws-group-header";
-        headerEl.innerHTML = \`
+        headerEl.innerHTML = `
           <span class="ws-arrow">▾</span>
           <span class="ws-icon">📁</span>
-          <span class="ws-name">\${escapeHtml(wsName)}</span>
-          <span class="ws-count" style="font-size: 11px; color: var(--text-tertiary); margin-left: auto;">\${sessList.length}</span>
-        \`;
+          <span class="ws-name">${escapeHtml(wsName)}</span>
+          <span class="ws-count" style="font-size: 11px; color: var(--text-tertiary); margin-left: auto;">${sessList.length}</span>
+        `;
         headerEl.onclick = () => {
           groupEl.classList.toggle("collapsed");
         };
@@ -499,15 +494,15 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
           item.className = "session-item" + (isActive ? " active" : "");
           const timeText = formatRelativeTime(sess.updated_at || sess.created_at);
           const fullTitle = sess.firstPrompt || sess.first_prompt || formatSessionTitle(sess, idx);
-          item.innerHTML = \`
+          item.innerHTML = `
             <div class="session-item-text">
-              <span class="session-title" title="\${escapeHtml(fullTitle)}">\${escapeHtml(formatSessionTitle(sess, idx))}</span>
-              <span class="session-time">\${timeText}</span>
+              <span class="session-title" title="${escapeHtml(fullTitle)}">${escapeHtml(formatSessionTitle(sess, idx))}</span>
+              <span class="session-time">${timeText}</span>
             </div>
-            <button class="session-del-btn" title="删除会话" onclick="event.stopPropagation(); deleteSession('\${id}')">
+            <button class="session-del-btn" title="删除会话" onclick="event.stopPropagation(); deleteSession('${id}')">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
             </button>
-          \`;
+          `;
           item.addEventListener("click", () => selectSession(id));
           itemsEl.appendChild(item);
         });
@@ -592,7 +587,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
     function renderMessages(messages) {
       clearChat();
       if (messages.length === 0) {
-        chatFlowContainer.innerHTML = \`
+        chatFlowContainer.innerHTML = `
           <div class="hero-state" id="hero-state">
             <h1 class="hero-title">今天想构建什么？</h1>
             <p class="hero-subtitle">XioCode 是基于当前工作区自主运行的智能体，具备严格的安全审查与可观测轨迹。</p>
@@ -627,7 +622,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
               </div>
             </div>
           </div>
-        \`;
+        `;
         return;
       }
 
@@ -646,11 +641,11 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
 
       const row = document.createElement("div");
       row.className = "message-row user";
-      row.innerHTML = \`
+      row.innerHTML = `
         <div class="bubble user">
-          <div class="bubble-content">\${escapeHtml(text)}</div>
+          <div class="bubble-content">${escapeHtml(text)}</div>
         </div>
-      \`;
+      `;
       chatFlowContainer.appendChild(row);
       chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
     }
@@ -693,7 +688,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       setRunningState(true);
 
       try {
-        const res = await fetch(\`/api/sessions/\${activeSessionId}/prompt\`, {
+        const res = await fetch(`/api/sessions/${activeSessionId}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: text }),
@@ -710,7 +705,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
     async function handleAbort() {
       if (!activeSessionId || !isRunning) return;
       try {
-        await fetch(\`/api/sessions/\${activeSessionId}/abort\`, { method: "POST" });
+        await fetch(`/api/sessions/${activeSessionId}/abort`, { method: "POST" });
       } catch (err) {
         console.error("abort error", err);
       }
@@ -731,7 +726,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       }
       if (!sessionId) return;
 
-      eventSource = new EventSource(\`/api/sessions/\${sessionId}/events\`);
+      eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
       eventSource.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
@@ -811,7 +806,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
         const matched = currentTrajectorySteps.find(s => s.callId === payload.call_id);
         if (matched) {
           matched.output = payload.result || "";
-          matched.outputPreview = (payload.result || "").replace(/\\s+/g, " ").slice(0, 100);
+          matched.outputPreview = (payload.result || "").replace(/\s+/g, " ").slice(0, 100);
           matched.isError = Boolean(payload.is_error);
           if (matched.isError) currentStats.totalErrors = (currentStats.totalErrors || 0) + 1;
           renderTrajectory(currentTrajectorySteps, currentStats);
@@ -928,83 +923,83 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
 
         let summaryHtml = "";
         if (s.type === "tool") {
-          summaryHtml = \`
-            <span class="traj-tool-name">\${escapeHtml(s.name || "tool")}</span>
-            <span class="traj-tool-args">\${escapeHtml(s.argsPreview || "{}")}</span>
+          summaryHtml = `
+            <span class="traj-tool-name">${escapeHtml(s.name || "tool")}</span>
+            <span class="traj-tool-args">${escapeHtml(s.argsPreview || "{}")}</span>
             <span class="traj-arrow">→</span>
-            <span class="traj-tool-output">\${escapeHtml(s.outputPreview || "")}</span>
-          \`;
+            <span class="traj-tool-output">${escapeHtml(s.outputPreview || "")}</span>
+          `;
         } else if (s.type === "assistant") {
           const isOnly = s.content === "(仅工具调用)" || s.content === "(tool call only)";
-          summaryHtml = \`<span class="traj-assistant-text \${isOnly ? 'traj-assistant-toolonly' : ''}">\${escapeHtml(s.content || "")}</span>\`;
+          summaryHtml = `<span class="traj-assistant-text ${isOnly ? 'traj-assistant-toolonly' : ''}">${escapeHtml(s.content || "")}</span>`;
         } else if (s.type === "thinking") {
-          summaryHtml = \`<span class="traj-assistant-text" style="color: #64748b;">\${escapeHtml((s.thought || s.content || "").slice(0, 140))}</span>\`;
+          summaryHtml = `<span class="traj-assistant-text" style="color: #64748b;">${escapeHtml((s.thought || s.content || "").slice(0, 140))}</span>`;
         } else if (s.type === "input") {
-          summaryHtml = \`<span class="traj-content-preview" style="font-weight: 600; color: #1e293b;">\${escapeHtml(s.content || "")}</span>\`;
+          summaryHtml = `<span class="traj-content-preview" style="font-weight: 600; color: #1e293b;">${escapeHtml(s.content || "")}</span>`;
         }
 
-        let detailHtml = \`
+        let detailHtml = `
           <div class="traj-detail-meta">
-            <span>步骤 #\${s.stepNumber} · 轮次 \${s.turnNumber}</span>
+            <span>步骤 #${s.stepNumber} · 轮次 ${s.turnNumber}</span>
             <div>
-              <span class="detail-status-pill \${s.isError ? 'error' : 'success'}">\${s.isError ? '异常 / 失败' : '执行成功'}</span>
-              \${s.callId ? '<span style="margin-left: 8px; font-family: var(--font-mono); font-size: 11px;">ID: ' + escapeHtml(s.callId) + '</span>' : ''}
+              <span class="detail-status-pill ${s.isError ? 'error' : 'success'}">${s.isError ? '异常 / 失败' : '执行成功'}</span>
+              ${s.callId ? '<span style="margin-left: 8px; font-family: var(--font-mono); font-size: 11px;">ID: ' + escapeHtml(s.callId) + '</span>' : ''}
             </div>
           </div>
-        \`;
+        `;
 
         if (s.type === "tool") {
-          detailHtml += \`
+          detailHtml += `
             <div class="traj-section-title">调用参数 (Arguments)</div>
             <div class="traj-code-block">
               <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
-              <code>\${escapeHtml(JSON.stringify(s.args || {}, null, 2))}</code>
+              <code>${escapeHtml(JSON.stringify(s.args || {}, null, 2))}</code>
             </div>
             <div class="traj-section-title" style="margin-top: 10px;">执行结果 (Output)</div>
             <div class="traj-code-block output-block">
               <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
-              <code>\${escapeHtml(s.output || "(无输出)")}</code>
+              <code>${escapeHtml(s.output || "(无输出)")}</code>
             </div>
-          \`;
+          `;
         } else if (s.type === "assistant") {
           if (s.thought) {
-            detailHtml += \`
+            detailHtml += `
               <div class="traj-thought-box">
                 <div class="traj-thought-label">思考推理过程 (Thinking)</div>
-                <div>\${escapeHtml(s.thought)}</div>
+                <div>${escapeHtml(s.thought)}</div>
               </div>
-            \`;
+            `;
           }
-          detailHtml += \`
+          detailHtml += `
             <div class="traj-section-title">模型回复</div>
-            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "(仅工具调用)")}</div>
-          \`;
+            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">${escapeHtml(s.content || "(仅工具调用)")}</div>
+          `;
         } else if (s.type === "thinking") {
-          detailHtml += \`
+          detailHtml += `
             <div class="traj-thought-box">
               <div class="traj-thought-label">思考推理过程 (Thinking)</div>
-              <div>\${escapeHtml(s.thought || s.content || "")}</div>
+              <div>${escapeHtml(s.thought || s.content || "")}</div>
             </div>
-          \`;
+          `;
         } else if (s.type === "input") {
-          detailHtml += \`
+          detailHtml += `
             <div class="traj-section-title">用户指令 (User Prompt)</div>
-            <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">\${escapeHtml(s.content || "")}</div>
-          \`;
+            <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">${escapeHtml(s.content || "")}</div>
+          `;
         }
 
-        item.innerHTML = \`
+        item.innerHTML = `
           <div class="traj-row-summary" onclick="this.parentElement.classList.toggle('expanded')">
-            <span class="traj-dot \${s.isError ? 'error' : ''}"></span>
-            <span class="traj-badge \${badgeClass}">\${badgeLabel}</span>
+            <span class="traj-dot ${s.isError ? 'error' : ''}"></span>
+            <span class="traj-badge ${badgeClass}">${badgeLabel}</span>
             <div class="traj-content-preview">
-              \${summaryHtml}
+              ${summaryHtml}
             </div>
           </div>
           <div class="traj-detail-panel">
-            \${detailHtml}
+            ${detailHtml}
           </div>
-        \`;
+        `;
         stream.appendChild(item);
       });
     }
@@ -1045,13 +1040,13 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       if (!card) {
         card = document.createElement("div");
         card.className = "thought-drawer";
-        card.innerHTML = \`
+        card.innerHTML = `
           <div class="thought-drawer-header" onclick="this.parentElement.classList.toggle('collapsed')">
             <span class="thought-badge">思考推理</span>
             <span class="thought-expand-hint">点击折叠/展开</span>
           </div>
           <div class="thought-drawer-body"></div>
-        \`;
+        `;
         box.appendChild(card);
       }
       const body = card.querySelector(".thought-drawer-body");
@@ -1075,7 +1070,7 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       const box = getOrCreateAssistantBox();
       const prose = document.createElement("div");
       prose.className = "prose";
-      prose.innerHTML = \`<p>\${escapeHtml(text)}</p>\`;
+      prose.innerHTML = `<p>${escapeHtml(text)}</p>`;
       box.appendChild(prose);
       chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
     }
@@ -1085,13 +1080,13 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
       const card = document.createElement("div");
       card.className = "tool-box";
       card.id = "tool-" + (payload.call_id || Date.now());
-      card.innerHTML = \`
+      card.innerHTML = `
         <div class="tool-box-header" onclick="this.parentElement.classList.toggle('collapsed')">
-          <span class="tool-name-tag">\${payload.tool}</span>
+          <span class="tool-name-tag">${payload.tool}</span>
           <span class="tool-status-pill">running</span>
         </div>
-        <div class="tool-box-body">\${JSON.stringify(payload.args || {}, null, 2)}</div>
-      \`;
+        <div class="tool-box-body">${JSON.stringify(payload.args || {}, null, 2)}</div>
+      `;
       box.appendChild(card);
       chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
     }
@@ -1126,5 +1121,3 @@ export function renderUiScript(options: { defaultSessionId?: string }): string {
     function escapeHtml(str) {
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
-  `;
-}

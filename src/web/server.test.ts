@@ -186,7 +186,14 @@ describe("Web Console & Server", () => {
     const extRes = await fetch(`${handle.url}/api/extensions`);
     expect(extRes.status).toBe(200);
     const extData = await extRes.json();
-    expect(Array.isArray(extData.extensions)).toBe(true);
-    expect(extData.extensions.some((e: { id: string }) => e.id === "xio-eval")).toBe(true);
+    expect(extData.extensions.some((e: { id: string }) => e.id === "xio-sandbox")).toBe(true);
+  });
+
+  it("renders valid client-side javascript without syntax errors", async () => {
+    const { renderUiScript } = await import("./ui-template.ts");
+    const script = renderUiScript({ defaultSessionId: "test-session" });
+    expect(typeof script).toBe("string");
+    expect(script.length).toBeGreaterThan(1000);
+    expect(() => new Function(script)).not.toThrow();
   });
 });

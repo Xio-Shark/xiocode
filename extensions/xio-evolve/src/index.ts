@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { decodeRunProvenance } from "../../xio-regress/src/decoder.ts";
+import { decodeRunProvenance } from "./provenance.ts";
 import { ContextInjector } from "./context-injector.ts";
 import { ResultDenoiser } from "./result-denoiser.ts";
 import { RetrospectiveRunner } from "./retrospective/runner.ts";
