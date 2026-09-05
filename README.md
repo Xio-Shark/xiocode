@@ -1,7 +1,7 @@
 # XioCode 🦈
 
-> A coding agent that lives in your terminal: **interrupt anytime, undo with one key, and never worry about broken codebases**.  
-> Bring your own API key, runs 100% locally. No hosted relay, no data harvesting, every penny accounted for.
+> A coding assistant in your terminal: **interrupt anytime, roll back edits cleanly, and keep your workspace intact**.  
+> Direct official provider endpoints, 100% local execution. No hosted relay, no data harvesting, transparent real-time cost tracking.
 
 **中文版 → [README.zh-CN.md](./README.zh-CN.md)**
 
@@ -15,12 +15,12 @@
 
 ## Why XioCode?
 
-Most coding agents make promises about speed, but the real anxiety when using AI on real code isn't "is it fast enough?" It's:
-- **Fear of dirty diffs**: What if it touches 10 files, breaks my tests, and leaves a mess?
-- **Fragile sessions**: If your terminal dies or laptop sleeps mid-task, your entire context is wiped out.
-- **Hidden costs and clunky provider setups**: Juggling custom proxy configs and guessing usage.
+Most coding agents make promises about speed, but in day-to-day engineering, the real friction points are:
+- **Fear of uncontrolled edits**: When an agent modifies multiple files unexpectedly, unwinding changes manually is painful;
+- **Vulnerable sessions**: Terminal exits, laptop sleep, or accidental interrupts destroy context and force you to start over;
+- **Tedious provider setups & hidden costs**: Juggling custom proxy configs with no real-time visibility into actual spending.
 
-**XioCode is built to solve these daily headaches:**
+**XioCode is designed to provide a safe, disciplined, and recoverable coding workflow:**
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -29,35 +29,39 @@ Most coding agents make promises about speed, but the real anxiety when using AI
 │  $ xio "refactor the payment module and add Stripe"    │
 │                                                        │
 │  XioCode:                                              │
-│    · Takes a snapshot of your files before touching    │
-│    · Reads and understands the project structure       │
-│    · Edits files live, showing exact diffs             │
+│    · Takes an automated workspace state snapshot       │
+│    · Analyzes project structure and dependencies       │
+│    · Applies file edits with clear diffs               │
 │    · Stops and asks before dangerous commands          │
 │                                                        │
-│  Don't like the changes? Type `/rollback turn` to undo │
-│  Terminal died? Run `xio resume` to pick right back up │
+│  Want to undo? Run /rollback turn to revert the turn   │
+│  Session interrupted? Run xio resume to continue       │
 └────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Three Core Superpowers
+## Key Features
 
-### 1. 💊 True "Regret Medicine" — Instant Undo
-No need to manually sift through `git diff` when the agent goes off track:
-- **Undo just the last turn**: Type `/rollback turn` to instantly revert files touched in that turn, without wiping your existing uncommitted work!
-- **Undo the entire session**: Type `/rollback` to reset back to the state when `xio` first opened.
+### 1. Granular Rollback: Safe, Turn-by-Turn Revert
+When code changes across multiple files do not match expectations, manual reversion is slow and error-prone.  
+XioCode captures lightweight snapshots before every modification:
+- **Revert the latest turn**: Run `/rollback turn` to instantly revert files changed in that specific prompt, leaving your other uncommitted work untouched;
+- **Revert the entire session**: Run `/rollback` to reset workspace files back to the state when the session began.
 
-### 2. ⚡ Unbreakable Sessions — Survives any crash or Ctrl+C
-Laptop battery died? Pressed `Ctrl+C` by mistake?  
-Every step is safely journaled locally:
+### 2. Session Persistence: Resume Interrupted Work Seamlessly
+If your laptop sleeps, the terminal is accidentally closed, or a long-running process is stopped, you do not need to reconstruct your context.  
+XioCode journals each execution step incrementally:
 ```bash
-$ xio resume        # Reopens right where it stopped — full conversation, task state, and thoughts intact!
+$ xio resume        # Reloads the session with conversation history, tool state, and context intact
 ```
 
-### 3. 🌏 First-class Models & Transparent Costs
-Native support for **DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM)**, alongside **OpenAI, Claude, and Gemini**.  
-The footer shows your exact spend in **real dollars and cents** on every turn — no fake `$0` placeholders.
+### 3. Native Model Integration & Real-Time Cost Tracking
+Directly connects to leading LLM providers through their official APIs without requiring intermediary proxies:
+- **Domestic & Open APIs**: DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), etc.
+- **Global APIs**: Anthropic Claude, OpenAI, Google Gemini, etc.
+
+The terminal status bar displays live cost calculations based on exact token usage (accurate to the cent) on every turn.
 
 ---
 
@@ -134,8 +138,8 @@ Helpful tips:
 |---------------|--------------|
 | `/connect` | Setup or switch provider API key |
 | `/model` | Switch model on the fly |
-| `/rollback turn` | **Undo turn**: revert files modified in the last prompt |
-| `/rollback` | **Undo session**: revert files to session baseline |
+| `/rollback turn` | **Undo turn**: revert files modified in the latest prompt |
+| `/rollback` | **Full rollback**: revert all workspace files back to session baseline |
 | `/compact` | Compress conversation history when context gets large |
 | `/help` | Open shortcut sheet (or press `?`) |
 
