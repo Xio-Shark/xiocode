@@ -67,6 +67,11 @@ export async function defaultAsk(question: string): Promise<boolean> {
 export { MergeGate } from "./merge-gate.ts";
 export { DirectRollbackGate } from "./direct-gate.ts";
 export { WorktreeSandbox, DEFAULT_WORKTREE_CONFIG } from "./worktree-sandbox.ts";
+export {
+  runSpeculativeRace,
+  applyRaceWinner,
+  parseNumstatLines,
+} from "./racing.ts";
 export type { DiffSummary, MergeResult, RollbackResult, AskFn } from "./merge-gate.ts";
 export type {
   TurnCheckpoint,
@@ -75,3 +80,13 @@ export type {
   WorktreeConfig,
   WorktreeCreateOptions,
 } from "./worktree-sandbox.ts";
+export type {
+  RaceCandidate,
+  RaceVerificationResult,
+  RaceVerifier,
+  RaceStrategy,
+  RaceCandidateResult,
+  RaceOutcome,
+  RaceOptions,
+} from "./racing.ts";
+

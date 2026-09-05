@@ -19,7 +19,7 @@ const common = {
   bundle: true,
   platform: "node",
   format: "esm",
-  target: "node22",
+  target: "node20",
   sourcemap: true,
   splitting: true,
   // Externalize npm deps; bundle only repo sources (src/ + extensions/).

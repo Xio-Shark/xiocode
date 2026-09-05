@@ -27,7 +27,7 @@
     "url": "https://github.com/Xio-Shark/xiocode/issues"
   },
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "node ./scripts/build-cli.mjs && node ./scripts/build-web.mjs",

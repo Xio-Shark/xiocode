@@ -9,8 +9,8 @@ import { PROVIDER_PRESETS } from "./provider-catalog.ts";
 import { discoverModels } from "../runtime/providers/discover.ts";
 import { providerErrorGuidance } from "../runtime/providers/error-guidance.ts";
 
-const MIN_NODE_MAJOR = 22;
-const MIN_NODE_MINOR = 6;
+const MIN_NODE_MAJOR = 20;
+const MIN_NODE_MINOR = 0;
 const CONNECT_TIMEOUT_MS = 4_000;
 
 export type DoctorCliOptions = Readonly<{

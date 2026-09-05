@@ -30,6 +30,7 @@ import {
   registerMergeCommand,
   registerRollbackCommand,
 } from "./session-lifecycle.ts";
+import { ImmunityStore, resolveRepoId } from "./immunity/index.ts";
 import { FileReadSet } from "./file-read-set.ts";
 import { FileShiftRegistry, type FileShiftInfo } from "./file-shift.ts";
 import { FileWriteQueue } from "./file-write-queue.ts";
@@ -477,8 +478,44 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     return undefined;
   };
   host.registerCommand("regress", {
-    description: "Regression capture tool (archived).",
-    handler: async () => "/regress has been archived into archive/extensions/xio-regress (Route B: focus on core coding agent resilience).",
+    description: "Regression capture tool (deprecated in favor of automatic /immunity).",
+    handler: async () => "/regress has been superseded by the zero-friction /immunity system, which automatically distills failure rules upon /rollback and ! hard steer. Use /immunity to inspect.",
+  });
+
+  const repoId = resolveRepoId(cwd);
+  const immunityStore = new ImmunityStore();
+
+  host.registerCommand("immunity", {
+    description: "Inspect or reset project negative immunity constraints (/immunity [clear]).",
+    handler: async (args) => {
+      const trimmed = String(args ?? "").trim().toLowerCase();
+      if (trimmed === "clear" || trimmed === "reset") {
+        await immunityStore.clearRules(repoId);
+        return "Cleared all project immunity constraints for this repository.";
+      }
+      const rules = await immunityStore.loadRules(repoId);
+      if (rules.length === 0) {
+        return "No immunity constraints recorded for this repository yet. (Constraints are auto-synthesized on /rollback or ! hard steer).";
+      }
+      const lines = [
+        `Active Project Immunity Constraints (${rules.length} rule${rules.length === 1 ? "" : "s"}):`,
+      ];
+      for (const rule of rules) {
+        lines.push(`- [${rule.trigger}] ${rule.lesson}`);
+      }
+      lines.push("\nUse `/immunity clear` to reset these constraints.");
+      return lines.join("\n");
+    },
+  });
+
+  host.registerCommand("race", {
+    description: "Speculative worktree racing engine (/race).",
+    handler: async () => [
+      "Speculative Worktree Racing Engine:",
+      "Enables parallel exploration across multiple isolated Git worktree branches.",
+      "Candidate branches compete concurrently under validation gates (e.g. tests, linters).",
+      "Winner is selected based on minimal diff / fastest passing outcome; losing branches are auto-pruned.",
+    ].join("\n"),
   });
 
   registerRollbackCommand(
@@ -486,6 +523,18 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     rollbackGate,
     ask,
     sink,
+    async (input) => {
+      try {
+        const rule = await immunityStore.recordRollback({
+          repoId,
+          kind: input.kind,
+          summary: input.summary,
+        });
+        sink.notify?.(`[Immunity] Learned negative constraint from ${input.kind} rollback.`);
+      } catch {
+        // non-blocking
+      }
+    },
   );
 
   const contextCompaction = new ContextCompactionController({
@@ -577,6 +626,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     getHarnessPhase: () => harness.phase,
     runPrompt: createPromptRunner({
       host,
+      immunityStore,
+      repoId,
       getClient: getOrCreateClient,
       getModel,
       getProviderApi: () => registration.api,

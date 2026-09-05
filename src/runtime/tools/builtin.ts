@@ -12,6 +12,7 @@ import { WorkspacePathPolicy, type CheckedWorkspacePath } from "../workspace-pat
 import { GrepSeenState, annotateGrepOutput } from "./grep-outline.ts";
 import { Type } from "../schema.ts";
 import { hashContent } from "../verify/write-back.ts";
+import { formatBlastRadiusAlert, probeBlastRadius } from "./blast-radius.ts";
 import { withFixHint } from "./error-guidance.ts";
 import {
   matchGlob,
@@ -113,7 +114,7 @@ export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly 
   return [
     createReadTool(cwd, pathPolicy, readSet, fileShift, contextId),
     createWriteTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
-    createEditTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
+    createEditTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift, searchOverride),
     createBashTool(cwd, childEnv),
     createGrepTool(cwd, pathPolicy, searchOverride, grepOutline ? grepSeen : undefined),
     createGlobTool(cwd, pathPolicy, searchOverride),
@@ -233,6 +234,7 @@ function createEditTool(
   fileShift?: FileShiftRegistry,
   contextId = "main",
   onFileShift?: (info: FileShiftInfo) => void,
+  searchEngine?: string | null,
 ): ToolDefinition {
   return defineTool({
     name: "edit",
@@ -277,9 +279,11 @@ function createEditTool(
               return errorResult("edit", patched.error);
             }
             return finishEdit(
+              cwd,
               policy,
               requestedPath,
               filePath,
+              content,
               patched.next,
               writeBackVerify,
               readSet,
@@ -287,6 +291,7 @@ function createEditTool(
               fileShift,
               contextId,
               onFileShift,
+              searchEngine,
             );
           }
 
@@ -301,9 +306,11 @@ function createEditTool(
             return errorResult("edit", replaced.error);
           }
           return finishEdit(
+            cwd,
             policy,
             requestedPath,
             filePath,
+            content,
             replaced.next,
             writeBackVerify,
             readSet,
@@ -311,6 +318,7 @@ function createEditTool(
             fileShift,
             contextId,
             onFileShift,
+            searchEngine,
           );
         });
       } catch (error) {
@@ -321,9 +329,11 @@ function createEditTool(
 }
 
 async function finishEdit(
+  cwd: string,
   pathPolicy: WorkspacePathPolicy,
   requestedPath: string,
   filePath: string,
+  oldContent: string,
   next: string,
   writeBackVerify: boolean,
   readSet: FileReadSet,
@@ -331,18 +341,28 @@ async function finishEdit(
   fileShift?: FileShiftRegistry,
   contextId = "main",
   onFileShift?: (info: FileShiftInfo) => void,
+  searchEngine?: string | null,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError: boolean }> {
   await pathPolicy.writeFileAtomic(requestedPath, next, undefined, "edit-file");
   const fuzzyNote = fuzzy ? "; fuzzy: whitespace normalized" : "";
-  if (!writeBackVerify) {
-    await readSet.mark(filePath);
-    await noteFileShift(fileShift, contextId, onFileShift, filePath);
-    return textResult(`edited ${filePath}${fuzzyNote}`);
+
+  let blastNote = "";
+  try {
+    const report = await probeBlastRadius(cwd, filePath, oldContent, next, { engine: searchEngine });
+    if (report) {
+      blastNote = formatBlastRadiusAlert(report);
+    }
+  } catch {
+    // Non-blocking probe failure
   }
+
   await readSet.mark(filePath);
   await noteFileShift(fileShift, contextId, onFileShift, filePath);
+  if (!writeBackVerify) {
+    return textResult(`edited ${filePath}${fuzzyNote}${blastNote}`);
+  }
   return textResult(
-    `edited ${filePath}${fuzzyNote}; write-back ok sha256=${hashContent(next).slice(0, 12)}`,
+    `edited ${filePath}${fuzzyNote}; write-back ok sha256=${hashContent(next).slice(0, 12)}${blastNote}`,
   );
 }
 

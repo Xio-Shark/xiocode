@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 
 import { ErrorTracker } from "./error-tracker.ts";
 import type { Executable } from "./types.ts";
+import { ImmunityStore } from "../../../src/runtime/immunity/index.ts";
+import { resolveRepoId } from "../../../src/runtime/immunity/distill.ts";
 
 export type ProjectState = Readonly<{
   branch: string;
@@ -17,6 +19,8 @@ export type ContextInjectorOptions = Readonly<{
   maxStatusEntries?: number;
   now?: () => number;
   errorTracker?: ErrorTracker;
+  immunityStore?: ImmunityStore;
+  repoId?: string;
 }>;
 
 export type FormatProjectStateOptions = Readonly<{
@@ -64,6 +68,8 @@ export class ContextInjector {
   private readonly maxStatusEntries: number;
   private readonly now: () => number;
   private readonly errorTracker: ErrorTracker;
+  private readonly immunityStore: ImmunityStore | undefined;
+  private readonly repoId: string | undefined;
   private cache: ContextCacheEntry | undefined;
   private recentCommitsCache: RecentCommitsCacheEntry | undefined;
   private pendingContext: Promise<ContextCacheEntry> | undefined;
@@ -76,6 +82,8 @@ export class ContextInjector {
     this.maxStatusEntries = options.maxStatusEntries ?? DEFAULT_MAX_STATUS_ENTRIES;
     this.now = options.now ?? Date.now;
     this.errorTracker = options.errorTracker ?? new ErrorTracker();
+    this.immunityStore = options.immunityStore;
+    this.repoId = options.repoId;
   }
 
   async collect(): Promise<ProjectState> {
@@ -96,6 +104,21 @@ export class ContextInjector {
     if (errorSummary) {
       parts.push("");
       parts.push(errorSummary);
+    }
+
+    // 添加项目负向免疫抗体（用户回滚和硬打断提炼出的工程禁忌规约）
+    if (this.immunityStore) {
+      const targetRepoId = this.repoId ?? resolveRepoId(this.cwd);
+      try {
+        const rules = await this.immunityStore.loadRules(targetRepoId);
+        const immunitySection = this.immunityStore.formatPromptSection(rules);
+        if (immunitySection) {
+          parts.push("");
+          parts.push(immunitySection);
+        }
+      } catch {
+        // non-blocking
+      }
     }
 
     return parts.join("\n");

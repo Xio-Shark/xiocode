@@ -50,17 +50,17 @@ async function main(): Promise<void> {
     return;
   }
   if (head === "improve") {
-    writeStdout("xio improve has been archived to archive/extensions/xio-improve (Route B: focus on core coding agent resilience).\n");
+    writeStdout("xio improve is deprecated in Route B (focus on core coding agent resilience).\n");
     process.exitCode = 0;
     return;
   }
   if (head === "eval") {
-    writeStdout("xio eval has been archived to archive/extensions/xio-eval (Route B: focus on core coding agent resilience).\n");
+    writeStdout("xio eval is deprecated in Route B (focus on core coding agent resilience).\n");
     process.exitCode = 0;
     return;
   }
   if (head === "regress") {
-    writeStdout("xio regress has been archived to archive/extensions/xio-regress (Route B: focus on core coding agent resilience).\n");
+    writeStdout("xio regress is deprecated in Route B; see /immunity for automatic zero-friction failure distillation.\n");
     process.exitCode = 0;
     return;
   }

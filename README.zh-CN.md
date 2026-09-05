@@ -6,7 +6,7 @@
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node.js-20.0%2B-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.0-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
@@ -16,6 +16,9 @@
 ## 核心特性
 
 - **细粒度版本回滚**：每次代码修改前自动记录工作区轻量快照。支持单轮撤销（`/rollback turn`）与会话基线回滚（`/rollback`），在不污染未暂存本地代码的前提下精准撤销异常变更。
+- **工程抗体系统 (Project Immunity Engine)**：零摩擦隐式负向约束蒸馏。当用户触发 `/rollback` 回滚或输入 `! 强干预` 时，自动提炼失败教训，并在后续轮次强约束注入，杜绝同一错误重犯。
+- **影响域探查 (Blast Radius Probe)**：公共导出符号 AST 变更探查。跨 TS/JS/Python/Go/Rust 自动识别破坏性签名变更，并实时联动探查工作区所有下游调用方文件与行号。
+- **推测性赛马 (Speculative Worktree Racing)**：在独立隔离的 Git Worktree 中并发探索多种解题路径与算法分支，基于自动化测试与最小 Diff (Karpathy Surgical 原则) 自动裁决优胜者并秒级清理废弃分支。
 - **状态持久化与断点恢复**：对话上下文、任务目标与执行状态均增量落盘持久化。在终端关闭、系统休眠或进程中断后，通过 `xio resume` 即可原位继续工作。
 - **主流模型原生对接**：原生集成 DeepSeek、通义千问 (DashScope)、硅基流动 (SiliconFlow)、智谱 AI (GLM) 以及 Anthropic Claude、OpenAI、Google Gemini 官方端点，无需自建转发代理。
 - **实时 Token 成本度量**：终端状态栏按实际 Token 消耗与提供商定价实时计算费用（精确到美分），使用成本清晰透明。
@@ -26,7 +29,7 @@
 
 ## 安装要求
 
-- **Node.js**: 22.6.0 或更高版本
+- **Node.js**: 20.0.0 或更高版本
 - **操作系统**: macOS, Linux, Windows (WSL)
 
 ```bash
@@ -116,6 +119,8 @@ xio web           # 启动本地可视化控制台并在浏览器打开 http://l
 | `/model` | 动态切换当前会话所用的模型 |
 | `/rollback turn` | 撤销上一轮的文件修改 |
 | `/rollback` | 撤销本次会话的所有文件修改 |
+| `/immunity` | 审查或清空当前项目的负向约束抗体 (`/immunity [clear]`) |
+| `/race` | 查看推测性 Worktree 赛马引擎状态与说明 |
 | `/compact` | 压缩会话历史以释放上下文窗口 |
 | `/clear` | 清屏并重置当前视图 |
 | `/help` | 查看命令手册与快捷键列表 |

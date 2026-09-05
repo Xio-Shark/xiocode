@@ -17,8 +17,8 @@ FROM="${XIO_INSTALL_FROM:-npm}"   # npm | github
 REPO="${XIO_INSTALL_REPO:-Xio-Shark/xiocode}"
 REF="${XIO_INSTALL_REF:-main}"
 NPM_REGISTRY="${XIO_INSTALL_REGISTRY:-https://registry.npmjs.org/}"
-MIN_NODE_MAJOR=22
-MIN_NODE_MINOR=6
+MIN_NODE_MAJOR=20
+MIN_NODE_MINOR=0
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'xio install failed: %s\n' "$*" >&2; exit 1; }

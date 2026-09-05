@@ -46,12 +46,12 @@ describe("runDoctorCli", () => {
     const code = await runDoctorCli({
       env,
       offline: true,
-      nodeVersion: "20.11.0",
+      nodeVersion: "18.19.0",
       write: (chunk) => out.push(chunk),
     });
     expect(code).toBe(1);
     const text = out.join("");
-    expect(text).toContain("v20.11.0 is too old");
+    expect(text).toContain("v18.19.0 is too old");
     expect(text).toContain("nodejs.org");
   });
 

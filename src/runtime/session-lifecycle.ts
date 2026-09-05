@@ -168,6 +168,8 @@ export function createPromptRunner(options: Readonly<{
   /** Optional RuntimeEvent.v1 bus (stream-json / multi-sink). */
   runtimeEvents?: import("./events/types.ts").RuntimeEventEmitter;
   steerMailbox?: import("./steer.ts").SteerMailbox;
+  immunityStore?: import("./immunity/index.ts").ImmunityStore;
+  repoId?: string;
   /** Fresh AbortSignal after hard-steer abort (must not reuse aborted controller). */
   resetSignal?: () => AbortSignal | undefined;
   /**
@@ -326,6 +328,12 @@ export function createPromptRunner(options: Readonly<{
             sawHardSteer = true;
             nextPrompt = result.hardSteerText;
             lastCancelled = false;
+            if (options.immunityStore && options.repoId) {
+              void options.immunityStore.recordHardSteer({
+                repoId: options.repoId,
+                text: result.hardSteerText,
+              }).catch(() => undefined);
+            }
             continue;
           }
           break;

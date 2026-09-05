@@ -6,7 +6,7 @@
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node.js-22.6%2B-green.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node.js-20.0%2B-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.0-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
@@ -16,6 +16,9 @@
 ## Features
 
 - **Granular Workspace Rollbacks**: Automatically captures lightweight workspace snapshots before edits. Revert changes turn-by-turn (`/rollback turn`) or to the session baseline (`/rollback`) without disturbing unrelated uncommitted local diffs.
+- **Project Immunity Engine**: Zero-friction negative constraint distillation. When you `/rollback` or issue a `! hard steer`, XioCode automatically extracts lessons and injects anti-regression boundaries into subsequent turns.
+- **Blast Radius Probe**: AST-aware exported symbol analysis. Detects signature breaks across TypeScript, JavaScript, Python, Go, and Rust, automatically probing downstream callers across the workspace.
+- **Speculative Worktree Racing**: Concurrently explores alternative solutions across isolated Git worktrees. Validates branches against test suites and automatically merges the winner with minimal diff churn.
 - **Crash-Resilient State Persistence**: Conversations, task graphs, and execution states are incrementally journaled locally. Resume any interrupted session seamlessly via `xio resume`.
 - **Native Multi-Model Integration**: Connects directly to official provider APIs including DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), Anthropic Claude, OpenAI, and Google Gemini. No proxy servers required.
 - **Real-Time Token & Cost Metering**: Precise turn-by-turn expenditure calculation based on actual token usage and provider pricing, displayed continuously in the status bar.
@@ -26,7 +29,7 @@
 
 ## Requirements
 
-- **Node.js**: 22.6.0 or higher
+- **Node.js**: 20.0.0 or higher
 - **OS**: macOS, Linux, Windows (WSL)
 
 ```bash
@@ -116,6 +119,8 @@ Inspect model interactions, tool call arguments, execution output, and timeline 
 | `/model` | Change active model on the fly |
 | `/rollback turn` | Undo file changes made during the latest turn |
 | `/rollback` | Undo all file changes made in the current session |
+| `/immunity` | View or clear distilled negative project constraints (`/immunity [clear]`) |
+| `/race` | Show status and guide for speculative worktree racing |
 | `/compact` | Compress conversation history to optimize context window |
 | `/clear` | Clear screen buffer and redraw active turn |
 | `/help` | Display shortcuts and command manual |

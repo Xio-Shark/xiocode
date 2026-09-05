@@ -391,6 +391,38 @@ describe("ContextInjector", () => {
 
     await expect(injector.inject()).resolves.toBe("");
   });
+
+  it("injects project immunity constraints when immunityStore has rules", async () => {
+    const mockStore = {
+      loadRules: async () => [
+        {
+          id: "1",
+          repoId: "test-repo",
+          createdAt: new Date().toISOString(),
+          trigger: "rollback_turn" as const,
+          lesson: "Do not delete src/auth.ts token validation",
+        },
+      ],
+      formatPromptSection: (rules: any[]) =>
+        rules.length > 0
+          ? "[Project Immunity & Negative Constraints]\n- (rollback_turn) Do not delete src/auth.ts token validation"
+          : "",
+    };
+
+    const injector = new ContextInjector({
+      exec: async () => {
+        const error = new Error("Command failed: git status --short");
+        Object.assign(error, { stderr: "fatal: not a git repository: .git" });
+        throw error;
+      },
+      immunityStore: mockStore as any,
+      repoId: "test-repo",
+    });
+
+    const injected = await injector.inject();
+    expect(injected).toContain("[Project Immunity & Negative Constraints]");
+    expect(injected).toContain("Do not delete src/auth.ts token validation");
+  });
 });
 
 async function waitForCondition(condition: () => boolean): Promise<void> {

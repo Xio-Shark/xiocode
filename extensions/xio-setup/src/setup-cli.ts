@@ -96,7 +96,7 @@ export async function runSetupCli(
     return runTemplates(rest, write, options);
   }
   if (command === "flow") {
-    write("xio-setup: flow subcommand has been archived into archive/extensions/xio-flow (Route B: focus on core coding agent resilience).\n");
+    write("xio-setup: flow subcommand is deprecated in Route B (focus on core coding agent resilience).\n");
     return 0;
   }
   if (command === "trellis") {

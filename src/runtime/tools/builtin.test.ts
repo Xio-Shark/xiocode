@@ -275,6 +275,32 @@ describe("builtin edit robustness", () => {
     }
   });
 
+  it("alerts on downstream blast radius when an exported symbol is edited", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-blast-radius-"));
+    try {
+      await writeFile(path.join(root, "api.ts"), "export function queryData() {\n  return 1;\n}\n", "utf8");
+      await writeFile(path.join(root, "caller.ts"), "import { queryData } from './api';\nconst val = queryData();\n", "utf8");
+
+      const tools = createBuiltinTools({ cwd: root, workspaceRoot: root, writeBackVerify: false });
+      const edit = toolByName(tools, "edit");
+
+      await readThen(tools, "api.ts");
+      const result = await textOf(edit, {
+        path: "api.ts",
+        old_string: "export function queryData() {\n  return 1;\n}",
+        new_string: "export function queryData(mode: string) {\n  return 2;\n}",
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.text).toContain("edited");
+      expect(result.text).toContain("[Blast Radius Alert]");
+      expect(result.text).toContain("queryData");
+      expect(result.text).toContain("caller.ts");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects edit before read with Fix guidance", async () => {
     const root = await makeEditFixture();
     try {
