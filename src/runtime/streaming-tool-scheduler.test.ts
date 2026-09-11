@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { FileWriteQueue } from "./file-write-queue.ts";
 import {
   StreamingToolScheduler,
+  isBrowserMcpTool,
   isWriteSerialTool,
+  toolSerialQueueKey,
 } from "./streaming-tool-scheduler.ts";
 import type { ChatToolCall, ToolExecuteResult } from "./types.ts";
 
@@ -36,6 +38,32 @@ describe("isWriteSerialTool", () => {
     expect(isWriteSerialTool("plan")).toBe(true);
     expect(isWriteSerialTool("read")).toBe(false);
     expect(isWriteSerialTool("bash")).toBe(false);
+  });
+});
+
+describe("isBrowserMcpTool", () => {
+  it("matches browser-driver MCP servers regardless of sanitized casing", () => {
+    expect(isBrowserMcpTool("mcp__playwright__browser_click")).toBe(true);
+    expect(isBrowserMcpTool("mcp__Playwright__click")).toBe(true);
+    expect(isBrowserMcpTool("mcp__playwright-mcp__click")).toBe(true);
+    expect(isBrowserMcpTool("mcp__browser__snapshot")).toBe(true);
+  });
+
+  it("leaves unrelated MCP and builtin tools alone", () => {
+    expect(isBrowserMcpTool("mcp__github__list_issues")).toBe(false);
+    expect(isBrowserMcpTool("mcp__echo__echo")).toBe(false);
+    expect(isBrowserMcpTool("read")).toBe(false);
+  });
+});
+
+describe("toolSerialQueueKey", () => {
+  it("shares one key across a browser server and keeps writes per-path", () => {
+    expect(toolSerialQueueKey(call("1", "mcp__playwright__click", { element: "x" }))).toBe(
+      toolSerialQueueKey(call("2", "mcp__playwright__type", { text: "y" })),
+    );
+    expect(toolSerialQueueKey(call("3", "write", { path: "a.ts" }))).toBe("a.ts");
+    expect(toolSerialQueueKey(call("4", "read", { path: "a.ts" }))).toBeUndefined();
+    expect(toolSerialQueueKey(call("5", "mcp__github__list_issues"))).toBeUndefined();
   });
 });
 
@@ -141,6 +169,36 @@ describe("StreamingToolScheduler", () => {
 
     expect(maxInFlight).toBe(1);
     expect(order).toEqual(["1:start", "1:end", "2:start", "2:end"]);
+  });
+
+  it("runs same-server browser calls one at a time in enqueue order", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const order: string[] = [];
+
+    const scheduler = new StreamingToolScheduler({
+      parallelToolCalls: true,
+      async execute(c) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        order.push(`${c.id}:start`);
+        await new Promise((r) => setTimeout(r, 10));
+        order.push(`${c.id}:end`);
+        inFlight -= 1;
+        return ok(c.id);
+      },
+    });
+
+    scheduler.enqueue(call("1", "mcp__playwright__navigate", { url: "https://example.com" }));
+    scheduler.enqueue(call("2", "mcp__playwright__click", { element: "Login" }));
+    // Independent probe in the same batch still overlaps with the browser family.
+    scheduler.enqueue(call("3", "read", { path: "a.ts" }));
+    await scheduler.waitAllOrdered();
+
+    // Browser family is FIFO serial; the independent read overlaps the first call.
+    expect(maxInFlight).toBe(2);
+    expect(order.indexOf("1:end")).toBeLessThan(order.indexOf("2:start"));
+    expect(order.indexOf("3:start")).toBeLessThan(order.indexOf("1:end"));
   });
 
   it("allows different-path write tools to overlap", async () => {

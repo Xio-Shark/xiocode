@@ -69,12 +69,16 @@ export type McpStdioServerSpec = Readonly<{
   args?: readonly string[];
   env?: Readonly<Record<string, string>>;
   cwd?: string;
+  /** Server-reported tool names to expose; omit to expose all. Unknown names are ignored. */
+  tools?: readonly string[];
 }>;
 
 export type McpUrlServerSpec = Readonly<{
   transport: "sse" | "http";
   url: string;
   headers?: Readonly<Record<string, string>>;
+  /** Server-reported tool names to expose; omit to expose all. Unknown names are ignored. */
+  tools?: readonly string[];
 }>;
 
 export type McpServerSpec = McpStdioServerSpec | McpUrlServerSpec;
@@ -495,10 +499,21 @@ async function connectServersInBackground(options: Readonly<{
         return;
       }
 
-      const toolNames: string[] = [];
+      const allowlist = server.spec.tools && server.spec.tools.length > 0
+        ? new Set(server.spec.tools.map((name) => sanitizeMcpSegment(name)))
+        : undefined;
+      const registered: string[] = [];
+      const dropped: string[] = [];
       for (const tool of listed.tools ?? []) {
+        // Client-side allowlist: the server may not offer one (e.g. Playwright MCP
+        // exposes 24 tools with no trim flag), and the resident tool block is a
+        // per-request cost on every turn.
+        if (allowlist && !allowlist.has(sanitizeMcpSegment(tool.name))) {
+          dropped.push(tool.name);
+          continue;
+        }
         const name = mcpToolName(server.name, tool.name);
-        toolNames.push(name);
+        registered.push(name);
         options.registerTool(createMcpToolDefinition({
           toolName: name,
           serverName: server.name,
@@ -510,6 +525,13 @@ async function connectServersInBackground(options: Readonly<{
           isClosed: options.isClosed,
         }));
       }
+      if (dropped.length > 0) {
+        options.warn(
+          `mcp: server "${server.name}" tool allowlist keeps ${registered.length}, drops ${dropped.length} (${dropped.slice(0, 6).join(", ")}${dropped.length > 6 ? ", …" : ""})`,
+        );
+      }
+
+      const toolNames = registered;
 
       connection.toolNames = toolNames;
       nextStatuses[index] = {
@@ -749,6 +771,40 @@ function mergeStdioEnv(
   );
 }
 
+/**
+ * Argument aliases models reach for that the server schema does not accept.
+ * Applied only when the schema declares the canonical name and not the alias, so
+ * a server that legitimately takes `ref` (or anything else) is left untouched.
+ */
+const MCP_ARG_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  target: ["ref"],
+};
+
+/** Normalize common argument-name mistakes against the declared schema. */
+export function applyMcpArgAliases(
+  params: unknown,
+  schema: JsonSchema | undefined,
+): unknown {
+  if (!params || typeof params !== "object" || Array.isArray(params) || !schema) {
+    return params;
+  }
+  const properties = schema.properties ?? {};
+  const record = params as Record<string, unknown>;
+  let next: Record<string, unknown> | undefined;
+  for (const [canonical, aliases] of Object.entries(MCP_ARG_ALIASES)) {
+    if (!(canonical in properties)) continue;
+    for (const alias of aliases) {
+      if (alias in properties || !(alias in record)) continue;
+      const value = record[alias];
+      if (value === undefined || value === null || value === "") continue;
+      next ??= { ...record };
+      if (!(canonical in next)) next[canonical] = value;
+      delete next[alias];
+    }
+  }
+  return next ?? params;
+}
+
 function createMcpToolDefinition(options: Readonly<{
   toolName: string;
   serverName: string;
@@ -776,7 +832,10 @@ function createMcpToolDefinition(options: Readonly<{
       try {
         const result = await withTimeout(
           options.client.callTool(
-            { name: options.mcpToolName, arguments: params },
+            {
+              name: options.mcpToolName,
+              arguments: applyMcpArgAliases(params, options.parameters) as Record<string, unknown>,
+            },
             undefined,
             { signal: ctx?.signal, timeout: options.timeoutMs },
           ),
@@ -884,6 +943,7 @@ export function parseServerSpec(
       args,
       env,
       cwd,
+      tools: asStringArray(entry.tools),
     };
   }
 
@@ -894,6 +954,7 @@ export function parseServerSpec(
       transport: kind,
       url: entry.url,
       headers,
+      tools: asStringArray(entry.tools),
     };
   }
 
@@ -921,6 +982,15 @@ function normalizeUrlTransport(hint: string | undefined): "sse" | "http" {
   }
   // Unknown url type → streamable HTTP (current MCP default).
   return "http";
+}
+
+/** Tool-name allowlist from config; undefined when absent or empty. */
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return items.length > 0 ? items : undefined;
 }
 
 function asStringRecord(value: unknown): Readonly<Record<string, string>> | undefined {

@@ -111,6 +111,8 @@ export type XioMcpServerConfig = Readonly<{
   transport?: string;
   type?: string;
   headers?: Readonly<Record<string, string>>;
+  /** Server-reported tool names to expose; omit to expose all. */
+  tools?: readonly string[];
 }>;
 
 export type XioMcpConfig = Readonly<{
@@ -937,6 +939,7 @@ function parseMcpServers(table: Record<string, unknown> | undefined): Readonly<R
       transport: getOptionalString(server, "transport"),
       type: getOptionalString(server, "type"),
       headers: headersTable ? stringRecord(headersTable, `mcp.servers.${name}.headers`) : undefined,
+      tools: getStringArray(server.tools, `mcp.servers.${name}.tools`),
     };
   }
   return servers;

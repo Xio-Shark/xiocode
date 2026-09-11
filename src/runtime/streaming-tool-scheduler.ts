@@ -1,11 +1,50 @@
 import type { ChatToolCall, ToolExecuteResult } from "./types.ts";
 import { FileWriteQueue } from "./file-write-queue.ts";
+import { SerialQueue } from "./serial-queue.ts";
 
 /** Tools that mutate workspace files and must not race each other by realpath. */
 export const WRITE_SERIAL_TOOLS = new Set(["write", "edit", "plan"]);
 
 export function isWriteSerialTool(name: string): boolean {
   return WRITE_SERIAL_TOOLS.has(name);
+}
+
+/**
+ * Queue key shared by every tool of one browser-driver MCP server. Browser
+ * actions are stateful and ordered (goto → click → type), so calls in the same
+ * turn must run one at a time instead of racing — while still costing a single
+ * model round trip.
+ */
+export const BROWSER_SERIAL_QUEUE_KEY = "__browser__";
+
+const BROWSER_SERVER_IDS = new Set([
+  "playwright",
+  "playwrightmcp",
+  "browser",
+  "browsermcp",
+  "chrome",
+  "chromedevtools",
+  "puppeteer",
+  "selenium",
+]);
+
+/** `mcp__<server>__<tool>` — server segment is matched case/dash-insensitively. */
+export function isBrowserMcpTool(name: string): boolean {
+  const server = /^mcp__([^_]+)__/.exec(name)?.[1];
+  if (server === undefined) return false;
+  return BROWSER_SERVER_IDS.has(server.toLowerCase().replace(/[^a-z0-9]/g, ""));
+}
+
+/**
+ * Queue key for a parallel batch, or `undefined` when the call needs no
+ * serialization. Same-class calls with no shared resource (unknown MCP tools)
+ * stay parallel — only file paths and browser servers are real resources.
+ */
+export function toolSerialQueueKey(call: ChatToolCall): string | undefined {
+  if (isBrowserMcpTool(call.name)) return BROWSER_SERIAL_QUEUE_KEY;
+  if (!isWriteSerialTool(call.name)) return undefined;
+  const filePath = typeof call.arguments.path === "string" ? String(call.arguments.path) : "";
+  return filePath.length > 0 ? filePath : `__anon_write_${call.id}`;
 }
 
 export type OrderedToolResult = Readonly<{
@@ -45,6 +84,7 @@ type Entry = {
 export class StreamingToolScheduler {
   readonly #execute: StreamingToolSchedulerOptions["execute"];
   readonly #writeQueue: FileWriteQueue;
+  readonly #serialQueue = new SerialQueue();
   readonly #parallel: boolean;
   readonly #onToolStart?: (call: ChatToolCall) => void;
   readonly #onToolEnd?: (call: ChatToolCall, result: ToolExecuteResult) => void;
@@ -116,6 +156,8 @@ export class StreamingToolScheduler {
       const filePath = typeof call.arguments.path === "string" ? String(call.arguments.path) : "";
       const queueKey = filePath.length > 0 ? filePath : `__anon_write_${call.id}`;
       promise = this.#writeQueue.run(queueKey, run);
+    } else if (isBrowserMcpTool(call.name)) {
+      promise = this.#serialQueue.run(BROWSER_SERIAL_QUEUE_KEY, run);
     } else {
       promise = run();
     }

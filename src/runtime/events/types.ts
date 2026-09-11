@@ -19,6 +19,7 @@ export const RUNTIME_EVENT_NAMES = [
   "thinking.delta",
   "tool.call",
   "tool.result",
+  "tool.batch",
   "tool.error",
   "provider.request",
   "provider.first_token",

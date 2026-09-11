@@ -16,14 +16,15 @@
 ## Features
 
 - **Granular Workspace Rollbacks**: Automatically captures lightweight workspace snapshots before edits. Revert changes turn-by-turn (`/rollback turn`) or to the session baseline (`/rollback`) without disturbing unrelated uncommitted local diffs.
-- **Project Immunity Engine**: Zero-friction negative constraint distillation. When you `/rollback` or issue a `! hard steer`, XioCode automatically extracts lessons and injects anti-regression boundaries into subsequent turns.
-- **Blast Radius Probe**: AST-aware exported symbol analysis. Detects signature breaks across TypeScript, JavaScript, Python, Go, and Rust, automatically probing downstream callers across the workspace.
-- **Speculative Worktree Racing**: Concurrently explores alternative solutions across isolated Git worktrees. Validates branches against test suites and automatically merges the winner with minimal diff churn.
+- **Project Immunity Engine**: Turns a `/rollback` or a `! hard steer` into a persisted project-level constraint that is injected into later turns, so a rejected approach is not repeated.
+- **Blast Radius Probe**: After each edit, extracts the changed exported symbols using per-language patterns and searches the workspace for downstream references, reporting callers that may need updating.
+- **Speculative Worktree Racing (experimental)**: Runs candidate solutions in isolated Git worktrees and arbitrates between them by minimal diff, fastest pass, or highest score. The engine is exported as a library and is not yet reachable from the default agent loop.
 - **Crash-Resilient State Persistence**: Conversations, task graphs, and execution states are incrementally journaled locally. Resume any interrupted session seamlessly via `xio resume`.
 - **Native Multi-Model Integration**: Connects directly to official provider APIs including DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), Anthropic Claude, OpenAI, and Google Gemini. No proxy servers required.
 - **Real-Time Token & Cost Metering**: Precise turn-by-turn expenditure calculation based on actual token usage and provider pricing, displayed continuously in the status bar.
 - **Dual Interface Modes**: Full-featured terminal TUI with syntax highlighting, fuzzy search, and command palette, alongside a zero-dependency local Web console (`xio web`) for visual timeline inspections.
 - **Built-in Execution Guardrails**: Intercepts destructive shell commands and unsafe file mutations, requiring explicit user authorization before execution.
+- **Ordered Browser Actions over MCP**: MCP browser tools from one driver (e.g. Playwright) share a serial queue, so a whole `navigate → click → type` sequence runs in one model round trip instead of racing in parallel. Setup, measured costs, and the extension-bridge login path: [docs/browser-mcp.md](./docs/browser-mcp.md).
 
 ---
 
@@ -120,7 +121,7 @@ Inspect model interactions, tool call arguments, execution output, and timeline 
 | `/rollback turn` | Undo file changes made during the latest turn |
 | `/rollback` | Undo all file changes made in the current session |
 | `/immunity` | View or clear distilled negative project constraints (`/immunity [clear]`) |
-| `/race` | Show status and guide for speculative worktree racing |
+| `/race` | Show experimental worktree racing engine status (not wired into the default loop) |
 | `/compact` | Compress conversation history to optimize context window |
 | `/clear` | Clear screen buffer and redraw active turn |
 | `/help` | Display shortcuts and command manual |

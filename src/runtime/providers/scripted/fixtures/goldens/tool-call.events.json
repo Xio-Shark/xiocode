@@ -6,7 +6,9 @@
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "run.start",
-    "payload": { "model": "scripted" }
+    "payload": {
+      "model": "scripted"
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
@@ -15,7 +17,10 @@
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "turn.start",
-    "payload": { "prompt": "use tool", "turnIndex": 1 }
+    "payload": {
+      "prompt": "use tool",
+      "turnIndex": 1
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
@@ -24,7 +29,10 @@
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "provider.request",
-    "payload": { "model": "scripted", "stream": true }
+    "payload": {
+      "model": "scripted",
+      "stream": true
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
@@ -33,7 +41,9 @@
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "provider.first_token",
-    "payload": { "via": "tool_calls" }
+    "payload": {
+      "via": "tool_calls"
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
@@ -59,7 +69,9 @@
     "turn_id": "turn-1",
     "event": "tool.call",
     "payload": {
-      "args": { "q": "ping" },
+      "args": {
+        "q": "ping"
+      },
       "toolCallId": "call-1",
       "toolName": "echo"
     }
@@ -84,12 +96,32 @@
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",
-    "event": "provider.request",
-    "payload": { "model": "scripted", "stream": true }
+    "event": "tool.batch",
+    "payload": {
+      "cancelled": false,
+      "concurrent": 1,
+      "errors": 0,
+      "parallel": true,
+      "serialized": 0,
+      "streaming": false,
+      "tools": 1
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
     "seq": 8,
+    "session_id": "golden-session",
+    "run_id": "golden-run",
+    "turn_id": "turn-1",
+    "event": "provider.request",
+    "payload": {
+      "model": "scripted",
+      "stream": true
+    }
+  },
+  {
+    "schema_version": "xio-runtime-event.v1",
+    "seq": 9,
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",
@@ -98,16 +130,18 @@
   },
   {
     "schema_version": "xio-runtime-event.v1",
-    "seq": 9,
+    "seq": 10,
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "text.delta",
-    "payload": { "text": "tool done" }
+    "payload": {
+      "text": "tool done"
+    }
   },
   {
     "schema_version": "xio-runtime-event.v1",
-    "seq": 10,
+    "seq": 11,
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",
@@ -123,13 +157,15 @@
   },
   {
     "schema_version": "xio-runtime-event.v1",
-    "seq": 11,
+    "seq": 12,
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",
     "event": "turn.end",
     "payload": {
-      "message": { "content": "tool done" },
+      "message": {
+        "content": "tool done"
+      },
       "outcome": "success",
       "prompt": "use tool",
       "toolResults": [
@@ -145,7 +181,7 @@
   },
   {
     "schema_version": "xio-runtime-event.v1",
-    "seq": 12,
+    "seq": 13,
     "session_id": "golden-session",
     "run_id": "golden-run",
     "turn_id": "turn-1",

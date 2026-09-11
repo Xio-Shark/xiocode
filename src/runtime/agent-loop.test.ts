@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { ExtensionHost } from "./extension-host.ts";
+import { createRuntimeEventEmitter } from "./events/emitter.ts";
 import { defineTool } from "./define-tool.ts";
 import { Type } from "./schema.ts";
-import { DEFAULT_MAX_TURNS, deriveTurnIndex, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
+import { DEFAULT_MAX_TURNS, batchConcurrencyMetrics, deriveTurnIndex, runAgentLoop, toolCallFingerprint } from "./agent-loop.ts";
 import { SteerMailbox } from "./steer.ts";
 
 import type { ChatMessage, LlmClient, StreamEvent, TurnEndPayload } from "./types.ts";
@@ -292,6 +293,87 @@ describe("runAgentLoop parallel tools", () => {
     expect(result.toolCalls).toBe(2);
     // PRD: parallel wall-clock < 70% of serial sum for independent tools
     expect(parallelElapsed).toBeLessThan(serialElapsed * 0.7);
+  });
+});
+
+describe("tool.batch metrics", () => {
+  it("separates concurrent calls from calls sharing a serial queue", () => {
+    const metrics = batchConcurrencyMetrics([
+      { id: "1", name: "read", arguments: { path: "a.ts" } },
+      { id: "2", name: "grep", arguments: { pattern: "x" } },
+      { id: "3", name: "mcp__playwright__browser_navigate", arguments: { url: "u" } },
+      { id: "4", name: "mcp__playwright__browser_click", arguments: { element: "e" } },
+      { id: "5", name: "write", arguments: { path: "same.ts" } },
+      { id: "6", name: "edit", arguments: { path: "same.ts" } },
+    ]);
+    // 2 concurrent (read/grep) + browser pair + same-path write pair share queues
+    expect(metrics).toEqual({ tools: 6, concurrent: 2, serialized: 4 });
+  });
+
+  it("emits tool.batch with concurrency split and no arguments or results", async () => {
+    const host = new ExtensionHost();
+    for (const name of ["probe", "mcp__playwright__browser_navigate", "mcp__playwright__browser_click"]) {
+      host.registerTool(defineTool({
+        name,
+        description: name,
+        parameters: Type.Object({}),
+        async execute() {
+          return { content: [{ type: "text", text: `${name} ok` }] };
+        },
+      }));
+    }
+
+    let calls = 0;
+    const client: LlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [
+              { id: "1", name: "probe", arguments: { value: "left" } },
+              { id: "2", name: "probe", arguments: { value: "right" } },
+              { id: "3", name: "mcp__playwright__browser_navigate", arguments: { url: "https://example.com" } },
+              { id: "4", name: "mcp__playwright__browser_click", arguments: { element: "Login" } },
+            ],
+          };
+        }
+        return { content: "done", toolCalls: [] };
+      },
+    };
+
+    const bus = createRuntimeEventEmitter({ sessionId: "s", runId: "r" });
+    const emitted: Array<Record<string, unknown>> = [];
+    bus.subscribe((event) => {
+      if (event.event === "tool.batch") emitted.push(event.payload);
+    });
+    await runAgentLoop("batch metrics", {
+      host,
+      client,
+      model: "stub",
+      runtimeEvents: bus,
+    });
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      tools: 4,
+      concurrent: 2,
+      serialized: 2,
+      parallel: true,
+      streaming: false,
+      errors: 0,
+      cancelled: false,
+    });
+    // No argument or result payloads on the batch event.
+    expect(Object.keys(emitted[0]!).sort()).toEqual([
+      "cancelled",
+      "concurrent",
+      "errors",
+      "parallel",
+      "serialized",
+      "streaming",
+      "tools",
+    ]);
   });
 });
 
@@ -770,7 +852,7 @@ describe("runAgentLoop tool_result budget", () => {
       });
       expect(secondRequestToolContent).toContain("[tool_result spilled:");
       expect(secondRequestToolContent).toContain(spillDir);
-      const match = /\[tool_result spilled: (.+)\]/.exec(secondRequestToolContent);
+      const match = /\[tool_result spilled:\s*(\S+)/.exec(secondRequestToolContent);
       expect(match?.[1]).toBeTruthy();
       const body = await readFile(match![1]!, "utf8");
       expect(body).toBe("Z".repeat(400));

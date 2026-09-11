@@ -19,7 +19,8 @@ import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt.ts";
 import { getCachedProviderTools } from "./providers/tool-schema-cache.ts";
 import { emptyTokenUsage, sumTokenUsage } from "./usage.ts";
 import { formatDoneContractFeedback, runDoneContract } from "./verify/done-contract.ts";
-import { isWriteSerialTool, StreamingToolScheduler } from "./streaming-tool-scheduler.ts";
+import { isWriteSerialTool, toolSerialQueueKey, StreamingToolScheduler } from "./streaming-tool-scheduler.ts";
+import { SerialQueue } from "./serial-queue.ts";
 import { applyToolResultBudgetInPlace } from "./tool-result-budget.ts";
 
 import type { TokenUsage } from "./types.ts";
@@ -879,6 +880,13 @@ async function appendStreamingToolResults(
     attrs: { tools: ordered.length, errors, streaming: true },
     ...(cancelled ? { error_class: "abort" } : {}),
   });
+  options.runtimeEvents?.emit("tool.batch", {
+    ...batchConcurrencyMetrics(ordered.map(({ call }) => call)),
+    errors,
+    parallel: options.parallelToolCalls !== false,
+    streaming: true,
+    cancelled,
+  });
   return {
     calls: ordered.length,
     errors,
@@ -946,8 +954,10 @@ async function appendToolResults(
       });
     }
   } else {
-    // Per-realpath serialization: different files may run concurrently; same realpath waits.
+    // Per-resource serialization: different files may run concurrently; same
+    // realpath waits. Browser-driver MCP calls share one ordered family queue.
     const writeQueue = options.fileWriteQueue ?? new FileWriteQueue();
+    const familyQueue = new SerialQueue();
 
     await Promise.all(calls.map(async (call, index) => {
       if (options.signal?.aborted) {
@@ -973,10 +983,12 @@ async function appendToolResults(
         return result;
       };
 
-      if (isWriteSerialTool(call.name)) {
-        const filePath = typeof call.arguments.path === "string" ? String(call.arguments.path) : "";
-        const queueKey = filePath.length > 0 ? filePath : `__anon_write_${call.id}`;
-        results[index] = await writeQueue.run(queueKey, run);
+      const familyKey = toolSerialQueueKey(call);
+      if (familyKey !== undefined) {
+        results[index] = await (isWriteSerialTool(call.name) ? writeQueue : familyQueue).run(
+          familyKey,
+          run,
+        );
         return;
       }
 
@@ -1007,11 +1019,45 @@ async function appendToolResults(
     attrs: { tools: calls.length, errors },
     ...(cancelled ? { error_class: "abort" } : {}),
   });
+  options.runtimeEvents?.emit("tool.batch", {
+    ...batchConcurrencyMetrics(calls),
+    errors,
+    parallel,
+    streaming: false,
+    cancelled,
+  });
   return {
     calls: calls.length,
     errors,
     cancelled,
   };
+}
+
+/**
+ * Batch shape for `tool.batch`: how many calls shared one round trip, and how many of those
+ * share a serial queue (file path / browser family) so product metrics can tell "submitted
+ * together" apart from "actually ran concurrently" — without arguments or results.
+ */
+export function batchConcurrencyMetrics(calls: readonly ChatToolCall[]): {
+  tools: number;
+  concurrent: number;
+  serialized: number;
+} {
+  const groups = new Map<string, number>();
+  let concurrent = 0;
+  for (const call of calls) {
+    const key = toolSerialQueueKey(call);
+    if (key === undefined) {
+      concurrent += 1;
+      continue;
+    }
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+  let serialized = 0;
+  for (const size of groups.values()) {
+    if (size > 1) serialized += size;
+  }
+  return { tools: calls.length, concurrent, serialized };
 }
 
 export {

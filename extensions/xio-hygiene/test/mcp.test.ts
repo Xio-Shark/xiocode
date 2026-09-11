@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MCP_CONFIG,
+  applyMcpArgAliases,
   forceKillPid,
   loadMcpConfigs,
   mcpToolName,
@@ -586,6 +587,71 @@ describe("registerMcpBridge transports", () => {
   });
 
 
+  it("tool allowlist keeps listed tools and drops the rest", async () => {
+    const root = await tempRoot("xio-mcp-allowlist-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+
+    const warnings: string[] = [];
+    const host = new ExtensionHost();
+    const bridge = registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({
+          readClaude: false,
+          readCursor: false,
+          timeoutMs: 2_000,
+          servers: {
+            playwright: {
+              transport: "stdio",
+              command: "npx",
+              tools: ["browser_navigate", "browser_find"],
+            },
+          },
+        }),
+        registerTool: (tool) => host.registerTool(tool),
+        warn: (message) => warnings.push(message),
+        connectServer: async (server) => ({
+          name: server.name,
+          client: {
+            listTools: async () => ({
+              tools: [
+                { name: "browser_navigate", description: "go", inputSchema: { type: "object" } },
+                { name: "browser_find", description: "find", inputSchema: { type: "object" } },
+                { name: "browser_snapshot", description: "snap", inputSchema: { type: "object" } },
+                { name: "browser_take_screenshot", description: "shot", inputSchema: { type: "object" } },
+              ],
+            }),
+            callTool: async () => ({ content: [] }),
+            close: async () => undefined,
+          } as never,
+          toolNames: [],
+          pid: null,
+          forceKill: () => undefined,
+          close: async () => undefined,
+        }),
+      },
+    );
+
+    await host.emit("session_start", {});
+    await bridge.waitUntilSettled();
+
+    expect(bridge.getToolNames()).toEqual([
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_find",
+    ]);
+    expect(host.getTool("mcp__playwright__browser_snapshot")).toBeUndefined();
+    expect(warnings.some((w) => w.includes("allowlist") && w.includes("browser_snapshot"))).toBe(true);
+    expect(bridge.getStatuses()[0]?.toolNames).toEqual([
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_find",
+    ]);
+
+    await host.emit("session_end", {});
+  });
+
   it("listTools failure closes connection and removes it from live registry", async () => {
     const root = await tempRoot("xio-mcp-listfail-");
     const cwd = path.join(root, "project");
@@ -755,5 +821,30 @@ describe("registerMcpBridge transports", () => {
     expect(JSON.stringify(skillHook)).not.toMatch(/"block":true/);
 
     await host.emit("session_end", {});
+  });
+});
+
+describe("applyMcpArgAliases", () => {
+  const browserClickSchema = {
+    type: "object" as const,
+    properties: { element: { type: "string" as const }, target: { type: "string" as const } },
+    required: ["target"],
+  };
+
+  it("maps ref to the declared target argument", () => {
+    expect(applyMcpArgAliases({ ref: "e12", element: "Login" }, browserClickSchema))
+      .toEqual({ target: "e12", element: "Login" });
+  });
+
+  it("keeps an explicit target and drops the stray alias", () => {
+    expect(applyMcpArgAliases({ ref: "e12", target: "e99" }, browserClickSchema))
+      .toEqual({ target: "e99" });
+  });
+
+  it("leaves schemas without target and empty aliases untouched", () => {
+    const noTarget = { type: "object" as const, properties: { ref: { type: "string" as const } } };
+    expect(applyMcpArgAliases({ ref: "e12" }, noTarget)).toEqual({ ref: "e12" });
+    expect(applyMcpArgAliases({ element: "Login" }, browserClickSchema)).toEqual({ element: "Login" });
+    expect(applyMcpArgAliases({ ref: "" }, browserClickSchema)).toEqual({ ref: "" });
   });
 });
