@@ -156,7 +156,13 @@ export type CommandExecutionDecision =
  * Characters that change shell tokenization/expansion. Presence of any one
  * disqualifies the command from the proven-safe auto path.
  */
-const SHELL_METACHAR = /['"`\\;&|<>$(){}*!?#~\n\r\t]/;
+const SHELL_METACHAR = /['"`\\;&|<>$(){}*!?#\n\r\t]/;
+
+/** A bare `~` or `~/...` home-relative token; `~user/...` stays disqualified. */
+const TILDE_HOME_TOKEN = /^~(?:$|\/)/;
+
+/** Any other use of `~` in a token (mid-token, or `~user`) is not proven-safe. */
+const UNSAFE_TILDE = /~(?!$|\/)/;
 
 /** Literal argv tokens allowed in the proven-safe grammar (no quotes/escapes). */
 const SAFE_TOKEN = /^[A-Za-z0-9_./:@%=+,\[\]-]+$/;
@@ -167,7 +173,7 @@ const LS_FLAGS = new Set(["-l", "-a", "-1", "-la", "-al", "-lh", "-hl"]);
  * Decide whether a raw bash command may auto-run or must confirm.
  * Only a tiny allowlist of simple commands returns `safe`.
  */
-export function classifyCommandExecution(command: string): CommandExecutionDecision {
+export function classifyCommandExecution(command: string, home?: string): CommandExecutionDecision {
   const raw = command;
   const text = command.trim();
   if (text.length === 0) {
@@ -179,7 +185,7 @@ export function classifyCommandExecution(command: string): CommandExecutionDecis
   }
 
   const risk = classifyCommandRisk(text);
-  const argv = tokenizeProvenSafe(text);
+  const argv = tokenizeProvenSafe(text, home);
   if (!argv) {
     return {
       kind: "confirm",
@@ -189,7 +195,7 @@ export function classifyCommandExecution(command: string): CommandExecutionDecis
     };
   }
 
-  const allowRule = matchAllowlist(argv);
+  const allowRule = matchAllowlist(argv, home);
   if (allowRule) {
     return { kind: "safe", argv, allowRule };
   }
@@ -203,15 +209,15 @@ export function classifyCommandExecution(command: string): CommandExecutionDecis
 }
 
 /** True when the command is in the proven-safe allowlist. */
-export function isProvenSafeCommand(command: string): boolean {
-  return classifyCommandExecution(command).kind === "safe";
+export function isProvenSafeCommand(command: string, home?: string): boolean {
+  return classifyCommandExecution(command, home).kind === "safe";
 }
 
 /**
  * Conservative tokenizer: exactly one simple command, whitespace-separated
  * literal tokens, no shell metacharacters.
  */
-export function tokenizeProvenSafe(command: string): string[] | undefined {
+export function tokenizeProvenSafe(command: string, home?: string): string[] | undefined {
   const text = command.trim();
   if (text.length === 0) return undefined;
   if (SHELL_METACHAR.test(text)) return undefined;
@@ -222,13 +228,27 @@ export function tokenizeProvenSafe(command: string): string[] | undefined {
   }
   const tokens = text.split(/\s+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return undefined;
-  if (tokens.some((token) => !SAFE_TOKEN.test(token))) return undefined;
+  if (tokens.some((token) => !SAFE_TOKEN.test(token) && !TILDE_HOME_TOKEN.test(token))) return undefined;
   // Leading env assignments (FOO=bar cmd) are not proven-safe.
   if (tokens[0]?.includes("=")) return undefined;
-  return tokens;
+  if (!tokens.some((token) => token.includes("~"))) return tokens;
+  // `~` is not in SAFE_TOKEN: it is an expansion, not a literal, so it is only
+  // accepted as a whole leading token and must be expanded to the real path
+  // before it can be proved to stay inside the home-relative grammar.
+  if (!home) return undefined;
+  const expanded: string[] = [];
+  for (const token of tokens) {
+    if (!token.includes("~")) {
+      expanded.push(token);
+      continue;
+    }
+    if (!TILDE_HOME_TOKEN.test(token) || UNSAFE_TILDE.test(token)) return undefined;
+    expanded.push(token === "~" ? home : `${home}${token.slice(1)}`);
+  }
+  return expanded;
 }
 
-function matchAllowlist(argv: readonly string[]): string | undefined {
+function matchAllowlist(argv: readonly string[], home?: string): string | undefined {
   const cmd = argv[0];
   if (!cmd) return undefined;
   if (cmd === "pwd" && argv.length === 1) return "pwd";
@@ -241,10 +261,14 @@ function matchAllowlist(argv: readonly string[]): string | undefined {
         if (!LS_FLAGS.has(arg)) return undefined;
         continue;
       }
-      // Relative path only; no parent traversal, no absolute paths.
-      if (arg.startsWith("/") || arg === "~" || arg.startsWith("~/") || arg.split("/").includes("..")) {
+      const underHome = home !== undefined && home.length > 0
+        && (arg === home || arg.startsWith(`${home}/`));
+      // Relative path, or an expanded `~` path that resolves inside home; no parent
+      // traversal anywhere, no other absolute paths.
+      if ((!underHome && arg.startsWith("/")) || arg === "~" || arg.startsWith("~/")) {
         return undefined;
       }
+      if (arg.split("/").includes("..")) return undefined;
     }
     return "ls";
   }

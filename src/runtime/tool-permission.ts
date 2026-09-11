@@ -2,6 +2,7 @@ import {
   isToolAllowedInMode,
   type PermissionMode,
 } from "./permission-mode.ts";
+import { homedir } from "node:os";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
 import {
   classifyCommandExecution,
@@ -285,7 +286,9 @@ async function enforceCommandExecution(input: Readonly<{
     return undefined;
   }
 
-  const decision = classifyCommandExecution(command);
+  // `~` is an expansion, not a literal: expand it with the real home so allowlist
+  // matching sees the path the shell would run (`ls ~/x` was rejected as complex-shell).
+  const decision = classifyCommandExecution(command, homedir());
   if (decision.kind === "safe") {
     return undefined;
   }

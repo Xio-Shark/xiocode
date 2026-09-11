@@ -6,6 +6,7 @@ import {
   commandFromToolArgs,
   describeCommandRisk,
   isProvenSafeCommand,
+  tokenizeProvenSafe,
 } from "./command-risk.ts";
 
 describe("classifyCommandRisk — destructive", () => {
@@ -163,6 +164,41 @@ describe("classifyCommandExecution — proven-safe allowlist", () => {
       expect(decision.detail).toContain(`command: ${raw}`);
       expect(decision.reason).toBe("complex-shell");
     }
+  });
+
+  it.each(["ls ~", "ls -la ~/.claude/skills", "ls ~/x ~/y"])(
+    "expands leading ~ and marks %s as safe",
+    (command) => {
+      const decision = classifyCommandExecution(command, "/Users/example");
+      expect(decision.kind).toBe("safe");
+      if (decision.kind === "safe") {
+        expect(decision.argv.join(" ")).toContain("/Users/example");
+        expect(decision.argv.some((token) => token.includes("~"))).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    // No home to expand with → fail closed rather than guessing.
+    ["ls ~", undefined],
+    // ~user and mid-token ~ are not the same expansion the classifier approved.
+    ["ls ~user/x", "/Users/example"],
+    ["ls /tmp/~x", "/Users/example"],
+    // Parent traversal stays disqualified even under home.
+    ["ls ~/a/../b", "/Users/example"],
+    ["ls ../x", "/Users/example"],
+    // Absolute paths outside home stay disqualified.
+    ["ls /etc", "/Users/example"],
+    // Quoting / expansion stays complex-shell.
+    ['ls "$HOME/x"', "/Users/example"],
+  ])("never marks %s as safe", (command, home) => {
+    expect(classifyCommandExecution(command, home).kind).toBe("confirm");
+  });
+
+  it("expands ~ so allowlist matching sees the real path", () => {
+    const expanded = tokenizeProvenSafe("ls -la ~/code", "/Users/example");
+    expect(expanded).toEqual(["ls", "-la", "/Users/example/code"]);
+    expect(tokenizeProvenSafe("ls -la ~/code")).toBeUndefined();
   });
 });
 
