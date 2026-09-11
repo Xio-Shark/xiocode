@@ -509,12 +509,11 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   });
 
   host.registerCommand("race", {
-    description: "Speculative worktree racing engine (/race).",
+    description: "Speculative worktree racing engine status (/race).",
     handler: async () => [
-      "Speculative Worktree Racing Engine:",
-      "Enables parallel exploration across multiple isolated Git worktree branches.",
-      "Candidate branches compete concurrently under validation gates (e.g. tests, linters).",
-      "Winner is selected based on minimal diff / fastest passing outcome; losing branches are auto-pruned.",
+      "Speculative Worktree Racing Engine (experimental):",
+      "Runs candidate solutions in isolated Git worktrees and arbitrates by minimal diff, fastest pass, or highest score.",
+      "The engine (runSpeculativeRace) is exported from the xio-sandbox extension and is not yet reachable from the default agent loop.",
     ].join("\n"),
   });
 

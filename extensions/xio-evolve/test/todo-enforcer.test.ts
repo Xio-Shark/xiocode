@@ -11,15 +11,13 @@ describe("TodoEnforcer", () => {
     expect(addendum).toContain("POSIX (macOS/Linux");
     expect(addendum).toContain("Windows (PowerShell/cmd)");
     expect(addendum).toContain("XioCode Tool Strategy");
-    expect(addendum).toContain("Fan out with glob/grep/find");
     expect(addendum).not.toContain("search_context");
-    expect(addendum).toContain("gather file-backed evidence before answering");
-    expect(addendum).toContain("repo/code/config/debug/audit");
-    expect(addendum).toContain("files, command output, tests");
     expect(addendum).toContain("multi-step coding tasks");
     expect(addendum).toContain("simple direct questions");
     expect(addendum).toContain("parallel independent searches and reads");
-    expect(addendum.length).toBeLessThan(1400);
+    // Guidance already carried by DEFAULT_SYSTEM_PROMPT must not be restated here.
+    expect(addendum).not.toMatch(/read the target files|edit surgically|gather file-backed evidence/i);
+    expect(addendum.length).toBeLessThan(700);
   });
 
   it("parses markdown checkbox TODO items", () => {

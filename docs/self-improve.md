@@ -1,5 +1,7 @@
 # XioCode Self-Improve Loop
 
+> **RETIRED (2026-09-06)**: the eval / regress / improve loop and its implementation were removed from the repository. `xio eval`, `xio regress`, and `xio improve` no longer exist. This document is kept as a historical design record only.
+>
 > **Opt-in outer loop** for modifying XioCode itself: pick a goal (T4) → edit inside a **candidate worktree** → run verifier → **MergeGate ask**.
 > **Not** the default daily coding path — interactive `xio` runs **direct-cwd** with **no git/worktree requirement**.
 > Serves final-goal item 4 (self-improvable under merge-ask): [GOAL.md](./GOAL.md).

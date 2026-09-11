@@ -6,15 +6,10 @@ const ADDENDUM = [
   "- Do not claim completion until verification has run or the blocker is explicit.",
   "",
   "## Host Environment",
-  "- Before shell work, classify the host once: POSIX (macOS/Linux, bash/zsh/sh) or Windows (PowerShell/cmd).",
-  "- If unsure, probe once (`uname -s`, or PowerShell `$PSVersionTable` / `$env:OS`), then keep later `bash` commands consistent with that host.",
-  "- POSIX: Unix paths and tools (`/`, `ls`, `grep`, pipes). Windows: PowerShell idioms; do not assume bash, `&&` chains, or Unix-only binaries unless WSL/Git Bash is confirmed.",
+  "- Classify the host once before shell work: POSIX (macOS/Linux, bash/zsh/sh) or Windows (PowerShell/cmd). Probe once with `uname -s` if unsure, then keep later `bash` commands consistent with it.",
   "",
   "## XioCode Tool Strategy",
-  "- For repo/code/config/debug/audit tasks, gather file-backed evidence before answering, editing, or claiming root cause.",
-  "- Fan out with glob/grep/find, then read the specific files that prove the answer.",
-  "- For code changes, read the target files and nearby tests first, then edit surgically and run the smallest reliable verification.",
-  "- Ground final repo claims in files, command output, tests, or explicit blockers; run parallel independent searches and reads when useful.",
+  "- Run parallel independent searches and reads in a single round rather than one at a time.",
   "- For simple direct questions that need no workspace evidence, answer directly.",
 ].join("\n");
 

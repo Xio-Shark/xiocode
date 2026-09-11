@@ -16,9 +16,9 @@
 ## 核心特性
 
 - **细粒度版本回滚**：每次代码修改前自动记录工作区轻量快照。支持单轮撤销（`/rollback turn`）与会话基线回滚（`/rollback`），在不污染未暂存本地代码的前提下精准撤销异常变更。
-- **工程抗体系统 (Project Immunity Engine)**：零摩擦隐式负向约束蒸馏。当用户触发 `/rollback` 回滚或输入 `! 强干预` 时，自动提炼失败教训，并在后续轮次强约束注入，杜绝同一错误重犯。
-- **影响域探查 (Blast Radius Probe)**：公共导出符号 AST 变更探查。跨 TS/JS/Python/Go/Rust 自动识别破坏性签名变更，并实时联动探查工作区所有下游调用方文件与行号。
-- **推测性赛马 (Speculative Worktree Racing)**：在独立隔离的 Git Worktree 中并发探索多种解题路径与算法分支，基于自动化测试与最小 Diff (Karpathy Surgical 原则) 自动裁决优胜者并秒级清理废弃分支。
+- **工程抗体系统 (Project Immunity Engine)**：把一次 `/rollback` 回滚或 `! 强干预` 沉淀为持久化的项目级约束，并在后续轮次注入，避免重犯同一错误。
+- **影响域探查 (Blast Radius Probe)**：每次编辑后按语言模式提取变更的导出符号，在工作区检索下游引用，报告可能需要同步修改的调用方。
+- **推测性赛马 (Speculative Worktree Racing，实验性)**：在隔离的 Git Worktree 中运行多个候选方案，按最小 Diff、最快通过或最高分裁决。引擎以库形式导出，尚未接入默认 agent 流程。
 - **状态持久化与断点恢复**：对话上下文、任务目标与执行状态均增量落盘持久化。在终端关闭、系统休眠或进程中断后，通过 `xio resume` 即可原位继续工作。
 - **主流模型原生对接**：原生集成 DeepSeek、通义千问 (DashScope)、硅基流动 (SiliconFlow)、智谱 AI (GLM) 以及 Anthropic Claude、OpenAI、Google Gemini 官方端点，无需自建转发代理。
 - **实时 Token 成本度量**：终端状态栏按实际 Token 消耗与提供商定价实时计算费用（精确到美分），使用成本清晰透明。
@@ -120,7 +120,7 @@ xio web           # 启动本地可视化控制台并在浏览器打开 http://l
 | `/rollback turn` | 撤销上一轮的文件修改 |
 | `/rollback` | 撤销本次会话的所有文件修改 |
 | `/immunity` | 审查或清空当前项目的负向约束抗体 (`/immunity [clear]`) |
-| `/race` | 查看推测性 Worktree 赛马引擎状态与说明 |
+| `/race` | 查看实验性 Worktree 赛马引擎状态（未接入默认流程） |
 | `/compact` | 压缩会话历史以释放上下文窗口 |
 | `/clear` | 清屏并重置当前视图 |
 | `/help` | 查看命令手册与快捷键列表 |
