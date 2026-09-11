@@ -61,8 +61,14 @@ export function fixHintFor(tool: string, message: string): string | undefined {
   }
 
   if (name === "bash" || m.startsWith("exit_code=")) {
+    // Probe, listing and pipeline commands (`a; echo ---; b | grep`, `2>/dev/null`) routinely exit
+    // non-zero while still returning the evidence that was asked for. The unconditional
+    // "re-run the same command" used to order a wasted model round trip for each of those, so the
+    // exception is stated explicitly instead. Nothing is hidden: the exit code and stderr stay in
+    // the body, isError is still set, and "do not ignore a non-zero exit" is preserved.
     return (
-      "Read stderr/stdout above, fix the root cause (deps, paths, tests), then re-run the same command. "
+      "Non-zero exit. If stdout above already answers the question (probe, listing, lookup), "
+      + "use it and move on; otherwise fix the root cause (deps, paths, failing check) and re-run. "
       + "Do not ignore a non-zero exit."
     );
   }
