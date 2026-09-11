@@ -31,6 +31,16 @@ describe("error-guidance", () => {
     expect(out.toLowerCase()).toMatch(/stderr|root cause|non-zero/);
   });
 
+  it("does not order an unconditional re-run when stdout may already be the evidence", () => {
+    const body = "exit_code=1\n\nstdout:\n/var/run/docker.sock\n\nstderr:\n";
+    const out = withFixHint("bash", body);
+    expect(out).toMatch(/Fix:/);
+    expect(out).not.toContain("re-run the same command");
+    // The failure itself must stay visible and must not be waved through.
+    expect(out).toContain("Do not ignore a non-zero exit");
+    expect(out).toContain("exit_code=1");
+  });
+
   it("adds Fix for workspace escape", () => {
     const out = withFixHint("write", "path escapes workspace root: /tmp/x (root=/ws)");
     expect(out).toMatch(/Fix:/);
