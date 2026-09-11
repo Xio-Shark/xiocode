@@ -224,8 +224,8 @@ export async function registerExploreCapability(
         + `${scaleNote ? `${scaleNote}, ` : ""}${resolved.maxTurns} turns`
         + `${resolved.partitionHint ? `, partition: ${resolved.partitionHint}` : ""})`
         + (auto
-          ? " — primary MUST call `explore` for repo work (see UI: ⊹ subagent / subs:N)"
-          : " — primary must call `explore` for workers to appear in the UI"),
+          ? " — explore stays optional: call it when repo-wide location is needed (UI: ⊹ subagent / subs:N)"
+          : " — call `explore` when parallel workers are useful"),
     );
     return resolved;
   };
