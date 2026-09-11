@@ -90,7 +90,7 @@ export async function applyToolResultBudget(
     });
     next.push({
       ...message,
-      content: formatSpillStub(filePath, content.length),
+      content: formatSpillStub(filePath, content),
     });
   }
 
@@ -175,11 +175,28 @@ export async function applyToolResultBudgetInPlace(
   return spills;
 }
 
-export function formatSpillStub(filePath: string, originalChars: number): string {
-  return [
-    `${SPILL_MARKER} ${filePath}]`,
-    `Original length: ${originalChars} chars. Full body at the path above.`,
-  ].join("\n");
+export function formatSpillStub(filePath: string, content: string): string {
+  const lines = [filePath, "", `Original length: ${content.length} chars.`];
+  const lineCount = countLines(content);
+  if (lineCount > 0) {
+    lines.push(`File has ${lineCount} lines.`);
+  }
+  lines.push(
+    `Read it in slices (read offset/limit, ~${SPILL_READ_SLICE_LINES} lines per call) — reading it whole spills again.`,
+  );
+  return `${SPILL_MARKER} ${lines.join("\n")}]`;
+}
+
+/** Lines suggested per follow-up read; keeps the re-read under the spill budget. */
+const SPILL_READ_SLICE_LINES = 120;
+
+function countLines(text: string): number {
+  if (text.length === 0) return 0;
+  let count = 1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) === 10) count += 1;
+  }
+  return count;
 }
 
 function normalizeMaxChars(value: number | undefined): number {

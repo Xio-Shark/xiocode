@@ -73,13 +73,25 @@ describe("tool-result-budget", () => {
 
   it("is idempotent for already-spilled stubs", async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "xio-spill-"));
-    const stub = formatSpillStub(path.join(root, "already.txt"), 9999);
+    const spilled = "x".repeat(9999);
+    const stub = formatSpillStub(path.join(root, "already.txt"), spilled);
     const messages: ChatMessage[] = [
       { role: "tool", toolCallId: "x", name: "bash", content: stub },
     ];
     const result = await applyToolResultBudget(messages, { maxChars: 256, spillDir: root });
     expect(result.spills).toEqual([]);
     expect(result.messages[0]?.content).toBe(stub);
+  });
+
+  it("spill stub tells the model the file length and to read slices", () => {
+    const body = ["alpha", "beta", "gamma"].join("\n");
+    const stub = formatSpillStub("/tmp/spill/call_1.txt", body);
+    expect(stub).toContain("[tool_result spilled:");
+    expect(stub).toContain("/tmp/spill/call_1.txt");
+    expect(stub).toContain(`Original length: ${body.length} chars.`);
+    expect(stub).toContain("File has 3 lines.");
+    expect(stub).toContain("read offset/limit");
+    expect(stub.endsWith("]")).toBe(true);
   });
 
   it("applyToolResultBudgetInPlace mutates the array", async () => {

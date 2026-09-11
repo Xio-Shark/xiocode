@@ -26,6 +26,12 @@ import {
 import type { ToolDefinition } from "../types.ts";
 import { buildChildEnv } from "../secret-environment.ts";
 
+/**
+ * Max lines one `read` returns when the caller omits `limit`. Sized so a slice
+ * stays under the tool_result budget for typical line lengths (~100 chars).
+ */
+const DEFAULT_READ_LINE_CAP = 120;
+
 export type BuiltinToolsOptions = Readonly<{
   cwd?: string;
   /** When set, write/edit paths must stay inside this workspace root. */
@@ -143,12 +149,23 @@ function createReadTool(
         const content = (await (await pathPolicy).readFile(requestedPath, id)).toString("utf8");
         const lines = content.split("\n");
         const offset = typeof params.offset === "number" && params.offset > 0 ? Math.floor(params.offset) : 1;
-        const limit = typeof params.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : lines.length;
+        const requestedLimit = typeof params.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : undefined;
+        // An omitted limit used to mean "whole file": a 600-line spill (e.g. a browser
+        // snapshot) blew the tool_result budget, spilled again, and cost the model a
+        // round trip per retry. Default to one slice and say how to continue.
+        const limit = requestedLimit ?? DEFAULT_READ_LINE_CAP;
         const slice = lines.slice(offset - 1, offset - 1 + limit);
         const numbered = slice.map((line, index) => `${offset + index}|${line}`).join("\n");
+        const lastLine = offset + slice.length - 1;
+        const total = lines.length;
+        const nextOffset = slice.length === 0 ? undefined : lastLine + 1;
+        const body =
+          requestedLimit === undefined && nextOffset !== undefined && nextOffset <= total
+            ? `${numbered}\n\n[file has ${total} lines; showing ${offset}-${lastLine}. continue with offset=${nextOffset}]`
+            : numbered;
         await readSet.mark(filePath);
         await fileShift?.markRead(contextId, filePath);
-        return textResult(numbered);
+        return textResult(body);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return errorResult("read", message);

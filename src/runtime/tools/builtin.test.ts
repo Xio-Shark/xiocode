@@ -596,6 +596,27 @@ describe("builtin workspace path boundary", () => {
     }
   });
 
+  it("caps an unlimited read at one slice and tells the model how to continue", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-read-slice-"));
+    try {
+      const body = Array.from({ length: 300 }, (_, index) => `line ${index + 1}`).join("\n");
+      await writeFile(path.join(root, "big.txt"), body, "utf8");
+      const read = toolByName(createBuiltinTools({ cwd: root }), "read");
+
+      const first = await textOf(read, { path: "big.txt" });
+      expect(first.text.startsWith("1|line 1")).toBe(true);
+      expect(first.text).toContain("120|line 120");
+      expect(first.text).not.toContain("121|line 121");
+      expect(first.text).toContain("[file has 300 lines; showing 1-120. continue with offset=121]");
+
+      const rest = await textOf(read, { path: "big.txt", offset: 121, limit: 180 });
+      expect(rest.text).toContain("300|line 300");
+      expect(rest.text).not.toContain("continue with offset=");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects files over the read byte limit without loading them as success", async () => {
     const { MAX_READ_BYTES } = await import("../workspace-path-policy.ts");
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-builtin-read-cap-"));
