@@ -1,0 +1,12 @@
+version: "1.0.0"
+project:
+  name: "xiocode"
+  type: "cli"
+  language: "typescript"
+  package_manager: "pnpm"
+
+workflow:
+  task_dir: ".xioflow/tasks"
+  spec_dir: ".xioflow/spec"
+  workspace_dir: ".xioflow/workspace"
+  default_mode: "agile_linear" # 敏捷单任务推进，无 DAG 控制器

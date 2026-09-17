@@ -1,0 +1,25 @@
+{
+  "id": "02-platform-driver-and-supervisor",
+  "name": "platform-driver-and-supervisor",
+  "title": "真实平台进程驱动、停止确认流水线与端到端恢复闭环",
+  "description": "接入真实 Node.js 平台驱动，实现微秒级身份核验、有界流排空、stopping 中间态与驱动停止确认流水线，联合 Task 01 实现崩溃故障注入与无头契约测试闭环",
+  "status": "completed",
+  "priority": "P0",
+  "creator": "developer",
+  "assignee": "agent",
+  "createdAt": "2026-09-18T04:15:00.000Z",
+  "completedAt": "2026-09-18T04:25:00.000Z",
+  "artifacts": {
+    "prd": "prd.md",
+    "todolist": "todolist.md",
+    "verification": "verification.md"
+  },
+  "relatedFiles": [
+    "xioflow/packages/kernel/src/driver/types.ts",
+    "xioflow/packages/kernel/src/driver/node-driver.ts",
+    "xioflow/packages/kernel/src/supervisor/supervisor.ts",
+    "xioflow/packages/kernel/src/recovery/engine.ts",
+    "xioflow/packages/kernel/tests/supervisor/contract.test.ts"
+  ],
+  "notes": "归属 xioflow 共享内核，联合 Task 01 落地无头 API 契约测试与崩溃故障注入"
+}
