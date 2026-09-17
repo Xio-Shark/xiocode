@@ -1,0 +1,25 @@
+{
+  "id": "01-kernel-domain-and-transaction-store",
+  "name": "kernel-domain-and-transaction-store",
+  "title": "执行域所有权、SQLite 事务存储与意图登记协议",
+  "description": "实现工作区执行域 (Execution Domain) 所有权锁、SQLite 事务存储 (WAL+FULL 同步)、单调自增序号 Journal 与启动意图持久化协议",
+  "status": "completed",
+  "priority": "P0",
+  "creator": "developer",
+  "assignee": "agent",
+  "createdAt": "2026-09-18T04:15:00.000Z",
+  "completedAt": "2026-09-18T04:24:00.000Z",
+  "artifacts": {
+    "prd": "prd.md",
+    "todolist": "todolist.md",
+    "verification": "verification.md"
+  },
+  "relatedFiles": [
+    "xioflow/packages/kernel/src/domain.ts",
+    "xioflow/packages/kernel/src/store/sqlite.ts",
+    "xioflow/packages/kernel/src/store/schema.ts",
+    "xioflow/packages/kernel/src/types.ts",
+    "xioflow/packages/kernel/tests/store/sqlite.test.ts"
+  ],
+  "notes": "归属 xioflow 共享内核，SQLite 事务保证断电一致性，启动前先建隔离与登记意图"
+}

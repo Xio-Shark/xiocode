@@ -1,0 +1,28 @@
+{
+  "id": "03-component-hub-and-default-workflow",
+  "name": "component-hub-and-default-workflow",
+  "title": "乐高组件宿主治理与 xiocode 默认三件套工作流",
+  "description": "构建具备显式依赖、配置与生命周期管理的组件宿主，实现 xiocode 默认三件套工作流组件与保留换行符格式的精准文件编辑策略",
+  "status": "completed",
+  "priority": "P1",
+  "creator": "developer",
+  "assignee": "agent",
+  "createdAt": "2026-09-18T04:15:00.000Z",
+  "completedAt": "2026-09-18T04:26:00.000Z",
+  "artifacts": {
+    "prd": "prd.md",
+    "todolist": "todolist.md",
+    "verification": "verification.md"
+  },
+  "relatedFiles": [
+    "xiocode/src/host/component-hub.ts",
+    "xiocode/src/host/lifecycle.ts",
+    "xiocode/src/distribution/workflows/three-piece-workflow.ts",
+    "xiocode/src/distribution/components/edit/exact-replace.ts",
+    "xiocode/src/distribution/components/spec/rule-injector.ts",
+    "xiocode/src/distribution/components/tools/kernel-tools.ts",
+    "xiocode/src/distribution/components/safety/basic-interceptor.ts",
+    "xiocode/tests/distribution/workflow.test.ts"
+  ],
+  "notes": "归属 xiocode 发行版仓库，组件具备显式生命周期，精确替换写回保留原文件换行符"
+}

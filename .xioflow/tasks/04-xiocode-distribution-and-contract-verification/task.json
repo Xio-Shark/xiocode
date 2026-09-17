@@ -1,0 +1,24 @@
+{
+  "id": "04-xiocode-distribution-and-contract-verification",
+  "name": "xiocode-distribution-and-contract-verification",
+  "title": "xiocode 最小发行版闭环与 8 项跨装配契约验收",
+  "description": "构建 xiocode 极简 Agent Loop 与命令行 CLI，运行无头 API 消费者与发行版消费者的 8 项跨装配一致性契约测试，完成端到端闭环",
+  "status": "completed",
+  "priority": "P1",
+  "creator": "developer",
+  "assignee": "agent",
+  "createdAt": "2026-09-18T04:15:00.000Z",
+  "completedAt": "2026-09-18T04:31:00.000Z",
+  "artifacts": {
+    "prd": "prd.md",
+    "todolist": "todolist.md",
+    "verification": "verification.md"
+  },
+  "relatedFiles": [
+    "xiocode/src/runtime/agent-loop.ts",
+    "xiocode/src/cli/index.ts",
+    "tests/contract/headless-consumer.test.ts",
+    "tests/contract/xiocode-consumer.test.ts"
+  ],
+  "notes": "契约测试比较状态规则、必要事件顺序与不变式，不比较真实时间墙时钟毫秒数"
+}
