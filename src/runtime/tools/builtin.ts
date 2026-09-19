@@ -7,7 +7,7 @@ import { defineTool } from "../define-tool.ts";
 import { FileReadSet } from "../file-read-set.ts";
 import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
 import { FileWriteQueue } from "../file-write-queue.ts";
-import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
 import { WorkspacePathPolicy, type CheckedWorkspacePath } from "../workspace-path-policy.ts";
 import { GrepSeenState, annotateGrepOutput } from "./grep-outline.ts";
 import { Type } from "../schema.ts";
@@ -748,7 +748,7 @@ async function runArgv(
   signal?: AbortSignal,
   options?: Readonly<{ abortedMessage?: string; env?: NodeJS.ProcessEnv }>,
 ): Promise<CommandResult> {
-  const result = await runSupervisedProcess({
+  const result = await runSupervisedProcessGated({
     command,
     args,
     cwd,
