@@ -17,3 +17,17 @@ export {
   type ProcessRunResult,
   type ProcessTermination,
 } from "./process-supervisor.ts";
+
+export {
+  kernelDomainRoot,
+  resetKernelProcessRunnerForTests,
+  resolveProcessBackend,
+  runSupervisedProcessGated,
+  type ProcessBackend,
+} from "./kernel-process.ts";
+
+export {
+  KERNEL_PROCESS_FLAG,
+  kernelProcessFlag,
+  type KernelProcessFlag,
+} from "./kernel-process-flag.ts";

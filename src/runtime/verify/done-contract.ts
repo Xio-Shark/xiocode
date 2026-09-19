@@ -1,6 +1,6 @@
 import { withFixHint } from "../tools/error-guidance.ts";
 import { buildChildEnv } from "../secret-environment.ts";
-import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
 
 export type DoneCommand = Readonly<{
   name: string;
@@ -93,7 +93,7 @@ async function runCommand(
       passed: false,
     };
   }
-  const result = await runSupervisedProcess({
+  const result = await runSupervisedProcessGated({
     command: bin,
     args,
     cwd,
