@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { ExecutionDomain } from "@xioflow/kernel";
+
 import {
   KernelProcessRunner,
   kernelProcessFlag,
@@ -174,6 +176,73 @@ describe("kernel adapter: product semantics", () => {
       );
       expect(result.stdout).toBe("once");
       expect(result.termination).toBe("exited");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adjudicates operations left behind by a crashed owner before new work", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiocode-kernel-recovery-"));
+    const domainPath = path.join(tempDir, ".xioflow");
+    const runId = "run-crash-session-t1";
+    try {
+      // Simulate a process that registered intent, went active, then died.
+      const crashed = ExecutionDomain.acquire(domainPath, "crash-session");
+      const store = crashed.getStore();
+      store.saveTask({
+        id: "session-crash-session",
+        domainId: crashed.domainId,
+        name: "crash-session",
+        createdAt: new Date().toISOString(),
+      });
+      store.saveRun({
+        id: runId,
+        taskId: "session-crash-session",
+        domainId: crashed.domainId,
+        owner: "crash-session",
+        status: "running",
+        startedAt: new Date().toISOString(),
+      });
+      crashed.registerOperationIntent({
+        id: "crashed-op-1",
+        runId,
+        kind: "process",
+        name: "process:/bin/sh",
+        inputFingerprint: "fp-crashed",
+        requiredResources: ["process:crashed-op-1"],
+        status: "pending",
+      });
+      store.updateOperationStatus("crashed-op-1", "active", {
+        pid: 999_999,
+        spawnTime: new Date().toISOString(),
+      });
+      crashed.close();
+
+      const runner = new KernelProcessRunner({
+        sessionId: "crash-session",
+        turnId: "t1",
+        domainPath,
+      });
+      try {
+        const result = await runner.run({
+          command: process.execPath,
+          args: ["-e", "process.stdout.write('after-recovery')"],
+          cwd: tempDir,
+          output: { headBytes: 512, tailBytes: 0, hardCapBytes: 64_000 },
+        });
+        expect(result.stdout).toBe("after-recovery");
+        const report = runner.lastRecoveryReport;
+        expect(report?.recoveredOperations.length).toBe(1);
+        expect(report?.recoveredOperations[0]?.opId).toBe("crashed-op-1");
+        expect(report?.recoveredOperations[0]?.action).toBe("marked_dead");
+        expect(report?.recoveredOperations[0]?.resourcesReleased).toBe(true);
+
+        const store = runner.ensureDomain().getStore();
+        expect(store.getOperation("crashed-op-1")?.status).toBe("done");
+        expect(store.getOperation("crashed-op-1")?.result?.status).toBe("failed");
+      } finally {
+        disposeRunner(runner, tempDir);
+      }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

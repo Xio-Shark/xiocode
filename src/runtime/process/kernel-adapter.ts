@@ -45,9 +45,11 @@ import {
   ExecutionDomain,
   NodePlatformDriver,
   ProcessSupervisor,
+  RecoveryEngine,
   type IndeterminateResult,
   type PlatformDriver,
   type ProcessOperationResult,
+  type RecoveryReport,
   type TerminationReason,
 } from "@xioflow/kernel";
 
@@ -79,6 +81,8 @@ export class KernelProcessRunner {
   readonly #context: KernelProcessContext;
   #domain: ExecutionDomain | undefined;
   #supervisor: ProcessSupervisor | undefined;
+  #recoveryStarted = false;
+  #lastRecoveryReport: RecoveryReport | undefined;
   #closed = false;
   #sequence = 0;
 
@@ -105,6 +109,11 @@ export class KernelProcessRunner {
 
   get runId(): string {
     return `run-${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}`;
+  }
+
+  /** Recovery verdict from the previous owner of this domain, when there was one. */
+  get lastRecoveryReport(): RecoveryReport | undefined {
+    return this.#lastRecoveryReport;
   }
 
   /** Acquires (once) the execution domain and registers Task + Run up front. */
@@ -189,6 +198,8 @@ export class KernelProcessRunner {
     const opId = `${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}-${++this.#sequence}`;
     const termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS;
 
+    await this.#recoverPreviousOwner();
+
     const pending = supervisor.executeProcess({
       runId: this.runId,
       opId,
@@ -225,6 +236,27 @@ export class KernelProcessRunner {
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * A domain may still hold operations from a crashed process. Adjudicate them
+   * with the kernel's RecoveryEngine before admitting anything new: confirmed
+   * dead processes release their leases, unverifiable ones stay isolated.
+   */
+  async #recoverPreviousOwner(): Promise<void> {
+    if (this.#recoveryStarted) {
+      return;
+    }
+    this.#recoveryStarted = true;
+    const domain = this.#domain;
+    const supervisor = this.#supervisor;
+    if (!domain || !supervisor) {
+      return;
+    }
+    if (domain.getStore().getUnfinishedOperations(domain.domainId).length === 0) {
+      return;
+    }
+    this.#lastRecoveryReport = await new RecoveryEngine(domain, supervisor.getDriver()).recover();
   }
 }
 
