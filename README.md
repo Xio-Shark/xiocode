@@ -25,6 +25,7 @@
 - **Dual Interface Modes**: Full-featured terminal TUI with syntax highlighting, fuzzy search, and command palette, alongside a zero-dependency local Web console (`xio web`) for visual timeline inspections.
 - **Built-in Execution Guardrails**: Intercepts destructive shell commands and unsafe file mutations, requiring explicit user authorization before execution.
 - **Ordered Browser Actions over MCP**: MCP browser tools from one driver (e.g. Playwright) share a serial queue, so a whole `navigate → click → type` sequence runs in one model round trip instead of racing in parallel. Setup, measured costs, and the extension-bridge login path: [docs/browser-mcp.md](./docs/browser-mcp.md).
+- **Kernel-Backed Process Layer (experimental)**: supervised commands can run on the embeddable [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) instead of the built-in supervisor — process intent recorded before spawn, stop confirmed by the driver before leases are released, per-stream truncation with spill artifacts, and crash-recovery adjudication of what a previous process left behind. Opt in with `XIOCODE_PROCESS_KERNEL=1` (Node 22.5+); the default path is unchanged.
 
 ---
 
@@ -32,6 +33,8 @@
 
 - **Node.js**: 20.0.0 or higher
 - **OS**: macOS, Linux, Windows (WSL)
+
+The experimental kernel process layer (`XIOCODE_PROCESS_KERNEL=1`) requires Node.js 22.5 or higher, because its store uses `node:sqlite`.
 
 ```bash
 # Recommended: Automated installer
