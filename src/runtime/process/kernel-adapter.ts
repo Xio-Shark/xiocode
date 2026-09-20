@@ -40,6 +40,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   ExecutionDomain,
@@ -54,6 +55,7 @@ import {
 } from "@xioflow/kernel";
 
 import { OUTPUT_BUDGET_PRESETS, type OutputBudget } from "./output-collector.ts";
+import type { OutputChunkProjection, OutputStreamName } from "./output-collector.ts";
 import type {
   CleanupGuarantee,
   ProcessRunOptions,
@@ -197,6 +199,7 @@ export class KernelProcessRunner {
     const budget = options.output ?? OUTPUT_BUDGET_PRESETS.bash;
     const opId = `${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}-${++this.#sequence}`;
     const termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS;
+    const projection = options.onOutput ? createLineProjection(options.onOutput, budget) : undefined;
 
     await this.#recoverPreviousOwner();
 
@@ -224,6 +227,7 @@ export class KernelProcessRunner {
       resourceBudget: budget.hardCapBytes > 0
         ? { maxOutputBytes: budget.hardCapBytes, enforcement: "soft" }
         : undefined,
+      ...(projection ? { onStreamChunk: projection.push } : {}),
     });
 
     const onAbort = (): void => {
@@ -489,4 +493,57 @@ function abortedBeforeStart(
 function sanitizeId(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return sanitized.length > 0 ? sanitized.slice(0, 64) : "session";
+}
+
+const DEFAULT_MAX_LINE_BYTES = 64 * 1024;
+
+type LineProjectionState = {
+  decoder: StringDecoder;
+  lineBuffer: string;
+};
+
+/**
+ * Rebuilds the product's `onOutput` line projection on top of the kernel's raw
+ * chunk callback, keeping the legacy semantics: whole lines are emitted as they
+ * arrive, an over-long line is trimmed to `maxLineBytes` (oldest bytes dropped,
+ * reported through `droppedBytes`), and a trailing partial line stays buffered.
+ */
+function createLineProjection(
+  onOutput: (chunk: OutputChunkProjection) => void,
+  budget: OutputBudget,
+): Readonly<{ push: (stream: OutputStreamName, chunk: Buffer) => void }> {
+  const maxLineBytes = budget.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+  const states: Record<OutputStreamName, LineProjectionState> = {
+    stdout: { decoder: new StringDecoder("utf8"), lineBuffer: "" },
+    stderr: { decoder: new StringDecoder("utf8"), lineBuffer: "" },
+  };
+
+  return {
+    push(stream, chunk) {
+      const state = states[stream];
+      const decoded = state.decoder.write(chunk);
+      if (!decoded) {
+        return;
+      }
+      state.lineBuffer += decoded;
+      let droppedBytes = 0;
+      if (Buffer.byteLength(state.lineBuffer) > maxLineBytes) {
+        const encoded = Buffer.from(state.lineBuffer);
+        droppedBytes = encoded.byteLength - maxLineBytes;
+        state.lineBuffer = encoded.subarray(encoded.byteLength - maxLineBytes).toString("utf8");
+      }
+      const newlineIndex = state.lineBuffer.lastIndexOf("\n");
+      if (newlineIndex === -1 && Buffer.byteLength(state.lineBuffer) < Math.min(4_096, maxLineBytes)) {
+        return;
+      }
+      if (newlineIndex === -1) {
+        onOutput({ stream, text: state.lineBuffer, droppedBytes });
+        state.lineBuffer = "";
+        return;
+      }
+      const text = state.lineBuffer.slice(0, newlineIndex + 1);
+      state.lineBuffer = state.lineBuffer.slice(newlineIndex + 1);
+      onOutput({ stream, text, droppedBytes });
+    },
+  };
 }

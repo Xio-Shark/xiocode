@@ -9,7 +9,7 @@
 import path from "node:path";
 
 import { buildChildEnv } from "../secret-environment.ts";
-import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
 
 export type GrepEngineKind = "ugrep" | "rg" | "grep" | "node";
 export type GlobEngineKind = "ugrep" | "rg" | "bfs" | "find" | "node";
@@ -492,7 +492,7 @@ async function runArgv(
   cwd: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
-  const result = await runSupervisedProcess({
+  const result = await runSupervisedProcessGated({
     command,
     args,
     cwd,

@@ -13,6 +13,7 @@ import {
   runSupervisedProcessViaKernel,
 } from "./kernel-adapter.ts";
 import { defineSupervisorContract } from "./supervisor-contract.testkit.ts";
+import type { OutputChunkProjection } from "./output-collector.ts";
 
 function createTempRunner(
   sessionId = "test-session",
@@ -125,6 +126,53 @@ describe("kernel adapter: product semantics", () => {
       const spillPath = result.spillPaths?.stdout;
       expect(spillPath).toBeTruthy();
       expect(fs.statSync(spillPath!).size).toBe(8_000);
+    } finally {
+      disposeRunner(runner, tempDir);
+    }
+  });
+
+  it("projects onOutput lines while the process runs", async () => {
+    const { runner, tempDir } = createTempRunner();
+    try {
+      const projections: OutputChunkProjection[] = [];
+      const result = await runner.run({
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write('line-1\\nline-2\\npartial'); process.stderr.write('err-line\\n')",
+        ],
+        cwd: tempDir,
+        output: { headBytes: 1_024, tailBytes: 0, hardCapBytes: 64_000 },
+        onOutput: (chunk) => projections.push(chunk),
+      });
+
+      const stdoutText = projections.filter((p) => p.stream === "stdout").map((p) => p.text).join("");
+      const stderrText = projections.filter((p) => p.stream === "stderr").map((p) => p.text).join("");
+      // 完整行实时投影；末尾半行保持缓冲，与 legacy 语义一致
+      expect(stdoutText).toBe("line-1\nline-2\n");
+      expect(stderrText).toBe("err-line\n");
+      expect(projections.every((p) => p.droppedBytes === 0)).toBe(true);
+      expect(result.stdout).toBe("line-1\nline-2\npartial");
+    } finally {
+      disposeRunner(runner, tempDir);
+    }
+  });
+
+  it("trims an over-long line and reports droppedBytes", async () => {
+    const { runner, tempDir } = createTempRunner();
+    try {
+      const projections: OutputChunkProjection[] = [];
+      await runner.run({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('A'.repeat(100) + '\\n')"],
+        cwd: tempDir,
+        output: { headBytes: 1_024, tailBytes: 0, hardCapBytes: 64_000, maxLineBytes: 32 },
+        onOutput: (chunk) => projections.push(chunk),
+      });
+
+      expect(projections.length).toBe(1);
+      expect(projections[0]?.text).toBe(`${"A".repeat(31)}\n`);
+      expect(projections[0]?.droppedBytes).toBe(69);
     } finally {
       disposeRunner(runner, tempDir);
     }

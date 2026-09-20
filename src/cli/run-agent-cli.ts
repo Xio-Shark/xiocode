@@ -74,6 +74,10 @@ export async function runAgentCli(
     }
     const recovered = recoverStoredSession(stored);
     const sessionId = stored?.metadata.id ?? store.createId();
+    // Kernel execution domains are keyed by session so a crashed process leaves
+    // a domain this session can adopt and recover on the next launch.
+    const { setKernelProcessSession } = await import("../runtime/process/kernel-process.ts");
+    setKernelProcessSession(sessionId);
     const releaseLease = await store.acquireLease(sessionId);
     try {
       earlyBoot?.setStatus("preparing workspace…");
