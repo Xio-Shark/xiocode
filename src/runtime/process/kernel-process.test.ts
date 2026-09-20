@@ -8,6 +8,7 @@ import {
   resetKernelProcessRunnerForTests,
   resolveProcessBackend,
   runSupervisedProcessGated,
+  setKernelProcessSession,
 } from "./kernel-process.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 import { runDoneContract } from "../verify/done-contract.ts";
@@ -37,6 +38,7 @@ function domainDatabases(root: string): string[] {
 }
 
 afterEach(() => {
+  setKernelProcessSession(undefined);
   resetKernelProcessRunnerForTests();
   withEnv({});
 });
@@ -91,6 +93,60 @@ describe("runSupervisedProcessGated", () => {
     expect(result.stdout).toBe("kernel-path");
     expect(result.termination).toBe("exited");
     expect(domainDatabases(domainRoot).length).toBe(1);
+  });
+
+  it("forwards live output projections through the gate", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const domainRoot = makeTempDir("xio-kernel-live-");
+    withEnv({ XIOCODE_PROCESS_KERNEL: "1", XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
+    const seen: string[] = [];
+    const result = await runSupervisedProcessGated({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('live-a\\nlive-b\\n')"],
+      cwd: process.cwd(),
+      output: { headBytes: 512, tailBytes: 0, hardCapBytes: 64_000 },
+      onOutput: (chunk) => seen.push(chunk.text),
+    });
+    expect(result.stdout).toBe("live-a\nlive-b\n");
+    expect(seen.join("")).toBe("live-a\nlive-b\n");
+  });
+
+  it("keys the execution domain by session so a restart can adopt it", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const domainRoot = makeTempDir("xio-kernel-session-");
+    const workspace = makeTempDir("xio-kernel-session-ws-");
+    withEnv({ XIOCODE_PROCESS_KERNEL: "1", XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
+    const run = () =>
+      runSupervisedProcessGated({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('session-domain')"],
+        cwd: workspace,
+        output: { headBytes: 512, tailBytes: 0, hardCapBytes: 64_000 },
+      });
+
+    try {
+      setKernelProcessSession("session-abc");
+      await run();
+      const firstSession = domainDatabases(domainRoot);
+      expect(firstSession.length).toBe(1);
+
+      // Same session reuses the same domain (the restart/adoption path).
+      await run();
+      expect(domainDatabases(domainRoot)).toEqual(firstSession);
+
+      // A different session gets its own domain.
+      setKernelProcessSession("session-def");
+      await run();
+      const bothSessions = domainDatabases(domainRoot);
+      expect(bothSessions.length).toBe(2);
+      expect(bothSessions).toContain(firstSession[0]);
+    } finally {
+      setKernelProcessSession(undefined);
+    }
   });
 });
 

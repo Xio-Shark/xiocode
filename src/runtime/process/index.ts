@@ -23,6 +23,7 @@ export {
   resetKernelProcessRunnerForTests,
   resolveProcessBackend,
   runSupervisedProcessGated,
+  setKernelProcessSession,
   type ProcessBackend,
 } from "./kernel-process.ts";
 

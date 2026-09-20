@@ -13,7 +13,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { buildChildEnv } from "../secret-environment.ts";
-import { OUTPUT_BUDGET_PRESETS, runSupervisedProcess } from "../process/index.ts";
+import { OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
 import {
   detectTrellis,
   formatParallelPlanHandoff,
@@ -94,7 +94,7 @@ async function runTaskPy(
     }
   };
 
-  const result = await runSupervisedProcess({
+  const result = await runSupervisedProcessGated({
     command: "python3",
     args: [path.join(".trellis", "scripts", "task.py"), ...args],
     cwd: options.workspaceRoot,

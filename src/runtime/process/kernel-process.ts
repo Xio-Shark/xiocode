@@ -37,6 +37,23 @@ export function kernelDomainRoot(env: NodeJS.ProcessEnv = process.env): string {
     : path.join(os.homedir(), ".xiocode", "kernel");
 }
 
+let sessionOverride: string | undefined;
+
+/**
+ * Binds the kernel execution domain to the product session, so a crashed
+ * process leaves a domain the next launch of the *same* session can adopt and
+ * adjudicate with `RecoveryEngine`. Without a session id the domain falls back
+ * to workspace + pid (still isolated, but not re-adoptable across restarts).
+ */
+export function setKernelProcessSession(sessionId: string | undefined): void {
+  const next = sessionId?.trim() || undefined;
+  if (next === sessionOverride) {
+    return;
+  }
+  sessionOverride = next;
+  resetKernelProcessRunnerForTests();
+}
+
 /** Which backend a call would use right now, with the reason spelled out. */
 export function resolveProcessBackend(
   cwd: string,
@@ -97,12 +114,15 @@ async function acquireKernelRunner(domainPath: string): Promise<KernelProcessRun
   return runner;
 }
 
-/** One CLI process is one session: workspace hash + pid keeps domains distinct. */
+/** One CLI process is one session: workspace hash + session id (or pid) keeps domains distinct. */
 function sessionKey(cwd: string): string {
   const resolved = path.resolve(cwd);
   const digest = crypto.createHash("sha1").update(resolved).digest("hex").slice(0, 10);
   const base = path.basename(resolved).replace(/[^A-Za-z0-9._-]+/g, "-") || "workspace";
-  return `${base}-${digest}-p${process.pid}`;
+  const owner = sessionOverride
+    ? `s${crypto.createHash("sha1").update(sessionOverride).digest("hex").slice(0, 10)}`
+    : `p${process.pid}`;
+  return `${base}-${digest}-${owner}`;
 }
 
 function sessionKeyFromDomainPath(domainPath: string): string {
