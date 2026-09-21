@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="XioCode: local-first terminal coding agent">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#060a14"/>
+      <stop offset="0.5" stop-color="#0a1424"/>
+      <stop offset="1" stop-color="#0e2036"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.6" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <g stroke="#7dd3fc" stroke-opacity="0.06" stroke-width="1">
+    <path d="M0 96H1280M0 192H1280M0 288H1280M0 384H1280M0 480H1280M0 576H1280"/>
+    <path d="M128 0V640M256 0V640M384 0V640M512 0V640M640 0V640M768 0V640M896 0V640M1024 0V640M1152 0V640"/>
+  </g>
+
+  <rect x="0" y="0" width="1280" height="10" fill="url(#accent)"/>
+
+  <g font-family="Helvetica, Arial, sans-serif">
+    <text x="88" y="196" font-size="92" font-weight="700" fill="#f8fafc">XioCode</text>
+    <text x="90" y="266" font-size="34" fill="#d7e3f4">Local-first terminal coding agent</text>
+    <text x="90" y="316" font-size="26" fill="#8fa3bf">Self-owned runtime &#183; direct provider endpoints &#183; zero telemetry</text>
+
+    <g font-size="22" fill="#d8ecff">
+      <rect x="88" y="386" width="282" height="58" rx="29" fill="#12293f" stroke="#2f6ea8"/>
+      <text x="112" y="423">turn-by-turn rollback</text>
+      <rect x="394" y="386" width="304" height="58" rx="29" fill="#12293f" stroke="#2f6ea8"/>
+      <text x="418" y="423">crash-resilient sessions</text>
+      <rect x="722" y="386" width="242" height="58" rx="29" fill="#12293f" stroke="#2f6ea8"/>
+      <text x="746" y="423">ordered MCP actions</text>
+      <rect x="988" y="386" width="204" height="58" rx="29" fill="#12293f" stroke="#2f6ea8"/>
+      <text x="1012" y="423">xioflow kernel</text>
+    </g>
+
+    <text x="90" y="548" font-size="28" fill="#e2e8f0" font-family="Menlo, monospace">npm i -g @xioshark/xiocode</text>
+    <text x="90" y="594" font-size="24" fill="#7f93ad" font-family="Menlo, monospace">github.com/Xio-Shark/xiocode</text>
+  </g>
+</svg>
