@@ -10,6 +10,7 @@ package-lock.json.bak
 
 # Runtime (local user data — never commit)
 .xiocode/
+.vitest-kernel-domains/
 .pi/
 *.sock
 
@@ -71,4 +72,3 @@ Agent工程教程*.md
 audit-report-*
 xiocode-audit-*
 *-audit-*
-

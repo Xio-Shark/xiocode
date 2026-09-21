@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  notifyKernelFallback,
   resetKernelProcessRunnerForTests,
   resolveProcessBackend,
   runSupervisedProcessGated,
@@ -44,11 +45,21 @@ afterEach(() => {
 });
 
 describe("resolveProcessBackend", () => {
-  it("defaults to the legacy supervisor", () => {
+  it("uses the kernel path by default where the runtime supports it", () => {
     withEnv({});
     const resolved = resolveProcessBackend(process.cwd());
+    const [major = 0, minor = 0] = process.versions.node
+      .split(".")
+      .map((part) => Number.parseInt(part, 10));
+    const kernelCapable = process.platform !== "win32" && (major > 22 || (major === 22 && minor >= 5));
+    if (kernelCapable) {
+      expect(resolved.backend).toBe("kernel");
+      expect(resolved.domainPath).toBeTruthy();
+      return;
+    }
+    // Unsupported runtime: built-in supervisor, with the reason kept for the notice.
     expect(resolved.backend).toBe("legacy");
-    expect(resolved.reason).toContain("XIOCODE_PROCESS_KERNEL");
+    expect(resolved.reason.length).toBeGreaterThan(0);
   });
 
   it("selects the kernel with an explicit domain path when the flag is on", () => {
@@ -67,7 +78,7 @@ describe("resolveProcessBackend", () => {
 describe("runSupervisedProcessGated", () => {
   it("leaves no kernel domain behind when the flag is off", async () => {
     const domainRoot = makeTempDir("xio-kernel-off-");
-    withEnv({ XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
+    withEnv({ XIOCODE_PROCESS_KERNEL: "0", XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
     const result = await runSupervisedProcessGated({
       command: process.execPath,
       args: ["-e", "process.stdout.write('legacy-path')"],
@@ -147,6 +158,46 @@ describe("runSupervisedProcessGated", () => {
     } finally {
       setKernelProcessSession(undefined);
     }
+  });
+
+  it("emits exactly one visible notice when the default path is unavailable", () => {
+    resetKernelProcessRunnerForTests();
+    const lines: string[] = [];
+    const write = (line: string): void => {
+      lines.push(line);
+    };
+
+    expect(notifyKernelFallback("node 20.11.1 is older than 22.5", write)).toBe(true);
+    expect(notifyKernelFallback("node 20.11.1 is older than 22.5", write)).toBe(false);
+
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("kernel process layer unavailable");
+    expect(lines[0]).toContain("node 20.11.1 is older than 22.5");
+    expect(lines[0]).toContain("XIOCODE_PROCESS_KERNEL=0");
+  });
+
+  it("does not collide when the same domain is reopened by a new runner", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const domainRoot = makeTempDir("xio-kernel-reopen-");
+    const workspace = makeTempDir("xio-kernel-reopen-ws-");
+    withEnv({ XIOCODE_PROCESS_KERNEL: "1", XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
+    setKernelProcessSession("reopen-session");
+    const run = (): Promise<string> =>
+      runSupervisedProcessGated({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('reopen')"],
+        cwd: workspace,
+        output: { headBytes: 512, tailBytes: 0, hardCapBytes: 64_000 },
+      }).then((result) => result.stdout);
+
+    await expect(run()).resolves.toBe("reopen");
+    // Simulate a restart: a fresh runner over the same domain (same session key)
+    // must not restart operation ids at 1 and collide with the previous run.
+    resetKernelProcessRunnerForTests();
+    await expect(run()).resolves.toBe("reopen");
+    expect(domainDatabases(domainRoot).length).toBe(1);
   });
 });
 
