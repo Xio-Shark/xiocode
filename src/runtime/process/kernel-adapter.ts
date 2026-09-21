@@ -40,6 +40,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
 import {
@@ -87,6 +88,13 @@ export class KernelProcessRunner {
   #lastRecoveryReport: RecoveryReport | undefined;
   #closed = false;
   #sequence = 0;
+  /**
+   * Per-runner token: a domain can outlive the process that created it (that is
+   * the point of recovery), so operation ids must not restart at 1 when the
+   * same session reopens the domain. Without this, the second launch would
+   * collide with the crashed launch's `operations.id`.
+   */
+  readonly #runToken = crypto.randomBytes(3).toString("hex");
 
   constructor(context: KernelProcessContext) {
     this.#context = context;
@@ -197,7 +205,7 @@ export class KernelProcessRunner {
     }
 
     const budget = options.output ?? OUTPUT_BUDGET_PRESETS.bash;
-    const opId = `${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}-${++this.#sequence}`;
+    const opId = `${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}-${this.#runToken}-${++this.#sequence}`;
     const termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS;
     const projection = options.onOutput ? createLineProjection(options.onOutput, budget) : undefined;
 
@@ -260,7 +268,29 @@ export class KernelProcessRunner {
     if (domain.getStore().getUnfinishedOperations(domain.domainId).length === 0) {
       return;
     }
+    const affectedRuns = new Set(
+      domain.getStore()
+        .getUnfinishedOperations(domain.domainId)
+        .map((operation) => operation.runId),
+    );
     this.#lastRecoveryReport = await new RecoveryEngine(domain, supervisor.getDriver()).recover();
+    // The recovery engine adjudicates operations; the Run they belonged to
+    // would otherwise stay `running` forever, so close it out honestly.
+    for (const runId of affectedRuns) {
+      const remaining = domain.getStore()
+        .getOperationsByRun(runId)
+        .filter((operation) => operation.status !== "done");
+      if (remaining.length > 0) {
+        continue;
+      }
+      const recovered = this.#lastRecoveryReport.recoveredOperations.filter((entry) =>
+        domain.getStore().getOperation(entry.opId)?.runId === runId
+      );
+      if (recovered.some((entry) => entry.action === "isolated_indeterminate")) {
+        continue; // Run stays open on purpose: an isolated operation must not look finished.
+      }
+      domain.getStore().updateRunStatus(runId, "failed", "crash_detected", new Date().toISOString());
+    }
   }
 }
 

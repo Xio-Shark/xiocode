@@ -321,17 +321,28 @@ describe("mapKernelTermination", () => {
 });
 
 describe("kernelProcessFlag", () => {
-  it("stays off unless explicitly enabled on a supported platform", () => {
-    expect(kernelProcessFlag({}).enabled).toBe(false);
-    expect(kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "0" }).enabled).toBe(false);
-    expect(kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "off" }).reason).toContain("not enabled");
+  it("is on by default, off when explicitly disabled, and honest about why", () => {
+    const byDefault = kernelProcessFlag({});
+    expect(byDefault.source).toBe("default");
+    if (process.platform === "win32") {
+      expect(byDefault.enabled).toBe(false);
+      expect(byDefault.reason).toContain("Windows");
+    } else {
+      expect(byDefault.enabled).toBe(true);
+    }
+
+    const disabled = kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "0" });
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.source).toBe("explicit");
+    expect(disabled.reason).toContain("XIOCODE_PROCESS_KERNEL=0");
+    expect(kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "off" }).enabled).toBe(false);
+
+    const nonsense = kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "maybe" });
+    expect(nonsense.enabled).toBe(false);
+    expect(nonsense.reason).toContain("not a recognized value");
 
     const explicit = kernelProcessFlag({ XIOCODE_PROCESS_KERNEL: "1" });
-    if (process.platform === "win32") {
-      expect(explicit.enabled).toBe(false);
-      expect(explicit.reason).toContain("Windows");
-    } else {
-      expect(explicit.enabled).toBe(true);
-    }
+    expect(explicit.source).toBe("explicit");
+    expect(explicit.enabled).toBe(process.platform !== "win32");
   });
 });

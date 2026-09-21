@@ -14,6 +14,9 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+### Changed
+- **The process layer now runs on `@xioflow/kernel` by default.** Supervised commands (bash tool, done contract, search backends, plan dispatch) execute through the embeddable kernel: process intent is recorded before spawn, a stop must be confirmed before leases are released, output is truncated per stream with spill artifacts, and whatever a crashed process left behind is adjudicated on the next launch. Node.js 22.5+ on Linux/macOS takes this path; older runtimes print one line and keep using the built-in supervisor. Set `XIOCODE_PROCESS_KERNEL=0` to choose the built-in supervisor deliberately.
+
 ## [1.3.0] - 2026-08-26
 
 ### Added
