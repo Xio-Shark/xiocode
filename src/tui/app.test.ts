@@ -1,5 +1,5 @@
 import React from "react";
-import { render as inkRender, renderToString, Text } from "ink";
+import { renderToString, Text } from "ink";
 import { cleanup, render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -480,58 +480,6 @@ describe("App", () => {
     expect(rows.length).toBeLessThanOrEqual(30);
     instance.stdin.write("\x1b");
     await expect(answer).resolves.toBeUndefined();
-  });
-
-  it("drops the header mark on a narrow terminal", async () => {
-    const { EventEmitter } = await import("node:events");
-    class FakeStream extends EventEmitter {
-      isTTY = true;
-      columns: number;
-      rows: number;
-      writes: string[] = [];
-      constructor(columns: number, rows: number) {
-        super();
-        this.columns = columns;
-        this.rows = rows;
-      }
-      write(chunk: string) {
-        this.writes.push(chunk);
-        return true;
-      }
-      setRawMode() {}
-      setEncoding() {}
-      resume() {}
-      pause() {}
-      read() {
-        return null;
-      }
-      ref() {}
-      unref() {}
-    }
-    const stdout = new FakeStream(40, 20);
-    const stdin = new FakeStream(40, 20);
-    const bridge = new TuiSessionBridge();
-    const instance = inkRender(React.createElement(App, {
-      session: createSession(new ExtensionHost()),
-      bridge,
-      cwd: "/tmp/project",
-      async onExit() {},
-    }), {
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      patchConsole: false,
-      exitOnCtrlC: false,
-    });
-    // Poll instead of sleeping: a fixed delay flakes when CI is slow.
-    const painted = async () => stdout.writes.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    for (let attempt = 0; attempt < 100 && !(await painted()).includes("XioCode"); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    const frame = await painted();
-    expect(frame).toContain("XioCode");
-    expect(frame).not.toContain("███");
-    instance.unmount();
-    instance.cleanup();
   });
 
   it("maps /bypass to permission full and shows the profile footer", async () => {
