@@ -522,10 +522,12 @@ describe("App", () => {
       patchConsole: false,
       exitOnCtrlC: false,
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    // Ink streams one frame as several chunks; strip the cursor controls so the
-    // assertions read the painted text.
-    const frame = stdout.writes.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    // Poll instead of sleeping: a fixed delay flakes when CI is slow.
+    const painted = async () => stdout.writes.join("").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    for (let attempt = 0; attempt < 100 && !(await painted()).includes("XioCode"); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const frame = await painted();
     expect(frame).toContain("XioCode");
     expect(frame).not.toContain("███");
     instance.unmount();
