@@ -21,6 +21,7 @@ Release cadence: **every 1–2 weeks** while the project is young.
 - **The `/model` picker no longer leaves overlapping ghost text.** Long or CJK model names are clipped to the terminal width with an ellipsis instead of wrapping, so the picker stays inside the screen and every row repaints cleanly.
 - **A model id that already carries its provider prefix is shown once.** Catalogs that return `opencodego/glm-5.1` no longer render as `opencodego/opencodego/glm-5.1` in the picker or the status line.
 - **`/model` reports a bad provider endpoint instead of hanging.** Model discovery gives up after 8 seconds and falls back to the configured catalog.
+- **The test suite stopped oversubscribing the machine.** Vitest's default worker count (`cpus - 1`) combined with per-test subprocesses was thrashing: the same suite took 976s and timed out git setup instead of 18.6s green. Workers are now capped.
 
 ## [1.3.0] - 2026-08-26
 
