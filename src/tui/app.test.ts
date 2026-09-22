@@ -453,6 +453,35 @@ describe("App", () => {
     await expect(answer).resolves.toBe("fast");
   });
 
+  it("keeps long/CJK select rows on one truncated line", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    // Ink counts CJK as a single column while terminals render two, so an
+    // unclipped label used to fold into a second row, push the frame past the
+    // terminal height, and leave overlapping ghost rows behind.
+    const longCjk = `opencodego/${"中文模型".repeat(12)}`;
+    const answer = bridge.select("Select model", [
+      { label: longCjk, value: "cjk" },
+      { label: "opencodego/glm-5.1", value: "glm" },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("Select model");
+    const rows = frame.split("\n");
+    const labelRows = rows.filter((line) => line.includes("中文模型"));
+    expect(labelRows).toHaveLength(1);
+    expect(labelRows[0]?.endsWith("…")).toBe(true);
+    expect(frame).not.toContain("中文模型中文模型中文模型中文模型中文模型中文模型中文模型中文模型中文模型中文模型中文模型中文模型");
+    expect(rows.length).toBeLessThanOrEqual(30);
+    instance.stdin.write("\x1b");
+    await expect(answer).resolves.toBeUndefined();
+  });
+
   it("maps /bypass to permission full and shows the profile footer", async () => {
     const bridge = new TuiSessionBridge();
     const session = createSession(new ExtensionHost());

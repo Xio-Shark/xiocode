@@ -4,6 +4,7 @@ export type DiscoverModelsOptions = Readonly<{
   apiKey: string;
   catalogModels?: readonly string[];
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }>;
 
 export type DiscoverModelsResult = Readonly<{
@@ -19,6 +20,9 @@ export type ProbeApiKeyResult = Readonly<{
   error?: string;
 }>;
 
+/** Bounded wait for provider catalogs; `/model` blocks its modal on this call. */
+export const DISCOVER_TIMEOUT_MS = 8_000;
+
 /** List models via OpenAI-compat `/models`, else fall back to catalog / free-form. */
 export async function discoverModels(options: DiscoverModelsOptions): Promise<DiscoverModelsResult> {
   const catalog = options.catalogModels ?? [];
@@ -30,12 +34,15 @@ export async function discoverModels(options: DiscoverModelsOptions): Promise<Di
   const baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
   const fetchImpl = options.fetchImpl ?? fetch;
   try {
+    // `/model` awaits discovery before it can render, so an unreachable provider
+    // must fail fast instead of parking the picker on "working…" forever.
     const response = await fetchImpl(`${baseUrl}/models`, {
       method: "GET",
       headers: {
         authorization: `Bearer ${options.apiKey}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(options.timeoutMs ?? DISCOVER_TIMEOUT_MS),
     });
     if (!response.ok) {
       await response.text().catch(() => undefined);

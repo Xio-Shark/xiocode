@@ -115,7 +115,7 @@ async function runConnect(options: ConnectCommandOptions): Promise<string> {
     name: modelId,
     api: providerApi(resolved.kind),
   });
-  options.sink.setStatus?.("model", `${resolved.id}/${modelId}`);
+  options.sink.setStatus?.("model", qualifyModelId(resolved.id, modelId));
   // Return value is shown by TUI/REPL — avoid duplicate sink.notify.
   return `connected ${resolved.id}/${modelId} (key saved to credentials, not config.toml)`;
 }
@@ -131,7 +131,7 @@ async function runModel(options: ConnectCommandOptions): Promise<string> {
     const models = await collectModelsForProvider(provider, options);
     for (const model of models) {
       entries.push({
-        label: `${provider.name}/${model}`,
+        label: qualifyModelId(provider.name, model),
         value: `${provider.name}::${model}`,
         provider: provider.name,
         model,
@@ -175,8 +175,8 @@ async function runModel(options: ConnectCommandOptions): Promise<string> {
     name: modelId,
     api: providerApi(provider.kind),
   });
-  options.sink.setStatus?.("model", `${providerName}/${modelId}`);
-  return `model ${providerName}/${modelId}`;
+  options.sink.setStatus?.("model", qualifyModelId(providerName, modelId));
+  return `model ${qualifyModelId(providerName, modelId)}`;
 }
 
 async function resolvePresetForConnect(
@@ -388,6 +388,17 @@ function toRegistration(provider: XioProviderConfig, models: readonly string[]):
 
 function uniqueModels(models: readonly string[]): string[] {
   return [...new Set(models.filter((id) => id.length > 0))];
+}
+
+/**
+ * Provider catalogs are inconsistent: some return bare ids (`glm-5.1`), others
+ * already carry the provider prefix (`opencodego/glm-5.1`). Preview labels and
+ * status lines use this so neither shape renders as `opencodego/opencodego/…`.
+ */
+export function qualifyModelId(providerName: string, modelId: string): string {
+  return modelId.startsWith(`${providerName}/`) || modelId === providerName
+    ? modelId
+    : `${providerName}/${modelId}`;
 }
 
 function normalizeProviderId(value: string): string {
