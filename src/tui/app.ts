@@ -488,6 +488,7 @@ export function App(props: AppProps): React.JSX.Element {
       thinking: thinkingLabel,
       plan: planLabel,
       cwd: props.cwd,
+      columns,
       busy,
       phase: composePhaseChrome(busyPhaseLabel({
         busy,
@@ -2857,6 +2858,7 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   busy?: boolean;
   /** Turn phase chrome: working… / streaming… / tools… / agents… */
   phase?: string;
+  columns: number;
 }>): React.JSX.Element {
   // Path / permission / usage / workspace live in the Claude-style footer;
   // header mirrors CondensedLogo: mascot + title / meta / cwd.
@@ -2871,6 +2873,7 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
     version: props.version,
     meta: parts.length > 0 ? parts.join(` ${theme.sym.meta} `) : undefined,
     path: formatShortCwd(props.cwd),
+    columns: props.columns,
   });
 });
 

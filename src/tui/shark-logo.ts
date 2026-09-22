@@ -17,8 +17,24 @@ import { theme } from "./theme.ts";
 
 const h = React.createElement;
 
+/**
+ * Columns needed to keep mark + gap + a readable title column on one row.
+ * Below this the row wraps (Ink measures the truncated title as wider than the
+ * room left) and a wrapped header row desyncs Ink's incremental repaint, so the
+ * mark is dropped and the text column takes the full width instead.
+ */
+export const BRAND_MARK_MIN_COLUMNS = 54;
+
 /** Four-row high-definition XIO wordmark with trailing shark dorsal fin (~29 cols). */
 export function XioMark(): React.JSX.Element {
+  if (process.env.XIO_DEBUG_WINDOW) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("node:fs").appendFileSync(process.env.XIO_DEBUG_WINDOW, `XioMark\n${new Error().stack}\n`);
+    } catch {
+      // ignore
+    }
+  }
   const letters = theme.shark;
   const accent = theme.accent;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
@@ -66,14 +82,17 @@ export function BrandHeader(props: Readonly<{
   meta?: string;
   /** Dim third line (cwd / boot status). */
   path?: string;
+  /** Terminal width; below {@link BRAND_MARK_MIN_COLUMNS} the mark is dropped. */
+  columns?: number;
 }>): React.JSX.Element {
+  const showMark = (props.columns ?? 80) >= BRAND_MARK_MIN_COLUMNS;
   return h(Box, {
     flexDirection: "row",
     gap: 2,
     alignItems: "center",
     marginBottom: 1,
   },
-    h(XioMark),
+    showMark ? h(XioMark) : null,
     h(Box, { flexDirection: "column", flexGrow: 1 },
       h(Text, null,
         h(Text, { bold: true, color: theme.brand }, "XioCode"),

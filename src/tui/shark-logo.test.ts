@@ -34,4 +34,24 @@ describe("BrandHeader", () => {
     expect(frame).toContain("~/proj");
     expect(frame).toContain("███");
   });
+
+  it("drops the mark on narrow terminals so the header row never wraps", () => {
+    const render = (width: number) => renderToString(React.createElement(BrandHeader, {
+      version: "1.1.0",
+      meta: "opencodego/deepseek-v4-flash-vision-exp · think:off",
+      path: "/Users/xioshark/code/projects/xiocode",
+      columns: width,
+    }), { columns: width });
+
+    // A wrapped header row desyncs Ink's incremental repaint, so no line may
+    // exceed the terminal width at any size.
+    const narrow = render(40);
+    expect(narrow).toContain("XioCode");
+    expect(narrow).not.toContain("███");
+    expect(narrow.split("\n").every((line) => line.length <= 40)).toBe(true);
+
+    const wide = render(80);
+    expect(wide).toContain("███");
+    expect(wide.split("\n").every((line) => line.length <= 80)).toBe(true);
+  });
 });
