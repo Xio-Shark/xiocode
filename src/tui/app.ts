@@ -34,6 +34,7 @@ import {
   selectionDragDistance,
   selectionIsEmpty,
   stripAnsi,
+  truncateToDisplayWidth,
   type TextSelectionRange,
 } from "./text-selection.ts";
 import { CONTEXT_SUMMARY_NAME, isContextCompactionError } from "../runtime/context-compaction.ts";
@@ -539,7 +540,7 @@ export function App(props: AppProps): React.JSX.Element {
         : view.confirm
           ? h(ConfirmView, { confirm: view.confirm, rows })
           : view.select
-            ? h(SelectView, { select: view.select, rows })
+            ? h(SelectView, { select: view.select, rows, columns })
             : view.prompt
               ? h(PromptView, { prompt: view.prompt })
               : h(Box, { flexDirection: "column", flexGrow: 1 },
@@ -2899,6 +2900,7 @@ export {
 function SelectView(props: Readonly<{
   select: NonNullable<ViewState["select"]>;
   rows: number;
+  columns: number;
 }>): React.JSX.Element {
   selectedValueHolder = props.select.choices[props.select.selected]?.value;
   const visibleCount = Math.max(4, props.rows - 5);
@@ -2907,8 +2909,13 @@ function SelectView(props: Readonly<{
     Math.max(0, props.select.choices.length - visibleCount),
   );
   const visible = props.select.choices.slice(start, start + visibleCount);
+  // Every row must render as exactly one terminal line: Ink wraps by its own
+  // width table, so an unclipped CJK/long label folds into a second row, the
+  // frame grows past the terminal height, and Ink's incremental repaint starts
+  // overwriting stale rows (visible as overlapping ghost text).
+  const textBudget = Math.max(8, props.columns - 2);
   return h(Box, { flexDirection: "column", flexGrow: 1 },
-    h(Text, { bold: true }, props.select.question),
+    h(Text, { bold: true, wrap: "truncate-end" }, truncateToDisplayWidth(props.select.question, textBudget)),
     ...visible.map((choice, index) => {
       const active = start + index === props.select.selected;
       const marker = active ? `${theme.sym.select} ` : "  ";
@@ -2917,15 +2924,16 @@ function SelectView(props: Readonly<{
         color: active ? theme.accent : undefined,
         dimColor: !active,
         wrap: "truncate-end",
-      }, `${marker}${choice.label}`);
+      }, truncateToDisplayWidth(`${marker}${choice.label}`, textBudget));
     }),
-    h(Text, { dimColor: true }, "↑/↓ select · Enter confirm · Esc cancel"));
+    h(Text, { dimColor: true, wrap: "truncate-end" },
+      "↑/↓ select · Enter confirm · Esc cancel"));
 }
 
 function PromptView(props: Readonly<{ prompt: NonNullable<ViewState["prompt"]> }>): React.JSX.Element {
   promptDraftHolder = props.prompt.value;
   return h(Box, { flexDirection: "column", flexGrow: 1 },
-    h(Text, { bold: true }, props.prompt.question),
+    h(Text, { bold: true, wrap: "truncate-end" }, props.prompt.question),
     h(Text, { dimColor: true }, props.prompt.secret
       ? "Secret input (masked) · Enter submit · Esc cancel"
       : "Enter submit · Esc cancel"));

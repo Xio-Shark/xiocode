@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG_TOML } from "../cli/default-config.ts";
 import { writeFile } from "node:fs/promises";
 import { ExtensionHost } from "./extension-host.ts";
-import { registerConnectCommands } from "./connect-commands.ts";
+import { qualifyModelId, registerConnectCommands } from "./connect-commands.ts";
 import { createPromptRunner } from "./session-lifecycle.ts";
 import { SecretEnvironment } from "./secret-environment.ts";
 
@@ -16,6 +16,22 @@ import type { LlmClient, ModelInfo } from "./types.ts";
 import type { XioRuntimeConfig } from "../cli/config-parser.ts";
 
 const tempDirs: string[] = [];
+
+describe("qualifyModelId", () => {
+  it("keeps a catalog id that already carries the provider prefix", () => {
+    expect(qualifyModelId("opencodego", "opencodego/glm-5.1")).toBe("opencodego/glm-5.1");
+    expect(qualifyModelId("opencodego", "opencodego")).toBe("opencodego");
+  });
+
+  it("prefixes bare catalog ids", () => {
+    expect(qualifyModelId("opencodego", "glm-5.1")).toBe("opencodego/glm-5.1");
+    expect(qualifyModelId("deepseek", "deepseek-chat")).toBe("deepseek/deepseek-chat");
+  });
+
+  it("does not treat a shared name prefix as already qualified", () => {
+    expect(qualifyModelId("opencode", "opencodego/glm-5.1")).toBe("opencode/opencodego/glm-5.1");
+  });
+});
 
 afterEach(async () => {
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));

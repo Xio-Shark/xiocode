@@ -85,6 +85,30 @@ export function indexFromDisplayCol(text: string, displayCol: number): number {
   return text.length;
 }
 
+/**
+ * Clip `text` to `maxCols` terminal columns, appending `…` when it was cut.
+ *
+ * Needed wherever a row must stay exactly one line: Ink wraps by its own width
+ * table (CJK counted as 1), so a Chinese label can still wrap after Ink thinks
+ * it fits — which grows the frame past the terminal height and desyncs Ink's
+ * incremental diffing into visible ghost rows.
+ */
+export function truncateToDisplayWidth(text: string, maxCols: number, ellipsis = "…"): string {
+  if (maxCols <= 0) return "";
+  if (displayWidth(text) <= maxCols) return text;
+  const ellipsisWidth = displayWidth(ellipsis);
+  const budget = Math.max(0, maxCols - ellipsisWidth);
+  let width = 0;
+  let out = "";
+  for (const ch of text) {
+    const w = codePointDisplayWidth(ch.codePointAt(0)!);
+    if (width + w > budget) break;
+    width += w;
+    out += ch;
+  }
+  return `${out}${ellipsis}`;
+}
+
 export function clampCell(pos: CellPos, lines: readonly string[]): CellPos {
   if (lines.length === 0) return { line: 0, col: 0 };
   const line = Math.max(0, Math.min(pos.line, lines.length - 1));

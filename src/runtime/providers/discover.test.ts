@@ -48,6 +48,28 @@ describe("discoverModels", () => {
     expect(result.error).toMatch(/500/);
     expect(result.error).not.toContain("boom");
   });
+
+  it("gives up on a hanging catalog instead of parking the picker", async () => {
+    // `/model` awaits discovery before it can render; a provider that accepts
+    // the connection and never answers used to freeze the picker on "working…".
+    const started = Date.now();
+    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+    const result = await discoverModels({
+      kind: "openai",
+      baseUrl: "https://example.test/v1",
+      apiKey: "sk-test",
+      catalogModels: ["fallback"],
+      timeoutMs: 40,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.source).toBe("catalog");
+    expect(result.models).toEqual(["fallback"]);
+    expect(result.error).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
 });
 
 describe("probeApiKey", () => {

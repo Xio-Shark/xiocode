@@ -13,11 +13,39 @@ import {
   selectionDragDistance,
   selectionIsEmpty,
   stripAnsi,
+  truncateToDisplayWidth,
 } from "./text-selection.ts";
 import { consumeMouseChunk } from "./mouse-scroll.ts";
 
 describe("text-selection", () => {
   const lines = ["hello world", "second line", "tail"];
+
+  describe("truncateToDisplayWidth", () => {
+    it("returns short text unchanged", () => {
+      expect(truncateToDisplayWidth("glm-5.1", 20)).toBe("glm-5.1");
+      expect(truncateToDisplayWidth("", 8)).toBe("");
+      expect(truncateToDisplayWidth("anything", 0)).toBe("");
+    });
+
+    it("clips on codepoint boundaries and marks the cut", () => {
+      const out = truncateToDisplayWidth("opencodego/deepseek-v4-flash-vision-exp", 16);
+      expect(out.endsWith("…")).toBe(true);
+      expect(displayWidth(out)).toBeLessThanOrEqual(16);
+      expect("opencodego/deepseek-v4-flash-vision-exp".startsWith(out.slice(0, -1))).toBe(true);
+    });
+
+    it("counts CJK as two columns so rows never wrap", () => {
+      const out = truncateToDisplayWidth("中文模型名称很长很长很长", 12);
+      expect(displayWidth(out)).toBeLessThanOrEqual(12);
+      expect(out.endsWith("…")).toBe(true);
+      // 12 cols with a 1-col ellipsis fits 5 full-width chars (10 cols).
+      expect(out).toBe("中文模型名…");
+    });
+
+    it("drops the ellipsis when the budget cannot hold it", () => {
+      expect(truncateToDisplayWidth("中文", 1)).toBe("…");
+    });
+  });
 
   it("extracts a single-line slice", () => {
     expect(extractSelectedText(lines, {

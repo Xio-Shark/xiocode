@@ -6,7 +6,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { ExtensionHost } from "./extension-host.ts";
 import { createLlmClient } from "./providers/client.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
-import { registerConnectCommands } from "./connect-commands.ts";
+import { qualifyModelId, registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
 import { registerPermissionCommands } from "./agent-commands.ts";
 import { registerContextCommands } from "./context-commands.ts";
@@ -315,11 +315,11 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     return client;
   };
   const modelStatus = (): string => {
-    if (client) return `${currentModel.provider}/${currentModel.id}`;
+    if (client) return qualifyModelId(currentModel.provider, currentModel.id);
     try {
       // Project only availability; never emit or retain the resolved secret.
       secretEnvironment.resolveProvider(registration);
-      return `${currentModel.provider}/${currentModel.id}`;
+      return qualifyModelId(currentModel.provider, currentModel.id);
     } catch {
       return "not connected · /connect";
     }
@@ -427,7 +427,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     registration = created.registration;
     parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;
     await host.setModel(currentModel);
-    sink.setStatus?.("model", `${currentModel.provider}/${currentModel.id}`);
+    sink.setStatus?.("model", qualifyModelId(currentModel.provider, currentModel.id));
     const providerModel = findProviderModel(registration, currentModel.id);
     const clamped = clampThinkingLevel(host.getThinkingLevel(), availableThinkingLevels(providerModel));
     await applyThinkingLevel({ ...thinkingOpts, persist: false }, clamped);
