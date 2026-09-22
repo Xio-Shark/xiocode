@@ -1,9 +1,18 @@
 import path from "node:path";
+import os from "node:os";
 
 import { configDefaults, defineConfig } from "vitest/config";
 
+// Default worker count is `cpus - 1`, and every worker spawns real child
+// processes (git, PTY, sandbox). On a 10-logical / 4-performance-core machine
+// that oversubscribed the box badly enough to time out git setup: the same
+// suite took 976s and failed `session-delete.test.ts`, versus 18.6s green with
+// the cap below. Peak throughput plateaus well before `cpus - 1` here.
+const maxWorkers = Math.max(2, Math.min(4, os.availableParallelism() - 1));
+
 export default defineConfig({
   test: {
+    maxWorkers,
     // Default excludes miss `.claude/`, so vitest collected the full stale
     // repo copies under `.claude/worktrees/` — every git E2E test ran twice
     // and fought over git locks (REVIEW-2026-07-27 D5).
