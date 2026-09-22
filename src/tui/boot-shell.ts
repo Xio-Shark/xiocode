@@ -138,6 +138,8 @@ export type BootShellProps = Readonly<{
   onInterrupt?: () => void;
   /** When false, skip useInput (headless paint / tests that only check layout). */
   captureInput?: boolean;
+  /** Terminal width; forwarded so the brand mark is dropped when it cannot fit. */
+  columns?: number;
 }>;
 
 export function BootShell(props: BootShellProps): React.JSX.Element {
@@ -177,6 +179,7 @@ export function BootShell(props: BootShellProps): React.JSX.Element {
       version: props.version,
       meta: props.confirmation ? "project trust" : statusLabel,
       path: formatShortCwd(props.cwd),
+      columns: props.columns,
     }),
     props.confirmation
       ? h(Box, { flexDirection: "column", marginTop: 1 },

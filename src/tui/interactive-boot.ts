@@ -65,6 +65,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     onAnswerConfirmation: answerConfirmation,
     onInterrupt: options.onInterrupt,
     captureInput,
+    columns: process.stdout.columns,
   }), {
     alternateScreen: true,
     exitOnCtrlC: false,
@@ -111,6 +112,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
       onAnswerConfirmation: answerConfirmation,
       onInterrupt: options.onInterrupt,
       captureInput,
+      columns: process.stdout.columns,
     }));
   };
 
