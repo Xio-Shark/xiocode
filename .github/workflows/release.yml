@@ -1,11 +1,16 @@
 name: Release
 
-# Tag-driven GitHub Release. The npm upload for this package is a separate,
-# manual step (`npm run prepack && npm publish`), so a tag here never touches
-# the registry.
+# Tag-driven release.
 #
-# The release body is the matching section of CHANGELOG.md, which is written
-# for users ("what can you do differently"), not for contributors.
+# GitHub Release: always created from the tag. The release body is the
+# matching section of CHANGELOG.md, which is written for users ("what can you
+# do differently"), not for contributors.
+#
+# npm publish: only when the repository variable NPM_TRUSTED_PUBLISHING_ENABLED
+# is 'true'. It is flipped once, after the npm Trusted Publisher exists
+# (npmjs.com -> @xioshark/xiocode settings -> Trusted Publisher -> GitHub
+# Actions: Xio-Shark / xiocode / release.yml, environment empty). No npm
+# token is stored anywhere; until the variable is set the job is skipped.
 
 on:
   push:
@@ -69,3 +74,62 @@ jobs:
           if [ -n "$notes_file" ]; then
             rm "$notes_file"
           fi
+
+  publish-npm:
+    needs: github-release
+    if: vars.NPM_TRUSTED_PUBLISHING_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # OIDC for trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1; fail loudly instead of
+      # silently publishing an unsigned artifact.
+      - name: Check npm CLI supports trusted publishing
+        run: |
+          npm_version="$(npm --version)"
+          echo "npm $npm_version"
+          node -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              console.error(`npm ${process.argv[1]} is too old for trusted publishing (need >= 11.5.1)`);
+              process.exit(1);
+            }
+          ' "$npm_version"
+
+      - run: npm ci
+      # prepack runs `npm run check`, both builds and the payload check.
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+
+      - name: Verify published version and provenance attestation
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 20); do
+            if metadata="$(npm view "$name@$version" --json 2>/dev/null)"; then
+              echo "$metadata" | node -e '
+                const fs = require("fs");
+                const info = JSON.parse(fs.readFileSync(0, "utf8"));
+                if (!info.dist?.attestations?.provenance) {
+                  console.error("published version has no provenance attestation");
+                  process.exit(1);
+                }
+                console.log(`provenance: ${JSON.stringify(info.dist.attestations.provenance)}`);
+              '
+              echo "verified $name@$version"
+              exit 0
+            fi
+            echo "attempt $attempt/20: registry has not indexed $version yet; retrying in 30s"
+            sleep 30
+          done
+          echo "::error::registry never exposed $name@$version (index lag); re-run this job to verify"
+          exit 1
