@@ -14,12 +14,16 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-23
+
+This is the first npm release since 1.2.0, so it also carries everything listed under 1.3.0. It is published from CI through npm Trusted Publishing with a provenance attestation.
+
 ### Changed
 - **The process layer now runs on `@xioflow/kernel` by default.** Supervised commands (bash tool, done contract, search backends, plan dispatch) execute through the embeddable kernel: process intent is recorded before spawn, a stop must be confirmed before leases are released, output is truncated per stream with spill artifacts, and whatever a crashed process left behind is adjudicated on the next launch. Node.js 22.5+ on Linux/macOS takes this path; older runtimes print one line and keep using the built-in supervisor. Set `XIOCODE_PROCESS_KERNEL=0` to choose the built-in supervisor deliberately.
 
 ### Fixed
 - **The `/model` picker no longer leaves overlapping ghost text.** Long or CJK model names are clipped to the terminal width with an ellipsis instead of wrapping, so the picker stays inside the screen and every row repaints cleanly.
-- **A crashed session no longer leaves its commands stuck as "cannot determine".** Recovery mistook the SIGKILLed process for a live one, so the crash was parked as indeterminate, the resource lease stayed held, and the process group was left running. Recovery now recognises that state, reaps the orphaned group, and records the command as failed.
+- **A crashed session no longer leaves its commands stuck as "cannot determine".** Recovery mistook the SIGKILLed process for a live one, so the crash was parked as indeterminate, the resource lease stayed held, and the process group was left running. Recovery now recognises that state, reaps the orphaned group, and records the command as failed (requires `@xioflow/kernel` 0.1.5, which this release pins).
 - **A model id that already carries its provider prefix is shown once.** Catalogs that return `opencodego/glm-5.1` no longer render as `opencodego/opencodego/glm-5.1` in the picker or the status line.
 - **`/model` reports a bad provider endpoint instead of hanging.** Model discovery gives up after 8 seconds and falls back to the configured catalog.
 - **The test suite stopped oversubscribing the machine.** Vitest's default worker count (`cpus - 1`) combined with per-test subprocesses was thrashing: the same suite took 976s and timed out git setup instead of 18.6s green. Workers are now capped.
