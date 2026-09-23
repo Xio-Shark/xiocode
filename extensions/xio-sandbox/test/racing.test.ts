@@ -157,7 +157,12 @@ describe("runSpeculativeRace", () => {
       id: "slow",
       name: "Slow candidate",
       execute: async (wt) => {
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        // `fastest` compares totalTimeMs = execute + verify, and verify shells
+        // out to git (diff + numstat) whose latency swings by hundreds of ms on
+        // a loaded runner. Keep the execution signal well above that noise so
+        // the winner is decided by which candidate ran faster, not by which
+        // verifier happened to get the quieter disk.
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
         await writeFile(path.join(wt, "math.ts"), "export function add() { return 1; }\n", "utf8");
       },
     };
@@ -181,7 +186,10 @@ describe("runSpeculativeRace", () => {
       },
     );
 
-    expect(outcome.winner?.candidate.id).toBe("fast");
+    const timings = outcome.allResults
+      .map((r) => `${r.candidate.id}: total=${r.totalTimeMs}ms exec=${r.executionTimeMs}ms verify=${r.verificationTimeMs}ms`)
+      .join("; ");
+    expect(outcome.winner?.candidate.id, timings).toBe("fast");
   });
 
   it("selects highest score candidate when strategy is 'highest_score'", async () => {
