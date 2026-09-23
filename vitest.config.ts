@@ -13,6 +13,8 @@ const maxWorkers = Math.max(2, Math.min(4, os.availableParallelism() - 1));
 export default defineConfig({
   test: {
     maxWorkers,
+    // Each worker claims its own HOME; see vitest.setup.ts for why.
+    setupFiles: ["./vitest.setup.ts"],
     // Default excludes miss `.claude/`, so vitest collected the full stale
     // repo copies under `.claude/worktrees/` — every git E2E test ran twice
     // and fought over git locks (REVIEW-2026-07-27 D5).

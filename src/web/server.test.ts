@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 
 import { startWebServer } from "./server.ts";
 import { parseWebCliArgs } from "../cli/web-cli.ts";
@@ -25,7 +25,14 @@ describe("Web Console & Server", () => {
   async function createTempStore() {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-web-test-"));
     tempDirs.push(root);
-    return new SessionStore({ root: path.join(root, "sessions") });
+    // The server reads and writes `<cwd>/AGENTS.md`; without an explicit cwd the
+    // rules test rewrote the repository's own AGENTS.md on every run.
+    const project = path.join(root, "project");
+    await mkdir(project, { recursive: true });
+    return {
+      store: new SessionStore({ root: path.join(root, "sessions") }),
+      project,
+    };
   }
 
   it("parses CLI args correctly", () => {
@@ -44,11 +51,12 @@ describe("Web Console & Server", () => {
   });
 
   it("serves the SPA UI and API endpoints", async () => {
-    const store = await createTempStore();
+    const { store, project } = await createTempStore();
     const handle = await startWebServer({
       port: 0, // dynamic port for tests
       host: "127.0.0.1",
       store,
+      cwd: project,
     });
     openServers.push(handle);
 
@@ -169,7 +177,7 @@ describe("Web Console & Server", () => {
     const rulesGetRes = await fetch(`${handle.url}/api/rules`);
     expect(rulesGetRes.status).toBe(200);
     const rulesData = await rulesGetRes.json();
-    expect(rulesData.path).toBeDefined();
+    expect(rulesData.path).toBe(path.join(project, "AGENTS.md"));
 
     const rulesPostRes = await fetch(`${handle.url}/api/rules`, {
       method: "POST",
