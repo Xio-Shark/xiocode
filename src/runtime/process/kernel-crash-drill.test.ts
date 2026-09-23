@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,9 +25,24 @@ function runnerFor(domainPath: string): KernelProcessRunner {
 }
 
 function processGroupAlive(pid: number): boolean {
+  // Zombie-aware: on Linux a reaped-by-nobody orphan stays in the process table
+  // and makes kill(-pgid, 0) succeed even though it can never work again.
   try {
     process.kill(-pid, 0);
-    return true;
+  } catch {
+    return false;
+  }
+  try {
+    const states = execFileSync("ps", ["-A", "-o", "pgid=,state="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return states.split("\n").some((line) => {
+      const match = line.trim().match(/^(\d+)\s+(\S+)/);
+      if (!match) return false;
+      const state = match[2] ?? "";
+      return Number.parseInt(match[1] ?? "", 10) === pid && state.charAt(0) !== "Z";
+    });
   } catch {
     return false;
   }
