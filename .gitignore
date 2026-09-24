@@ -72,3 +72,5 @@ Agent工程教程*.md
 audit-report-*
 xiocode-audit-*
 *-audit-*
+.xioflow/
+*.bundle
