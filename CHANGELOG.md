@@ -14,6 +14,20 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-26
+
+This release upgrades the embedded process execution engine to `@xioflow/kernel@0.2.0`, bringing single-writer convergence, bulletproof crash recovery, and honest process lifecycle accounting.
+
+### Added
+- **Kernel adjudication CLI (`xio kernel adjudicate`).** Users can now adjudicate indeterminate kernel operations directly from the terminal (`xio kernel adjudicate <opId> [--verdict <verdict>] [--domain <path>]`), releasing held resource leases without manual database intervention.
+
+### Changed
+- **Upgraded `@xioflow/kernel` to `0.2.0`.**
+  - **Eliminated dual truth sources for run status:** Deleted local runner run-status patching; Run and Operation lifecycles are now exclusively converged and audited by the kernel recovery engine.
+  - **Graceful turn cancellation:** Runner turn cancellation now routes through the kernel public API `domain.reportRunCancelled(runId, reason)`.
+  - **OpId collision prevention:** Extended `runToken` random entropy using `crypto.randomUUID()`.
+  - **Hardened error semantics:** Gracefully handles racing `OperationNotActiveError` states (`not_found`, `already_completed`) and visibly propagates `DuplicateOperationError`.
+
 ## [1.3.1] - 2026-09-23
 
 This is the first npm release since 1.2.0, so it also carries everything listed under 1.3.0. It is published from CI through npm Trusted Publishing with a provenance attestation.
