@@ -27,9 +27,7 @@
  * Known, explicit gaps (documented instead of silently swallowed):
  * - `killDeadlineMs` has no kernel counterpart: SIGKILL confirmation windows
  *   are owned by the platform driver.
- * - `onOutput` chunk streaming is not forwarded by the kernel, so callers that
- *   need live output (`plan/parallel-dispatch.ts`) must keep using the legacy
- *   supervisor until the kernel grows a projection callback.
+ * - `onOutput` chunk streaming is forwarded by the kernel via `onStreamChunk`.
  * - Windows is not supported by the kernel; `kernelProcessFlag()` reports the
  *   flag as disabled there rather than degrading silently.
  *
@@ -48,6 +46,8 @@ import {
   NodePlatformDriver,
   ProcessSupervisor,
   RecoveryEngine,
+  OperationNotActiveError,
+  DuplicateOperationError,
   type IndeterminateResult,
   type PlatformDriver,
   type ProcessOperationResult,
@@ -94,7 +94,7 @@ export class KernelProcessRunner {
    * same session reopens the domain. Without this, the second launch would
    * collide with the crashed launch's `operations.id`.
    */
-  readonly #runToken = crypto.randomBytes(3).toString("hex");
+  readonly #runToken = crypto.randomUUID();
 
   constructor(context: KernelProcessContext) {
     this.#context = context;
@@ -117,8 +117,60 @@ export class KernelProcessRunner {
     return `session-${sanitizeId(this.sessionId)}`;
   }
 
+  #currentRunId: string | undefined;
+
   get runId(): string {
+    return this.#currentRunId ?? this.#baseRunId();
+  }
+
+  #baseRunId(): string {
     return `run-${sanitizeId(this.sessionId)}-${sanitizeId(this.turnId)}`;
+  }
+
+  #ensureActiveRun(store: any, domainId: string): void {
+    const baseId = this.#baseRunId();
+    const existing = store.getRun(baseId);
+    if (!existing) {
+      store.saveRun({
+        id: baseId,
+        taskId: this.taskId,
+        domainId,
+        owner: this.sessionId,
+        status: "running",
+        startedAt: new Date().toISOString(),
+      });
+      this.#currentRunId = baseId;
+      return;
+    }
+
+    if (existing.status === "running") {
+      this.#currentRunId = baseId;
+      return;
+    }
+
+    // Previous run was finalized (e.g. converged after crash); allocate a new attempt run.
+    let attempt = 2;
+    while (true) {
+      const candidateId = `${baseId}-r${attempt}`;
+      const candidate = store.getRun(candidateId);
+      if (!candidate) {
+        store.saveRun({
+          id: candidateId,
+          taskId: this.taskId,
+          domainId,
+          owner: this.sessionId,
+          status: "running",
+          startedAt: new Date().toISOString(),
+        });
+        this.#currentRunId = candidateId;
+        return;
+      }
+      if (candidate.status === "running") {
+        this.#currentRunId = candidateId;
+        return;
+      }
+      attempt++;
+    }
   }
 
   /** Recovery verdict from the previous owner of this domain, when there was one. */
@@ -147,16 +199,7 @@ export class KernelProcessRunner {
           createdAt: new Date().toISOString(),
         });
       }
-      if (!store.getRun(this.runId)) {
-        store.saveRun({
-          id: this.runId,
-          taskId: this.taskId,
-          domainId: domain.domainId,
-          owner: this.sessionId,
-          status: "running",
-          startedAt: new Date().toISOString(),
-        });
-      }
+      this.#ensureActiveRun(store, domain.domainId);
     }
     return this.#domain;
   }
@@ -166,10 +209,11 @@ export class KernelProcessRunner {
     status: "succeeded" | "failed" | "cancelled" = "succeeded",
     reason?: TerminationReason,
   ): void {
-    const store = this.#domain?.getStore();
-    if (!store) {
+    const domain = this.#domain;
+    if (!domain) {
       return;
     }
+    const store = domain.getStore();
     if (status === "succeeded") {
       // Kernel completion protocol: refuses to finish a Run with unfinished or
       // indeterminate operations instead of faking a successful turn.
@@ -180,7 +224,7 @@ export class KernelProcessRunner {
       store.reportRunFailed(this.runId, reason);
       return;
     }
-    store.updateRunStatus(this.runId, "cancelled", reason, new Date().toISOString());
+    domain.reportRunCancelled(this.runId, reason);
   }
 
   close(): void {
@@ -210,6 +254,7 @@ export class KernelProcessRunner {
     const projection = options.onOutput ? createLineProjection(options.onOutput, budget) : undefined;
 
     await this.#recoverPreviousOwner();
+    this.#ensureActiveRun(this.#domain!.getStore(), this.#domain!.domainId);
 
     const pending = supervisor.executeProcess({
       runId: this.runId,
@@ -239,12 +284,25 @@ export class KernelProcessRunner {
     });
 
     const onAbort = (): void => {
-      void supervisor.cancelOperation(opId, termGraceMs);
+      supervisor.cancelOperation(opId, termGraceMs).catch((err) => {
+        if (err instanceof OperationNotActiveError) {
+          // not_found or already_completed are normal races when cancelled late.
+          if (err.reason === "not_found" || err.reason === "already_completed") {
+            return;
+          }
+        }
+        console.warn(`[xiocode/kernel-adapter] cancelOperation error for ${opId}:`, err);
+      });
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const kernelResult = await pending;
       return toProcessRunResult(kernelResult, { budget, started, cleanupGuarantee });
+    } catch (err) {
+      if (err instanceof DuplicateOperationError) {
+        console.error(`[xiocode/kernel-adapter] Duplicate operation submission detected: ${opId}`);
+      }
+      throw err;
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
     }
@@ -268,29 +326,7 @@ export class KernelProcessRunner {
     if (domain.getStore().getUnfinishedOperations(domain.domainId).length === 0) {
       return;
     }
-    const affectedRuns = new Set(
-      domain.getStore()
-        .getUnfinishedOperations(domain.domainId)
-        .map((operation) => operation.runId),
-    );
     this.#lastRecoveryReport = await new RecoveryEngine(domain, supervisor.getDriver()).recover();
-    // The recovery engine adjudicates operations; the Run they belonged to
-    // would otherwise stay `running` forever, so close it out honestly.
-    for (const runId of affectedRuns) {
-      const remaining = domain.getStore()
-        .getOperationsByRun(runId)
-        .filter((operation) => operation.status !== "done");
-      if (remaining.length > 0) {
-        continue;
-      }
-      const recovered = this.#lastRecoveryReport.recoveredOperations.filter((entry) =>
-        domain.getStore().getOperation(entry.opId)?.runId === runId
-      );
-      if (recovered.some((entry) => entry.action === "isolated_indeterminate")) {
-        continue; // Run stays open on purpose: an isolated operation must not look finished.
-      }
-      domain.getStore().updateRunStatus(runId, "failed", "crash_detected", new Date().toISOString());
-    }
   }
 }
 

@@ -81,6 +81,11 @@ async function main(): Promise<void> {
     process.exitCode = await runWebCli(rawArgs.slice(1));
     return;
   }
+  if (head === "kernel") {
+    const { runKernelCli } = await import("./kernel-cli.ts");
+    process.exitCode = await runKernelCli(rawArgs.slice(1));
+    return;
+  }
 
   try {
     const { parseXioArgs } = await import("./cli-args.ts");
