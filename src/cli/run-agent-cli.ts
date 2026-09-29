@@ -74,23 +74,18 @@ export async function runAgentCli(
     }
     const recovered = recoverStoredSession(stored);
     const sessionId = stored?.metadata.id ?? store.createId();
-    // Kernel execution domains are keyed by session so a crashed process leaves
-    // a domain this session can adopt and recover on the next launch.
-    const { setKernelProcessSession } = await import("../runtime/process/kernel-process.ts");
-    setKernelProcessSession(sessionId);
     const releaseLease = await store.acquireLease(sessionId);
     try {
       earlyBoot?.setStatus("preparing workspace…");
-      const launch = await prepareLaunch(cwd, process.env, {
+      const launch = await launchStoredSession({
+        cwd,
+        env: process.env,
+        sessionId,
+        recovered,
+        gitRoot,
         runtimeExtensionEnabled: xioArgs.runtimeExtensionEnabled,
         allowDirty: xioArgs.allowDirty,
-        sessionId: recovered && !recovered.filesRecoverable ? undefined : sessionId,
-        resumeWorkspace: recovered?.filesRecoverable ? recovered.workspace : undefined,
-        gitRoot,
       });
-      if (launch.worktree && recovered?.filesRecoverable && recovered.execution?.checkpoint) {
-        await WorktreeSandbox.validateCheckpoint(launch.worktree, recovered.execution.checkpoint);
-      }
       return await runPreparedLaunch({
         xioArgs,
         launch,
@@ -123,6 +118,34 @@ async function loadRequestedSession(input: Readonly<{
   });
 }
 
+/**
+ * Prepares the workspace for a (possibly resumed) session: reattaches a
+ * recoverable worktree and validates its checkpoint. Shared by the CLI and
+ * the web console so both start sessions the same way.
+ */
+export async function launchStoredSession(input: Readonly<{
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  sessionId: string;
+  recovered?: ReturnType<typeof recoverStoredSession>;
+  gitRoot?: string | null;
+  runtimeExtensionEnabled?: boolean;
+  allowDirty?: boolean;
+}>): Promise<LaunchPlan> {
+  const { recovered } = input;
+  const launch = await prepareLaunch(input.cwd, input.env, {
+    runtimeExtensionEnabled: input.runtimeExtensionEnabled,
+    allowDirty: input.allowDirty,
+    sessionId: recovered && !recovered.filesRecoverable ? undefined : input.sessionId,
+    resumeWorkspace: recovered?.filesRecoverable ? recovered.workspace : undefined,
+    gitRoot: input.gitRoot,
+  });
+  if (launch.worktree && recovered?.filesRecoverable && recovered.execution?.checkpoint) {
+    await WorktreeSandbox.validateCheckpoint(launch.worktree, recovered.execution.checkpoint);
+  }
+  return launch;
+}
+
 async function runPreparedLaunch(input: Readonly<{
   xioArgs: XioArgs;
   launch: LaunchPlan;
@@ -133,16 +156,61 @@ async function runPreparedLaunch(input: Readonly<{
   earlyBoot?: import("../tui/early-boot.ts").EarlyBootHandle;
   updateNotice?: Promise<string | null>;
 }>): Promise<number> {
-  const sessionOptions: SessionOptions = {
+  const sessionOptions = createLaunchSessionOptions({
+    launch: input.launch,
+    store: input.store,
+    stored: input.stored,
+    recovered: input.recovered,
+    sessionId: input.sessionId,
+    promptOnce: input.xioArgs.promptOnce,
+    outputFormat: input.xioArgs.outputFormat,
+    allowHighRisk: input.xioArgs.allowHighRisk,
+  });
+  const inkEnv = input.launch.env ?? process.env;
+  if (shouldUseInk(
+    input.xioArgs,
+    {
+      stdinIsTTY: process.stdin.isTTY,
+      stdoutIsTTY: process.stdout.isTTY,
+    },
+    inkEnv,
+  )) {
+    return (await import("../tui/run-ink-session.ts")).runInkSession({
+      ...sessionOptions,
+      earlyBoot: input.earlyBoot,
+      updateNotice: input.updateNotice,
+    });
+  }
+  input.earlyBoot?.unmount();
+  void deliverUpdateNotice(input.updateNotice, (message) => {
+    process.stderr.write(`${message}\n`);
+  });
+  return runSession(sessionOptions);
+}
+
+/** Session options for a prepared launch: persistence, recovery state and extensions. */
+export function createLaunchSessionOptions(input: Readonly<{
+  launch: LaunchPlan;
+  store: SessionStore;
+  stored?: StoredSession;
+  recovered?: ReturnType<typeof recoverStoredSession>;
+  sessionId: string;
+  promptOnce?: string;
+  outputFormat?: SessionOptions["outputFormat"];
+  allowHighRisk?: boolean;
+}>): SessionOptions {
+  return {
     cwd: input.launch.cwd,
     workspaceRoot: input.launch.cwd,
     runtimeConfig: input.launch.runtimeConfig,
     env: input.launch.env,
     secretEnvironment: input.launch.secretEnvironment,
-    promptOnce: input.xioArgs.promptOnce,
-    outputFormat: input.xioArgs.outputFormat,
+    promptOnce: input.promptOnce,
+    outputFormat: input.outputFormat,
     sessionId: input.sessionId,
-    allowHighRisk: input.xioArgs.allowHighRisk,
+    // Direct mode snapshots the repository (git root); worktree mode its worktree.
+    kernelWorkspaceRoot: input.launch.worktree ? input.launch.cwd : input.launch.mainRoot,
+    allowHighRisk: input.allowHighRisk,
     sessionStart: input.launch.sessionStart,
     initialMessages: input.recovered?.messages ?? input.stored?.messages,
     initialExecution: input.recovered?.execution,
@@ -178,26 +246,6 @@ async function runPreparedLaunch(input: Readonly<{
     }).then(() => undefined),
     registerExtensions: createExtensionRegistrar(input.launch),
   };
-  const inkEnv = input.launch.env ?? process.env;
-  if (shouldUseInk(
-    input.xioArgs,
-    {
-      stdinIsTTY: process.stdin.isTTY,
-      stdoutIsTTY: process.stdout.isTTY,
-    },
-    inkEnv,
-  )) {
-    return (await import("../tui/run-ink-session.ts")).runInkSession({
-      ...sessionOptions,
-      earlyBoot: input.earlyBoot,
-      updateNotice: input.updateNotice,
-    });
-  }
-  input.earlyBoot?.unmount();
-  void deliverUpdateNotice(input.updateNotice, (message) => {
-    process.stderr.write(`${message}\n`);
-  });
-  return runSession(sessionOptions);
 }
 
 function deliverUpdateNotice(
@@ -273,7 +321,20 @@ export async function deleteStoredSession(store: SessionStore, id: string): Prom
     await WorktreeSandbox.releaseSessionCheckpoints({ mainRoot, sessionId });
   }
 
+  await disposeKernelDomain(stored, id);
   await store.remove(id);
+}
+
+/** The session's kernel domain goes with it, including its snapshot refs in the repository. */
+async function disposeKernelDomain(stored: StoredSession, id: string): Promise<void> {
+  const workspace = stored.workspace;
+  const kernelRoot = workspace?.mode === "worktree" ? workspace.worktree_path : workspace?.main_root;
+  if (!kernelRoot) return;
+  const { disposeSessionDomain } = await import("../runtime/process/kernel-process.ts");
+  const outcome = await disposeSessionDomain({ sessionId: id, workspaceRoot: kernelRoot });
+  if (outcome.kind === "kept") {
+    process.stderr.write(`[warn] kept the kernel domain of session ${id}: ${outcome.reason} (see \`xio kernel status\`)\n`);
+  }
 }
 
 function createExtensionRegistrar(launch: LaunchPlan): SessionOptions["registerExtensions"] {

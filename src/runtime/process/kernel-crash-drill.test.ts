@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { ExecutionDomain, NodePlatformDriver } from "@xioflow/kernel";
 
-import { KernelProcessRunner } from "./kernel-adapter.ts";
+import { KernelSession } from "./kernel-session.ts";
 
 /**
  * Crash drill: a supervised command is in flight, its owner dies with SIGKILL,
@@ -18,10 +18,9 @@ import { KernelProcessRunner } from "./kernel-adapter.ts";
  * outlives the killed leader exactly like a crashed session would leave it.
  */
 const sessionId = "crash-drill-session";
-const runId = `run-${sessionId}-t1`;
 
-function runnerFor(domainPath: string): KernelProcessRunner {
-  return new KernelProcessRunner({ sessionId, turnId: "t1", domainPath });
+function openFor(domainPath: string, workspace: string): Promise<KernelSession> {
+  return KernelSession.open({ sessionId, workspaceRoot: workspace, domainPath });
 }
 
 function processGroupAlive(pid: number): boolean {
@@ -78,7 +77,8 @@ describe.skipIf(!kernelSupportsGroupReaping || process.platform === "win32")("ke
     const record = path.join(workspace, "crashed.json");
     const marker = path.join(workspace, "alive.txt");
 
-    const owner = runnerFor(domainPath);
+    const owner = await openFor(domainPath, workspace);
+    const runId = owner.beginTurn("t1");
     let ownerStillRunning = true;
     try {
       // `$$` is the group leader (the kernel spawns detached); the background
@@ -114,7 +114,7 @@ describe.skipIf(!kernelSupportsGroupReaping || process.platform === "win32")("ke
     // The group outlives the killed leader: this is what recovery has to reap.
     expect(processGroupAlive(runLeaderPid)).toBe(true);
 
-    const reopened = runnerFor(domainPath);
+    const reopened = await openFor(domainPath, workspace);
     try {
       const result = await reopened.run({
         command: "/bin/sh",
@@ -124,7 +124,7 @@ describe.skipIf(!kernelSupportsGroupReaping || process.platform === "win32")("ke
       });
       expect(result.stdout).toContain("after-recovery");
 
-      const report = reopened.lastRecoveryReport;
+      const report = reopened.recoveryReport;
       expect(report?.recoveredOperations.length).toBe(1);
       const recovered = report?.recoveredOperations[0];
       // A crashed owner must be adjudicated, not parked as "cannot determine":
@@ -132,14 +132,14 @@ describe.skipIf(!kernelSupportsGroupReaping || process.platform === "win32")("ke
       expect(recovered?.resourcesReleased).toBe(true);
       expect(["marked_dead", "stopped_alive_process"]).toContain(recovered?.action);
 
-      const store = reopened.ensureDomain().getStore();
-      const crashed = store.getOperation(recovered?.opId ?? "");
+      const status = reopened.status();
+      const crashed = status.operations.find((op) => op.id === recovered?.opId);
       expect(crashed?.status).toBe("done");
       // SIGKILL of the owner is a real termination, not an unknown.
       expect(crashed?.result?.status).not.toBe("indeterminate");
 
       // The Run is closed out honestly: the crash must not leave it "running".
-      expect(store.getRun(runId)?.status).toBe("failed");
+      expect(status.runs.find((run) => run.id === runId)?.status).toBe("failed");
 
       // Reaping: the orphaned group must not outlive the recovery.
       await new Promise((resolve) => setTimeout(resolve, 200));

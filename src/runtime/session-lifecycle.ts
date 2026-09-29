@@ -4,6 +4,7 @@ import { ContextCompactionController, SessionHistory, isContextCompactionError }
 import { ExtensionHost } from "./extension-host.ts";
 import { createStdoutSessionUiSink } from "./session-ui.ts";
 import { sumTokenUsage } from "./usage.ts";
+import { toKernelAcceptance } from "./kernel-binding.ts";
 import type { HarnessController } from "./harness/admission.ts";
 
 import type { XioVerifyConfig } from "../cli/config-parser.ts";
@@ -165,6 +166,8 @@ export function createPromptRunner(options: Readonly<{
       runId?: string;
     }>) => Promise<void>;
   }>;
+  /** Kernel Run per turn (begin before the loop, end with the turn's outcome + done contract). */
+  kernelTurn?: import("./kernel-binding.ts").KernelTurnHooks;
   /** Optional RuntimeEvent.v1 bus (stream-json / multi-sink). */
   runtimeEvents?: import("./events/types.ts").RuntimeEventEmitter;
   steerMailbox?: import("./steer.ts").SteerMailbox;
@@ -230,6 +233,7 @@ export function createPromptRunner(options: Readonly<{
       }
 
       const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      options.kernelTurn?.begin(turnId);
       try {
         let nextPrompt = prompt;
         let totalTurns = 0;
@@ -339,6 +343,10 @@ export function createPromptRunner(options: Readonly<{
           break;
         }
 
+        options.kernelTurn?.end({
+          status: lastCancelled ? "cancelled" : lastSuccess ? "succeeded" : "failed",
+          ...(lastDoneContract ? { acceptance: toKernelAcceptance(lastDoneContract) } : {}),
+        });
         if (lastCancelled) {
           sink.onCancelled?.();
         }
@@ -367,6 +375,7 @@ export function createPromptRunner(options: Readonly<{
           cancelled: lastCancelled,
         };
       } catch (error) {
+        options.kernelTurn?.end({ status: "failed" });
         if (!isContextCompactionError(error)) {
           const runId = await options.getRunId?.();
           if (options.failureCapture) {
@@ -398,6 +407,8 @@ export function createSessionCloser(options: Readonly<{
   sink?: SessionUiSink;
   onFinalized?: (disposition: WorktreeDisposition) => Promise<void> | void;
   onClosed?: () => void;
+  /** Runs last, after `session_end` listeners (e.g. MCP services) have shut down. */
+  afterClosed?: () => Promise<void> | void;
 }>): PreparedSession["close"] {
   const sink = options.sink ?? createStdoutSessionUiSink();
   return async () => {
@@ -412,5 +423,6 @@ export function createSessionCloser(options: Readonly<{
       void disposition;
     }
     options.onClosed?.();
+    await options.afterClosed?.();
   };
 }

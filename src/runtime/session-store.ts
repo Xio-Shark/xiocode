@@ -12,6 +12,7 @@ import {
   truncateJournal,
   writeJsonAtomicDurable,
 } from "./session-wal.ts";
+import { checkpointSchema } from "./session-wal.ts";
 import type { WalCompactionFact } from "./session-wal.ts";
 import type { SessionCompactionFact } from "./context-compaction.ts";
 import type { ChatMessage, ModelInfo } from "./types.ts";
@@ -51,13 +52,6 @@ const workspaceSchema = z.object({
   repo_id: z.string().optional(),
   session_id: z.string().optional(),
   epoch: z.number().int().nonnegative(),
-});
-
-const checkpointSchema = z.object({
-  ref: z.string(),
-  commit: z.string(),
-  head: z.string(),
-  tree: z.string(),
 });
 
 const executionSchema = z.object({

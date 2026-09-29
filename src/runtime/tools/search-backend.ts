@@ -500,6 +500,7 @@ async function runArgv(
     signal,
     timeoutMs: 60_000,
     output: OUTPUT_BUDGET_PRESETS.search,
+    access: "read",
   });
   if (result.termination === "spawn_error") {
     return {

@@ -38,6 +38,8 @@ export type PermissionCommandOptions = Readonly<{
   highRiskPolicy?: HighRiskPolicy;
   /** Project trust decision for write/exec restrictions when untrusted. */
   getTrust?: () => import("./project-trust.ts").TrustDecision;
+  /** Authorization ledger sink (kernel journal); also receives mode switches. */
+  recordDecision?: (fact: import("./tool-permission.ts").AuthorizationFact) => void;
   /**
    * Session workspace path policy for exact one-tool-call outside read/search grants.
    */
@@ -74,6 +76,7 @@ export function registerPermissionCommands(
     ...(options.highRiskPolicy ? { highRiskPolicy: options.highRiskPolicy } : {}),
     ...(options.getTrust ? { getTrust: options.getTrust } : {}),
     ...(options.pathPolicy ? { pathPolicy: options.pathPolicy } : {}),
+    ...(options.recordDecision ? { recordDecision: options.recordDecision } : {}),
   });
 
   const applyFilter = (): void => {
@@ -85,6 +88,17 @@ export function registerPermissionCommands(
   const setMode = (next: PermissionMode): PermissionMode => {
     const prev = mode;
     mode = next;
+    if (prev !== next) {
+      options.recordDecision?.({
+        gate: "mode",
+        tool: "*",
+        decision: "allow",
+        by: "user",
+        scope: "session",
+        mode: next,
+        detail: `${prev}->${next}`,
+      });
+    }
     if (prev === "full" && next !== "full") {
       permissionGate.clearApprovals();
     }

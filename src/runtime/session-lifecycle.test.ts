@@ -370,3 +370,40 @@ describe("createPromptRunner failure nudge", () => {
     expect(notices.filter((n) => n.startsWith("hint: capture private regression")).length).toBe(1);
   });
 });
+
+describe("createPromptRunner kernel turn", () => {
+  it("opens a Run before the loop and closes it with the turn outcome and done-contract verdict", async () => {
+    const calls: string[] = [];
+    const outcomes: unknown[] = [];
+    const client: LlmClient = {
+      async complete() {
+        calls.push("provider");
+        return { content: "done", toolCalls: [] };
+      },
+    };
+    const runPrompt = createPromptRunner({
+      host: new ExtensionHost(),
+      client,
+      model: { provider: "test", id: "stub" },
+      providerApi: "openai-completions",
+      verify: { enabled: true, requireAllPass: true, repairTurns: 0, commands: [] },
+      doneContract: { commands: [{ name: "check", argv: [process.execPath, "-e", "process.exit(4)"] }] },
+      kernelTurn: {
+        begin: (turnId) => calls.push(`begin:${turnId.startsWith("turn-")}`),
+        end: (outcome) => {
+          calls.push("end");
+          outcomes.push(outcome);
+        },
+      },
+    });
+
+    await runPrompt("do it");
+
+    expect(calls[0]).toBe("begin:true");
+    expect(calls.at(-1)).toBe("end");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      acceptance: { passed: false, commands: [{ name: "check", exitCode: 4, passed: false }] },
+    });
+  });
+});

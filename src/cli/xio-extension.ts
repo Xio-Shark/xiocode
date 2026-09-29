@@ -302,7 +302,7 @@ async function loadSandbox(): Promise<typeof import("../../extensions/xio-sandbo
   return import("../../extensions/xio-sandbox/src/index.ts");
 }
 
-function toHygieneMcp(mcp: XioMcpConfig | undefined): Partial<McpConfig> {
+export function toHygieneMcp(mcp: XioMcpConfig | undefined): Partial<McpConfig> {
   if (!mcp) {
     return {
       enabled: true,

@@ -61,6 +61,14 @@ import {
   type HarnessPhase,
 } from "./harness/admission.ts";
 import { SecretEnvironment } from "./secret-environment.ts";
+import {
+  annotateInterruptedTools,
+  createAuthorizationRecorder,
+  createKernelTurnHooks,
+  openSessionKernel,
+  registerKernelCommand,
+} from "./kernel-binding.ts";
+import { closeKernelSession, type KernelSession } from "./process/index.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ContextCompactionResult } from "./context-compaction.ts";
@@ -104,6 +112,12 @@ export type SessionOptions = Readonly<{
   interactive?: InteractiveIO;
   maxTurns?: number;
   sessionStart?: SessionStartPayload;
+  /**
+   * Root of the kernel write lease and direct-mode snapshots. Defaults to
+   * `workspaceRoot`; the CLI passes the git root in direct mode so rollback
+   * covers the repository, as it did before snapshots moved into the kernel.
+   */
+  kernelWorkspaceRoot?: string;
   uiSink?: SessionUiSink;
   initialMessages?: readonly ChatMessage[];
   onSessionSnapshot?: (snapshot: SessionSnapshot) => Promise<void> | void;
@@ -248,6 +262,19 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   process.env.XIO_INCLUDE_PROJECT = allowsProjectResources(projectTrust.decision) ? "1" : "0";
   sink.setStatus?.("trust", `trust:${projectTrust.decision}`);
 
+  const kernelNotify = (message: string, level: "info" | "warning"): void => {
+    sink.notify?.(message, level);
+  };
+  const kernel = await openSessionKernel({
+    sessionId: sessionEventId,
+    workspaceRoot: options.kernelWorkspaceRoot ?? workspaceRoot,
+    env,
+    notify: kernelNotify,
+  });
+  const initialMessages = kernel && options.initialMessages
+    ? annotateInterruptedTools(options.initialMessages, kernel)
+    : options.initialMessages;
+
   const steerMailbox = new SteerMailbox();
   const harness = new HarnessController({ runtimeEvents });
   const turnSnapshotEnabled = options.runtimeConfig.harness?.snapshot !== false;
@@ -281,7 +308,9 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     pathPolicy,
     childEnv,
     secretEnvironment,
+    kernel,
   });
+  registerKernelCommand(host, () => kernel);
 
   let currentModel = model;
   let registration = host.getProvider(currentModel.provider)
@@ -377,7 +406,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     }
   });
   const history = new SessionHistory({
-    initialMessages: options.initialMessages,
+    initialMessages,
     persist: async (messages, meta) => {
       const { getGlobalTracer } = await import("./perf/index.ts");
       const tracer = getGlobalTracer(options.env ?? process.env);
@@ -464,6 +493,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     interactiveSession,
     getTrust: () => projectTrust.decision,
     pathPolicy,
+    ...(kernel ? { recordDecision: createAuthorizationRecorder(kernel, kernelNotify) } : {}),
   });
   const getRunId = async (): Promise<string | undefined> => {
     try {
@@ -636,6 +666,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       doneContractEnv: childEnv,
       redactOutbound: (value) => secretEnvironment.redactProjection(value),
       verify,
+      ...(kernel ? { kernelTurn: createKernelTurnHooks(kernel, kernelNotify) } : {}),
       getParallelToolCalls: () => parallelToolCalls,
       maxSessionMessages,
       getSignal: createTurnSignal,
@@ -672,8 +703,15 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
                 checkpoint,
               };
             }
-          } catch {
-            // Ignore checkpoint capture failure on non-git trees
+          } catch (error) {
+            // The gate only exists for git workspaces, so a failure here is real:
+            // /rollback turn would silently target the previous checkpoint.
+            sink.notify?.(
+              `Turn checkpoint failed; /rollback turn is unavailable for this turn: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              "warning",
+            );
           }
         }
       },
@@ -729,6 +767,15 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       },
       onClosed: () => {
         secretEnvironment.dispose();
+      },
+      afterClosed: async () => {
+        const refusal = await closeKernelSession();
+        if (refusal) {
+          sink.notify?.(
+            `Kernel kept this launch's Run open (${refusal.message}); the next launch's recovery settles it.`,
+            "warning",
+          );
+        }
       },
     }),
     abortTurn: () => {
@@ -813,6 +860,7 @@ async function createConfiguredHost(input: Readonly<{
   pathPolicy?: WorkspacePathPolicy;
   childEnv: NodeJS.ProcessEnv;
   secretEnvironment: SecretEnvironment;
+  kernel?: KernelSession;
 }>): Promise<{
   host: ExtensionHost;
   mergeGate?: MergeGate;
@@ -854,11 +902,21 @@ async function createConfiguredHost(input: Readonly<{
   const restoredCheckpoint = input.options.initialExecution?.checkpoint;
   const mergeGate = worktreeSession ? new MergeGate(worktreeSession, restoredCheckpoint) : undefined;
   let directGate: DirectRollbackGate | undefined;
-  if (!mergeGate) {
-    const gitRoot = await WorktreeSandbox.tryResolveMainRoot(input.workspaceRoot);
+  if (!mergeGate && input.kernel) {
+    const gitRoot = await WorktreeSandbox.tryResolveMainRoot(input.kernel.workspaceRoot);
     if (gitRoot) {
-      directGate = new DirectRollbackGate(gitRoot, restoredCheckpoint);
-      await directGate.initSessionBaseline();
+      directGate = new DirectRollbackGate(input.kernel, restoredCheckpoint);
+      try {
+        await directGate.initSessionBaseline();
+      } catch (error) {
+        directGate = undefined;
+        input.sink.notify?.(
+          `Session baseline snapshot failed; /rollback is unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "warning",
+        );
+      }
     }
   }
   const rollbackGate = mergeGate ?? directGate;

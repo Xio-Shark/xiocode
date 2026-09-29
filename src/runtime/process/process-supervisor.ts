@@ -41,6 +41,18 @@ export type ProcessRunOptions = Readonly<{
   output?: OutputBudget;
   onOutput?: (chunk: OutputChunkProjection) => void;
   /**
+   * Kernel path: product key for this operation (the tool call id). It is
+   * journaled next to the operation so a resumed session can look up what the
+   * kernel recorded; it does not become the operation id.
+   */
+  operationKey?: string;
+  /**
+   * Kernel path: `write` (default) takes the session's workspace write lease,
+   * so writers queue FIFO and rollback cannot run under them; `read` takes no
+   * lease. Only proven read-only commands should pass `read`.
+   */
+  access?: "read" | "write";
+  /**
    * Test seam: override platform tree termination.
    * Return true when the tree is gone; false to signal cleanup_failed.
    */
@@ -68,6 +80,17 @@ export type ProcessRunResult = Readonly<{
   bytesSeen: Readonly<{ stdout: number; stderr: number }>;
   peakRetainedBytes: number;
   spillPaths?: Readonly<{ stdout?: string; stderr?: string }>;
+  /** Kernel path only: where the facts of this run live. */
+  kernel?: KernelOperationRef;
+}>;
+
+export type KernelOperationRef = Readonly<{
+  opId: string;
+  domainPath: string;
+  /** The process could not be confirmed stopped; its lease is kept until adjudicated. */
+  indeterminate?: boolean;
+  /** Facts replayed from the journal (same opId + input), nothing was spawned. */
+  replayed?: boolean;
 }>;
 
 const DEFAULT_TERM_GRACE_MS = 500;

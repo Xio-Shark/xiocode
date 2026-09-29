@@ -3,6 +3,8 @@ import type { SessionExecution, SessionWorkspace, StoredSession } from "./sessio
 import type { ChatMessage } from "./types.ts";
 
 export const SESSION_RECOVERY_NAME = "xiocode_session_recovery";
+/** Start of the synthetic tool result for a call cut off by a crash; resume matches on it. */
+export const INTERRUPTED_TOOL_PREFIX = "tool interrupted: completion unknown";
 
 export type RecoveredSession = Readonly<{
   messages: readonly ChatMessage[];
@@ -56,7 +58,7 @@ export function recoverStoredSession(stored: StoredSession | undefined, now = ne
       role: "tool",
       toolCallId: call.id,
       name: call.name,
-      content: `tool interrupted: completion unknown for ${call.name}; inspect workspace state before retrying`,
+      content: `${INTERRUPTED_TOOL_PREFIX} for ${call.name}; inspect workspace state before retrying`,
     });
   }
   repaired.push({

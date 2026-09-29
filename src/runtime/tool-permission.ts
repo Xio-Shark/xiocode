@@ -2,6 +2,7 @@ import {
   isToolAllowedInMode,
   type PermissionMode,
 } from "./permission-mode.ts";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { toolNeedsHighRiskGate, toolRisk } from "./tool-risk.ts";
 import {
@@ -27,8 +28,29 @@ export type HighRiskPolicy = "ask" | "deny" | "allow";
 /** Status field: bash auto-runs only proven-safe allowlist commands. */
 export const SHELL_COMMAND_POLICY = "safe_allowlist_else_confirm" as const;
 
+/**
+ * One authorization decision, for the kernel journal. The subject (command
+ * text, path) is only kept as a fingerprint: approvals must be auditable
+ * without copying secrets that may sit in a command line.
+ */
+export type AuthorizationFact = Readonly<{
+  gate: "mode" | "trust" | "path" | "tool" | "command";
+  tool: string;
+  decision: "allow" | "deny";
+  /** `user` answered a prompt; `policy` is mode/config; `noninteractive` is a `-p` refusal. */
+  by: "user" | "policy" | "noninteractive";
+  scope: "call" | "session";
+  mode: PermissionMode;
+  toolCallId?: string;
+  /** Risk id / reason, never raw command text. */
+  detail?: string;
+  subjectFingerprint?: string;
+}>;
+
 export type ToolPermissionGateOptions = Readonly<{
   host: ExtensionHost;
+  /** Receives every approval/denial (not cache hits or proven-safe auto-runs). */
+  recordDecision?: (fact: AuthorizationFact) => void;
   interactive: InteractiveIO;
   sink: SessionUiSink;
   getMode: () => PermissionMode;
@@ -98,7 +120,12 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     if (!name) return;
 
     const mode = options.getMode();
+    const callId = toolCallIdFromEvent(record);
+    const note: DecisionRecorder = (fact) => {
+      options.recordDecision?.({ ...fact, tool: name, mode, ...(callId ? { toolCallId: callId } : {}) });
+    };
     if (!isToolAllowedInMode(name, mode)) {
+      note({ gate: "mode", decision: "deny", by: "policy", scope: "call" });
       return {
         block: true,
         reason: `tool blocked in permission mode ${mode}: ${name}`,
@@ -114,6 +141,8 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
         highRiskPolicy: resolveUntrustedHighRisk(),
         interactive: options.interactive,
         sink: options.sink,
+        note,
+        callArgs: toolArgsFromEvent(record),
       });
       if (trustBlock) return trustBlock;
     }
@@ -121,11 +150,12 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
     const pathBlock = await enforceExternalPathAccess({
       name,
       args: toolArgsFromEvent(record),
-      callId: toolCallIdFromEvent(record),
+      callId,
       pathPolicy: options.pathPolicy,
       interactiveSession,
       interactive: options.interactive,
       sink: options.sink,
+      note,
     });
     if (pathBlock) return pathBlock;
 
@@ -136,30 +166,42 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
 
       if (policy === "allow") {
         approved.add(name);
+        note({ gate: "tool", decision: "allow", by: "policy", scope: "session", detail: risk });
         options.sink.notify?.(
           `High-risk auto-allowed: ${name} (${risk})`,
           "warning",
         );
       } else if (policy === "deny") {
+        note({ gate: "tool", decision: "deny", by: interactiveSession ? "policy" : "noninteractive", scope: "call", detail: risk });
         return {
           block: true,
           reason:
             `high-risk tool denied: ${name} (${risk}). Switch to full permission (Shift+Tab) `
             + "or pass --allow-high-risk / [permissions] allow_high_risk = true.",
         };
-      } else {
-        const ok = await options.interactive.ask(
-          `Allow high-risk ${risk} tool "${name}" for this session? [y/N] `,
-          `tool: ${name}\nrisk: ${risk}\nscope: session`,
+      } else if (name !== "bash") {
+        // bash is gated per command below, with the command shown; a session-wide
+        // "allow bash" would only ever cover the read-only allowlist.
+        const choice = await options.interactive.select(
+          `Allow ${risk} tool "${name}"? This call: ${describeCallArgs(toolArgsFromEvent(record))}`,
+          [
+            { label: "Allow this call", value: "once" },
+            { label: `Allow "${name}" for the rest of this session`, value: "session" },
+            { label: "Deny", value: "deny" },
+          ],
         );
-        if (!ok) {
+        if (choice !== "once" && choice !== "session") {
+          note({ gate: "tool", decision: "deny", by: "user", scope: "call", detail: risk });
           return {
             block: true,
             reason: `user denied high-risk tool: ${name} (${risk})`,
           };
         }
-        approved.add(name);
-        options.sink.notify?.(`Approved ${name} (${risk}) for this session.`, "info");
+        note({ gate: "tool", decision: "allow", by: "user", scope: choice === "session" ? "session" : "call", detail: risk });
+        if (choice === "session") {
+          approved.add(name);
+          options.sink.notify?.(`Approved ${name} (${risk}) for this session.`, "info");
+        }
       }
     }
 
@@ -171,6 +213,7 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
       interactiveSession,
       interactive: options.interactive,
       sink: options.sink,
+      note,
     });
     if (commandBlock) return commandBlock;
   });
@@ -215,6 +258,8 @@ async function enforceUntrustedTool(input: Readonly<{
   highRiskPolicy: HighRiskPolicy;
   interactive: InteractiveIO;
   sink: SessionUiSink;
+  note: DecisionRecorder;
+  callArgs?: unknown;
 }>): Promise<{ block: true; reason: string } | undefined> {
   if (!toolNeedsTrustGate(input.name)) {
     return undefined;
@@ -231,10 +276,12 @@ async function enforceUntrustedTool(input: Readonly<{
 
   if (policy === "allow") {
     input.approved.add(approvalKey);
+    input.note({ gate: "trust", decision: "allow", by: "policy", scope: "session", detail: risk });
     return undefined;
   }
 
   if (policy === "deny") {
+    input.note({ gate: "trust", decision: "deny", by: "policy", scope: "call", detail: risk });
     return {
       block: true,
       reason:
@@ -245,14 +292,16 @@ async function enforceUntrustedTool(input: Readonly<{
 
   const ok = await input.interactive.ask(
     `Untrusted project: allow ${risk} tool "${input.name}" for this session? [y/N] `,
-    `tool: ${input.name}\nrisk: ${risk}\ntrust: untrusted\nscope: session`,
+    `tool: ${input.name}\nrisk: ${risk}\ntrust: untrusted\nscope: session\nthis call: ${describeCallArgs(input.callArgs)}`,
   );
   if (!ok) {
+    input.note({ gate: "trust", decision: "deny", by: "user", scope: "call", detail: risk });
     return {
       block: true,
       reason: `user denied untrusted-project tool: ${input.name} (${risk})`,
     };
   }
+  input.note({ gate: "trust", decision: "allow", by: "user", scope: "session", detail: risk });
   input.approved.add(approvalKey);
   input.sink.notify?.(
     `Approved ${input.name} (${risk}) for this untrusted session.`,
@@ -272,12 +321,14 @@ async function enforceCommandExecution(input: Readonly<{
   interactiveSession: boolean;
   interactive: InteractiveIO;
   sink: SessionUiSink;
+  note: DecisionRecorder;
 }>): Promise<{ block: true; reason: string } | undefined> {
   if (input.name !== "bash") return undefined;
   const command = commandFromToolArgs(input.args);
   if (command === undefined) {
     // Missing command string — fail closed at command layer.
     if (!input.interactiveSession) {
+      input.note({ gate: "command", decision: "deny", by: "noninteractive", scope: "call", detail: "missing-command" });
       return {
         block: true,
         reason: "bash command missing; requires interactive one-time approval.",
@@ -293,10 +344,12 @@ async function enforceCommandExecution(input: Readonly<{
     return undefined;
   }
 
+  const riskBit = decision.risk
+    ? `${decision.risk.severity}/${decision.risk.id}`
+    : decision.reason;
+  const subjectFingerprint = fingerprint(command);
   if (!input.interactiveSession) {
-    const riskBit = decision.risk
-      ? `${decision.risk.severity}/${decision.risk.id}`
-      : decision.reason;
+    input.note({ gate: "command", decision: "deny", by: "noninteractive", scope: "call", detail: riskBit, subjectFingerprint });
     return {
       block: true,
       reason:
@@ -312,6 +365,14 @@ async function enforceCommandExecution(input: Readonly<{
       : "Run this shell command? [y/N] ";
 
   const ok = await input.interactive.ask(question, decision.detail);
+  input.note({
+    gate: "command",
+    decision: ok ? "allow" : "deny",
+    by: "user",
+    scope: "call",
+    detail: riskBit,
+    subjectFingerprint,
+  });
   if (!ok) {
     return {
       block: true,
@@ -341,6 +402,7 @@ async function enforceExternalPathAccess(input: Readonly<{
   interactiveSession: boolean;
   interactive: InteractiveIO;
   sink: SessionUiSink;
+  note: DecisionRecorder;
 }>): Promise<{ block: true; reason: string } | undefined> {
   if (!input.pathPolicy) return undefined;
   const operation = pathOperationForTool(input.name);
@@ -361,7 +423,9 @@ async function enforceExternalPathAccess(input: Readonly<{
     return undefined;
   }
 
+  const subjectFingerprint = fingerprint(decision.request.canonicalPath);
   if (!input.interactiveSession) {
+    input.note({ gate: "path", decision: "deny", by: "noninteractive", scope: "call", detail: operation, subjectFingerprint });
     return {
       block: true,
       reason:
@@ -386,6 +450,7 @@ async function enforceExternalPathAccess(input: Readonly<{
       "scope: this tool call only (not reusable)",
     ].join("\n"),
   );
+  input.note({ gate: "path", decision: ok ? "allow" : "deny", by: "user", scope: "call", detail: operation, subjectFingerprint });
   if (!ok) {
     return {
       block: true,
@@ -398,6 +463,25 @@ async function enforceExternalPathAccess(input: Readonly<{
     "warning",
   );
   return undefined;
+}
+
+/** One-line view of a tool call's arguments for an approval question. */
+function describeCallArgs(args: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(args ?? {});
+  } catch {
+    text = String(args);
+  }
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+}
+
+type DecisionRecorder = (
+  fact: Omit<AuthorizationFact, "tool" | "mode" | "toolCallId">,
+) => void;
+
+function fingerprint(subject: string): string {
+  return createHash("sha256").update(subject).digest("hex").slice(0, 16);
 }
 
 function pathOperationForTool(name: string): "read-file" | "search" | undefined {

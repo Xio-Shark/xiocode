@@ -2,7 +2,7 @@
  * Feature-flag resolution for the kernel process path.
  *
  * Kept in its own module (no `@xioflow/kernel` import) so the CLI can resolve
- * the flag on Node < 22.5 without ever touching `node:sqlite`.
+ * the flag on older Node without ever touching `node:sqlite`.
  *
  * The kernel path is the default. `XIOCODE_PROCESS_KERNEL=0` (or `false`/`off`/
  * `no`) selects the built-in supervisor explicitly, which is the escape hatch
@@ -12,8 +12,8 @@
 
 export const KERNEL_PROCESS_FLAG = "XIOCODE_PROCESS_KERNEL";
 
-/** `node:sqlite` (used by the kernel store) requires Node >= 22.5. */
-const MIN_KERNEL_NODE = [22, 5] as const;
+/** The kernel store needs `node:sqlite` without a flag: Node >= 22.13 (same as `engines`). */
+const MIN_KERNEL_NODE = [22, 13] as const;
 
 const DISABLED_VALUES = new Set(["0", "false", "no", "off"]);
 const ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -50,7 +50,7 @@ export function kernelProcessFlag(
   if (major < MIN_KERNEL_NODE[0] || (major === MIN_KERNEL_NODE[0] && minor < MIN_KERNEL_NODE[1])) {
     return {
       enabled: false,
-      reason: `node ${process.versions.node} is older than 22.5 (node:sqlite is required)`,
+      reason: `node ${process.versions.node} is older than 22.13 (unflagged node:sqlite is required)`,
       source,
     };
   }

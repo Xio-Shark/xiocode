@@ -1,4 +1,5 @@
 import { access, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { applyPatch, parsePatch } from "diff";
@@ -25,6 +26,7 @@ import {
 
 import type { ToolDefinition } from "../types.ts";
 import { buildChildEnv } from "../secret-environment.ts";
+import { classifyCommandExecution } from "../command-risk.ts";
 
 /**
  * Max lines one `read` returns when the caller omits `limit`. Sized so a slice
@@ -487,9 +489,9 @@ function createBashTool(cwd: string, childEnv: NodeJS.ProcessEnv): ToolDefinitio
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute." }),
     }),
-    async execute(_id, params, ctx) {
+    async execute(toolCallId, params, ctx) {
       const command = String(params.command ?? "");
-      const result = await runCommand(command, cwd, ctx?.signal, childEnv);
+      const result = await runCommand(command, cwd, ctx?.signal, childEnv, toolCallId);
       const body = `exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
       if (result.exitCode !== 0) {
         return errorResult("bash", body);
@@ -731,6 +733,7 @@ async function runCommand(
   cwd: string,
   signal?: AbortSignal,
   env?: NodeJS.ProcessEnv,
+  toolCallId?: string,
 ): Promise<CommandResult> {
   if (signal?.aborted) {
     return { exitCode: 1, stdout: "", stderr: "bash cancelled: AbortSignal aborted before start" };
@@ -738,6 +741,10 @@ async function runCommand(
   return runArgv("/bin/sh", ["-c", command], cwd, signal, {
     abortedMessage: "bash cancelled: AbortSignal aborted",
     env,
+    // Stable kernel identity: a resumed session looks up what this call did.
+    ...(toolCallId ? { operationKey: toolCallId } : {}),
+    // Only the proven read-only allowlist skips the workspace write lease.
+    access: classifyCommandExecution(command, homedir()).kind === "safe" ? "read" : "write",
   });
 }
 
@@ -746,7 +753,12 @@ async function runArgv(
   args: readonly string[],
   cwd: string,
   signal?: AbortSignal,
-  options?: Readonly<{ abortedMessage?: string; env?: NodeJS.ProcessEnv }>,
+  options?: Readonly<{
+    abortedMessage?: string;
+    env?: NodeJS.ProcessEnv;
+    operationKey?: string;
+    access?: "read" | "write";
+  }>,
 ): Promise<CommandResult> {
   const result = await runSupervisedProcessGated({
     command,
@@ -755,6 +767,8 @@ async function runArgv(
     env: options?.env ?? buildChildEnv(process.env),
     signal,
     output: OUTPUT_BUDGET_PRESETS.bash,
+    ...(options?.operationKey ? { operationKey: options.operationKey } : {}),
+    ...(options?.access ? { access: options.access } : {}),
   });
   if (result.termination === "spawn_error") {
     return {

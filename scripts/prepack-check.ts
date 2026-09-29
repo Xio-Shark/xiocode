@@ -3,7 +3,7 @@
  * Fail pack/publish when installable entrypoints are missing.
  * Published payload is AOT-only: bin/ + dist/ (no src/ or extensions/).
  */
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +28,22 @@ for (const rel of required) {
 }
 if (missing.length > 0) {
   console.error(`prepack-check failed; missing: ${missing.join(", ")}`);
+  process.exit(1);
+}
+
+// A `file:` dependency (e.g. a vendored kernel tarball used while the kernel
+// release is pending) cannot be resolved by anyone installing from npm.
+const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as {
+  dependencies?: Record<string, string>;
+};
+const localDeps = Object.entries(manifest.dependencies ?? {})
+  .filter(([, spec]) => spec.startsWith("file:") || spec.startsWith("link:"));
+if (localDeps.length > 0) {
+  console.error(
+    `prepack-check failed; local dependency specs cannot be published: ${
+      localDeps.map(([name, spec]) => `${name}@${spec}`).join(", ")
+    }`,
+  );
   process.exit(1);
 }
 console.log("prepack-check ok");

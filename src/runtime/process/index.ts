@@ -13,19 +13,41 @@ export {
   forceKillProcessTree,
   runSupervisedProcess,
   type CleanupGuarantee,
+  type KernelOperationRef,
   type ProcessRunOptions,
   type ProcessRunResult,
   type ProcessTermination,
 } from "./process-supervisor.ts";
 
 export {
+  bindKernelSession,
+  closeKernelSession,
+  disposeSessionDomain,
+  kernelDomainPath,
   kernelDomainRoot,
-  resetKernelProcessRunnerForTests,
+  notifyKernelFallback,
+  resetKernelProcessForTests,
+  resolveKernelSession,
   resolveProcessBackend,
   runSupervisedProcessGated,
-  setKernelProcessSession,
+  sweepOrphanedDomains,
+  type BindKernelSessionInput,
+  type OrphanedDomainRecovery,
   type ProcessBackend,
 } from "./kernel-process.ts";
+
+export {
+  formatOrphanRecoveryNotice,
+  formatSessionRecoveryNotice,
+} from "./kernel-notice.ts";
+
+export type {
+  KernelAcceptance,
+  KernelOperationFact,
+  KernelRunEnd,
+  KernelSession,
+  KernelTurnOutcome,
+} from "./kernel-session.ts";
 
 export {
   KERNEL_PROCESS_FLAG,

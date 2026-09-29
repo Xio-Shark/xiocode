@@ -47,11 +47,16 @@ const workspaceSchema = z.object({
   epoch: z.number().int().nonnegative(),
 });
 
-const checkpointSchema = z.object({
+/** Turn/session checkpoint; shared with session-store so both parse one shape. */
+export const checkpointSchema = z.object({
   ref: z.string(),
   commit: z.string(),
   head: z.string(),
   tree: z.string(),
+  /** Kernel snapshot behind this checkpoint (direct mode); absent in pre-kernel sessions. */
+  snapshot_id: z.string().optional(),
+  /** Kernel journal position the snapshot was recorded at. */
+  journal_seq: z.number().int().nonnegative().optional(),
 });
 
 const executionSchema = z.object({

@@ -3,12 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { ExecutionDomain } from "@xioflow/kernel";
+import { DomainLockedError, ExecutionDomain } from "@xioflow/kernel";
+
+import { kernelDomainRoot } from "../runtime/process/kernel-process.ts";
 
 export type KernelCliOptions = Readonly<{
   write?: (chunk: string) => void;
   writeErr?: (chunk: string) => void;
+  env?: NodeJS.ProcessEnv;
 }>;
+
+type Verdict = "confirmed_stopped" | "abandon_with_residuals";
 
 export async function runKernelCli(
   args: readonly string[],
@@ -16,24 +21,29 @@ export async function runKernelCli(
 ): Promise<number> {
   const write = options.write ?? ((chunk: string) => process.stdout.write(chunk));
   const writeErr = options.writeErr ?? ((chunk: string) => process.stderr.write(chunk));
+  const env = options.env ?? process.env;
 
   const subCommand = args[0];
 
   if (!subCommand || args.includes("--help") || args.includes("-h") || subCommand === "help") {
-    write(kernelHelp());
+    write(kernelHelp(env));
     return 0;
   }
 
   if (subCommand === "adjudicate") {
-    return handleAdjudicate(args.slice(1), write, writeErr);
+    return handleAdjudicate(args.slice(1), env, write, writeErr);
+  }
+  if (subCommand === "status") {
+    return handleStatus(args.slice(1), env, write);
   }
 
-  writeErr(`Unknown kernel subcommand: "${subCommand}"\n\n${kernelHelp()}`);
+  writeErr(`Unknown kernel subcommand: "${subCommand}"\n\n${kernelHelp(env)}`);
   return 1;
 }
 
 async function handleAdjudicate(
   args: readonly string[],
+  env: NodeJS.ProcessEnv,
   write: (chunk: string) => void,
   writeErr: (chunk: string) => void,
 ): Promise<number> {
@@ -43,35 +53,29 @@ async function handleAdjudicate(
     return 1;
   }
 
-  const domainPath = parsed.domainPath ?? findDomainForOperation(parsed.opId);
+  const domainPath = parsed.domainPath ?? findDomainForOperation(parsed.opId, env);
   if (!domainPath) {
-    writeErr(`Error: Could not locate execution domain containing operation "${parsed.opId}". Please specify --domain <path>.\n`);
+    writeErr(
+      `Error: no execution domain under ${kernelDomainRoot(env)} contains operation "${parsed.opId}". `
+        + "Pass --domain <path> (the path is printed next to the operation id).\n",
+    );
     return 1;
   }
 
-  const actor = os.userInfo?.().username || process.env.USER || process.env.USERNAME || "operator";
+  const opDomainId = readOperationDomainId(path.join(domainPath, "domain.db"), parsed.opId);
+  if (!opDomainId) {
+    writeErr(`Error: operation "${parsed.opId}" is not recorded in ${domainPath}.\n`);
+    return 1;
+  }
+
+  const actor = actorName(env);
   const verdict = parsed.verdict ?? "confirmed_stopped";
-
-  const dbPath = path.join(domainPath, "domain.db");
-  let opDomainId = "default";
-  try {
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try {
-      const row = db.prepare("SELECT domain_id FROM operations WHERE id = ?").get(parsed.opId) as { domain_id: string } | undefined;
-      if (row && row.domain_id) {
-        opDomainId = row.domain_id;
-      }
-    } finally {
-      db.close();
-    }
-  } catch {}
-
   let domain: ExecutionDomain | undefined;
   try {
     domain = ExecutionDomain.acquire(domainPath, opDomainId);
     const record = await domain.adjudicate(parsed.opId, verdict, actor, parsed.note);
 
-    write(`\x1b[32m✔ Adjudication recorded successfully\x1b[0m\n`);
+    write(`\x1b[32m✔ Adjudication recorded\x1b[0m\n`);
     write(`  Operation ID:       ${record.operationId}\n`);
     write(`  Verdict:            ${record.verdict}\n`);
     write(`  Actor:              ${record.actor}\n`);
@@ -83,23 +87,111 @@ async function handleAdjudicate(
       write(`  Note:               ${record.note}\n`);
     }
     return 0;
-  } catch (err: any) {
-    writeErr(`\x1b[31m✖ Adjudication failed:\x1b[0m ${err.message ?? String(err)}\n`);
+  } catch (err) {
+    if (err instanceof DomainLockedError) {
+      writeErr(
+        `\x1b[31m✖ The domain is owned by a running XioCode session (pid ${err.ownerPid}).\x1b[0m\n`
+          + `  Adjudicate from inside that session: /kernel adjudicate ${parsed.opId}\n`,
+      );
+      return 1;
+    }
+    writeErr(`\x1b[31m✖ Adjudication failed:\x1b[0m ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   } finally {
     domain?.close();
   }
 }
 
+type DomainSummary = Readonly<{
+  domainPath: string;
+  owner: "none" | "live" | "crashed";
+  ownerPid?: number;
+  unfinished: number;
+  indeterminate: readonly Readonly<{ id: string; name: string }>[];
+}>;
+
+/** `xio kernel status [--all]`: domains that need attention (or all of them). */
+function handleStatus(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  write: (chunk: string) => void,
+): number {
+  const root = kernelDomainRoot(env);
+  const all = args.includes("--all");
+  const summaries = listDomains(root).map(summarizeDomain);
+  const shown = all
+    ? summaries
+    : summaries.filter((s) => s.owner === "crashed" || s.unfinished > 0 || s.indeterminate.length > 0);
+  write(`kernel domains: ${root} (${summaries.length} total)\n`);
+  if (shown.length === 0) {
+    write(all ? "  (none)\n" : "  nothing needs attention — no crashed owners, unfinished or indeterminate operations\n");
+    return 0;
+  }
+  for (const summary of shown) {
+    const owner = summary.owner === "live"
+      ? `live session pid ${summary.ownerPid}`
+      : summary.owner === "crashed" ? `crashed owner pid ${summary.ownerPid} (recovered on next launch in this workspace)` : "closed";
+    write(`\n  ${path.basename(summary.domainPath)}\n    owner: ${owner}\n    unfinished operations: ${summary.unfinished}\n`);
+    for (const op of summary.indeterminate) {
+      const how = summary.owner === "live"
+        ? `/kernel adjudicate ${op.id}  (in that session)`
+        : `xio kernel adjudicate ${op.id} --domain ${summary.domainPath}`;
+      write(`    indeterminate: ${op.id} (${op.name}) → ${how}\n`);
+    }
+  }
+  return 0;
+}
+
+function listDomains(root: string): string[] {
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(root, entry.name, "domain.db")))
+      .map((entry) => path.join(root, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+function summarizeDomain(domainPath: string): DomainSummary {
+  const lock = readLock(domainPath);
+  const owner = !lock ? "none" : isAlive(lock.ownerPid) ? "live" : "crashed";
+  const base = { domainPath, owner, ...(lock ? { ownerPid: lock.ownerPid } : {}) } as const;
+  try {
+    const db = new DatabaseSync(path.join(domainPath, "domain.db"), { readOnly: true });
+    try {
+      const unfinished = db.prepare("SELECT COUNT(*) AS n FROM operations WHERE status != 'done'").get() as { n: number };
+      const rows = db.prepare("SELECT id, name, result FROM operations WHERE status = 'done' AND result IS NOT NULL")
+        .all() as { id: string; name: string; result: string }[];
+      const indeterminate = rows
+        .filter((row) => parseStatus(row.result) === "indeterminate")
+        .map(({ id, name }) => ({ id, name }));
+      return { ...base, unfinished: Number(unfinished.n), indeterminate };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return { ...base, unfinished: 0, indeterminate: [] };
+  }
+}
+
+function parseStatus(result: string): string | undefined {
+  try {
+    const parsed = JSON.parse(result) as { status?: unknown };
+    return typeof parsed.status === "string" ? parsed.status : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseAdjudicateArgs(args: readonly string[]): {
   opId?: string;
   domainPath?: string;
-  verdict?: "confirmed_stopped" | "abandon_with_residuals";
+  verdict?: Verdict;
   note?: string;
 } {
   let opId: string | undefined;
   let domainPath: string | undefined;
-  let verdict: "confirmed_stopped" | "abandon_with_residuals" | undefined;
+  let verdict: Verdict | undefined;
   let note: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -122,70 +214,73 @@ function parseAdjudicateArgs(args: readonly string[]): {
   return { opId, domainPath, verdict, note };
 }
 
-function findDomainForOperation(opId: string): string | undefined {
-  const candidateRoots = [
-    path.join(process.cwd(), ".xioflow", "kernel"),
-    path.join(process.cwd(), ".xiocode", "kernel"),
-    path.join(os.homedir(), ".xiocode", "kernel"),
-  ];
-
-  for (const root of candidateRoots) {
-    if (!fs.existsSync(root)) continue;
-
-    // Check if root itself is a domain
-    if (fs.existsSync(path.join(root, "domain.db"))) {
-      if (checkDbForOp(path.join(root, "domain.db"), opId)) {
-        return root;
-      }
-    }
-
-    // Check subdirectories
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const subDomain = path.join(root, entry.name);
-          const dbPath = path.join(subDomain, "domain.db");
-          if (fs.existsSync(dbPath) && checkDbForOp(dbPath, opId)) {
-            return subDomain;
-          }
-        }
-      }
-    } catch {}
-  }
-
-  return undefined;
+/** Searches the configured domain root (XIOCODE_KERNEL_DOMAIN_ROOT, else <XIO_HOME>/kernel). */
+function findDomainForOperation(opId: string, env: NodeJS.ProcessEnv): string | undefined {
+  return listDomains(kernelDomainRoot(env))
+    .find((domainPath) => readOperationDomainId(path.join(domainPath, "domain.db"), opId) !== undefined);
 }
 
-function checkDbForOp(dbPath: string, opId: string): boolean {
+function readOperationDomainId(dbPath: string, opId: string): string | undefined {
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
-      const row = db.prepare("SELECT id FROM operations WHERE id = ?").get(opId);
-      return Boolean(row);
+      const row = db.prepare("SELECT domain_id FROM operations WHERE id = ?").get(opId) as { domain_id?: string } | undefined;
+      return row?.domain_id;
     } finally {
       db.close();
     }
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-function kernelHelp(): string {
-  return `xio kernel — Supervised execution kernel management
+function readLock(domainPath: string): { ownerPid: number } | undefined {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(domainPath, "domain.lock"), "utf8")) as { ownerPid?: unknown };
+    return typeof meta.ownerPid === "number" ? { ownerPid: meta.ownerPid } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function actorName(env: NodeJS.ProcessEnv): string {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return env.USER || env.USERNAME || "operator";
+  }
+}
+
+function kernelHelp(env: NodeJS.ProcessEnv): string {
+  return `xio kernel — supervised execution kernel management
+
+Domains live under ${kernelDomainRoot(env)} (XIOCODE_KERNEL_DOMAIN_ROOT or <XIO_HOME>/kernel).
 
 Commands:
-  xio kernel adjudicate <opId> [options]
-    Resolve an indeterminate operation, releasing its retained resource leases
-    under audited journal recording.
+  xio kernel status [--all]
+    Domains that need attention: crashed owners, unfinished or indeterminate
+    operations (--all lists every domain).
 
-Options:
-  --domain <path>     Path to the execution domain directory (defaults to auto-detect)
-  --verdict <type>    Verdict type: confirmed_stopped (default) or abandon_with_residuals
-  --note <text>       Optional audit note for this adjudication
+  xio kernel adjudicate <opId> [options]
+    Resolve an indeterminate operation, releasing its retained leases under an
+    audited journal record. Inside a running session use /kernel adjudicate.
+
+Options (adjudicate):
+  --domain <path>     Domain directory (default: search the domain root)
+  --verdict <type>    confirmed_stopped (default) or abandon_with_residuals
+  --note <text>       Audit note for this adjudication
 
 Examples:
-  xio kernel adjudicate op-12345
-  xio kernel adjudicate op-12345 --verdict confirmed_stopped --note "Manually verified stopped"
+  xio kernel status
+  xio kernel adjudicate op-abc-toolu_01 --note "verified the process is gone"
 `;
 }
