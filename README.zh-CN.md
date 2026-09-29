@@ -6,7 +6,7 @@
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node.js-20.0%2B-green.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node.js-22.13%2B-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.1-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
@@ -24,16 +24,16 @@
 - **实时 Token 成本度量**：终端状态栏按实际 Token 消耗与提供商定价实时计算费用（精确到美分），使用成本清晰透明。
 - **双模操作界面**：全屏高密度终端 TUI（语法高亮、模糊搜索、命令面板、鼠标滚动支持），同时内置零依赖本地 Web 控制台（`xio web`），可视化审查工具调用链路与执行时间线。
 - **主动安全防护**：对破坏性 Shell 命令与敏感文件修改执行严格拦截与人工授权校验，保障工作区安全。
-- **内核化进程执行层**：受监督命令运行在可嵌入内核 [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) 上——启动前登记进程意图、停止必须由驱动确认后才释放租约、逐流截断并落盘转储、崩溃后对遗留操作做残留判定。Node 22.5+（Linux/macOS）默认走这条路径；用 `XIOCODE_PROCESS_KERNEL=0` 可回退到内置 supervisor，更老的运行时会自动回退并打印一行原因。
+- **内核化进程执行层**：受监督命令运行在可嵌入内核 [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) 上——启动前登记进程意图、停止必须由驱动确认后才释放租约、逐流截断并落盘转储、崩溃后对遗留操作做残留判定。每个 prompt 对应一个内核 Run，direct 模式的 `/rollback` 基于内核快照，权限决策写入内核 journal（见 [ARCHITECTURE.md](./ARCHITECTURE.md)）。`XIOCODE_PROCESS_KERNEL=0` 可让命令改用内置 supervisor 执行。
 
 ---
 
 ## 安装要求
 
-- **Node.js**: 20.0.0 或更高版本
+- **Node.js**: 22.13.0 或更高版本
 - **操作系统**: macOS, Linux, Windows (WSL)
 
-内核进程层在 Node.js 22.5+（Linux/macOS）上是默认路径，其存储依赖 `node:sqlite`。更老的运行时会打印一行说明并改用内置 supervisor；也可以用 `XIOCODE_PROCESS_KERNEL=0` 主动选择内置 supervisor。
+内核存储依赖 `node:sqlite`，因此要求 Node.js 22.13+。`XIOCODE_PROCESS_KERNEL=0` 只把命令执行切到内置 supervisor；回滚、恢复与 journal 仍在内核上。
 
 ```bash
 # 推荐：一键安装脚本（自动配置全局环境）

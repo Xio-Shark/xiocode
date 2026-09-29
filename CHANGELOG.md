@@ -14,6 +14,37 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+Requires `@xioflow/kernel` 0.4.0.
+
+### Added
+- **`/rollback` in direct mode runs on kernel snapshots and tells you what it could not undo.** The session baseline and each turn's checkpoint are kernel snapshots taken through a private index, so your staged changes and HEAD are never touched. After a rollback XioCode says whether the kernel verified the result, lists paths it could not restore, reminds you that ignored files (`.env`, `node_modules`, build output) were never snapshotted, and warns when a command ran since the checkpoint, because such a command may have written outside the workspace.
+- **A crash is recovered and reported at the next start, not at the first command.** Opening a session adjudicates whatever the previous launch of that session left running and prints what happened to each operation. Crashed sessions of other workspaces are swept in the background too, so their leftovers do not wait for that session to be resumed.
+- **`/kernel` inside a session and `xio kernel status` outside one.** Both list operations the kernel could not confirm stopped, each with the exact command that resolves it (`/kernel adjudicate <id>` while the session runs, `xio kernel adjudicate <id> --domain <path>` after it exits).
+- **Resuming a crashed session says what an interrupted command actually did.** Instead of "completion unknown", the tool result now reports whether the command never started, finished (with its exit code and the tail of its output) or is still unconfirmed.
+- **Approvals and denials are recorded.** Every permission decision (who decided, which gate, once or for the session) is written to the session's kernel journal next to the command it authorized. Commands and paths are stored as fingerprints, never as text.
+
+### Added (web console)
+- **The web console runs the agent.** `xio web` used to store your message and stay on "Thinking…" forever. It now runs the turn with the same startup as the CLI, streams text and tool calls into the transcript, and asks permission questions in a dialog (declining is the default button).
+- **The web console only answers the link it prints.** `xio web` prints a URL with a one-time access token; the browser trades it for a same-site cookie. Other web pages can no longer read your sessions, change your settings or API key, or delete sessions (it previously answered any site with `Access-Control-Allow-Origin: *`), and requests with a foreign `Host` are refused.
+- **Web console dark mode, narrow screens and keyboard use.** It follows the system theme, the session list becomes a drawer on phones, every control is a real button with a label, and it no longer loads fonts from Google.
+
+### Changed
+- **Commands that write to the workspace take turns.** Commands outside the read-only allowlist queue behind each other instead of running at the same time, and a command that had to wait says which one it waited for. A command stuck behind an operation the kernel could not confirm stopped is refused with instructions instead of waiting forever.
+- **MCP stdio servers run under the kernel.** Their stderr is bounded and spilled, their stop is confirmed, and a crash leaves nothing running. `XIOCODE_PROCESS_KERNEL=0` keeps the previous transport.
+- **`XIOCODE_PROCESS_KERNEL=0` only switches how commands are executed.** Rollback, recovery and the journal no longer depend on it.
+- **Node.js 22.13 or newer is required**, as `engines` already said; `xio doctor` and `install.sh` asked for 20.
+
+### Fixed
+- **Web console showed made-up numbers and wrong descriptions.** The 94.2% cache hit rate was hard-coded, new sessions claimed `claude-3-7-sonnet`, the permission cards described behavior XioCode does not have (strict asking instead of refusing, full auto-approving shell, a "Docker sandbox"), and the extensions page listed invented features. Usage now shows only what the provider reported; the permission control switches the live session's mode instead of silently rewriting `allow_high_risk`.
+- **A single Ctrl+C in the TUI quit and threw away your draft.** Ctrl+C now cancels a running turn, otherwise clears the draft, and only exits on a second press from an empty prompt, as the shortcuts sheet already said.
+- **Typing `?` in the TUI opened the shortcuts sheet instead of inserting it**, so "why?" became "why". The sheet opens only from an empty prompt; this also removes the garbled text left when it opened on top of the command menu.
+- **Permission questions no longer ask "allow bash for this session?" before showing a command.** Read-only allowlisted commands run without asking; every other command is shown and confirmed on its own. Tools without command text (MCP) show the call's arguments and offer "this call" or "this session".
+- **Esc closes the slash-command menu** (the draft stays) instead of doing nothing and clearing the draft on a quick second press.
+- **The TUI header shrinks to one line once the conversation starts** and no longer repeats the path the footer already shows.
+- **Direct-mode `/rollback turn` staged files and skipped non-ASCII paths.** It restored files with `git checkout <tree> -- <file>`, which also writes your index, and parsed git output without `-z`, so a file like `报告.md` was silently left in place.
+- **Every turn was recorded as one never-ending run.** 1.4.0's notes said turn cancellation went through the kernel; the code never ended a run at all. Each prompt is now its own kernel run and ends as succeeded, failed (including a failed done contract, whose verdict is recorded) or cancelled.
+- **A command's working directory decided which kernel domain it used**, so a command in a subdirectory closed the session's domain and opened a new one.
+
 ## [1.4.0] - 2026-09-26
 
 This release upgrades the embedded process execution engine to `@xioflow/kernel@0.2.0`, bringing single-writer convergence, bulletproof crash recovery, and honest process lifecycle accounting.

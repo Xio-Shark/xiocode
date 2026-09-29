@@ -6,7 +6,7 @@
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
-[![Node](https://img.shields.io/badge/Node.js-20.0%2B-green.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/Node.js-22.13%2B-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.1-informational.svg)](./package.json)
 [![CI](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml/badge.svg)](https://github.com/Xio-Shark/xiocode/actions/workflows/ci.yml)
@@ -25,16 +25,16 @@
 - **Dual Interface Modes**: Full-featured terminal TUI with syntax highlighting, fuzzy search, and command palette, alongside a zero-dependency local Web console (`xio web`) for visual timeline inspections.
 - **Built-in Execution Guardrails**: Intercepts destructive shell commands and unsafe file mutations, requiring explicit user authorization before execution.
 - **Ordered Browser Actions over MCP**: MCP browser tools from one driver (e.g. Playwright) share a serial queue, so a whole `navigate → click → type` sequence runs in one model round trip instead of racing in parallel. Setup, measured costs, and the extension-bridge login path: [docs/browser-mcp.md](./docs/browser-mcp.md).
-- **Kernel-Backed Process Layer**: supervised commands run on the embeddable [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) — process intent recorded before spawn, stop confirmed by the driver before leases are released, per-stream truncation with spill artifacts, and crash-recovery adjudication of what a previous process left behind. This is the default on Node 22.5+ (Linux/macOS); set `XIOCODE_PROCESS_KERNEL=0` to fall back to the built-in supervisor, and older runtimes print one line saying why they do.
+- **Kernel-Backed Process Layer**: supervised commands run on the embeddable [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) — process intent recorded before spawn, stop confirmed by the driver before leases are released, per-stream truncation with spill artifacts, and crash-recovery adjudication of what a previous process left behind. Each prompt is a kernel run, direct-mode `/rollback` uses kernel snapshots, and approvals are journaled (see [ARCHITECTURE.md](./ARCHITECTURE.md)). Set `XIOCODE_PROCESS_KERNEL=0` to execute commands on the built-in supervisor instead.
 
 ---
 
 ## Requirements
 
-- **Node.js**: 20.0.0 or higher
+- **Node.js**: 22.13.0 or higher
 - **OS**: macOS, Linux, Windows (WSL)
 
-The kernel process layer is the default on Node.js 22.5+ on Linux/macOS; its store uses `node:sqlite`. On older runtimes XioCode prints one line explaining why and uses the built-in supervisor instead — set `XIOCODE_PROCESS_KERNEL=0` to pick that path deliberately.
+The kernel store uses `node:sqlite`, which is why Node.js 22.13+ is required. `XIOCODE_PROCESS_KERNEL=0` switches command execution to the built-in supervisor; rollback, recovery and the journal stay on the kernel.
 
 ```bash
 # Recommended: Automated installer
