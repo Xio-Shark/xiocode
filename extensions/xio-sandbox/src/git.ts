@@ -1,13 +1,36 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runSupervisedProcessGated } from "../../../src/runtime/process/index.ts";
 
 export type GitResult = Readonly<{
   stdout: string;
   stderr: string;
   code: number;
 }>;
+
+/** Callers parse git output, so it must arrive whole: past this, fail instead of truncating. */
+const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
+/** Plumbing is local and non-interactive; this only bounds a hung git. */
+const GIT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Subcommands that never write the work tree, index or refs. They run without
+ * the workspace write lease; everything else queues behind writers.
+ */
+const READ_ONLY_SUBCOMMANDS = new Set([
+  "cat-file",
+  "diff",
+  "diff-index",
+  "diff-tree",
+  "for-each-ref",
+  "log",
+  "ls-files",
+  "ls-tree",
+  "merge-base",
+  "rev-list",
+  "rev-parse",
+  "show",
+  "show-ref",
+  "status",
+]);
 
 export async function git(cwd: string, args: readonly string[]): Promise<GitResult> {
   return runGit(cwd, args);
@@ -26,28 +49,39 @@ async function runGit(
   args: readonly string[],
   env?: Readonly<Record<string, string>>,
 ): Promise<GitResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync("git", [...args], {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-      env: env ? { ...process.env, ...env } : process.env,
-    });
-    return { stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), code: 0 };
-  } catch (error) {
-    const err = error as {
-      code?: number | string;
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-    };
-    const code = typeof err.code === "number" ? err.code : 1;
+  const result = await runSupervisedProcessGated({
+    command: "git",
+    args,
+    cwd,
+    // Same environment git always had here (it needs HOME, PATH, GIT_*), plus overrides.
+    env: env ? { ...process.env, ...env } : { ...process.env },
+    timeoutMs: GIT_TIMEOUT_MS,
+    access: READ_ONLY_SUBCOMMANDS.has(args[0] ?? "") ? "read" : "write",
+    output: {
+      headBytes: GIT_OUTPUT_LIMIT_BYTES,
+      tailBytes: 0,
+      hardCapBytes: GIT_OUTPUT_LIMIT_BYTES * 2,
+    },
+  });
+  if (result.stdoutTruncated || result.stderrTruncated) {
     return {
-      stdout: typeof err.stdout === "string" ? err.stdout.trimEnd() : "",
-      stderr: typeof err.stderr === "string" ? err.stderr.trimEnd() : (err.message ?? String(error)),
-      code,
+      stdout: "",
+      stderr: `git ${args.join(" ")}: output exceeded ${GIT_OUTPUT_LIMIT_BYTES} bytes`,
+      code: 1,
     };
   }
+  if (result.termination !== "exited") {
+    return {
+      stdout: result.stdout.trimEnd(),
+      stderr: (result.stderr || result.cleanupError || `git ${args.join(" ")}: ${result.termination}`).trimEnd(),
+      code: 1,
+    };
+  }
+  return {
+    stdout: result.stdout.trimEnd(),
+    stderr: result.stderr.trimEnd(),
+    code: result.code ?? 1,
+  };
 }
 
 export async function gitOk(cwd: string, args: readonly string[]): Promise<string> {
@@ -71,4 +105,3 @@ export async function gitWithEnvOk(
   }
   return result.stdout;
 }
-
