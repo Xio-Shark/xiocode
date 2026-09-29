@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
@@ -13,6 +14,10 @@ import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { renderWebUiHtml } from "./ui-template.ts";
 import { buildSessionTrajectory } from "./trajectory.ts";
+import { AgentHostBusyError, WebAgentHost, type WebEvent } from "./agent-host.ts";
+import { DEFAULT_MCP_CONFIG, loadMcpConfigs } from "../../extensions/xio-hygiene/src/mcp.ts";
+import { toHygieneMcp } from "../cli/xio-extension.ts";
+import { parsePermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore } from "../runtime/session-store.ts";
 import type { RuntimeEventV1 } from "../runtime/events/types.ts";
 
@@ -24,15 +29,29 @@ export type WebServerOptions = Readonly<{
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   store?: SessionStore;
+  /** Access token; a random one is generated per start when omitted (tests pass their own). */
+  token?: string;
+  /** Test seam: the agent runner behind /prompt. */
+  agentHost?: Pick<
+    WebAgentHost,
+    "prompt" | "abort" | "answerApproval" | "close" | "isRunning" | "activeSessionId" | "permissionMode" | "setPermissionMode"
+  >;
 }>;
 
 export type WebServerHandle = Readonly<{
   server: http.Server;
   port: number;
   host: string;
+  /** Plain origin, e.g. http://127.0.0.1:3080 */
   url: string;
+  /** URL to open: carries the access token, exchanged for a cookie on first load. */
+  launchUrl: string;
+  token: string;
   close: () => Promise<void>;
 }>;
+
+/** Hostnames a loopback console answers to; anything else is a rebinding attempt. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 export async function startWebServer(options: WebServerOptions = {}): Promise<WebServerHandle> {
   const cwd = options.cwd ?? process.cwd();
@@ -40,41 +59,73 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
   const store = options.store ?? createSessionStore(env);
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? 3080;
+  const token = options.token ?? randomBytes(24).toString("base64url");
+  let listeningPort = requestedPort;
 
   // SSE client connections by sessionId
   const sseClients = new Map<string, Set<http.ServerResponse>>();
 
-  function broadcastEvent(sessionId: string, event: RuntimeEventV1 | Record<string, unknown>): void {
+  function broadcastEvent(sessionId: string, event: RuntimeEventV1 | WebEvent): number {
     const clients = sseClients.get(sessionId);
-    if (!clients || clients.size === 0) return;
+    if (!clients || clients.size === 0) return 0;
     const payload = `data: ${JSON.stringify(event)}\n\n`;
+    let delivered = 0;
     for (const client of clients) {
       try {
         client.write(payload);
+        delivered += 1;
       } catch {
         clients.delete(client);
       }
     }
+    return delivered;
   }
 
-  const server = http.createServer(async (req, res) => {
-    // CORS headers for local dev convenience
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  const agentHost = options.agentHost ?? new WebAgentHost({ cwd, env, store, broadcast: broadcastEvent });
+  const cookieName = () => `xio_web_${listeningPort}`;
 
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
+  const server = http.createServer(async (req, res) => {
+    // No CORS: the console is same-origin only. Framing and sniffing are off.
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Frame-Options", "DENY");
+
+    const guard = checkRequest(req, {
+      port: listeningPort,
+      extraHost: host,
+      token,
+      cookieName: cookieName(),
+    });
+    if (guard.kind === "reject") {
+      res.writeHead(guard.status, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(guard.message);
       return;
     }
 
-    const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
+    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const pathname = url.pathname;
 
     try {
-      // 1. Root SPA page
+      // 1. Root SPA page. A valid ?token= is exchanged for a same-site cookie.
       if (pathname === "/" || pathname === "/index.html") {
+        if (url.searchParams.has("token")) {
+          if (!sameSecret(url.searchParams.get("token") ?? "", token)) {
+            res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(unauthorizedPage());
+            return;
+          }
+          res.writeHead(303, {
+            "Set-Cookie": `${cookieName()}=${token}; HttpOnly; SameSite=Strict; Path=/`,
+            Location: "/",
+          });
+          res.end();
+          return;
+        }
+        if (guard.kind !== "authorized") {
+          res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(unauthorizedPage());
+          return;
+        }
         const latestSession = await store.latest(cwd);
         const html = renderWebUiHtml({
           version: XIO_VERSION,
@@ -82,6 +133,13 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         });
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
+        return;
+      }
+
+      // Everything below is API: it needs the cookie (browser) or a bearer token.
+      if (guard.kind !== "authorized") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized: open the URL printed by `xio web`" }));
         return;
       }
 
@@ -93,6 +151,9 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           version: XIO_VERSION,
           cwd,
           mainRoot: cwd,
+          defaultModel: await readDefaultModel(env, cwd),
+          activeSessionId: agentHost.activeSessionId,
+          permissionMode: agentHost.permissionMode ?? "auto",
         }));
         return;
       }
@@ -138,16 +199,10 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           return;
         }
         if (req.method === "POST") {
-          const newId = store.createId();
-          await store.save({
-            id: newId,
-            model: { provider: "anthropic", id: "claude-3-7-sonnet" },
-            cwd,
-            mainRoot: cwd,
-            messages: [],
-          });
+          // Nothing is persisted until the first prompt: an unused "new session"
+          // must not litter the list. The model is whatever the config selects.
           res.writeHead(201, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ id: newId }));
+          res.end(JSON.stringify({ id: store.createId(), model: await readDefaultModel(env, cwd) }));
           return;
         }
       }
@@ -218,6 +273,12 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           return;
         }
         if (req.method === "DELETE") {
+          if (agentHost.isRunning(id)) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "session is running a turn; abort it first" }));
+            return;
+          }
+          if (agentHost.activeSessionId === id) await agentHost.close();
           const release = await store.acquireLease(id);
           try {
             await store.remove(id);
@@ -254,54 +315,27 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         return;
       }
 
-      // 6. Send Prompt (/api/sessions/:id/prompt)
+      // 6. Send Prompt (/api/sessions/:id/prompt): runs a real agent turn.
       const promptMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/prompt$/);
       if (promptMatch && req.method === "POST") {
         const id = promptMatch[1]!;
-        const body = await readJsonBody<{ prompt: string }>(req);
-        if (!body.prompt) {
+        const body = await readJsonBody<{ prompt?: string }>(req);
+        const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+        if (!prompt) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Missing prompt in body" }));
           return;
         }
-
-        // Acknowledge request immediately
+        try {
+          await agentHost.prompt(id, prompt);
+        } catch (error) {
+          const busy = error instanceof AgentHostBusyError;
+          res.writeHead(busy ? 409 : 500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          return;
+        }
         res.writeHead(202, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "accepted", sessionId: id }));
-
-        // Emit simulated & runtime events to connected SSE clients
-        const runId = "run-" + Date.now();
-        broadcastEvent(id, {
-          schema_version: "xio-runtime-event.v1",
-          seq: 0,
-          timestamp: new Date().toISOString(),
-          session_id: id,
-          run_id: runId,
-          turn_id: "turn-1",
-          event: "run.start",
-          payload: { prompt: body.prompt },
-        });
-
-        // Save user message to store
-        try {
-          const current = await store.load(id);
-          const updatedMessages = [
-            ...current.messages,
-            { role: "user" as const, content: body.prompt },
-          ];
-          await store.save({
-            id: current.metadata.id,
-            model: current.metadata.model,
-            cwd: current.metadata.cwd,
-            mainRoot: current.metadata.main_root,
-            messages: updatedMessages,
-            execution: current.execution,
-            workspace: current.workspace,
-          });
-        } catch {
-          // ignore if new session
-        }
-
         return;
       }
 
@@ -309,18 +343,38 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
       const abortMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/abort$/);
       if (abortMatch && req.method === "POST") {
         const id = abortMatch[1]!;
-        broadcastEvent(id, {
-          schema_version: "xio-runtime-event.v1",
-          seq: 999,
-          timestamp: new Date().toISOString(),
-          session_id: id,
-          run_id: "abort",
-          turn_id: null,
-          event: "cancel",
-          payload: { reason: "User abort via Web Console" },
-        });
+        const aborted = agentHost.abort(id);
+        res.writeHead(aborted ? 200 : 409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(aborted ? { status: "aborting", sessionId: id } : { error: "no running turn in this session" }));
+        return;
+      }
+
+      // 7b. Answer a permission question (/api/sessions/:id/approval)
+      const approvalMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/approval$/);
+      if (approvalMatch && req.method === "POST") {
+        const id = approvalMatch[1]!;
+        const body = await readJsonBody<{ id?: string; approve?: boolean; value?: string }>(req);
+        const answered = typeof body.id === "string"
+          && agentHost.answerApproval(id, body.id, {
+            approve: body.approve === true,
+            ...(typeof body.value === "string" ? { value: body.value } : {}),
+          });
+        res.writeHead(answered ? 200 : 404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(answered ? { status: "answered" } : { error: "no such pending question" }));
+        return;
+      }
+
+      // 7c. Permission mode of the console's session (/api/permission)
+      if (pathname === "/api/permission" && req.method === "POST") {
+        const body = await readJsonBody<{ mode?: string }>(req);
+        const mode = parsePermissionMode(String(body.mode ?? ""));
+        if (!mode) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "mode must be auto, strict or full" }));
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "aborted", sessionId: id }));
+        res.end(JSON.stringify({ mode: agentHost.setPermissionMode(mode) }));
         return;
       }
 
@@ -490,16 +544,17 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         }
       }
 
-      // 11. Extensions & MCP API (/api/extensions)
+      // 11. Extensions & MCP API (/api/extensions): what actually ships and what is configured.
       if (pathname === "/api/extensions" && req.method === "GET") {
         const extensions = [
-          { id: "xio-setup", name: "环境配置诊断 (Setup & Doctor)", description: "检测系统环境、依赖工具与 API Key 凭据状态", enabled: true, category: "core" },
-          { id: "xio-hygiene", name: "代码异味扫描 (Hygiene & Audit)", description: "自动化静态扫描代码异味、坏味道与死代码", enabled: true, category: "audit" },
-          { id: "xio-sandbox", name: "安全隔离沙箱 (Worktree & Direct Rollback)", description: "基于 Git 临时对象快照与 Worktree 的安全执行环境", enabled: true, category: "security" },
-          { id: "xio-evolve", name: "规则演进器 (Rules Evolver)", description: "自动化更新与维护 AGENTS.md 约束守卫", enabled: true, category: "rules" },
+          { id: "xio-hygiene", name: "Hygiene", description: "Loads AGENTS.md / CLAUDE.md, skills, user hooks (SessionStart / PreToolUse / PostToolUse / Stop) and MCP servers.", enabled: true, category: "context" },
+          { id: "xio-sandbox", name: "Sandbox", description: "Optional git worktree per session with merge-on-approval; /rollback for turns and sessions.", enabled: true, category: "isolation" },
+          { id: "xio-evolve", name: "Evolve", description: "Records run trajectories, trims noisy tool output and injects relevant context each turn.", enabled: true, category: "runtime" },
+          { id: "xio-setup", name: "Setup", description: "xio-setup CLI: provider setup and optional config sections.", enabled: true, category: "setup" },
         ];
+        const mcpServers = await listMcpServers(env, cwd);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ extensions, mcpServers: [] }));
+        res.end(JSON.stringify({ extensions, mcpServers }));
         return;
       }
 
@@ -524,6 +579,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
     server.on("error", reject);
   });
 
+  listeningPort = actualPort;
   const url = `http://${host}:${actualPort}`;
 
   return {
@@ -531,10 +587,93 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
     port: actualPort,
     host,
     url,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
-    }),
+    launchUrl: `${url}/?token=${encodeURIComponent(token)}`,
+    token,
+    close: async () => {
+      await agentHost.close();
+      for (const clients of sseClients.values()) {
+        for (const client of clients) client.end();
+      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
   };
+}
+
+type RequestGuard =
+  | Readonly<{ kind: "authorized" }>
+  | Readonly<{ kind: "anonymous" }>
+  | Readonly<{ kind: "reject"; status: number; message: string }>;
+
+/**
+ * Loopback-only access control:
+ * - Host must be a loopback name on our port (blocks DNS rebinding).
+ * - A cross-site Origin is refused (blocks CSRF from any page the user visits).
+ * - Authorized = same-site cookie (browser) or bearer token (scripts, tests).
+ */
+export function checkRequest(
+  req: http.IncomingMessage,
+  context: Readonly<{ port: number; extraHost: string; token: string; cookieName: string }>,
+): RequestGuard {
+  const hostHeader = req.headers.host ?? "";
+  const allowedHosts = new Set([...LOOPBACK_HOSTS, context.extraHost]);
+  const portSuffix = `:${context.port}`;
+  const hostName = hostHeader.endsWith(portSuffix) ? hostHeader.slice(0, -portSuffix.length) : "";
+  if (!allowedHosts.has(hostName)) {
+    return { kind: "reject", status: 421, message: "Misdirected request: unexpected Host header" };
+  }
+  const origin = req.headers.origin;
+  if (origin !== undefined && origin !== `http://${hostHeader}`) {
+    return { kind: "reject", status: 403, message: "Cross-origin requests are not allowed" };
+  }
+  const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+  const cookie = readCookie(req.headers.cookie, context.cookieName);
+  const presented = bearer ?? cookie;
+  return presented !== undefined && sameSecret(presented, context.token)
+    ? { kind: "authorized" }
+    : { kind: "anonymous" };
+}
+
+function readCookie(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? "").split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return undefined;
+}
+
+function sameSecret(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function unauthorizedPage(): string {
+  return "<!doctype html><meta charset=utf-8><title>XioCode</title>"
+    + "<body style=\"font:15px system-ui;max-width:32rem;margin:15vh auto;padding:0 16px\">"
+    + "<h1 style=\"font-size:18px\">Open the link printed by <code>xio web</code></h1>"
+    + "<p>The console only accepts the address shown in your terminal, which carries a one-time access token. "
+    + "This keeps other web pages from reading your sessions or changing your settings.</p></body>";
+}
+
+async function readDefaultModel(env: NodeJS.ProcessEnv, cwd: string): Promise<{ provider: string; id: string } | undefined> {
+  const config = await ensureConfigFile(env);
+  const general = parseXioConfig(config.content, { cwd }).xio.general;
+  return general.defaultProvider && general.defaultModel
+    ? { provider: general.defaultProvider, id: general.defaultModel }
+    : undefined;
+}
+
+async function listMcpServers(env: NodeJS.ProcessEnv, cwd: string): Promise<{ name: string; transport: string; source: string }[]> {
+  const config = await ensureConfigFile(env);
+  const parsed = parseXioConfig(config.content, { cwd });
+  const loaded = await loadMcpConfigs({
+    cwd,
+    home: env.HOME,
+    config: { ...DEFAULT_MCP_CONFIG, ...toHygieneMcp(parsed.xio.mcp) },
+  });
+  return loaded.servers.map((server) => ({ name: server.name, transport: server.spec.transport, source: server.source }));
 }
 
 async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {

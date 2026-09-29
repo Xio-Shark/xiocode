@@ -421,11 +421,13 @@ export function ConfirmView(props: Readonly<{
   const visible = allLines.slice(scroll, scroll + visibleCount);
   const endLine = Math.min(scroll + visibleCount, allLines.length);
   return h(Box, { flexDirection: "column", flexGrow: 1 },
-    h(Text, { bold: true }, props.confirm.question),
+    h(Text, { bold: true }, props.confirm.question.replace(/\s*\[y\/N\]\s*$/i, "")),
     h(Box, { flexDirection: "column", borderStyle: "single" },
       ...visible.map((line, index) => h(DiffLine, { key: `${scroll + index}-${line}`, line }))),
     maxScroll > 0
       ? h(Text, { dimColor: true }, `lines ${scroll + 1}–${endLine}/${allLines.length}`)
       : null,
-    h(Text, { bold: true }, "Yes / No"));
+    h(Text, null,
+      h(Text, { bold: true, color: theme.accent }, "y"), " allow  ·  ",
+      h(Text, { bold: true }, "n"), " / enter / esc deny"));
 }

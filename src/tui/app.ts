@@ -88,7 +88,6 @@ import { motionEnabled, REDUCED_TICK_MS, SPINNER_INTERVAL_MS, spinnerFrameAt } f
 import type { ChatMessage, ContextCompactionUiEvent } from "../runtime/types.ts";
 import {
   collapseNoticesForDisplay,
-  formatShortCwd,
   padSlashName,
   theme,
   truncateToolDetail,
@@ -300,6 +299,7 @@ export function App(props: AppProps): React.JSX.Element {
 
   const {
     input,
+    slashDismissed,
     composer,
     busy,
     slashIndex,
@@ -343,8 +343,10 @@ export function App(props: AppProps): React.JSX.Element {
   const spinnerFrame = MOTION_ENABLED && busy ? spinnerFrameAt(subagentClock) : undefined;
 
   const slashItems = useMemo(
-    () => filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(input)),
-    [props.session.host, input],
+    () => slashDismissed === input
+      ? undefined
+      : filterSlashCommands(collectSlashCommands(props.session.host), slashQuery(input)),
+    [props.session.host, input, slashDismissed],
   );
   const slashOpen = !busy && slashItems !== undefined;
   const safeSlashIndex = slashOpen && slashItems.length > 0
@@ -483,11 +485,12 @@ export function App(props: AppProps): React.JSX.Element {
 
   return h(Box, rootProps,
     h(SessionHeader, {
+      // Full brand block on the welcome screen only; one line once the transcript has content.
+      compact: scrollback.blocks.length > 0 || busy,
       version: PACKAGE_VERSION,
       model: modelLabel,
       thinking: thinkingLabel,
       plan: planLabel,
-      cwd: props.cwd,
       columns,
       busy,
       phase: composePhaseChrome(busyPhaseLabel({
@@ -1111,6 +1114,7 @@ function useSessionInteraction(
   slashIndex: number;
   setSlashIndex: React.Dispatch<React.SetStateAction<number>>;
   atItems: readonly string[] | undefined;
+  slashDismissed: string | undefined;
   atIndex: number;
   transcriptViewer: HistoryBlock | undefined;
   viewerScrollOffset: number;
@@ -1125,7 +1129,8 @@ function useSessionInteraction(
   palette: Readonly<{ query: string; index: number }> | undefined;
   /** Esc layering: cancel turn / double-press clear draft. */
   pressEsc: () => boolean;
-  escArmed: "clear-draft" | undefined;
+  escArmed: "clear-draft" | "exit" | undefined;
+  pressCtrlC: () => "cancelled" | "cleared" | "armed" | "exit";
   /** `?` shortcuts sheet. */
   shortcutsOpen: boolean;
   toggleShortcuts: () => void;
@@ -1199,7 +1204,7 @@ function useSessionInteraction(
   // Esc layering (grok parity): busy → cancel (draft kept); idle non-empty
   // draft → double-press within 800ms clears it. A cancel suppresses the arm
   // for ~1s so mashing Esc to stop a turn can't wipe the draft.
-  const [escArmed, setEscArmed] = useState<"clear-draft" | undefined>(undefined);
+  const [escArmed, setEscArmed] = useState<"clear-draft" | "exit" | undefined>(undefined);
   const escArmedRef = useRef(escArmed);
   escArmedRef.current = escArmed;
   const lastCancelAtRef = useRef(0);
@@ -1229,6 +1234,28 @@ function useSessionInteraction(
     escTimerRef.current = setTimeout(() => setEscArmed(undefined), 800);
     return true;
   };
+  /**
+   * Ctrl+C layering (same as the `?` sheet documents): a running turn is
+   * cancelled; a draft is cleared; an empty prompt arms exit, and a second
+   * press within 1.5s exits. One stray Ctrl+C never loses a draft or quits.
+   */
+  const pressCtrlC = (): "cancelled" | "cleared" | "armed" | "exit" => {
+    if (busyRef.current) {
+      lastCancelAtRef.current = Date.now();
+      props.session.abortTurn();
+      return "cancelled";
+    }
+    if (composerRef.current.text.length > 0) {
+      setComposerState(setComposerText(composerRef.current, "", 0));
+      setEscArmed(undefined);
+      return "cleared";
+    }
+    if (escArmedRef.current === "exit") return "exit";
+    setEscArmed("exit");
+    if (escTimerRef.current) clearTimeout(escTimerRef.current);
+    escTimerRef.current = setTimeout(() => setEscArmed(undefined), 1_500);
+    return "armed";
+  };
   /** Last mouse press for double-click detection (same row within DOUBLE_CLICK_MS). */
   const lastPointerDownRef = useRef<{ at: number; row: number; col: number } | undefined>(undefined);
   const scrollbackRef = useRef(scrollback);
@@ -1244,6 +1271,8 @@ function useSessionInteraction(
   const [atIndex, setAtIndex] = useState(0);
   const atIndexRef = useRef(0);
   const [atDismissed, setAtDismissed] = useState<string | undefined>(undefined);
+  /** Draft text for which the slash menu was closed with Esc. */
+  const [slashDismissed, setSlashDismissed] = useState<string | undefined>(undefined);
   const atDismissedRef = useRef(atDismissed);
   atDismissedRef.current = atDismissed;
   const activeAtQuery = busy ? undefined : atQuery(composer.text, composer.cursor);
@@ -1554,6 +1583,7 @@ function useSessionInteraction(
     moveAt,
     insertAt,
     dismissAt,
+    dismissSlash: () => setSlashDismissed(composerRef.current.text),
     setInputValue,
     setComposerState,
     moveSlash,
@@ -1603,6 +1633,7 @@ function useSessionInteraction(
     paletteClose: () => setPalette(undefined),
     paletteRun,
     pressEsc,
+    pressCtrlC,
     escArmed,
     shortcutsOpen: () => shortcutsOpen,
     toggleShortcuts: () => {
@@ -1762,6 +1793,7 @@ function useSessionInteraction(
     slashIndex,
     setSlashIndex,
     atItems,
+    slashDismissed,
     atIndex,
     transcriptViewer,
     viewerScrollOffset,
@@ -1803,6 +1835,7 @@ function useSessionInteraction(
     paletteClose: () => setPalette(undefined),
     paletteRun,
     pressEsc,
+    pressCtrlC,
     escArmed,
     shortcutsOpen,
     shortcutsOffset,
@@ -1862,6 +1895,8 @@ function handleInput(options: Readonly<{
   moveAt: (delta: number) => void;
   insertAt: () => void;
   dismissAt: () => void;
+  /** Close the slash menu for the current draft text. */
+  dismissSlash: () => void;
   scrollConfirm: (delta: number) => void;
   scrollTranscript: (delta: number) => void;
   scrollViewer?: (delta: number) => void;
@@ -1901,8 +1936,10 @@ function handleInput(options: Readonly<{
   viewTopBlock?: () => void;
   /** Esc layering: cancel turn / double-press clear draft. Returns handled. */
   pressEsc: () => boolean;
-  /** Esc arm state for the composer hint. */
-  escArmed: "clear-draft" | undefined;
+  /** Esc / Ctrl+C arm state for the composer hint. */
+  escArmed: "clear-draft" | "exit" | undefined;
+  /** Ctrl+C layering: cancel turn → clear draft → arm exit → exit. */
+  pressCtrlC: () => "cancelled" | "cleared" | "armed" | "exit";
   /** `?` shortcuts sheet. */
   shortcutsOpen?: () => boolean;
   shortcutsScroll?: (delta: number) => void;
@@ -1929,8 +1966,7 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.ctrl && options.character === "c") {
-    if (options.busy) options.session.abortTurn();
-    else void options.close(0);
+    if (options.pressCtrlC() === "exit") void options.close(0);
     return;
   }
   // `?` shortcuts sheet: while open it owns navigation; Esc closes, and the
@@ -2021,7 +2057,8 @@ function handleInput(options: Readonly<{
     options.paletteOpen?.() ? options.paletteClose?.() : options.paletteInput?.("");
     return;
   }
-  if (options.character === "?" && !options.key.ctrl && !options.key.meta) {
+  // `?` opens the sheet only from an empty prompt; inside a draft it is text ("why?").
+  if (options.character === "?" && !options.key.ctrl && !options.key.meta && options.composer.text.length === 0) {
     options.toggleShortcuts?.();
     return;
   }
@@ -2056,6 +2093,12 @@ function handleInput(options: Readonly<{
     return;
   }
   if (options.key.escape && options.clearTextSelection?.()) {
+    return;
+  }
+  // An open slash menu is the innermost layer: Esc closes it for this draft
+  // (the text stays; typing reopens it) before Esc means "clear the draft".
+  if (options.key.escape && !options.busy && options.slashItems !== undefined) {
+    options.dismissSlash();
     return;
   }
   // Esc layering after overlays: busy → cancel (draft kept); idle non-empty
@@ -2854,11 +2897,11 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
   model: string;
   thinking: string;
   plan?: string;
-  cwd: string;
   busy?: boolean;
   /** Turn phase chrome: working… / streaming… / tools… / agents… */
   phase?: string;
   columns: number;
+  compact?: boolean;
 }>): React.JSX.Element {
   // Path / permission / usage / workspace live in the Claude-style footer;
   // header mirrors CondensedLogo: mascot + title / meta / cwd.
@@ -2869,10 +2912,17 @@ const SessionHeader = memo(function SessionHeader(props: Readonly<{
     props.phase ?? (props.busy ? "working…" : undefined),
   ].filter((part): part is string => typeof part === "string" && part.length > 0);
 
+  const meta = parts.length > 0 ? parts.join(` ${theme.sym.meta} `) : undefined;
+  if (props.compact) {
+    // The footer already shows the path; keep the working area for the transcript.
+    return h(Text, { wrap: "truncate-end" },
+      h(Text, { bold: true, color: theme.brand }, "XioCode"),
+      h(Text, { dimColor: true }, ` v${props.version}${meta ? ` ${theme.sym.meta} ${meta}` : ""}`));
+  }
+  // No path here: the footer shows it on every screen.
   return h(BrandHeader, {
     version: props.version,
-    meta: parts.length > 0 ? parts.join(` ${theme.sym.meta} `) : undefined,
-    path: formatShortCwd(props.cwd),
+    meta,
     columns: props.columns,
   });
 });

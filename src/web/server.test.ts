@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 
-import { startWebServer } from "./server.ts";
+import http from "node:http";
+
+import { startWebServer, type WebServerHandle } from "./server.ts";
 import { parseWebCliArgs } from "../cli/web-cli.ts";
 import { SessionStore } from "../runtime/session-store.ts";
 
@@ -50,15 +52,88 @@ describe("Web Console & Server", () => {
     });
   });
 
+  function fakeAgentHost() {
+    const calls: string[] = [];
+    return {
+      calls,
+      host: {
+        activeSessionId: undefined as string | undefined,
+        prompt: async (id: string, text: string) => { calls.push(`prompt:${id}:${text}`); },
+        abort: (id: string) => { calls.push(`abort:${id}`); return false; },
+        answerApproval: () => false,
+        close: async () => undefined,
+        isRunning: () => false,
+        permissionMode: undefined,
+        setPermissionMode: (mode: "auto" | "strict" | "full") => { calls.push(`mode:${mode}`); return mode; },
+      },
+    };
+  }
+
+  /** Raw request so tests can forge Host / Origin headers that fetch() would not send. */
+  function rawRequest(handle: WebServerHandle, options: http.RequestOptions & { body?: string }) {
+    return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port: handle.port, ...options }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      });
+      req.on("error", reject);
+      if (options.body) req.write(options.body);
+      req.end();
+    });
+  }
+
+  it("refuses anonymous, rebinding and cross-site requests; exchanges the launch token for a same-site cookie", async () => {
+    const { store, project } = await createTempStore();
+    const handle = await startWebServer({ port: 0, host: "127.0.0.1", store, cwd: project, agentHost: fakeAgentHost().host });
+    openServers.push(handle);
+
+    expect(handle.launchUrl).toBe(`${handle.url}/?token=${encodeURIComponent(handle.token)}`);
+
+    const anonymousApi = await fetch(`${handle.url}/api/sessions`);
+    expect(anonymousApi.status).toBe(401);
+    expect(anonymousApi.headers.get("access-control-allow-origin")).toBeNull();
+    const anonymousPage = await fetch(`${handle.url}/`);
+    expect(anonymousPage.status).toBe(401);
+    expect(await anonymousPage.text()).not.toContain("chat-messages");
+    expect((await fetch(`${handle.url}/?token=wrong`)).status).toBe(401);
+
+    const exchange = await fetch(handle.launchUrl, { redirect: "manual" });
+    expect(exchange.status).toBe(303);
+    const cookie = exchange.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain(`xio_web_${handle.port}=${handle.token}`);
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+    const cookieHeader = cookie.split(";")[0]!;
+    expect((await fetch(`${handle.url}/api/sessions`, { headers: { cookie: cookieHeader } })).status).toBe(200);
+
+    // DNS rebinding: the browser sends the attacker's hostname as Host.
+    const rebound = await rawRequest(handle, { path: "/api/sessions", headers: { host: `evil.example:${handle.port}`, cookie: cookieHeader } });
+    expect(rebound.status).toBe(421);
+    // CSRF: a page elsewhere posting with the user's cookie.
+    const crossSite = await rawRequest(handle, {
+      method: "POST",
+      path: "/api/settings",
+      headers: { host: `127.0.0.1:${handle.port}`, origin: "https://evil.example", cookie: cookieHeader, "content-type": "application/json" },
+      body: JSON.stringify({ general: { defaultModel: "pwned" } }),
+    });
+    expect(crossSite.status).toBe(403);
+  });
+
   it("serves the SPA UI and API endpoints", async () => {
     const { store, project } = await createTempStore();
+    const agent = fakeAgentHost();
     const handle = await startWebServer({
       port: 0, // dynamic port for tests
       host: "127.0.0.1",
       store,
       cwd: project,
+      agentHost: agent.host,
     });
     openServers.push(handle);
+    const auth = { authorization: `Bearer ${handle.token}` };
+    const fetch = (url: string, init: RequestInit = {}) =>
+      globalThis.fetch(url, { ...init, headers: { ...auth, ...(init.headers as Record<string, string> | undefined) } });
 
     expect(handle.port).toBeGreaterThan(0);
     expect(handle.url).toContain(`http://127.0.0.1:${handle.port}`);
@@ -68,7 +143,8 @@ describe("Web Console & Server", () => {
     expect(rootRes.status).toBe(200);
     expect(rootRes.headers.get("content-type")).toContain("text/html");
     const html = await rootRes.text();
-    expect(html).toContain("XioCode Web");
+    expect(html).toContain("<title>XioCode 控制台</title>");
+    expect(html).not.toContain("fonts.googleapis.com");
     expect(html).toContain("chat-messages");
 
     // 2. Test GET /api/status
@@ -85,16 +161,19 @@ describe("Web Console & Server", () => {
     // close SSE stream
     await eventsRes.body?.cancel();
 
-    // 3. Test POST & GET /api/sessions
+    // 3. POST /api/sessions hands out an id but persists nothing until the first prompt
     const postRes = await fetch(`${handle.url}/api/sessions`, { method: "POST" });
     expect(postRes.status).toBe(201);
-    const postData = await postRes.json();
-    expect(postData.id).toBeDefined();
-
+    const draft = await postRes.json();
+    expect(draft.id).toBeDefined();
+    expect(draft.model?.id).not.toBe("claude-3-7-sonnet");
     const listRes = await fetch(`${handle.url}/api/sessions`);
     expect(listRes.status).toBe(200);
-    const listData = await listRes.json();
-    expect(listData.some((s: { id: string }) => s.id === postData.id)).toBe(true);
+    expect((await listRes.json()).some((s: { id: string }) => s.id === draft.id)).toBe(false);
+
+    // A stored session (what the agent writes on its first turn)
+    const postData = { id: draft.id as string };
+    await store.save({ id: postData.id, model: { provider: "local", id: "stub" }, cwd: project, mainRoot: project, messages: [] });
 
     // 4. Test GET /api/sessions/:id
     const detailRes = await fetch(`${handle.url}/api/sessions/${postData.id}`);
@@ -127,6 +206,17 @@ describe("Web Console & Server", () => {
       body: JSON.stringify({ prompt: "hello from web client" }),
     });
     expect(promptRes.status).toBe(202);
+    expect(agent.calls).toContain(`prompt:${postData.id}:hello from web client`);
+    const abortRes = await fetch(`${handle.url}/api/sessions/${postData.id}/abort`, { method: "POST" });
+    expect(abortRes.status).toBe(409);
+    const modeRes = await fetch(`${handle.url}/api/permission`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "strict" }),
+    });
+    expect(await modeRes.json()).toEqual({ mode: "strict" });
+    expect(agent.calls).toContain("mode:strict");
+    expect((await fetch(`${handle.url}/api/permission`, { method: "POST", body: JSON.stringify({ mode: "yolo-ish" }) })).status).toBe(400);
 
     // 6. Test DELETE /api/sessions/:id
     const delRes = await fetch(`${handle.url}/api/sessions/${postData.id}`, { method: "DELETE" });
@@ -194,7 +284,9 @@ describe("Web Console & Server", () => {
     const extRes = await fetch(`${handle.url}/api/extensions`);
     expect(extRes.status).toBe(200);
     const extData = await extRes.json();
-    expect(extData.extensions.some((e: { id: string }) => e.id === "xio-sandbox")).toBe(true);
+    expect(extData.extensions.map((e: { id: string }) => e.id).sort()).toEqual(["xio-evolve", "xio-hygiene", "xio-sandbox", "xio-setup"]);
+    expect(JSON.stringify(extData)).not.toContain("deepseek-harness");
+    expect(Array.isArray(extData.mcpServers)).toBe(true);
   });
 
   it("renders valid client-side javascript without syntax errors", async () => {

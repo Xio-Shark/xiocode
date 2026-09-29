@@ -56,12 +56,13 @@ export async function runWebCli(rawArgs: readonly string[]): Promise<number> {
 
     process.stdout.write("\n");
     process.stdout.write("  \x1b[36m🦈 XioCode Web Console\x1b[0m\n");
-    process.stdout.write(`  \x1b[32m➜\x1b[0m  Local:   \x1b[1m\x1b[36m${handle.url}\x1b[0m\n`);
+    // The token in this link is the only way in; keep it out of shared screenshots.
+    process.stdout.write(`  \x1b[32m➜\x1b[0m  Open:    \x1b[1m\x1b[36m${handle.launchUrl}\x1b[0m\n`);
     process.stdout.write(`  \x1b[32m➜\x1b[0m  Root:    \x1b[90m${cwd}\x1b[0m\n`);
     process.stdout.write("  \x1b[90mReady for interactive pairing. Press Ctrl+C to stop.\x1b[0m\n\n");
 
     if (options.open) {
-      openBrowser(handle.url);
+      openBrowser(handle.launchUrl);
     }
 
     // Keep running until SIGINT

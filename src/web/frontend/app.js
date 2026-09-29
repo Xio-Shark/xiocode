@@ -1,13 +1,17 @@
-let activeSessionId = "";
+const DEFAULT_SESSION_ID = "";
+
+    let activeSessionId = DEFAULT_SESSION_ID;
     let isRunning = false;
     let eventSource = null;
     let allSessions = [];
-    let metricsState = { turns: 0, tokens: 0 };
     let currentSettingsData = null;
     let selectedThinkingLevel = "high";
-    let selectedPermMode = "auto";
     let currentTrajectorySteps = [];
     let currentStats = {};
+    let defaultModel = null;
+    let workspaceName = "";
+    const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0 };
+    const pendingApprovals = [];
 
     const chatFlowContainer = document.getElementById("chat-flow-container");
     const chatScrollArea = document.getElementById("chat-messages");
@@ -18,69 +22,115 @@ let activeSessionId = "";
     const statusText = document.getElementById("status-text");
     const sessionList = document.getElementById("session-list");
     const btnNewSession = document.getElementById("btn-new-session");
-    const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
     const sidebar = document.getElementById("sidebar");
+    const sidebarScrim = document.getElementById("sidebar-scrim");
     const sessionSearch = document.getElementById("session-search");
+    const narrowScreen = window.matchMedia("(max-width: 900px)");
+
+    const STARTERS = [
+      { title: "跑一遍测试", desc: "运行测试并报告失败用例", prompt: "运行测试套件并报告失败的用例" },
+      { title: "审查未提交的改动", desc: "解释 git diff 的影响面", prompt: "检查 git diff 并分析未暂存的改动" },
+      { title: "梳理项目结构", desc: "模块分层与依赖关系", prompt: "分析代码库架构与核心模块分层约定" },
+    ];
 
     document.addEventListener("DOMContentLoaded", async () => {
       initTabs();
       initSidebar();
       initComposer();
+      initDelegatedActions();
       initTrajectoryControls();
       initSettingsModal();
+      initApprovalDialog();
+      setRunningState(false);
       await fetchStatus();
       await loadSessions();
-      if (activeSessionId) {
-        selectSession(activeSessionId);
-      } else if (allSessions.length > 0) {
-        const withMsgs = allSessions.find(s => (s.messageCount && s.messageCount > 0) || s.firstPrompt);
-        const target = withMsgs || allSessions[0];
-        selectSession(target.id || target.metadata?.id);
+      const initial = activeSessionId
+        || allSessions.find(s => (s.messageCount && s.messageCount > 0) || s.firstPrompt)?.id
+        || allSessions[0]?.id;
+      if (initial) {
+        selectSession(initial);
+      } else {
+        startDraftSession();
       }
     });
 
+    // ---------- Shell: tabs, sidebar, delegated actions ----------
+
     function initTabs() {
       document.querySelectorAll(".nav-tab-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-          document.querySelectorAll(".nav-tab-btn").forEach(b => b.classList.remove("active"));
-          document.querySelectorAll(".view-panel").forEach(v => v.classList.remove("active"));
-          btn.classList.add("active");
-          const viewId = "view-" + btn.dataset.view;
-          const target = document.getElementById(viewId);
-          if (target) target.classList.add("active");
-          if (btn.dataset.view === "trajectory") {
-            renderTrajectory(currentTrajectorySteps, currentStats);
-          } else if (btn.dataset.view === "diff") {
-            fetchDiff();
-          }
-        });
+        btn.addEventListener("click", () => activateTab(btn));
       });
     }
 
+    function activateTab(btn) {
+      document.querySelectorAll(".nav-tab-btn").forEach(b => {
+        b.classList.toggle("active", b === btn);
+        b.setAttribute("aria-selected", b === btn ? "true" : "false");
+      });
+      document.querySelectorAll(".view-panel").forEach(v => v.classList.remove("active"));
+      const target = document.getElementById("view-" + btn.dataset.view);
+      if (target) target.classList.add("active");
+      if (btn.dataset.view === "trajectory") renderTrajectory(currentTrajectorySteps, currentStats);
+      else if (btn.dataset.view === "diff") fetchDiff();
+      else if (btn.dataset.view === "metrics") renderMetrics();
+    }
+
     function initSidebar() {
-      const btnExpandSidebar = document.getElementById("btn-expand-sidebar");
-      if (btnToggleSidebar) {
-        btnToggleSidebar.addEventListener("click", () => {
-          sidebar.classList.add("collapsed");
-          if (btnExpandSidebar) btnExpandSidebar.style.display = "inline-flex";
-        });
+      document.getElementById("btn-toggle-sidebar").addEventListener("click", closeSidebar);
+      document.getElementById("btn-expand-sidebar").addEventListener("click", openSidebar);
+      sidebarScrim.addEventListener("click", closeSidebar);
+      sessionSearch.addEventListener("input", (e) => renderSessionList(e.target.value.trim().toLowerCase()));
+    }
+
+    function openSidebar() {
+      sidebar.classList.remove("collapsed");
+      if (narrowScreen.matches) {
+        sidebar.classList.add("open");
+        sidebarScrim.hidden = false;
       }
-      if (btnExpandSidebar) {
-        btnExpandSidebar.addEventListener("click", () => {
-          sidebar.classList.remove("collapsed");
-          btnExpandSidebar.style.display = "none";
-        });
+    }
+
+    function closeSidebar() {
+      if (narrowScreen.matches) {
+        sidebar.classList.remove("open");
+        sidebarScrim.hidden = true;
+      } else {
+        sidebar.classList.add("collapsed");
       }
-      if (sessionSearch) {
-        sessionSearch.addEventListener("input", (e) => {
-          renderSessionList(e.target.value.trim().toLowerCase());
-        });
-      }
+    }
+
+    function initDelegatedActions() {
+      document.addEventListener("click", (e) => {
+        const el = e.target.closest("[data-prompt], [data-action], [data-rule-preset], [data-perm-mode], [data-delete-id], [data-toggle]");
+        if (!el) return;
+        if (el.dataset.deleteId) {
+          e.stopPropagation();
+          deleteSession(el.dataset.deleteId);
+        } else if (el.dataset.prompt) {
+          insertPrompt(el.dataset.prompt);
+        } else if (el.dataset.rulePreset) {
+          appendRulePreset(el.dataset.rulePreset);
+        } else if (el.dataset.permMode) {
+          setPermissionMode(el.dataset.permMode);
+        } else if (el.dataset.toggle) {
+          const box = el.closest("." + el.dataset.toggle);
+          if (box) {
+            const expanded = box.classList.toggle("expanded");
+            el.setAttribute("aria-expanded", expanded ? "true" : "false");
+          }
+        } else if (el.dataset.action === "refresh-diff") {
+          fetchDiff();
+        } else if (el.dataset.action === "reload-rules") {
+          loadRules(true);
+        } else if (el.dataset.action === "copy") {
+          copyCode(el);
+        }
+      });
     }
 
     function initComposer() {
       composerInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           handleSend();
         }
@@ -88,616 +138,434 @@ let activeSessionId = "";
       btnSend.addEventListener("click", handleSend);
       btnAbort.addEventListener("click", handleAbort);
       btnNewSession.addEventListener("click", handleNewSession);
+      document.getElementById("permission-select").addEventListener("change", (e) => setPermissionMode(e.target.value));
     }
 
-    function initSettingsModal() {
-      const btnOpen = document.getElementById("btn-open-settings");
-      const btnClose = document.getElementById("btn-close-settings");
-      const btnCancel = document.getElementById("btn-cancel-settings");
-      const btnSave = document.getElementById("btn-save-settings");
-      const modal = document.getElementById("settings-modal");
-
-      btnOpen.addEventListener("click", openSettingsModal);
-      btnClose.addEventListener("click", closeSettingsModal);
-      btnCancel.addEventListener("click", closeSettingsModal);
-      btnSave.addEventListener("click", saveSettings);
-
-      modal.addEventListener("click", (e) => {
-        if (e.target === modal) closeSettingsModal();
-      });
-
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && modal.classList.contains("open")) {
-          closeSettingsModal();
-        }
-      });
-
-      // Settings tab switching
-      document.querySelectorAll(".settings-tab-link").forEach(btn => {
-        btn.addEventListener("click", () => {
-          document.querySelectorAll(".settings-tab-link").forEach(b => b.classList.remove("active"));
-          document.querySelectorAll(".settings-tab-content").forEach(c => c.classList.remove("active"));
-          btn.classList.add("active");
-          const tabId = "settings-pane-" + btn.dataset.settingsTab;
-          const pane = document.getElementById(tabId);
-          if (pane) pane.classList.add("active");
-        });
-      });
-
-      // Thinking level buttons
-      document.querySelectorAll("#setting-thinking-picker .segmented-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-          document.querySelectorAll("#setting-thinking-picker .segmented-btn").forEach(b => b.classList.remove("active"));
-          btn.classList.add("active");
-          selectedThinkingLevel = btn.dataset.level;
-        });
-      });
-
-      // Provider change listener
-      const provSelect = document.getElementById("setting-provider-select");
-      provSelect.addEventListener("change", () => {
-        const val = provSelect.value;
-        const modelInput = document.getElementById("setting-model-input");
-        const envName = document.getElementById("provider-key-env-name");
-        if (val === "deepseek") {
-          modelInput.placeholder = "deepseek-chat";
-          envName.textContent = "DEEPSEEK_API_KEY";
-        } else if (val === "openai") {
-          modelInput.placeholder = "gpt-4.1";
-          envName.textContent = "OPENAI_API_KEY";
-        } else if (val === "anthropic") {
-          modelInput.placeholder = "claude-3-7-sonnet";
-          envName.textContent = "ANTHROPIC_API_KEY";
-        } else if (val === "ollama") {
-          modelInput.placeholder = "llama3:8b";
-          envName.textContent = "OLLAMA_HOST (Optional)";
-        }
-        updateKeyStatusBadge(val);
-      });
-
-      // Permission selector sync
-      const permSelect = document.getElementById("permission-select");
-      permSelect.addEventListener("change", () => {
-        selectPermCard(permSelect.value);
-      });
-    }
-
-    async function openSettingsModal() {
-      const modal = document.getElementById("settings-modal");
-      modal.classList.add("open");
-      await loadSettings();
-      await loadRules();
-      await loadExtensions();
-    }
-
-    function closeSettingsModal() {
-      const modal = document.getElementById("settings-modal");
-      modal.classList.remove("open");
-    }
-
-    function selectPermCard(mode) {
-      selectedPermMode = mode;
-      document.querySelectorAll(".perm-card").forEach(card => {
-        card.classList.toggle("active", card.dataset.permMode === mode);
-      });
-      const permSelect = document.getElementById("permission-select");
-      if (permSelect) permSelect.value = mode;
-    }
-
-    function updateKeyStatusBadge(providerName) {
-      if (!currentSettingsData || !currentSettingsData.providers) return;
-      const match = currentSettingsData.providers.find(p => p.name === providerName);
-      const statusBadge = document.getElementById("provider-key-status");
-      const statusText = document.getElementById("provider-key-status-text");
-      if (match && match.hasKey) {
-        statusBadge.className = "provider-status-badge";
-        statusText.textContent = "已就绪 (检测到凭据)";
-      } else {
-        statusBadge.className = "provider-status-badge missing";
-        statusText.textContent = "未检测到环境变量 / 密钥";
-      }
-    }
-
-    async function loadSettings() {
-      try {
-        const res = await fetch("/api/settings");
-        if (!res.json) return;
-        const data = await res.json();
-        currentSettingsData = data;
-
-        if (data.configPath) {
-          document.getElementById("setting-config-path").textContent = data.configPath;
-        }
-
-        if (data.general) {
-          const provSelect = document.getElementById("setting-provider-select");
-          if (data.general.defaultProvider) {
-            provSelect.value = data.general.defaultProvider;
-          }
-          if (data.general.defaultModel) {
-            document.getElementById("setting-model-input").value = data.general.defaultModel;
-          }
-          if (data.general.maxTurns) {
-            document.getElementById("setting-max-turns").value = data.general.maxTurns;
-          }
-          if (data.general.maxSessionTokens) {
-            document.getElementById("setting-max-tokens").value = data.general.maxSessionTokens;
-          }
-          if (data.general.repeatToolLimit !== undefined) {
-            document.getElementById("setting-repeat-tool-limit").value = data.general.repeatToolLimit;
-          }
-          if (data.general.defaultThinkingLevel) {
-            selectedThinkingLevel = data.general.defaultThinkingLevel;
-            document.querySelectorAll("#setting-thinking-picker .segmented-btn").forEach(b => {
-              b.classList.toggle("active", b.dataset.level === selectedThinkingLevel);
-            });
-          }
-        }
-
-        updateKeyStatusBadge(document.getElementById("setting-provider-select").value);
-      } catch (err) {
-        console.error("loadSettings error", err);
-      }
-    }
-
-    async function loadRules(force = false) {
-      try {
-        const res = await fetch("/api/rules");
-        const data = await res.json();
-        const editor = document.getElementById("setting-rules-editor");
-        if (editor) {
-          editor.value = data.content || "";
-          document.getElementById("rules-file-indicator").textContent = (data.filename || "AGENTS.md") + (data.exists ? " (本地已加载)" : " (新建)");
-        }
-        if (force) showToast("已重新读取工作区规则文件", "success");
-      } catch (err) {
-        console.error("loadRules error", err);
-      }
-    }
-
-    async function loadExtensions() {
-      try {
-        const res = await fetch("/api/extensions");
-        const data = await res.json();
-        const container = document.getElementById("plugins-container");
-        if (!container || !data.extensions) return;
-
-        container.innerHTML = data.extensions.map(ext => `
-          <div class="plugin-card">
-            <div class="plugin-card-header">
-              <span class="plugin-name">${escapeHtml(ext.name)}</span>
-              <span class="plugin-tag">${escapeHtml(ext.category || 'plugin')}</span>
-            </div>
-            <p class="plugin-desc">${escapeHtml(ext.description)}</p>
-          </div>
-        `).join("");
-      } catch (err) {
-        console.error("loadExtensions error", err);
-      }
-    }
-
-    function appendRulePreset(type) {
-      const editor = document.getElementById("setting-rules-editor");
-      let snippet = "";
-      if (type === "Surgical") {
-        snippet = "\n## Surgical Diff 最小修改原则\n- 只改动实现意图所必需的文件与代码行。\n- 严禁无关格式化、顺手重构或清理已有代码。\n";
-      } else if (type === "TestFirst") {
-        snippet = "\n## Test-First 严格测试交付\n- 交付前须执行并通过受影响模块的单元测试。\n- 输出中必须附带明确的测试执行状态证据。\n";
-      } else if (type === "Security") {
-        snippet = "\n## A3 凭据安全基线\n- 源码与日志中绝不硬编码任何 API Key 或敏感凭据。\n- 数据库与命令调用一律强制参数化。\n";
-      }
-      editor.value = (editor.value.trim() + snippet).trim() + "\n";
-      showToast("已插入规则预设模板", "success");
-    }
-
-    async function saveSettings() {
-      const btnSave = document.getElementById("btn-save-settings");
-      btnSave.textContent = "保存中...";
-      btnSave.disabled = true;
-
-      try {
-        const providerName = document.getElementById("setting-provider-select").value;
-        const modelName = document.getElementById("setting-model-input").value.trim();
-        const maxTurns = parseInt(document.getElementById("setting-max-turns").value, 10) || 24;
-        const maxTokens = parseInt(document.getElementById("setting-max-tokens").value, 10) || 48000;
-        const repeatLimit = parseInt(document.getElementById("setting-repeat-tool-limit").value, 10) || 3;
-        const apiKey = document.getElementById("setting-api-key-input").value.trim();
-        const rulesContent = document.getElementById("setting-rules-editor").value;
-
-        // 1. Save general settings & provider
-        const payload = {
-          general: {
-            defaultProvider: providerName,
-            ...(modelName ? { defaultModel: modelName } : {}),
-            defaultThinkingLevel: selectedThinkingLevel,
-            maxTurns,
-            maxSessionTokens: maxTokens,
-            repeatToolLimit: repeatLimit,
-          },
-          provider: {
-            name: providerName,
-            ...(modelName ? { model: modelName } : {}),
-            ...(apiKey ? { apiKey } : {}),
-          },
-          permissions: {
-            allowHighRisk: selectedPermMode === "full",
-          },
-        };
-
-        const res1 = await fetch("/api/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-
-        // 2. Save rules content
-        const res2 = await fetch("/api/rules", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: rulesContent }),
-        });
-
-        if (res1.ok && res2.ok) {
-          showToast("配置与规则已成功保存生效！", "success");
-          document.getElementById("setting-api-key-input").value = "";
-          closeSettingsModal();
-        } else {
-          showToast("保存失败，请检查控制台输出", "error");
-        }
-      } catch (err) {
-        showToast("保存异常: " + err.message, "error");
-      } finally {
-        btnSave.textContent = "保存配置";
-        btnSave.disabled = false;
-      }
-    }
-
-    function showToast(message, type = "success") {
-      const container = document.getElementById("toast-container");
-      const toast = document.createElement("div");
-      toast.className = "toast " + type;
-      toast.innerHTML = (type === "success" ? "✓ " : "✕ ") + escapeHtml(message);
-      container.appendChild(toast);
-
-      requestAnimationFrame(() => {
-        toast.classList.add("show");
-      });
-
-      setTimeout(() => {
-        toast.classList.remove("show");
-        setTimeout(() => toast.remove(), 300);
-      }, 3000);
-    }
-
-    function insertPrompt(text) {
-      composerInput.value = text;
-      composerInput.focus();
-    }
+    // ---------- Status, permission ----------
 
     async function fetchStatus() {
       try {
-        const res = await fetch("/api/status");
-        const data = await res.json();
-        const wsName = data.cwd ? data.cwd.split("/").pop() : "工作区";
-        const wsChip = document.getElementById("active-workspace-chip");
-        if (wsChip) wsChip.textContent = "工作区: " + wsName;
+        const data = await api("/api/status");
+        defaultModel = data.defaultModel || null;
+        workspaceName = data.cwd ? data.cwd.split("/").pop() : "";
+        reflectPermissionMode(data.permissionMode || "auto");
+        document.getElementById("meta-session-cwd").textContent = "工作区 " + (workspaceName || "—");
       } catch (err) {
-        console.error("fetchStatus err", err);
+        showToast("无法读取控制台状态：" + err.message, "error");
       }
     }
 
+    async function setPermissionMode(mode) {
+      try {
+        const data = await api("/api/permission", { method: "POST", body: { mode } });
+        reflectPermissionMode(data.mode);
+      } catch (err) {
+        showToast("切换权限失败：" + err.message, "error");
+      }
+    }
+
+    function reflectPermissionMode(mode) {
+      document.getElementById("permission-select").value = mode;
+      document.querySelectorAll(".perm-card").forEach(card => {
+        const on = card.dataset.permMode === mode;
+        card.classList.toggle("active", on);
+        card.setAttribute("aria-checked", on ? "true" : "false");
+      });
+    }
+
+    function modelLabel(model) {
+      return model ? (model.provider ? model.provider + "/" : "") + model.id : "—";
+    }
+
+    // ---------- Sessions ----------
+
     async function loadSessions() {
       try {
-        const res = await fetch("/api/sessions");
-        allSessions = await res.json();
-        const badge = document.getElementById("session-count-badge");
-        if (badge) badge.textContent = allSessions.length + " 个会话";
-        renderSessionList();
+        allSessions = await api("/api/sessions");
+        document.getElementById("session-count-badge").textContent = allSessions.length + " 个会话";
+        renderSessionList(sessionSearch.value.trim().toLowerCase());
       } catch (err) {
-        console.error("loadSessions err", err);
+        showToast("无法读取会话列表：" + err.message, "error");
       }
     }
 
     function formatRelativeTime(dateStr) {
       if (!dateStr) return "";
-      try {
-        const diffMs = Date.now() - new Date(dateStr).getTime();
-        if (diffMs < 0) return "刚刚";
-        const sec = Math.floor(diffMs / 1000);
-        if (sec < 60) return "刚刚";
-        const min = Math.floor(sec / 60);
-        if (min < 60) return min + "分钟前";
-        const hr = Math.floor(min / 60);
-        if (hr < 24) return hr + "小时前";
-        const day = Math.floor(hr / 24);
-        if (day < 30) return day + "天前";
-        const d = new Date(dateStr);
-        return (d.getMonth() + 1) + "月" + d.getDate() + "日";
-      } catch {
-        return "";
-      }
+      const diffMs = Date.now() - new Date(dateStr).getTime();
+      const min = Math.floor(diffMs / 60000);
+      if (!Number.isFinite(min) || min < 1) return "刚刚";
+      if (min < 60) return min + " 分钟前";
+      const hr = Math.floor(min / 60);
+      if (hr < 24) return hr + " 小时前";
+      const day = Math.floor(hr / 24);
+      if (day < 30) return day + " 天前";
+      const d = new Date(dateStr);
+      return (d.getMonth() + 1) + "月" + d.getDate() + "日";
     }
 
-    function formatSessionTitle(sess, index) {
-      if (sess.firstPrompt) return sess.firstPrompt.slice(0, 32);
-      if (sess.first_prompt) return sess.first_prompt.slice(0, 32);
-      const id = sess.id || sess.metadata?.id || "";
-      if (id) {
-        return (sess.messageCount === 0 ? "新会话 · " : "会话 ") + id.slice(0, 8);
-      }
-      return "会话 #" + (index + 1);
+    function sessionTitle(sess) {
+      const first = sess.firstPrompt || sess.first_prompt;
+      if (first) return first.replace(/\s+/g, " ").slice(0, 40);
+      return "会话 " + (sess.id || "").slice(0, 8);
     }
 
     function renderSessionList(query = "") {
-      sessionList.innerHTML = "";
+      sessionList.replaceChildren();
       const q = (query || "").trim().toLowerCase();
       const filtered = q
-        ? allSessions.filter(s => {
-            const title = (s.firstPrompt || s.first_prompt || formatSessionTitle(s, 0)).toLowerCase();
-            const id = (s.id || s.metadata?.id || "").toLowerCase();
-            const rawCwd = (s.cwd || s.main_root || "").toLowerCase();
-            return title.includes(q) || id.includes(q) || rawCwd.includes(q);
-          })
+        ? allSessions.filter(s => (sessionTitle(s) + " " + (s.id || "") + " " + (s.cwd || s.main_root || "")).toLowerCase().includes(q))
         : allSessions;
 
       if (filtered.length === 0) {
-        sessionList.innerHTML = `<div class="empty-state-list">未找到相关会话</div>`;
+        const empty = document.createElement("div");
+        empty.className = "empty-state-list";
+        empty.textContent = q ? "没有匹配的会话" : "还没有会话";
+        sessionList.appendChild(empty);
         return;
       }
 
-      // Group sessions by workspace directory name (e.g. bff, xiocode, 未分组)
       const groups = new Map();
       filtered.forEach(sess => {
         const rawCwd = sess.cwd || sess.main_root || "";
-        let wsName = "未分组";
-        if (rawCwd) {
-          const parts = rawCwd.split("/").filter(Boolean);
-          wsName = parts[parts.length - 1] || "未分组";
-        }
-        if (!groups.has(wsName)) {
-          groups.set(wsName, []);
-        }
+        const wsName = rawCwd.split("/").filter(Boolean).pop() || "未分组";
+        if (!groups.has(wsName)) groups.set(wsName, []);
         groups.get(wsName).push(sess);
       });
-
-      // Render workspace header
-      const wsHeader = document.createElement("div");
-      wsHeader.className = "sidebar-section-title";
-      wsHeader.innerHTML = `<span>工作区</span><span style="font-size: 10.5px; font-weight: normal; color: var(--text-tertiary);">${filtered.length} 个会话</span>`;
-      sessionList.appendChild(wsHeader);
 
       for (const [wsName, sessList] of groups.entries()) {
         const groupEl = document.createElement("div");
         groupEl.className = "ws-group";
-        groupEl.id = "ws-group-" + wsName;
+        const header = document.createElement("div");
+        header.className = "ws-group-header";
+        header.textContent = wsName;
+        const count = document.createElement("span");
+        count.className = "ws-count";
+        count.textContent = String(sessList.length);
+        header.appendChild(count);
+        groupEl.appendChild(header);
 
-        const headerEl = document.createElement("div");
-        headerEl.className = "ws-group-header";
-        headerEl.innerHTML = `
-          <span class="ws-arrow">▾</span>
-          <span class="ws-icon">📁</span>
-          <span class="ws-name">${escapeHtml(wsName)}</span>
-          <span class="ws-count" style="font-size: 11px; color: var(--text-tertiary); margin-left: auto;">${sessList.length}</span>
-        `;
-        headerEl.onclick = () => {
-          groupEl.classList.toggle("collapsed");
-        };
-        groupEl.appendChild(headerEl);
-
-        const itemsEl = document.createElement("div");
+        const itemsEl = document.createElement("ul");
         itemsEl.className = "ws-group-items";
-
-        sessList.forEach((sess, idx) => {
-          const id = sess.id || sess.metadata?.id;
-          const isActive = id === activeSessionId;
-          const item = document.createElement("div");
-          item.className = "session-item" + (isActive ? " active" : "");
-          const timeText = formatRelativeTime(sess.updated_at || sess.created_at);
-          const fullTitle = sess.firstPrompt || sess.first_prompt || formatSessionTitle(sess, idx);
-          item.innerHTML = `
-            <div class="session-item-text">
-              <span class="session-title" title="${escapeHtml(fullTitle)}">${escapeHtml(formatSessionTitle(sess, idx))}</span>
-              <span class="session-time">${timeText}</span>
-            </div>
-            <button class="session-del-btn" title="删除会话" onclick="event.stopPropagation(); deleteSession('${id}')">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-            </button>
-          `;
-          item.addEventListener("click", () => selectSession(id));
-          itemsEl.appendChild(item);
+        sessList.forEach(sess => {
+          const li = document.createElement("li");
+          li.className = "session-item" + (sess.id === activeSessionId ? " active" : "");
+          const open = document.createElement("button");
+          open.type = "button";
+          open.className = "session-item-text";
+          if (sess.id === activeSessionId) open.setAttribute("aria-current", "true");
+          const title = document.createElement("span");
+          title.className = "session-title";
+          title.textContent = sessionTitle(sess);
+          title.title = sess.firstPrompt || sess.first_prompt || "";
+          const time = document.createElement("span");
+          time.className = "session-time";
+          time.textContent = formatRelativeTime(sess.updated_at || sess.created_at);
+          open.append(title, time);
+          open.addEventListener("click", () => {
+            selectSession(sess.id);
+            if (narrowScreen.matches) closeSidebar();
+          });
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "session-del-btn";
+          del.dataset.deleteId = sess.id;
+          del.setAttribute("aria-label", "删除会话：" + sessionTitle(sess));
+          del.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+          li.append(open, del);
+          itemsEl.appendChild(li);
         });
-
         groupEl.appendChild(itemsEl);
         sessionList.appendChild(groupEl);
       }
     }
 
     async function handleNewSession() {
-      try {
-        const res = await fetch("/api/sessions", { method: "POST" });
-        const data = await res.json();
-        await loadSessions();
-        selectSession(data.id);
-      } catch (err) {
-        console.error("handleNewSession err", err);
+      if (isRunning) {
+        showToast("当前会话还在运行，先停止或等待它结束", "error");
+        return;
       }
+      await startDraftSession();
+      composerInput.focus();
+      if (narrowScreen.matches) closeSidebar();
+    }
+
+    /** A new session only exists on the server once its first prompt runs. */
+    async function startDraftSession() {
+      try {
+        const data = await api("/api/sessions", { method: "POST" });
+        activeSessionId = data.id;
+        defaultModel = data.model || defaultModel;
+      } catch (err) {
+        showToast("无法创建会话：" + err.message, "error");
+        return;
+      }
+      setHeader("新会话", modelLabel(defaultModel));
+      currentTrajectorySteps = [];
+      currentStats = {};
+      renderMessages([]);
+      updateComposerMeta();
+      renderSessionList(sessionSearch.value.trim().toLowerCase());
+      connectSse(activeSessionId);
     }
 
     async function deleteSession(id) {
-      if (!confirm("Are you sure you want to delete this session?")) return;
+      if (!confirm("删除这个会话？记录会被永久删除。")) return;
       try {
-        await fetch("/api/sessions/" + id, { method: "DELETE" });
-        if (activeSessionId === id) {
-          activeSessionId = "";
-          clearChat();
-        }
+        await api("/api/sessions/" + id, { method: "DELETE" });
+        if (activeSessionId === id) await startDraftSession();
         await loadSessions();
       } catch (err) {
-        console.error("deleteSession err", err);
+        showToast("删除失败：" + err.message, "error");
       }
     }
 
     function selectSession(id) {
       activeSessionId = id;
-      document.querySelectorAll(".session-item").forEach(el => el.classList.remove("active"));
-      renderSessionList();
+      renderSessionList(sessionSearch.value.trim().toLowerCase());
       connectSse(id);
       loadSessionDetail(id);
     }
 
     async function loadSessionDetail(id) {
+      let detail;
       try {
-        const res = await fetch("/api/sessions/" + id);
-        if (!res.ok) return;
-        const detail = await res.json();
-
-        // Update header session title & badge
-        const sessItem = allSessions.find(s => (s.metadata?.id || s.id) === id);
-        const firstUserPrompt = detail.messages?.find(m => m.role === "user")?.content;
-        const title = sessItem?.first_prompt || (firstUserPrompt ? firstUserPrompt.slice(0, 40) : ("Session " + id.slice(0, 8)));
-        const titleEl = document.getElementById("current-session-title");
-        if (titleEl) titleEl.textContent = title;
-        const modeBadge = document.getElementById("current-mode-badge");
-        if (modeBadge) {
-          modeBadge.textContent = detail.metadata?.model?.id || "极简模式";
-        }
-
-        renderMessages(detail.messages || []);
-
-        currentTrajectorySteps = detail.trajectory || [];
-        currentStats = detail.stats || {};
-        renderTrajectory(currentTrajectorySteps, currentStats);
-
-        // Update composer statusbar
-        const metaTurns = document.getElementById("meta-turns-info");
-        if (metaTurns) metaTurns.textContent = (currentStats.totalTurns || 1) + " 轮 · " + (currentStats.totalSteps || currentTrajectorySteps.length) + " 步";
-        const metaTools = document.getElementById("meta-tools-info");
-        if (metaTools) metaTools.textContent = "工具调用 " + (currentStats.totalToolCalls || 0) + " 次";
-        const metaCwd = document.getElementById("meta-session-cwd");
-        if (metaCwd) metaCwd.textContent = "工作区: " + (detail.metadata?.cwd ? detail.metadata.cwd.split("/").pop() : "local");
+        detail = await api("/api/sessions/" + id);
       } catch (err) {
-        console.error("loadSessionDetail err", err);
+        showToast("无法读取会话：" + err.message, "error");
+        return;
       }
+      const firstUser = (detail.messages || []).find(m => m.role === "user")?.content;
+      setHeader(firstUser ? firstUser.replace(/\s+/g, " ").slice(0, 60) : "会话 " + id.slice(0, 8), modelLabel(detail.metadata?.model));
+      renderMessages(detail.messages || []);
+      currentTrajectorySteps = detail.trajectory || [];
+      currentStats = detail.stats || {};
+      usageTotals.toolCalls = currentStats.totalToolCalls || 0;
+      renderTrajectory(currentTrajectorySteps, currentStats);
+      updateComposerMeta();
     }
 
+    function setHeader(title, model) {
+      document.getElementById("current-session-title").textContent = title;
+      document.getElementById("current-mode-badge").textContent = model || "—";
+      document.title = title + " · XioCode";
+    }
+
+    function updateComposerMeta() {
+      const steps = currentStats.totalSteps || currentTrajectorySteps.length;
+      const turns = steps > 0 ? (currentStats.totalTurns || 0) : 0;
+      document.getElementById("meta-turns-info").textContent = turns + " 轮 · " + steps + " 步";
+      document.getElementById("meta-tools-info").textContent = "工具调用 " + usageTotals.toolCalls + " 次";
+    }
+
+    // ---------- Transcript ----------
+
+    let currentAssistantBox = null;
+    const toolCards = new Map();
+
     function clearChat() {
-      chatFlowContainer.innerHTML = "";
+      chatFlowContainer.replaceChildren();
+      toolCards.clear();
+      currentAssistantBox = null;
+    }
+
+    function renderHero() {
+      const hero = document.createElement("div");
+      hero.className = "hero-state";
+      hero.id = "hero-state";
+      const h = document.createElement("h2");
+      h.className = "hero-title";
+      h.textContent = "要做点什么？";
+      const p = document.createElement("p");
+      p.className = "hero-subtitle";
+      p.textContent = "智能体在" + (workspaceName ? "「" + workspaceName + "」" : "当前工作区") + "里读写代码、运行命令。每个需要确认的操作都会先问你。";
+      const grid = document.createElement("div");
+      grid.className = "starter-grid";
+      STARTERS.forEach(s => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "starter-item";
+        b.dataset.prompt = s.prompt;
+        const t = document.createElement("span");
+        t.className = "starter-title";
+        t.textContent = s.title;
+        const d = document.createElement("span");
+        d.className = "starter-desc";
+        d.textContent = s.desc;
+        b.append(t, d);
+        grid.appendChild(b);
+      });
+      hero.append(h, p, grid);
+      chatFlowContainer.appendChild(hero);
     }
 
     function renderMessages(messages) {
       clearChat();
-      if (messages.length === 0) {
-        chatFlowContainer.innerHTML = `
-          <div class="hero-state" id="hero-state">
-            <h1 class="hero-title">今天想构建什么？</h1>
-            <p class="hero-subtitle">XioCode 是基于当前工作区自主运行的智能体，具备严格的安全审查与可观测轨迹。</p>
-            <div class="starter-grid">
-              <div class="starter-item" onclick="insertPrompt('运行完整测试套件并验证当前工作区完整性')">
-                <div class="starter-icon-wrap">⚡</div>
-                <div class="starter-text-wrap">
-                  <span class="starter-title">运行测试套件</span>
-                  <span class="starter-desc">执行单元测试与代码完整性断言</span>
-                </div>
-              </div>
-              <div class="starter-item" onclick="insertPrompt('检查 git diff 并分析未暂存的改动')">
-                <div class="starter-icon-wrap">📋</div>
-                <div class="starter-text-wrap">
-                  <span class="starter-title">检查代码差异</span>
-                  <span class="starter-desc">审查工作树修改与改动影响面</span>
-                </div>
-              </div>
-              <div class="starter-item" onclick="insertPrompt('运行 xio doctor 检查系统健康度与密钥状态')">
-                <div class="starter-icon-wrap">🩺</div>
-                <div class="starter-text-wrap">
-                  <span class="starter-title">系统体检 (Doctor)</span>
-                  <span class="starter-desc">检测本地环境、配置及模型凭据</span>
-                </div>
-              </div>
-              <div class="starter-item" onclick="insertPrompt('分析代码库架构与核心模块分层约定')">
-                <div class="starter-icon-wrap">🧭</div>
-                <div class="starter-text-wrap">
-                  <span class="starter-title">分析代码库架构</span>
-                  <span class="starter-desc">梳理依赖链路与设计规范</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        `;
+      const visible = messages.filter(m => m.role !== "system");
+      if (visible.length === 0) {
+        renderHero();
         return;
       }
-
-      messages.forEach(msg => {
+      for (const msg of visible) {
         if (msg.role === "user") {
           appendUserMessage(msg.content);
         } else if (msg.role === "assistant") {
-          appendAssistantMessage(msg.content);
+          if (msg.content) appendAssistantText(msg.content);
+          (msg.toolCalls || []).forEach(call => appendToolCall(call.id, call.name, call.arguments));
+          currentAssistantBox = null;
+        } else if (msg.role === "tool") {
+          updateToolResult(msg.toolCallId, msg.content, false);
         }
-      });
+      }
+      scrollToBottom();
+    }
+
+    function removeHero() {
+      document.getElementById("hero-state")?.remove();
+    }
+
+    function messageRow(role, label) {
+      removeHero();
+      const row = document.createElement("article");
+      row.className = "message-row " + role;
+      const who = document.createElement("div");
+      who.className = "message-role";
+      who.textContent = label;
+      const body = document.createElement("div");
+      body.className = "bubble " + role;
+      row.append(who, body);
+      chatFlowContainer.appendChild(row);
+      return body;
     }
 
     function appendUserMessage(text) {
-      const hero = document.getElementById("hero-state");
-      if (hero) hero.remove();
+      const body = messageRow("user", "你");
+      const content = document.createElement("div");
+      content.className = "bubble-content";
+      content.textContent = text;
+      body.appendChild(content);
+      currentAssistantBox = null;
+      scrollToBottom();
+    }
 
-      const row = document.createElement("div");
-      row.className = "message-row user";
-      row.innerHTML = `
-        <div class="bubble user">
-          <div class="bubble-content">${escapeHtml(text)}</div>
-        </div>
-      `;
-      chatFlowContainer.appendChild(row);
+    function getOrCreateAssistantBox() {
+      if (!currentAssistantBox) currentAssistantBox = messageRow("assistant", "XioCode");
+      return currentAssistantBox;
+    }
+
+    function appendAssistantText(text) {
+      const prose = document.createElement("div");
+      prose.className = "prose";
+      prose.textContent = text;
+      getOrCreateAssistantBox().appendChild(prose);
+    }
+
+    function appendTextDelta(delta) {
+      const box = getOrCreateAssistantBox();
+      let prose = box.lastElementChild;
+      if (!prose || !prose.classList.contains("prose") || prose.dataset.done) {
+        prose = document.createElement("div");
+        prose.className = "prose";
+        box.appendChild(prose);
+      }
+      prose.textContent += delta;
+      scrollToBottom();
+    }
+
+    function appendThinkingDelta(delta) {
+      const box = getOrCreateAssistantBox();
+      let drawer = box.lastElementChild;
+      if (!drawer || !drawer.classList.contains("thought-drawer")) {
+        drawer = document.createElement("div");
+        drawer.className = "thought-drawer";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "thought-drawer-header";
+        toggle.dataset.toggle = "thought-drawer";
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.textContent = "思考过程";
+        const body = document.createElement("div");
+        body.className = "thought-drawer-body";
+        drawer.append(toggle, body);
+        box.appendChild(drawer);
+      }
+      drawer.querySelector(".thought-drawer-body").textContent += delta;
+      scrollToBottom();
+    }
+
+    function appendToolCall(id, name, args) {
+      const box = getOrCreateAssistantBox();
+      box.querySelectorAll(".prose").forEach(p => { p.dataset.done = "1"; });
+      const card = document.createElement("div");
+      card.className = "tool-box";
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "tool-box-header";
+      header.dataset.toggle = "tool-box";
+      header.setAttribute("aria-expanded", "false");
+      const tag = document.createElement("span");
+      tag.className = "tool-name-tag";
+      tag.textContent = name || "tool";
+      const summary = document.createElement("span");
+      summary.className = "tool-summary";
+      summary.textContent = summarizeArgs(name, args);
+      const status = document.createElement("span");
+      status.className = "tool-status-pill running";
+      status.textContent = "运行中";
+      header.append(tag, summary, status);
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "tool-box-body";
+      const argsPre = document.createElement("pre");
+      argsPre.className = "tool-args";
+      argsPre.textContent = JSON.stringify(args || {}, null, 2);
+      const outPre = document.createElement("pre");
+      outPre.className = "tool-output";
+      bodyEl.append(argsPre, outPre);
+      card.append(header, bodyEl);
+      box.appendChild(card);
+      if (id) toolCards.set(id, { status, outPre });
+      scrollToBottom();
+    }
+
+    function updateToolResult(id, content, isError) {
+      const card = toolCards.get(id);
+      if (!card) return;
+      card.status.className = "tool-status-pill " + (isError ? "error" : "done");
+      card.status.textContent = isError ? "失败" : "完成";
+      card.outPre.textContent = typeof content === "string" ? content.slice(0, 20000) : JSON.stringify(content ?? "");
+    }
+
+    function summarizeArgs(name, args) {
+      if (!args) return "";
+      if (name === "bash" && args.command) return args.command;
+      return args.path || args.pattern || args.query || JSON.stringify(args).slice(0, 80);
+    }
+
+    function appendSystemNote(message, level) {
+      removeHero();
+      const note = document.createElement("div");
+      note.className = "system-note " + (level || "info");
+      note.textContent = message;
+      chatFlowContainer.appendChild(note);
+      scrollToBottom();
+    }
+
+    function scrollToBottom() {
       chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
     }
 
-    let currentAssistantBox = null;
-
-    function getOrCreateAssistantBox() {
-      const hero = document.getElementById("hero-state");
-      if (hero) hero.remove();
-
-      if (!currentAssistantBox) {
-        const row = document.createElement("div");
-        row.className = "message-row assistant";
-        const bubble = document.createElement("div");
-        bubble.className = "bubble assistant";
-        const content = document.createElement("div");
-        content.className = "bubble-content";
-        bubble.appendChild(content);
-        row.appendChild(bubble);
-        chatFlowContainer.appendChild(row);
-        currentAssistantBox = content;
-      }
-      return currentAssistantBox;
-    }
+    // ---------- Running a turn ----------
 
     async function handleSend() {
       const text = composerInput.value.trim();
       if (!text || isRunning) return;
-
-      if (!activeSessionId) {
-        const res = await fetch("/api/sessions", { method: "POST" });
-        const data = await res.json();
-        activeSessionId = data.id;
-        await loadSessions();
-      }
-
+      if (!activeSessionId) await startDraftSession();
       appendUserMessage(text);
       composerInput.value = "";
-      currentAssistantBox = null;
       setRunningState(true);
-
       try {
-        const res = await fetch(`/api/sessions/${activeSessionId}/prompt`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text }),
-        });
-        if (!res.ok) {
-          throw new Error("Failed to send prompt");
-        }
+        await api(`/api/sessions/${activeSessionId}/prompt`, { method: "POST", body: { prompt: text } });
       } catch (err) {
-        appendAssistantMessage("Error dispatching prompt: " + err.message);
+        appendSystemNote("没有开始运行：" + err.message, "error");
         setRunningState(false);
       }
     }
@@ -705,18 +573,20 @@ let activeSessionId = "";
     async function handleAbort() {
       if (!activeSessionId || !isRunning) return;
       try {
-        await fetch(`/api/sessions/${activeSessionId}/abort`, { method: "POST" });
+        await api(`/api/sessions/${activeSessionId}/abort`, { method: "POST" });
+        statusText.textContent = "正在停止…";
       } catch (err) {
-        console.error("abort error", err);
+        showToast("停止失败：" + err.message, "error");
       }
     }
 
     function setRunningState(running) {
       isRunning = running;
       statusPill.className = "status-badge" + (running ? " running" : "");
-      statusText.textContent = running ? "Thinking..." : "Ready";
-      btnSend.style.display = running ? "none" : "flex";
-      btnAbort.style.display = running ? "flex" : "none";
+      statusText.textContent = running ? "运行中" : "就绪";
+      btnSend.hidden = running;
+      btnAbort.hidden = !running;
+      btnNewSession.disabled = running;
     }
 
     function connectSse(sessionId) {
@@ -725,399 +595,549 @@ let activeSessionId = "";
         eventSource = null;
       }
       if (!sessionId) return;
-
       eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
       eventSource.onmessage = (e) => {
+        let event;
         try {
-          const event = JSON.parse(e.data);
-          handleRuntimeEvent(event);
-        } catch (err) {
-          // ignore keepalive
+          event = JSON.parse(e.data);
+        } catch {
+          return;
         }
-      };
-      eventSource.onerror = () => {
-        // SSE auto reconnects
+        handleRuntimeEvent(event);
       };
     }
 
     function handleRuntimeEvent(event) {
       const type = event.event;
       const payload = event.payload || {};
-
-      if (type === "run.start") {
-        setRunningState(true);
-        if (payload.prompt) {
-          const stepNum = currentTrajectorySteps.length + 1;
-          currentTrajectorySteps.push({
-            id: "step-live-" + stepNum + "-user",
-            stepNumber: stepNum,
-            turnNumber: Math.max(1, currentStats.totalTurns || 1),
-            type: "input",
-            role: "user",
-            content: payload.prompt,
-          });
-          currentStats.totalSteps = currentTrajectorySteps.length;
-          renderTrajectory(currentTrajectorySteps, currentStats);
-        }
-      } else if (type === "run.end" || type === "cancel") {
-        setRunningState(false);
-        currentAssistantBox = null;
-        if (activeSessionId) {
-          fetch("/api/sessions/" + activeSessionId + "/trajectory")
-            .then(res => res.json())
-            .then(data => {
-              if (data && data.steps) {
-                currentTrajectorySteps = data.steps;
-                currentStats = data.stats;
-                renderTrajectory(currentTrajectorySteps, currentStats);
-              }
-            }).catch(() => {});
-        }
-      } else if (type === "thinking.delta") {
-        appendThinkingDelta(payload.delta || "");
-      } else if (type === "text.delta") {
-        appendTextDelta(payload.delta || "");
-      } else if (type === "tool.call") {
-        appendToolCall(payload);
-        metricsState.turns++;
-        const valTurns = document.getElementById("val-turns");
-        if (valTurns) valTurns.textContent = metricsState.turns;
-
-        const stepNum = currentTrajectorySteps.length + 1;
-        currentTrajectorySteps.push({
-          id: "step-live-" + stepNum + "-tool",
-          stepNumber: stepNum,
-          turnNumber: Math.max(1, currentStats.totalTurns || 1),
-          type: "tool",
-          role: "tool",
-          name: payload.tool || "tool",
-          args: payload.args || {},
-          argsPreview: JSON.stringify(payload.args || {}).slice(0, 80),
-          output: "",
-          outputPreview: "running...",
-          isError: false,
-          callId: payload.call_id,
-        });
-        currentStats.totalSteps = currentTrajectorySteps.length;
-        currentStats.totalToolCalls = (currentStats.totalToolCalls || 0) + 1;
-        renderTrajectory(currentTrajectorySteps, currentStats);
-      } else if (type === "tool.result") {
-        updateToolResult(payload);
-        const matched = currentTrajectorySteps.find(s => s.callId === payload.call_id);
-        if (matched) {
-          matched.output = payload.result || "";
-          matched.outputPreview = (payload.result || "").replace(/\s+/g, " ").slice(0, 100);
-          matched.isError = Boolean(payload.is_error);
-          if (matched.isError) currentStats.totalErrors = (currentStats.totalErrors || 0) + 1;
-          renderTrajectory(currentTrajectorySteps, currentStats);
-        }
+      switch (type) {
+        case "turn.start":
+          setRunningState(true);
+          break;
+        case "text.delta":
+          appendTextDelta(payload.text || "");
+          break;
+        case "thinking.delta":
+          appendThinkingDelta(payload.text || "");
+          break;
+        case "tool.call":
+          appendToolCall(payload.toolCallId, payload.toolName, payload.args);
+          usageTotals.toolCalls += 1;
+          updateComposerMeta();
+          break;
+        case "tool.result":
+        case "tool.error":
+          updateToolResult(payload.toolCallId, payload.content, type === "tool.error" || payload.isError === true);
+          break;
+        case "web.approval":
+          enqueueApproval(payload);
+          break;
+        case "web.notice":
+          // Warnings (recovery, refused leases, denied questions) stay in the transcript; routine info is transient.
+          if (payload.level === "warning" || payload.level === "warn" || payload.level === "error") {
+            appendSystemNote(payload.message || "", "warning");
+          } else {
+            showToast(payload.message || "", "info");
+          }
+          break;
+        case "web.error":
+          appendSystemNote("运行出错：" + (payload.message || "未知错误"), "error");
+          break;
+        case "web.turn_end":
+          addUsage(payload.usage);
+          if (payload.cancelled) appendSystemNote("已停止。", "info");
+          break;
+        case "web.idle":
+          setRunningState(false);
+          currentAssistantBox = null;
+          closeApprovalDialog();
+          refreshAfterTurn();
+          break;
+        default:
+          break;
       }
     }
+
+    async function refreshAfterTurn() {
+      await loadSessions();
+      const saved = allSessions.find(s => s.id === activeSessionId);
+      if (saved) setHeader(sessionTitle(saved), document.getElementById("current-mode-badge").textContent);
+      try {
+        const traj = await api("/api/sessions/" + activeSessionId + "/trajectory");
+        currentTrajectorySteps = traj.steps || [];
+        currentStats = traj.stats || {};
+        renderTrajectory(currentTrajectorySteps, currentStats);
+        updateComposerMeta();
+      } catch {
+        // A turn that failed before saving anything has no trajectory yet.
+      }
+    }
+
+    function addUsage(usage) {
+      if (!usage) return;
+      usageTotals.input += usage.inputTokens || 0;
+      usageTotals.output += usage.outputTokens || 0;
+      if (typeof usage.cacheReadTokens === "number") {
+        usageTotals.cacheRead += usage.cacheReadTokens;
+        usageTotals.cacheKnown = true;
+      }
+      renderMetrics();
+    }
+
+    function renderMetrics() {
+      const total = usageTotals.input + usageTotals.output;
+      document.getElementById("val-tokens").textContent = total > 0 ? total.toLocaleString() : "—";
+      document.getElementById("val-tokens-foot").textContent = total > 0
+        ? "输入 " + usageTotals.input.toLocaleString() + " · 输出 " + usageTotals.output.toLocaleString()
+        : "输入 + 输出，发起一轮后统计";
+      document.getElementById("val-cache").textContent = usageTotals.cacheKnown && usageTotals.input > 0
+        ? Math.round((usageTotals.cacheRead / usageTotals.input) * 100) + "%"
+        : "—";
+      document.getElementById("val-turns").textContent = String(usageTotals.toolCalls);
+    }
+
+    // ---------- Permission questions ----------
+
+    function initApprovalDialog() {
+      document.getElementById("approval-modal").addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          answerApproval(false);
+        }
+      });
+    }
+
+    function enqueueApproval(payload) {
+      pendingApprovals.push(payload);
+      if (pendingApprovals.length === 1) showApproval(payload);
+    }
+
+    function showApproval(payload) {
+      const modal = document.getElementById("approval-modal");
+      document.getElementById("approval-question").textContent = (payload.question || "").replace(/\s*\[y\/N\]\s*$/i, "");
+      const detail = document.getElementById("approval-detail");
+      detail.textContent = payload.detail || "";
+      detail.hidden = !payload.detail;
+      const actions = document.getElementById("approval-actions");
+      actions.replaceChildren();
+      const choices = Array.isArray(payload.choices) && payload.choices.length > 0
+        ? payload.choices
+        : [{ label: "允许", value: "__allow" }, { label: "拒绝", value: "deny" }];
+      // Declining is always last and focused: Enter never approves by accident.
+      const ordered = [...choices.filter(c => c.value !== "deny"), ...choices.filter(c => c.value === "deny")];
+      if (!ordered.some(c => c.value === "deny")) ordered.push({ label: "拒绝", value: "deny" });
+      let declineButton = null;
+      ordered.forEach(choice => {
+        const b = document.createElement("button");
+        b.type = "button";
+        const isDeny = choice.value === "deny";
+        b.className = isDeny ? "btn-cancel-settings" : "btn-save-settings";
+        b.textContent = isDeny ? "拒绝（Esc）" : choice.label;
+        b.addEventListener("click", () => answerApproval(!isDeny, choice.value));
+        actions.appendChild(b);
+        if (isDeny) declineButton = b;
+      });
+      modal.hidden = false;
+      modal.classList.add("open");
+      declineButton?.focus();
+    }
+
+    async function answerApproval(approve, value) {
+      const current = pendingApprovals.shift();
+      if (!current) return closeApprovalDialog();
+      try {
+        const body = { id: current.id, approve, ...(value && value !== "__allow" && value !== "deny" ? { value } : {}) };
+        await api(`/api/sessions/${activeSessionId}/approval`, { method: "POST", body });
+      } catch (err) {
+        showToast("提交确认失败：" + err.message, "error");
+      }
+      if (pendingApprovals.length > 0) showApproval(pendingApprovals[0]);
+      else closeApprovalDialog();
+    }
+
+    function closeApprovalDialog() {
+      pendingApprovals.length = 0;
+      const modal = document.getElementById("approval-modal");
+      modal.classList.remove("open");
+      modal.hidden = true;
+      composerInput.focus();
+    }
+
+    // ---------- Settings ----------
+
+    function initSettingsModal() {
+      const modal = document.getElementById("settings-modal");
+      document.getElementById("btn-open-settings").addEventListener("click", openSettingsModal);
+      document.getElementById("btn-close-settings").addEventListener("click", closeSettingsModal);
+      document.getElementById("btn-cancel-settings").addEventListener("click", closeSettingsModal);
+      document.getElementById("btn-save-settings").addEventListener("click", saveSettings);
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) closeSettingsModal();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && modal.classList.contains("open")) closeSettingsModal();
+      });
+
+      document.querySelectorAll(".settings-tab-link").forEach(btn => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".settings-tab-link").forEach(b => {
+            b.classList.toggle("active", b === btn);
+            b.setAttribute("aria-selected", b === btn ? "true" : "false");
+          });
+          document.querySelectorAll(".settings-tab-content").forEach(c => c.classList.remove("active"));
+          document.getElementById("settings-pane-" + btn.dataset.settingsTab)?.classList.add("active");
+        });
+      });
+
+      document.querySelectorAll("#setting-thinking-picker .segmented-btn").forEach(btn => {
+        btn.addEventListener("click", () => selectThinkingLevel(btn.dataset.level));
+      });
+
+      const provSelect = document.getElementById("setting-provider-select");
+      provSelect.addEventListener("change", () => {
+        const hints = {
+          deepseek: ["deepseek-chat", "DEEPSEEK_API_KEY"],
+          openai: ["gpt-4.1", "OPENAI_API_KEY"],
+          anthropic: ["claude-sonnet-4-5", "ANTHROPIC_API_KEY"],
+          ollama: ["llama3:8b", "（本地服务，无需 Key）"],
+        };
+        const [placeholder, envName] = hints[provSelect.value] || ["", ""];
+        document.getElementById("setting-model-input").placeholder = placeholder;
+        document.getElementById("provider-key-env-name").textContent = envName;
+        updateKeyStatusBadge(provSelect.value);
+      });
+    }
+
+    function selectThinkingLevel(level) {
+      selectedThinkingLevel = level;
+      document.querySelectorAll("#setting-thinking-picker .segmented-btn").forEach(b => {
+        const on = b.dataset.level === level;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-checked", on ? "true" : "false");
+      });
+    }
+
+    async function openSettingsModal() {
+      const modal = document.getElementById("settings-modal");
+      modal.classList.add("open");
+      document.getElementById("btn-close-settings").focus();
+      await Promise.all([loadSettings(), loadRules(), loadExtensions()]);
+    }
+
+    function closeSettingsModal() {
+      document.getElementById("settings-modal").classList.remove("open");
+    }
+
+    function updateKeyStatusBadge(providerName) {
+      if (!currentSettingsData || !currentSettingsData.providers) return;
+      const match = currentSettingsData.providers.find(p => p.name === providerName);
+      const badge = document.getElementById("provider-key-status");
+      const text = document.getElementById("provider-key-status-text");
+      const ok = Boolean(match && match.hasKey);
+      badge.className = "provider-status-badge" + (ok ? "" : " missing");
+      text.textContent = ok ? "已找到凭据" : "未找到凭据";
+    }
+
+    async function loadSettings() {
+      try {
+        const data = await api("/api/settings");
+        currentSettingsData = data;
+        if (data.configPath) document.getElementById("setting-config-path").textContent = data.configPath;
+        const g = data.general || {};
+        if (g.defaultProvider) document.getElementById("setting-provider-select").value = g.defaultProvider;
+        document.getElementById("setting-model-input").value = g.defaultModel || "";
+        if (g.maxTurns) document.getElementById("setting-max-turns").value = g.maxTurns;
+        if (g.maxSessionTokens) document.getElementById("setting-max-tokens").value = g.maxSessionTokens;
+        if (g.repeatToolLimit !== undefined) document.getElementById("setting-repeat-tool-limit").value = g.repeatToolLimit;
+        if (g.defaultThinkingLevel) selectThinkingLevel(g.defaultThinkingLevel);
+        updateKeyStatusBadge(document.getElementById("setting-provider-select").value);
+      } catch (err) {
+        showToast("无法读取设置：" + err.message, "error");
+      }
+    }
+
+    async function loadRules(force = false) {
+      try {
+        const data = await api("/api/rules");
+        document.getElementById("setting-rules-editor").value = data.content || "";
+        document.getElementById("rules-file-indicator").textContent = (data.filename || "AGENTS.md") + (data.exists ? "" : "（尚未创建）");
+        if (force) showToast("已重新读取 AGENTS.md", "success");
+      } catch (err) {
+        showToast("无法读取 AGENTS.md：" + err.message, "error");
+      }
+    }
+
+    function card(title, tag, desc) {
+      const el = document.createElement("div");
+      el.className = "plugin-card";
+      const head = document.createElement("div");
+      head.className = "plugin-card-header";
+      const name = document.createElement("span");
+      name.className = "plugin-name";
+      name.textContent = title;
+      const t = document.createElement("span");
+      t.className = "plugin-tag";
+      t.textContent = tag;
+      head.append(name, t);
+      const p = document.createElement("p");
+      p.className = "plugin-desc";
+      p.textContent = desc;
+      el.append(head, p);
+      return el;
+    }
+
+    async function loadExtensions() {
+      try {
+        const data = await api("/api/extensions");
+        document.getElementById("plugins-container").replaceChildren(
+          ...(data.extensions || []).map(ext => card(ext.name, ext.category || "extension", ext.description)),
+        );
+        const mcp = document.getElementById("mcp-container");
+        const servers = data.mcpServers || [];
+        if (servers.length === 0) {
+          const empty = document.createElement("p");
+          empty.className = "form-hint";
+          empty.textContent = "没有发现 MCP 服务器。可以在工作区 .mcp.json 或配置文件的 [mcp] 段里添加。";
+          mcp.replaceChildren(empty);
+        } else {
+          mcp.replaceChildren(...servers.map(s => card(s.name, s.transport, "来源：" + s.source)));
+        }
+      } catch (err) {
+        showToast("无法读取扩展列表：" + err.message, "error");
+      }
+    }
+
+    function appendRulePreset(type) {
+      const snippets = {
+        Surgical: "\n## 最小改动\n- 只改实现需求所必需的文件与代码行。\n- 不做无关的格式化、重构或清理。\n",
+        TestFirst: "\n## 交付前跑测试\n- 交付前运行受影响模块的测试并确认通过。\n- 回复里附上测试命令与结果。\n",
+        Security: "\n## 不硬编码凭据\n- 源码与日志里不写任何 API Key 或密钥，使用环境变量。\n- 数据库与命令调用一律参数化。\n",
+      };
+      const editor = document.getElementById("setting-rules-editor");
+      editor.value = (editor.value.trim() + (snippets[type] || "")).trim() + "\n";
+    }
+
+    async function saveSettings() {
+      const btnSave = document.getElementById("btn-save-settings");
+      btnSave.textContent = "保存中…";
+      btnSave.disabled = true;
+      try {
+        const providerName = document.getElementById("setting-provider-select").value;
+        const modelName = document.getElementById("setting-model-input").value.trim();
+        const apiKey = document.getElementById("setting-api-key-input").value.trim();
+        await api("/api/settings", {
+          method: "POST",
+          body: {
+            general: {
+              defaultProvider: providerName,
+              ...(modelName ? { defaultModel: modelName } : {}),
+              defaultThinkingLevel: selectedThinkingLevel,
+              maxTurns: parseInt(document.getElementById("setting-max-turns").value, 10) || 24,
+              maxSessionTokens: parseInt(document.getElementById("setting-max-tokens").value, 10) || 48000,
+              repeatToolLimit: parseInt(document.getElementById("setting-repeat-tool-limit").value, 10) || 0,
+            },
+            provider: { name: providerName, ...(modelName ? { model: modelName } : {}), ...(apiKey ? { apiKey } : {}) },
+          },
+        });
+        await api("/api/rules", { method: "POST", body: { content: document.getElementById("setting-rules-editor").value } });
+        document.getElementById("setting-api-key-input").value = "";
+        showToast("已保存，新会话生效", "success");
+        closeSettingsModal();
+        fetchStatus();
+      } catch (err) {
+        showToast("保存失败：" + err.message, "error");
+      } finally {
+        btnSave.textContent = "保存";
+        btnSave.disabled = false;
+      }
+    }
+
+    // ---------- Trajectory ----------
 
     function renderTrajectory(steps, stats) {
       const durEl = document.getElementById("traj-stat-duration");
-      if (durEl) {
-        let durText = "0s";
-        if (stats && stats.createdAt && stats.updatedAt) {
-          const ms = Math.max(1000, new Date(stats.updatedAt).getTime() - new Date(stats.createdAt).getTime());
-          const sec = Math.round(ms / 1000);
-          const m = Math.floor(sec / 60);
-          const s = sec % 60;
-          durText = (m > 0 ? m + "m" : "") + (s > 0 ? s + "s" : (m === 0 ? "1s" : ""));
-        }
-        durEl.textContent = stats && stats.totalToolCalls > 0 ? ("LLM " + durText + " · 工具调用 " + stats.totalToolCalls + " 次") : durText;
+      if (stats && stats.createdAt && stats.updatedAt) {
+        const sec = Math.max(1, Math.round((new Date(stats.updatedAt) - new Date(stats.createdAt)) / 1000));
+        durEl.textContent = (sec >= 60 ? Math.floor(sec / 60) + "m" : "") + (sec % 60) + "s";
+      } else {
+        durEl.textContent = "—";
       }
-
-      const turnsEl = document.getElementById("traj-stat-turns");
-      if (turnsEl) {
-        turnsEl.textContent = (stats?.totalTurns || 1) + " 轮 · " + (stats?.totalSteps || steps.length) + " 步";
-      }
-
-      const callsEl = document.getElementById("traj-stat-calls");
-      if (callsEl) {
-        callsEl.textContent = (stats?.totalToolCalls || 0) + " Calls" + (stats?.totalErrors ? (" (" + stats.totalErrors + " 异常)") : "");
-      }
-
+      const stepCount = stats?.totalSteps || steps.length;
+      document.getElementById("traj-stat-turns").textContent = (stepCount > 0 ? (stats?.totalTurns || 0) : 0) + " 轮 · " + stepCount + " 步";
+      document.getElementById("traj-stat-calls").textContent = (stats?.totalToolCalls || 0) + " 次工具调用" + (stats?.totalErrors ? "（" + stats.totalErrors + " 次失败）" : "");
       renderTimelineWaterfall(steps);
-
-      const searchInput = document.getElementById("trajectory-search-input");
-      const q = searchInput ? searchInput.value.trim() : "";
-      renderTrajectoryList(steps, q);
+      renderTrajectoryList(steps, document.getElementById("trajectory-search-input").value.trim());
     }
 
     function renderTimelineWaterfall(steps) {
-      const inputRow = document.getElementById("track-row-input");
-      const modelRow = document.getElementById("track-row-model");
-      const toolsRow = document.getElementById("track-row-tools");
-      if (!inputRow || !modelRow || !toolsRow) return;
-
-      inputRow.innerHTML = "";
-      modelRow.innerHTML = "";
-      toolsRow.innerHTML = "";
-
+      const rows = {
+        input: document.getElementById("track-row-input"),
+        model: document.getElementById("track-row-model"),
+        tools: document.getElementById("track-row-tools"),
+      };
+      Object.values(rows).forEach(r => r.replaceChildren());
       if (!steps || steps.length === 0) return;
-
-      const N = steps.length;
-      const blockWidth = Math.max(2, Math.min(8, 92 / N));
-
+      const n = steps.length;
+      const width = Math.max(2, Math.min(8, 92 / n));
       steps.forEach((s, idx) => {
-        const leftPct = (idx / N) * 98;
         const block = document.createElement("div");
-        block.style.left = leftPct + "%";
-        block.style.width = blockWidth + "%";
-
-        if (s.type === "input") {
-          block.className = "timeline-block block-input";
-          block.title = "[用户输入] #" + s.stepNumber + ": " + (s.content ? s.content.slice(0, 80) : "");
-          inputRow.appendChild(block);
-        } else if (s.type === "assistant" || s.type === "thinking") {
-          block.className = "timeline-block block-model";
-          block.title = "[模型推理] #" + s.stepNumber + ": " + ((s.content || s.thought || "").slice(0, 80));
-          modelRow.appendChild(block);
-        } else if (s.type === "tool") {
-          block.className = "timeline-block block-tool" + (s.isError ? " error" : "");
-          block.title = "[工具执行 " + (s.name || "") + "] #" + s.stepNumber + ": " + (s.argsPreview || "");
-          toolsRow.appendChild(block);
-        }
-
+        block.style.left = (idx / n) * 98 + "%";
+        block.style.width = width + "%";
+        const row = s.type === "input" ? "input" : s.type === "tool" ? "tools" : "model";
+        block.className = "timeline-block " + (row === "input" ? "block-input" : row === "tools" ? "block-tool" + (s.isError ? " error" : "") : "block-model");
+        block.title = "#" + s.stepNumber + " " + (s.name || s.type) + " " + (s.argsPreview || s.content || "").slice(0, 80);
         block.addEventListener("click", () => {
           const target = document.getElementById("traj-step-" + s.id);
-          if (target) {
-            target.scrollIntoView({ behavior: "smooth", block: "center" });
-            target.classList.add("highlighted");
-            setTimeout(() => target.classList.remove("highlighted"), 1500);
-          }
+          if (!target) return;
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+          target.classList.add("highlighted");
+          setTimeout(() => target.classList.remove("highlighted"), 1500);
         });
+        rows[row].appendChild(block);
       });
     }
 
     function renderTrajectoryList(steps, query = "") {
       const stream = document.getElementById("trajectory-stream");
-      if (!stream) return;
-      stream.innerHTML = "";
-
-      const q = (query || "").trim().toLowerCase();
+      stream.replaceChildren();
+      const q = (query || "").toLowerCase();
       const filtered = q
-        ? steps.filter(s => {
-            const str = (s.name || "") + " " + (s.argsPreview || "") + " " + (s.outputPreview || "") + " " + (s.content || "") + " " + (s.thought || "");
-            return str.toLowerCase().includes(q);
-          })
+        ? steps.filter(s => [s.name, s.argsPreview, s.outputPreview, s.content, s.thought].join(" ").toLowerCase().includes(q))
         : steps;
-
       if (filtered.length === 0) {
-        stream.innerHTML = '<div class="trajectory-empty">' + (query ? '未找到包含 "' + escapeHtml(query) + '" 的轨迹步骤' : '暂无运行轨迹数据。请选择左侧会话或在对话中发起任务。') + '</div>';
+        const empty = document.createElement("div");
+        empty.className = "trajectory-empty";
+        empty.textContent = q ? "没有包含「" + query + "」的步骤" : "暂无轨迹。选择一个会话，或在对话里发起任务。";
+        stream.appendChild(empty);
         return;
       }
-
+      const labels = { input: "用户", thinking: "思考", assistant: "回复", tool: "工具" };
       filtered.forEach(s => {
         const item = document.createElement("div");
         item.className = "traj-item";
         item.id = "traj-step-" + s.id;
+        const summary = document.createElement("button");
+        summary.type = "button";
+        summary.className = "traj-row-summary";
+        summary.dataset.toggle = "traj-item";
+        summary.setAttribute("aria-expanded", "false");
+        const dot = document.createElement("span");
+        dot.className = "traj-dot" + (s.isError ? " error" : "");
+        const badge = document.createElement("span");
+        badge.className = "traj-badge " + (s.type === "input" ? "user" : s.type);
+        badge.textContent = labels[s.type] || s.type;
+        const preview = document.createElement("span");
+        preview.className = "traj-content-preview";
+        preview.textContent = s.type === "tool"
+          ? (s.name || "tool") + "  " + (s.argsPreview || "") + "  →  " + (s.outputPreview || "")
+          : (s.content || s.thought || "").slice(0, 160);
+        summary.append(dot, badge, preview);
 
-        let badgeClass = s.type;
-        let badgeLabel = s.type.toUpperCase();
-        if (s.type === "input") { badgeClass = "user"; badgeLabel = "USER"; }
-        else if (s.type === "thinking") { badgeClass = "thinking"; badgeLabel = "THINKING"; }
-        else if (s.type === "assistant") { badgeClass = "assistant"; badgeLabel = "ASSISTANT"; }
-        else if (s.type === "tool") { badgeClass = "tool"; badgeLabel = "TOOL"; }
-
-        let summaryHtml = "";
+        const detail = document.createElement("div");
+        detail.className = "traj-detail-panel";
+        const meta = document.createElement("div");
+        meta.className = "traj-detail-meta";
+        meta.textContent = "步骤 #" + s.stepNumber + " · 第 " + s.turnNumber + " 轮" + (s.callId ? " · " + s.callId : "") + (s.isError ? " · 失败" : "");
+        detail.appendChild(meta);
         if (s.type === "tool") {
-          summaryHtml = `
-            <span class="traj-tool-name">${escapeHtml(s.name || "tool")}</span>
-            <span class="traj-tool-args">${escapeHtml(s.argsPreview || "{}")}</span>
-            <span class="traj-arrow">→</span>
-            <span class="traj-tool-output">${escapeHtml(s.outputPreview || "")}</span>
-          `;
-        } else if (s.type === "assistant") {
-          const isOnly = s.content === "(仅工具调用)" || s.content === "(tool call only)";
-          summaryHtml = `<span class="traj-assistant-text ${isOnly ? 'traj-assistant-toolonly' : ''}">${escapeHtml(s.content || "")}</span>`;
-        } else if (s.type === "thinking") {
-          summaryHtml = `<span class="traj-assistant-text" style="color: #64748b;">${escapeHtml((s.thought || s.content || "").slice(0, 140))}</span>`;
-        } else if (s.type === "input") {
-          summaryHtml = `<span class="traj-content-preview" style="font-weight: 600; color: #1e293b;">${escapeHtml(s.content || "")}</span>`;
+          detail.append(codeBlock("参数", JSON.stringify(s.args || {}, null, 2)), codeBlock("输出", s.output || "（无输出）"));
+        } else {
+          if (s.thought) detail.appendChild(codeBlock("思考", s.thought));
+          detail.appendChild(codeBlock(labels[s.type] || "内容", s.content || ""));
         }
-
-        let detailHtml = `
-          <div class="traj-detail-meta">
-            <span>步骤 #${s.stepNumber} · 轮次 ${s.turnNumber}</span>
-            <div>
-              <span class="detail-status-pill ${s.isError ? 'error' : 'success'}">${s.isError ? '异常 / 失败' : '执行成功'}</span>
-              ${s.callId ? '<span style="margin-left: 8px; font-family: var(--font-mono); font-size: 11px;">ID: ' + escapeHtml(s.callId) + '</span>' : ''}
-            </div>
-          </div>
-        `;
-
-        if (s.type === "tool") {
-          detailHtml += `
-            <div class="traj-section-title">调用参数 (Arguments)</div>
-            <div class="traj-code-block">
-              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
-              <code>${escapeHtml(JSON.stringify(s.args || {}, null, 2))}</code>
-            </div>
-            <div class="traj-section-title" style="margin-top: 10px;">执行结果 (Output)</div>
-            <div class="traj-code-block output-block">
-              <button class="traj-btn-copy" onclick="event.stopPropagation(); copyCode(this)">复制</button>
-              <code>${escapeHtml(s.output || "(无输出)")}</code>
-            </div>
-          `;
-        } else if (s.type === "assistant") {
-          if (s.thought) {
-            detailHtml += `
-              <div class="traj-thought-box">
-                <div class="traj-thought-label">思考推理过程 (Thinking)</div>
-                <div>${escapeHtml(s.thought)}</div>
-              </div>
-            `;
-          }
-          detailHtml += `
-            <div class="traj-section-title">模型回复</div>
-            <div style="font-size: 13px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">${escapeHtml(s.content || "(仅工具调用)")}</div>
-          `;
-        } else if (s.type === "thinking") {
-          detailHtml += `
-            <div class="traj-thought-box">
-              <div class="traj-thought-label">思考推理过程 (Thinking)</div>
-              <div>${escapeHtml(s.thought || s.content || "")}</div>
-            </div>
-          `;
-        } else if (s.type === "input") {
-          detailHtml += `
-            <div class="traj-section-title">用户指令 (User Prompt)</div>
-            <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; padding: 4px 0;">${escapeHtml(s.content || "")}</div>
-          `;
-        }
-
-        item.innerHTML = `
-          <div class="traj-row-summary" onclick="this.parentElement.classList.toggle('expanded')">
-            <span class="traj-dot ${s.isError ? 'error' : ''}"></span>
-            <span class="traj-badge ${badgeClass}">${badgeLabel}</span>
-            <div class="traj-content-preview">
-              ${summaryHtml}
-            </div>
-          </div>
-          <div class="traj-detail-panel">
-            ${detailHtml}
-          </div>
-        `;
+        item.append(summary, detail);
         stream.appendChild(item);
       });
     }
 
-    function initTrajectoryControls() {
-      const searchInput = document.getElementById("trajectory-search-input");
-      if (searchInput) {
-        searchInput.addEventListener("input", (e) => {
-          renderTrajectoryList(currentTrajectorySteps, e.target.value);
-        });
-      }
+    function codeBlock(title, text) {
+      const wrap = document.createElement("div");
+      const h = document.createElement("div");
+      h.className = "traj-section-title";
+      h.textContent = title;
+      const block = document.createElement("div");
+      block.className = "traj-code-block";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "traj-btn-copy";
+      copy.dataset.action = "copy";
+      copy.textContent = "复制";
+      const code = document.createElement("code");
+      code.textContent = text;
+      block.append(copy, code);
+      wrap.append(h, block);
+      return wrap;
+    }
 
-      const btnExport = document.getElementById("btn-export-log");
-      if (btnExport) {
-        btnExport.addEventListener("click", () => {
-          if (!activeSessionId) {
-            showToast("请先选择一个会话", "error");
-            return;
-          }
-          window.open("/api/sessions/" + activeSessionId + "/log", "_blank");
-        });
-      }
+    function initTrajectoryControls() {
+      document.getElementById("trajectory-search-input").addEventListener("input", (e) => {
+        renderTrajectoryList(currentTrajectorySteps, e.target.value);
+      });
+      document.getElementById("btn-export-log").addEventListener("click", () => {
+        if (!activeSessionId || !allSessions.some(s => s.id === activeSessionId)) {
+          showToast("这个会话还没有记录可导出", "error");
+          return;
+        }
+        window.open("/api/sessions/" + activeSessionId + "/log", "_blank", "noopener");
+      });
     }
 
     function copyCode(btn) {
       const code = btn.parentElement.querySelector("code");
       if (!code) return;
-      navigator.clipboard.writeText(code.innerText).then(() => {
-        const orig = btn.textContent;
-        btn.textContent = "已复制!";
-        setTimeout(() => { btn.textContent = orig; }, 1500);
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => { btn.textContent = "复制"; }, 1500);
       });
-    }
-
-    function appendThinkingDelta(delta) {
-      const box = getOrCreateAssistantBox();
-      let card = box.querySelector(".thought-drawer");
-      if (!card) {
-        card = document.createElement("div");
-        card.className = "thought-drawer";
-        card.innerHTML = `
-          <div class="thought-drawer-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <span class="thought-badge">思考推理</span>
-            <span class="thought-expand-hint">点击折叠/展开</span>
-          </div>
-          <div class="thought-drawer-body"></div>
-        `;
-        box.appendChild(card);
-      }
-      const body = card.querySelector(".thought-drawer-body");
-      body.textContent += delta;
-      chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
-    }
-
-    function appendTextDelta(delta) {
-      const box = getOrCreateAssistantBox();
-      let prose = box.querySelector(".prose");
-      if (!prose) {
-        prose = document.createElement("div");
-        prose.className = "prose";
-        box.appendChild(prose);
-      }
-      prose.textContent += delta;
-      chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
-    }
-
-    function appendAssistantMessage(text) {
-      const box = getOrCreateAssistantBox();
-      const prose = document.createElement("div");
-      prose.className = "prose";
-      prose.innerHTML = `<p>${escapeHtml(text)}</p>`;
-      box.appendChild(prose);
-      chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
-    }
-
-    function appendToolCall(payload) {
-      const box = getOrCreateAssistantBox();
-      const card = document.createElement("div");
-      card.className = "tool-box";
-      card.id = "tool-" + (payload.call_id || Date.now());
-      card.innerHTML = `
-        <div class="tool-box-header" onclick="this.parentElement.classList.toggle('collapsed')">
-          <span class="tool-name-tag">${payload.tool}</span>
-          <span class="tool-status-pill">running</span>
-        </div>
-        <div class="tool-box-body">${JSON.stringify(payload.args || {}, null, 2)}</div>
-      `;
-      box.appendChild(card);
-      chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
-    }
-
-    function updateToolResult(payload) {
-      const card = document.getElementById("tool-" + payload.call_id);
-      if (card) {
-        const badge = card.querySelector(".tool-status-pill");
-        if (badge) {
-          badge.className = "tool-status-pill " + (payload.is_error ? "error" : "done");
-          badge.textContent = payload.is_error ? "error" : "done";
-        }
-        const body = card.querySelector(".tool-box-body");
-        if (body && payload.result) {
-          body.textContent = payload.result;
-        }
-      }
     }
 
     async function fetchDiff() {
       const body = document.getElementById("diff-output-body");
-      body.textContent = "Loading git diff...";
+      body.textContent = "正在读取 git diff…";
       try {
-        const res = await fetch("/api/workspace/diff");
-        const data = await res.json();
-        body.textContent = data.diff && data.diff.trim().length > 0 ? data.diff : "Working tree clean. No uncommitted modifications.";
+        const data = await api("/api/workspace/diff");
+        body.textContent = data.diff && data.diff.trim() ? data.diff : "工作区没有未提交的改动。";
       } catch (err) {
-        body.textContent = "Failed to fetch workspace diff.";
+        body.textContent = "读取失败：" + err.message;
       }
     }
 
-    function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // ---------- Utilities ----------
+
+    /** Same-origin JSON call; the session cookie authenticates it. Errors carry the server's message. */
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        method: options.method || "GET",
+        headers: options.body !== undefined ? { "Content-Type": "application/json" } : undefined,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      });
+      let data = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+      if (!res.ok) {
+        if (res.status === 401) throw new Error("访问凭据已失效，请重新打开 xio web 打印的链接");
+        throw new Error((data && data.error) || ("HTTP " + res.status));
+      }
+      return data;
+    }
+
+    function showToast(message, type = "success") {
+      const container = document.getElementById("toast-container");
+      const toast = document.createElement("div");
+      toast.className = "toast " + type;
+      toast.textContent = message;
+      container.appendChild(toast);
+      requestAnimationFrame(() => toast.classList.add("show"));
+      setTimeout(() => {
+        toast.classList.remove("show");
+        setTimeout(() => toast.remove(), 300);
+      }, type === "error" ? 6000 : 3000);
+    }
+
+    function insertPrompt(text) {
+      composerInput.value = text;
+      composerInput.focus();
     }
