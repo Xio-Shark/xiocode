@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import type { ExtensionContext } from "../../xio-evolve/src/types.ts";
@@ -20,7 +20,11 @@ import {
   BoundedOutputCollector,
   OUTPUT_BUDGET_PRESETS,
   forceKillProcessTree,
+  notifyKernelFallback,
+  resolveKernelSession,
+  resolveProcessBackend,
 } from "../../../src/runtime/process/index.ts";
+import { KernelStdioTransport } from "./kernel-stdio-transport.ts";
 
 /** Prefer package.json over a hardcoded wire version so MCP identify stays in sync with releases. */
 function readXioPackageVersion(): string {
@@ -605,6 +609,8 @@ export async function connectMcpServer(
 ): Promise<LiveConnection> {
   if (server.spec.transport === "stdio") {
     await assertStdioCommandExists(server.spec.command);
+    const viaKernel = await connectStdioViaKernel(server, server.spec, options);
+    if (viaKernel) return viaKernel;
   }
 
   const client = new Client({ name: "xiocode", version: readXioPackageVersion() });
@@ -682,6 +688,76 @@ export async function connectMcpServer(
     toolNames: [],
     pid: initialPid,
     forceKill,
+    close,
+  };
+}
+
+type StdioSpec = McpStdioServerSpec;
+
+/**
+ * Kernel executor: the server runs as a kernel service. Returns undefined when
+ * the legacy executor is selected (`XIOCODE_PROCESS_KERNEL=0`) or the kernel
+ * session cannot open (reported once), so the SDK transport takes over.
+ */
+async function connectStdioViaKernel(
+  server: ResolvedMcpServer,
+  spec: StdioSpec,
+  options: Readonly<{
+    cwd: string;
+    timeoutMs: number;
+    resolveEnvReference?: (name: string) => string | undefined;
+    registerSecretValue?: (value: string) => void;
+  }>,
+): Promise<LiveConnection | undefined> {
+  if (resolveProcessBackend().backend !== "kernel") return undefined;
+  let session;
+  try {
+    session = await resolveKernelSession(options.cwd);
+  } catch (error) {
+    notifyKernelFallback(`kernel session could not open: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+  const transport = new KernelStdioTransport(session, {
+    name: server.name,
+    command: spec.command,
+    args: spec.args ?? [],
+    cwd: spec.cwd ? path.resolve(options.cwd, spec.cwd) : options.cwd,
+    // Same environment the SDK stdio transport builds: its safe defaults + declared keys.
+    env: { ...getDefaultEnvironment(), ...(mergeStdioEnv(spec.env, options) ?? {}) },
+  });
+  const client = new Client({ name: "xiocode", version: readXioPackageVersion() });
+  const close = async (): Promise<void> => {
+    try {
+      await withTimeout(
+        (async () => {
+          await client.close().catch(() => undefined);
+          await transport.close();
+        })(),
+        MCP_CLOSE_TIMEOUT_MS,
+        `close(${server.name})`,
+      );
+    } catch {
+      // Graceful close hung or failed: the kernel's confirmed stop takes over,
+      // and an unconfirmed stop is kept as indeterminate in the journal (/kernel).
+      await transport.forceStop();
+    }
+  };
+  try {
+    await withTimeout(client.connect(transport), options.timeoutMs, `connect(${server.name})`);
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return {
+    name: server.name,
+    client,
+    toolNames: [],
+    pid: null,
+    forceKill: () => {
+      void transport.forceStop().catch(() => {
+        // The kernel journals an unconfirmed stop (SERVICE_FAILED stop_unconfirmed); /kernel shows it.
+      });
+    },
     close,
   };
 }
