@@ -149,6 +149,13 @@ export function mapKernelTermination(
       };
     case "crash_detected":
       return { termination: "cleanup_failed", cleanupError: "kernel reported crash_detected" };
+    case "exit_unobserved":
+      // Recovery saw the process gone but never saw its exit: the outcome is
+      // unknown, so it must not read as a clean exit (or be retried blindly).
+      return {
+        termination: "cleanup_failed",
+        cleanupError: "kernel: the process exited while XioCode was down; its outcome is unknown",
+      };
   }
 }
 

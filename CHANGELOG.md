@@ -14,6 +14,14 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+Requires `@xioflow/kernel` 0.5.0.
+
+### Changed
+- **Commands run under the kernel's native process-tree holder where it ships** (Linux x64/arm64, macOS arm64/x64). A command that detaches (`setsid`, double fork) is now stopped with the rest of its tree instead of being reported as a leftover, and if XioCode itself dies the helper stops the tree. `/kernel` shows which driver is in use and why; `XIOCODE_KERNEL_DRIVER=node` selects the previous one, `=reaper` insists on the native one and fails loudly where it is missing.
+
+### Fixed
+- **Resuming after a crash no longer calls a command "finished" when its exit was never seen.** If a command ended while XioCode was down, the resumed tool result now says its outcome is unknown and asks to check its effects before running it again.
+
 ## [1.5.0] - 2026-09-29
 
 Requires `@xioflow/kernel` 0.4.0.

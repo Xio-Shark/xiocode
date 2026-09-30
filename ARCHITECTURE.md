@@ -5,7 +5,7 @@
 > 这里此前是一份内核规范的旧拷贝（四协议、八契约、`stopped: boolean`、`accurateStartTime`），
 > 与 0.2.0 起的实际 API 不一致，已删除，避免出现第二份真相源。
 
-依赖版本：`@xioflow/kernel` 0.4.0。代码入口：`src/runtime/process/`（内核会话与进程执行）、
+依赖版本：`@xioflow/kernel` 0.5.0。代码入口：`src/runtime/process/`（内核会话与进程执行）、
 `src/runtime/kernel-binding.ts`（会话层接线）、`extensions/xio-sandbox/src/direct-gate.ts`（回滚）、
 `extensions/xio-hygiene/src/kernel-stdio-transport.ts`（MCP）。
 
@@ -29,12 +29,15 @@
 opId 在域内唯一（D17），同 opId 同输入会被 0.3.0 幂等协议回放，因此复用 id 会让一条新命令拿到旧结果而不执行。
 xiocode 让每次执行的 opId 唯一，用 journal 事实记录 `toolCallId → opId`。
 
-## 2. 两个开关
+## 2. 开关
 
 - **内核会话**始终开启：它只需要 `node:sqlite`（Node ≥ 22.13，与 `engines` 一致）和 git。
   打不开时（例如域目录不可写）会话照常工作，但会一次性提示：direct 模式回滚与 journal 关闭，命令与 MCP 不经内核。
 - **进程执行器**默认是内核。`XIOCODE_PROCESS_KERNEL=0`（或内核驱动不支持的平台）改用内置 supervisor，
   只影响命令与 MCP stdio 的执行方式。这个逃生开关计划在 2.0 删除，前提是 0.4.0 接入后的观察期通过。
+- **平台驱动**：`XIOCODE_KERNEL_DRIVER=auto`（默认）在内核包带有本平台 native reaper 时用 `ReaperPlatformDriver`
+  （持有整棵进程树，`setsid` 逃逸者也能停掉），否则用 `NodePlatformDriver`；`node` / `reaper` 强制指定，
+  `reaper` 在缺 helper 的平台直接报错。实际选择与原因显示在 `/kernel`。恢复与孤儿域清扫用同一选择。
 
 ## 3. 资源仲裁
 

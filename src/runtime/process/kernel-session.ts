@@ -23,7 +23,6 @@ import path from "node:path";
 
 import {
   ExecutionDomain,
-  NodePlatformDriver,
   OperationNotActiveError,
   ProcessSupervisor,
   RecoveryEngine,
@@ -42,6 +41,7 @@ import {
 
 import { OUTPUT_BUDGET_PRESETS } from "./output-collector.ts";
 import type { KernelOperationRef, ProcessRunOptions, ProcessRunResult } from "./process-supervisor.ts";
+import { resolveKernelDriver } from "./kernel-driver.ts";
 import { adjudicationHint } from "./kernel-hint.ts";
 import {
   abortedBeforeStart,
@@ -62,7 +62,7 @@ export type KernelSessionOptions = Readonly<{
   /** Canonical (realpath) workspace root; the write lease and snapshots are scoped to it. */
   workspaceRoot: string;
   domainPath: string;
-  /** Test seam; defaults to the real Node platform driver. */
+  /** Test seam; defaults to `resolveKernelDriver()` (native reaper when available). */
   driver?: PlatformDriver;
   writeLeaseWaitMs?: number;
   /**
@@ -99,6 +99,8 @@ export class KernelSession {
   readonly domainPath: string;
   /** What recovery found from a previous owner of this domain; undefined when nothing was left. */
   readonly recoveryReport: RecoveryReport | undefined;
+  /** The platform driver supervising processes, and why it was chosen. */
+  readonly driver: Readonly<{ name: string; reason: string }>;
 
   readonly #domain: ExecutionDomain;
   readonly #supervisor: ProcessSupervisor;
@@ -115,7 +117,9 @@ export class KernelSession {
     domain: ExecutionDomain,
     supervisor: ProcessSupervisor,
     recoveryReport: RecoveryReport | undefined,
+    driver: Readonly<{ name: string; reason: string }>,
   ) {
+    this.driver = driver;
     this.sessionId = options.sessionId;
     this.workspaceRoot = options.workspaceRoot;
     this.domainPath = options.domainPath;
@@ -132,7 +136,8 @@ export class KernelSession {
   static async open(options: KernelSessionOptions): Promise<KernelSession> {
     const domain = ExecutionDomain.acquire(options.domainPath, sanitizeId(options.sessionId));
     try {
-      const driver = options.driver ?? new NodePlatformDriver();
+      const choice = options.driver ? undefined : resolveKernelDriver();
+      const driver = options.driver ?? choice!.create();
       const supervisor = new ProcessSupervisor(domain, driver);
       // Always recover: besides unfinished operations, this converges Runs a
       // crashed launch left `running`. It must happen before our own Runs exist.
@@ -142,6 +147,7 @@ export class KernelSession {
         domain,
         supervisor,
         report.recoveredOperations.length > 0 ? report : undefined,
+        { name: driver.name, reason: choice?.reason ?? "injected" },
       );
       session.#registerTaskAndLaunchRun();
       return session;

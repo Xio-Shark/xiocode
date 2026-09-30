@@ -82,6 +82,34 @@ describe("annotateInterruptedTools", () => {
     expect(never?.content).toContain("never started");
     expect(other).toBe(untouched);
   });
+
+  it("does not present an exit recovery never observed as a finished command", () => {
+    // Recovery records `failed` + `exit_unobserved` when the process died while
+    // XioCode was down before its exit was recorded (kernel 0.5.0).
+    const session = {
+      getOperationByKey: () => ({
+        opId: "op-x",
+        status: "done",
+        result: {
+          kind: "process",
+          status: "failed",
+          terminationReason: "exit_unobserved",
+          exitCode: null,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        },
+      }),
+    } as unknown as KernelSession;
+    const [message] = annotateInterruptedTools([{
+      role: "tool",
+      toolCallId: "call-x",
+      name: "bash",
+      content: `${INTERRUPTED_TOOL_PREFIX} for bash`,
+    }], session);
+    expect(message?.content).toContain("its exit was never observed");
+    expect(message?.content).not.toContain("finished before the interruption");
+  });
 });
 
 describe("authorization recorder and /kernel", () => {
@@ -96,6 +124,7 @@ describe("authorization recorder and /kernel", () => {
     registerKernelCommand(host, () => session);
     const status = String(await host.runCommand("kernel"));
     expect(status).toContain(`domain: ${session.domainPath}`);
+    expect(status).toContain(`driver: ${session.driver.name} (${session.driver.reason})`);
     expect(status).toContain("leases: none");
     await expect(host.runCommand("kernel", "adjudicate nope")).rejects.toThrow(/not found/);
     expect(String(await host.runCommand("kernel", "adjudicate"))).toMatch(/usage/);

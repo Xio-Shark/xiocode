@@ -139,6 +139,10 @@ function describeFact(fact: NonNullable<ReturnType<KernelSession["getOperationBy
     return `kernel: operation ${fact.opId} is indeterminate (process not confirmed stopped). `
       + `Run /kernel adjudicate ${fact.opId} after inspecting it.`;
   }
+  if (result.kind === "process" && result.terminationReason === "exit_unobserved") {
+    return `kernel: operation ${fact.opId} ran and exited while XioCode was down; its exit was never `
+      + "observed, so it may have succeeded or failed. Check its effects before running it again.";
+  }
   if (result.kind === "process") {
     const tail = result.stdout.slice(-2_000);
     return [
@@ -196,6 +200,7 @@ function formatKernelStatus(session: KernelSession): string {
   const indeterminate = status.operations.filter((op) => op.result?.status === "indeterminate");
   const lines = [
     `domain: ${session.domainPath}`,
+    `driver: ${session.driver.name} (${session.driver.reason})`,
     `run: ${session.currentRunId}  (runs: ${status.runs.length}, active: ${status.activeRuns.length})`,
     `operations: ${status.operations.length}, unfinished: ${status.unfinishedOperations.length}`,
     `leases: ${status.leases.length === 0 ? "none" : status.leases.map((lease) => `${lease.resourceId} ← ${session.describeOperation(lease.operationId)}`).join("; ")}`,

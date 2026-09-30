@@ -9,10 +9,11 @@ import path from "node:path";
 import {
   DomainLockedError,
   ExecutionDomain,
-  NodePlatformDriver,
   ProcessSupervisor,
   RecoveryEngine,
 } from "@xioflow/kernel";
+
+import { resolveKernelDriver } from "./kernel-driver.ts";
 
 export type OrphanOutcome = Readonly<{
   recovered: readonly Readonly<{ opId: string; action: string; resourcesReleased: boolean }>[];
@@ -41,7 +42,7 @@ export async function recoverOrphanedDomain(domainPath: string): Promise<OrphanO
     return { recovered: [], error: error instanceof Error ? error.message : String(error) };
   }
   try {
-    const report = await new RecoveryEngine(domain, new NodePlatformDriver()).recover();
+    const report = await new RecoveryEngine(domain, resolveKernelDriver().create()).recover();
     return report.recoveredOperations.length > 0
       ? { recovered: report.recoveredOperations }
       : undefined;
@@ -76,7 +77,7 @@ export async function disposeDomain(domainPath: string, domainId: string): Promi
     if (pending.length > 0) {
       return { kind: "kept", reason: `${pending.length} operation(s) are unfinished or indeterminate` };
     }
-    const supervisor = new ProcessSupervisor(domain, new NodePlatformDriver());
+    const supervisor = new ProcessSupervisor(domain, resolveKernelDriver().create());
     pruned = await supervisor.pruneSnapshots(store.listSnapshots(domain.domainId).map((snap) => snap.id));
   } finally {
     domain.close();
