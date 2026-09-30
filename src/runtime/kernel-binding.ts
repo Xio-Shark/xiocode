@@ -13,6 +13,7 @@ import {
   formatOrphanRecoveryNotice,
   formatSessionRecoveryNotice,
   kernelDomainRoot,
+  resolveProcessBackend,
   sweepOrphanedDomains,
   type KernelAcceptance,
   type KernelSession,
@@ -46,6 +47,13 @@ export async function openSessionKernel(input: Readonly<{
   const notice = formatSessionRecoveryNotice(recovered, session.domainPath);
   if (notice) {
     input.notify(notice, recovered.every((op) => op.resourcesReleased) ? "info" : "warning");
+  }
+  if (input.env.XIOCODE_KERNEL_CONFINE === "1") {
+    try {
+      input.notify(setConfinement(session, true, input.env), "info");
+    } catch (error) {
+      input.notify(`XIOCODE_KERNEL_CONFINE=1 but confinement is off: ${errorText(error)}`, "warning");
+    }
   }
   void sweepOrphanedDomains({
     root: kernelDomainRoot(input.env),
@@ -193,6 +201,40 @@ export function registerKernelCommand(host: ExtensionHost, getSession: () => Ker
       return formatKernelStatus(session);
     },
   });
+  host.registerCommand("confine", {
+    description: "Write confinement for commands: /confine on|off (on lets /rollback be complete).",
+    handler: async (args) => {
+      const session = getSession();
+      if (!session) return "Kernel session is not available in this session.";
+      const arg = String(args ?? "").trim().toLowerCase();
+      if (arg === "on" || arg === "off") return setConfinement(session, arg === "on");
+      return session.confinement.enabled
+        ? `Write confinement is on (${session.confinement.driver}). /confine off lifts it.`
+        : "Write confinement is off. /confine on keeps commands inside the workspace.";
+    },
+  });
+}
+
+/**
+ * Turns write confinement on or off and says what that means. Refused when
+ * commands bypass the kernel (`XIOCODE_PROCESS_KERNEL=0`): the kernel could
+ * not see them, so confinement would prove nothing.
+ */
+export function setConfinement(session: KernelSession, on: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  if (!on) {
+    session.disableConfinement(actorName());
+    return "Write confinement is off: commands can write anywhere again, so rollbacks cannot be vouched for as complete.";
+  }
+  const backend = resolveProcessBackend(env);
+  if (backend.backend !== "kernel") {
+    throw new Error(`commands are not run by the kernel (${backend.reason}), so it cannot confine them`);
+  }
+  const driver = session.enableConfinement(actorName());
+  return [
+    `Write confinement is on (${driver}): commands can only write inside ${session.workspaceRoot}`,
+    "and only run from inside it. Tools that write elsewhere (caches, /tmp) will fail and say so.",
+    "While nothing else runs unconfined (e.g. an MCP server), /rollback can restore the workspace completely.",
+  ].join("\n");
 }
 
 function formatKernelStatus(session: KernelSession): string {
@@ -201,6 +243,7 @@ function formatKernelStatus(session: KernelSession): string {
   const lines = [
     `domain: ${session.domainPath}`,
     `driver: ${session.driver.name} (${session.driver.reason})`,
+    `confinement: ${session.confinement.enabled ? `on (${session.confinement.driver})` : "off (/confine on)"}`,
     `run: ${session.currentRunId}  (runs: ${status.runs.length}, active: ${status.activeRuns.length})`,
     `operations: ${status.operations.length}, unfinished: ${status.unfinishedOperations.length}`,
     `leases: ${status.leases.length === 0 ? "none" : status.leases.map((lease) => `${lease.resourceId} ← ${session.describeOperation(lease.operationId)}`).join("; ")}`,

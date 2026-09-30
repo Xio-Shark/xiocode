@@ -22,6 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  createConfinementDriver,
   ExecutionDomain,
   OperationNotActiveError,
   ProcessSupervisor,
@@ -56,6 +57,15 @@ const DEFAULT_TERM_GRACE_MS = 500;
 const OPERATION_KEY_EVENT = "XIOCODE_TOOL_OPERATION";
 /** How long a writer queues behind another writer before it is refused. */
 const DEFAULT_WRITE_LEASE_WAIT_MS = 15 * 60_000;
+/** Journal fact for turning write confinement on / off. */
+const CONFINEMENT_EVENT = "XIOCODE_CONFINEMENT";
+/** Confinement capabilities are re-issued before they expire. */
+const CAPABILITY_TTL_MS = 12 * 60 * 60_000;
+const CAPABILITY_RENEW_MARGIN_MS = 10 * 60_000;
+/** What a sandbox denial looks like on stderr (sandbox-exec, bubblewrap). */
+const CONFINEMENT_DENIAL = /Operation not permitted|EPERM|Read-only file system|EROFS/;
+
+export type KernelConfinement = Readonly<{ enabled: false } | { enabled: true; driver: string }>;
 
 export type KernelSessionOptions = Readonly<{
   sessionId: string;
@@ -111,6 +121,7 @@ export class KernelSession {
   #turnRunId: string | undefined;
   #sequence = 0;
   #closed = false;
+  #confinement: { driver: string; capabilityId: string; expiresAt: number } | undefined;
 
   private constructor(
     options: KernelSessionOptions,
@@ -245,6 +256,38 @@ export class KernelSession {
     return op ? { opId: op.id, status: op.status, result: op.result } : undefined;
   }
 
+  get confinement(): KernelConfinement {
+    return this.#confinement ? { enabled: true, driver: this.#confinement.driver } : { enabled: false };
+  }
+
+  /**
+   * Every later command runs under the platform's write-confinement driver,
+   * bound to a capability that only covers the workspace. With nothing else
+   * running unconfined, the kernel can then vouch for a rollback as
+   * `complete`. Throws when the platform has no driver.
+   */
+  enableConfinement(actor: string): string {
+    this.#assertOpen();
+    if (this.#confinement) return this.#confinement.driver;
+    const driver = createConfinementDriver();
+    if (!driver) {
+      throw new Error("write confinement needs sandbox-exec (macOS) or bubblewrap / srt (Linux); none is available");
+    }
+    const capability = this.#issueWorkspaceCapability(actor);
+    this.#confinement = { driver: driver.name, capabilityId: capability.id, expiresAt: Date.parse(capability.expiresAt) };
+    this.recordFact(CONFINEMENT_EVENT, { enabled: true, driver: driver.name, capabilityId: capability.id, by: actor });
+    return driver.name;
+  }
+
+  disableConfinement(actor: string): void {
+    this.#assertOpen();
+    const current = this.#confinement;
+    if (!current) return;
+    this.#confinement = undefined;
+    this.#domain.revokeCapability(current.capabilityId, actor);
+    this.recordFact(CONFINEMENT_EVENT, { enabled: false, driver: current.driver, capabilityId: current.capabilityId, by: actor });
+  }
+
   async run(options: ProcessRunOptions): Promise<ProcessRunResult> {
     const started = Date.now();
     const cleanupGuarantee = resolveCleanupGuarantee();
@@ -263,6 +306,16 @@ export class KernelSession {
     const leaseRoot = options.access === "read" ? undefined : this.#leaseRootFor(options.cwd);
     const resources = leaseRoot ? [writeLease(leaseRoot)] : [];
 
+    const confined = this.#confinementFor(options.cwd);
+    if (confined === "outside") {
+      return leaseRefusedResult(
+        `kernel: write confinement is on, so commands only run inside the workspace (${this.workspaceRoot}); `
+          + "nothing was started. /confine off lifts it.",
+        started,
+        cleanupGuarantee,
+        ref,
+      );
+    }
     const holder = leaseRoot ? this.#leaseHolder(writeLease(leaseRoot)) : undefined;
     if (holder?.indeterminate) {
       return leaseRefusedResult(
@@ -302,6 +355,7 @@ export class KernelSession {
         ? { maxOutputBytes: budget.hardCapBytes, enforcement: "soft" }
         : undefined,
       ...(projection ? { onStreamChunk: projection.push } : {}),
+      ...(confined ? { capabilityId: confined.capabilityId, confinement: confined.driver } : {}),
     });
 
     const onAbort = (): void => {
@@ -316,9 +370,10 @@ export class KernelSession {
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const result = toProcessRunResult(await pending, {
+      const raw = toProcessRunResult(await pending, {
         budget, started, cleanupGuarantee, opId, domainPath: this.domainPath,
       });
+      const result = confined ? withConfinementNote(raw, this.workspaceRoot) : raw;
       return holder ? withQueueNote(result, holder) : result;
     } catch (err) {
       if (err instanceof ResourceConflictError) {
@@ -443,6 +498,28 @@ export class KernelSession {
     return refusal;
   }
 
+  /** Capability + driver for a command under confinement; "outside" when its cwd leaves the workspace. */
+  #confinementFor(cwd: string): Readonly<{ capabilityId: string; driver: string }> | "outside" | undefined {
+    const current = this.#confinement;
+    if (!current) return undefined;
+    if (this.#leaseRootFor(cwd) !== this.workspaceRoot) return "outside";
+    if (current.expiresAt - Date.now() < CAPABILITY_RENEW_MARGIN_MS) {
+      const renewed = this.#issueWorkspaceCapability("xiocode");
+      this.#domain.revokeCapability(current.capabilityId, "xiocode");
+      current.capabilityId = renewed.id;
+      current.expiresAt = Date.parse(renewed.expiresAt);
+    }
+    return { capabilityId: current.capabilityId, driver: current.driver };
+  }
+
+  #issueWorkspaceCapability(actor: string): Readonly<{ id: string; expiresAt: string }> {
+    return this.#domain.issueCapability(
+      { write: [this.workspaceRoot], exclusive: [writeLease(this.workspaceRoot)] },
+      actor,
+      CAPABILITY_TTL_MS,
+    );
+  }
+
   #registerTaskAndLaunchRun(): void {
     const store = this.#domain.getStore();
     if (!store.getTask(this.taskId)) {
@@ -508,6 +585,14 @@ type LeaseHolder = Readonly<{ opId: string; name: string; indeterminate: boolean
 
 function writeLease(root: string): string {
   return `workspace:write:${root}`;
+}
+
+/** A failure that looks like a sandbox denial gets the reason spelled out (the failure itself stands). */
+function withConfinementNote(result: ProcessRunResult, workspaceRoot: string): ProcessRunResult {
+  if (result.code === 0 || !CONFINEMENT_DENIAL.test(result.stderr)) return result;
+  const note = `[kernel] write confinement is on: writes outside ${workspaceRoot} are denied, which may be why this failed. `
+    + "/confine off lifts it.";
+  return { ...result, stderr: `${result.stderr}\n${note}` };
 }
 
 function withQueueNote(result: ProcessRunResult, holder: LeaseHolder): ProcessRunResult {

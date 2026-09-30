@@ -14,10 +14,11 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
-Requires `@xioflow/kernel` 0.5.0.
+Requires `@xioflow/kernel` 0.5.1.
 
 ### Added
 - **Rewind to an earlier turn: press Esc twice on an empty prompt (or `/rewind`).** Pick a turn, then restore its files and the conversation, only the conversation, or only the files. Files come back from the snapshot the kernel took when that turn started and are verified by fingerprint; the conversation is cut back to just before that turn and its prompt is put back in the input so you can edit and resend it. Rewind points survive a restart. A point says plainly what it can no longer restore: files once its snapshot has aged out (the last 20 turns keep one), the conversation once it has been compacted. In worktree mode only the conversation can be rewound.
+- **`/confine on`: keep commands inside the workspace, and get rollbacks the kernel can vouch for.** With write confinement on (`sandbox-exec` on macOS, `bubblewrap` or `srt` on Linux), commands can only write inside the workspace and only start from inside it. A rollback then says when every command since the checkpoint ran confined, meaning nothing outside the workspace needs undoing. It is off by default because tools that write to caches or `/tmp` fail under it; such a failure now says that confinement is the likely cause. `XIOCODE_KERNEL_CONFINE=1` turns it on at startup, and `/kernel` shows whether it is on.
 
 ### Changed
 - **Commands run under the kernel's native process-tree holder where it ships** (Linux x64/arm64, macOS arm64/x64). A command that detaches (`setsid`, double fork) is now stopped with the rest of its tree instead of being reported as a leftover, and if XioCode itself dies the helper stops the tree. `/kernel` shows which driver is in use and why; `XIOCODE_KERNEL_DRIVER=node` selects the previous one, `=reaper` insists on the native one and fails loudly where it is missing.

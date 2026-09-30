@@ -1,4 +1,4 @@
-import type { KernelSession } from "../../../src/runtime/process/index.ts";
+import { resolveProcessBackend, type KernelSession } from "../../../src/runtime/process/index.ts";
 import type { RollbackOperationResult, SnapshotRef } from "@xioflow/kernel";
 
 import { git } from "./git.ts";
@@ -211,10 +211,19 @@ export function describeRollback(
   if (snapshot.coverage === "worktree_non_ignored") {
     lines.push("Ignored files (.gitignore: e.g. .env, node_modules, build output) were not snapshotted and are unchanged.");
   }
-  if (result.outOfScopeEffects === "possible") {
+  // With the built-in executor, commands never reached the kernel: its view
+  // of what ran since the checkpoint is incomplete, so it vouches for nothing.
+  const bypassed = resolveProcessBackend().backend !== "kernel";
+  if (result.outOfScopeEffects === "possible" || bypassed) {
     lines.push(
-      "Commands ran without write confinement since this checkpoint, so effects outside the workspace "
-        + "(other directories, databases, network) may remain and were not rolled back.",
+      "Commands ran without write confinement since this checkpoint (or one is still running unconfined, "
+        + "e.g. an MCP server), so effects outside the workspace (other directories, databases, network) "
+        + "may remain and were not rolled back.",
+    );
+  } else if (result.coverage === "complete") {
+    lines.push(
+      "Every command since this checkpoint ran confined to the workspace, so nothing outside it needs undoing "
+        + "(the kernel vouches for a complete rollback).",
     );
   }
   return lines.join("\n");

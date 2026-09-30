@@ -5,7 +5,7 @@
 > 这里此前是一份内核规范的旧拷贝（四协议、八契约、`stopped: boolean`、`accurateStartTime`），
 > 与 0.2.0 起的实际 API 不一致，已删除，避免出现第二份真相源。
 
-依赖版本：`@xioflow/kernel` 0.5.0。代码入口：`src/runtime/process/`（内核会话与进程执行）、
+依赖版本：`@xioflow/kernel` 0.5.1。代码入口：`src/runtime/process/`（内核会话与进程执行）、
 `src/runtime/kernel-binding.ts`（会话层接线）、`extensions/xio-sandbox/src/direct-gate.ts`（回滚）、
 `extensions/xio-hygiene/src/kernel-stdio-transport.ts`（MCP）。
 
@@ -61,7 +61,12 @@ xiocode 让每次执行的 opId 唯一，用 journal 事实记录 `toolCallId �
 
 direct 模式的回滚结果如实呈现内核结论：`restored` / `partial`（列出未恢复路径）/ `failed`（抛错）；
 快照不含被忽略文件；自检查点以来若有未受写入限制的命令运行（`outOfScopeEffects: possible`），会提示工作区外可能留有副作用。
-xiocode 目前不启用写入限制驱动（sandbox-exec / bubblewrap），因此 `coverage` 不会是 `complete`。
+写入限制默认关闭（它会让写 `/tmp`、`~/.npm` 等缓存的工具失败），用 `/confine on` 或 `XIOCODE_KERNEL_CONFINE=1` 开启：
+- 会话签发一个只覆盖工作区的 capability（写根 = 工作区，排他资源 = 工作区写租约，12h 到期前自动续签），此后每条命令（读型也算）
+  都带 `capabilityId` 并在平台驱动（macOS `sandbox-exec`，Linux `bubblewrap` / `srt`）下运行；cwd 在工作区外的命令直接拒绝、不启动；
+- 受限命令失败且 stderr 像沙箱拒绝时，结果末尾说明原因（失败本身原样保留）；开关写 `XIOCODE_CONFINEMENT` journal 事实；
+- 回滚只有在内核给出 `coverage: complete` 时才说"内核担保完整回滚"；仍在运行的未受限操作（如 MCP server，service 尚不支持受限）
+  会让内核（≥ 0.5.1）退化为 `declared_roots`；`XIOCODE_PROCESS_KERNEL=0` 时命令绕过内核，`/confine on` 拒绝开启，回滚也从不担保。
 
 保留策略：会话基线 + 最近 20 轮的轮前快照（回退点）；更早的在新 turn 开始时回收。会话启动时只保留 journal 里仍列出的回退点快照，
 其余之前启动留下的快照回收；删除会话时一并清理。
