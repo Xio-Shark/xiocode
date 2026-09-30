@@ -14,6 +14,8 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-30
+
 Requires `@xioflow/kernel` 0.5.1.
 
 ### Added
