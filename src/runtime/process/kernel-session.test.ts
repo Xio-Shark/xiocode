@@ -274,13 +274,18 @@ describe("KernelSession: workspace write lease", () => {
   it("queues a writer behind another writer and lets readers through", async () => {
     const h = await openTemp("lease");
     try {
+      // The first writer holds the lease until the test releases it, so the
+      // queueing below does not depend on how long a spawn takes.
       const marker = path.join(h.workspace, "first-started");
-      const first = h.session.run({
-        command: process.execPath,
-        args: ["-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => {}, 400)`],
-        cwd: h.workspace,
-        output: SMALL,
-      });
+      const release = path.join(h.workspace, "release-first");
+      const finished = path.join(h.workspace, "first-finished");
+      const firstScript = [
+        "const fs = require('fs');",
+        `fs.writeFileSync(${JSON.stringify(marker)}, '1');`,
+        `const t = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) {`,
+        `  fs.writeFileSync(${JSON.stringify(finished)}, '1'); clearInterval(t); } }, 10);`,
+      ].join(" ");
+      const first = h.session.run({ command: process.execPath, args: ["-e", firstScript], cwd: h.workspace, output: SMALL });
       while (!fs.existsSync(marker)) await new Promise((r) => setTimeout(r, 10));
 
       const reader = await h.session.run({
@@ -289,18 +294,15 @@ describe("KernelSession: workspace write lease", () => {
       expect(reader.stdout).toBe("r");
       expect(reader.stderr).not.toContain("queued behind");
 
-      const secondProbe = `process.stdout.write(require('fs').existsSync(${JSON.stringify(`${marker}.done`)}) ? 'after' : 'overlap')`;
-      const firstDone = first.then((result) => {
-        fs.writeFileSync(`${marker}.done`, "1");
-        return result;
-      });
-      const second = await h.session.run({
+      const secondProbe = `process.stdout.write(require('fs').existsSync(${JSON.stringify(finished)}) ? 'after' : 'overlap')`;
+      const second = h.session.run({
         command: process.execPath, args: ["-e", secondProbe], cwd: h.workspace, output: SMALL,
       });
-      const firstResult = await firstDone;
+      fs.writeFileSync(release, "1");
+      const [firstResult, secondResult] = await Promise.all([first, second]);
       // The queued writer only started once the first writer had finished.
-      expect(second.stdout).toBe("after");
-      expect(second.stderr).toContain(`queued behind ${firstResult.kernel?.opId}`);
+      expect(secondResult.stdout).toBe("after");
+      expect(secondResult.stderr).toContain(`queued behind ${firstResult.kernel?.opId}`);
     } finally {
       h.dispose();
     }
