@@ -69,6 +69,14 @@ import {
   registerKernelCommand,
 } from "./kernel-binding.ts";
 import { closeKernelSession, type KernelSession } from "./process/index.ts";
+import {
+  formatRewindPoints,
+  RewindLedger,
+  rewindSnapshotIds,
+  type RewindMode,
+  type RewindOutcome,
+  type RewindPointView,
+} from "./rewind.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ContextCompactionResult } from "./context-compaction.ts";
@@ -189,6 +197,11 @@ export type PreparedSession = Readonly<{
    */
   followUp: (text: string) => void;
   getMessages: () => readonly ChatMessage[];
+  /** Rewind to the start of an earlier turn (files, conversation or both); idle only. */
+  rewind: Readonly<{
+    list: () => RewindPointView[];
+    run: (index: number, mode: RewindMode) => Promise<RewindOutcome>;
+  }>;
   /** Local workspace perception map + evidence store (non-blocking warm). */
   workspacePerception: WorkspacePerceptionService;
   close: () => Promise<void>;
@@ -290,7 +303,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const fileShift = new FileShiftRegistry();
   const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
   const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot, cwd });
-  const { host, mergeGate, rollbackGate, ensureExploreForUltra } = await createConfiguredHost({
+  const { host, mergeGate, directGate, rollbackGate, ensureExploreForUltra } = await createConfiguredHost({
     options,
     model,
     sink,
@@ -430,6 +443,17 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     currentExecution = { phase: "idle" };
     await history.persist();
   });
+  const rewind = new RewindLedger({
+    history,
+    ...(directGate ? { gate: directGate } : {}),
+    ...(kernel ? { journal: kernel } : {}),
+    ask,
+    notify: (message) => sink.notify?.(message, "info"),
+    isBusy: () => harness.phase !== "idle",
+  });
+  /** Snapshot taken by this turn's beforePrompt; recorded with the rewind point. */
+  let pendingRewindSnapshot: string | undefined;
+  registerRewindCommand(host, rewind);
   const createTurnSignal = () => {
     turnAbort = new AbortController();
     return turnAbort.signal;
@@ -693,9 +717,13 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         grepSeen.clear();
         // Fresh prompt resets the cross-context read landscape for file-shift detection.
         fileShift.clear();
+        pendingRewindSnapshot = undefined;
         if (rollbackGate?.captureTurnCheckpoint) {
           try {
             const checkpoint = await rollbackGate.captureTurnCheckpoint();
+            if (checkpoint && "snapshot_id" in checkpoint && typeof checkpoint.snapshot_id === "string") {
+              pendingRewindSnapshot = checkpoint.snapshot_id;
+            }
             if (checkpoint) {
               currentExecution = {
                 phase: "turn_started",
@@ -713,6 +741,22 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
               "warning",
             );
           }
+        }
+      },
+      onTurnStart: ({ messageCount, prompt }) => {
+        try {
+          rewind.record({
+            messageCount,
+            prompt,
+            ...(pendingRewindSnapshot ? { snapshotId: pendingRewindSnapshot } : {}),
+          });
+        } catch (error) {
+          sink.notify?.(
+            `Rewind point for this turn was not recorded: ${error instanceof Error ? error.message : String(error)}`,
+            "warning",
+          );
+        } finally {
+          pendingRewindSnapshot = undefined;
         }
       },
       onCheckpoint: async (checkpoint) => {
@@ -838,6 +882,10 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       );
     },
     getMessages: () => history.getMessages(),
+    rewind: {
+      list: () => rewind.list(),
+      run: (index, mode) => rewind.rewind(index, mode),
+    },
   };
   return session;
 }
@@ -907,7 +955,8 @@ async function createConfiguredHost(input: Readonly<{
     if (gitRoot) {
       directGate = new DirectRollbackGate(input.kernel, restoredCheckpoint);
       try {
-        await directGate.initSessionBaseline();
+        // Keep the snapshots of rewind points an earlier launch journaled.
+        await directGate.initSessionBaseline(rewindSnapshotIds(input.kernel));
       } catch (error) {
         directGate = undefined;
         input.sink.notify?.(
@@ -1136,4 +1185,23 @@ async function runRepl(session: PreparedSession): Promise<number> {
     process.off("SIGINT", onSigInt);
     rl.close();
   }
+}
+
+const REWIND_MODES: readonly RewindMode[] = ["both", "code", "conversation"];
+
+/** `/rewind` lists rewind points; `/rewind <n> [both|code|conversation]` goes back to one. */
+function registerRewindCommand(host: ExtensionHost, ledger: RewindLedger): void {
+  host.registerCommand("rewind", {
+    description: "Go back to the start of an earlier turn: files, conversation or both (Esc Esc in the TUI).",
+    handler: async (args) => {
+      const [indexArg, modeArg] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
+      if (!indexArg) return formatRewindPoints(ledger.list());
+      const index = Number(indexArg);
+      if (!Number.isInteger(index) || index < 1) return `usage: /rewind <n> [${REWIND_MODES.join("|")}]`;
+      const mode = (modeArg ?? "both") as RewindMode;
+      if (!REWIND_MODES.includes(mode)) return `usage: /rewind <n> [${REWIND_MODES.join("|")}]`;
+      const outcome = await ledger.rewind(index, mode);
+      return outcome.prompt === undefined ? outcome.summary : `${outcome.summary}\nPrompt: ${outcome.prompt}`;
+    },
+  });
 }

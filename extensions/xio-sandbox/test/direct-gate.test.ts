@@ -96,18 +96,38 @@ describe("DirectRollbackGate (kernel snapshots)", () => {
     await expect(readFile(path.join(mainRoot, "README.md"), "utf8")).resolves.toBe("base\n");
   });
 
-  it("keeps only the baseline and the current turn's snapshot", async () => {
+  it("keeps the baseline and the last retainTurns turn snapshots (rewind points)", async () => {
     const mainRoot = await initGitRepo();
     const kernel = await openKernel(mainRoot);
-    const gate = new DirectRollbackGate(kernel);
+    const gate = new DirectRollbackGate(kernel, undefined, { retainTurns: 2 });
     await gate.initSessionBaseline();
     const first = await gate.captureTurnCheckpoint();
     const second = await gate.captureTurnCheckpoint();
+    const third = await gate.captureTurnCheckpoint();
 
-    expect(kernel.listSnapshotIds()).toHaveLength(2);
-    expect(kernel.listSnapshotIds()).toContain(second.snapshot_id);
-    expect(kernel.listSnapshotIds()).not.toContain(first.snapshot_id);
+    expect(kernel.listSnapshotIds()).toHaveLength(3);
+    expect(kernel.listSnapshotIds()).toEqual(expect.arrayContaining([second.snapshot_id, third.snapshot_id]));
+    expect(gate.hasTurnSnapshot(first.snapshot_id)).toBe(false);
     expect(git(mainRoot, ["for-each-ref", `refs/xioflow/snapshots/${first.snapshot_id}`])).toBe("");
+
+    // Rewinding to `second` forgets the turns after it.
+    await gate.dropTurnSnapshotsAfter(second.snapshot_id);
+    expect(gate.hasTurnSnapshot(third.snapshot_id)).toBe(false);
+    expect(gate.turnCheckpoint?.snapshot_id).toBe(second.snapshot_id);
+  });
+
+  it("keeps an earlier launch's rewind snapshots when asked to at startup", async () => {
+    const mainRoot = await initGitRepo();
+    const kernel = await openKernel(mainRoot);
+    const earlier = new DirectRollbackGate(kernel);
+    await earlier.initSessionBaseline();
+    const kept = await earlier.captureTurnCheckpoint();
+    const dropped = await earlier.captureTurnCheckpoint();
+
+    const gate = new DirectRollbackGate(kernel);
+    await gate.initSessionBaseline([kept.snapshot_id]);
+    expect(gate.hasTurnSnapshot(kept.snapshot_id)).toBe(true);
+    expect(kernel.listSnapshotIds()).not.toContain(dropped.snapshot_id);
   });
 
   it("restores the session baseline", async () => {

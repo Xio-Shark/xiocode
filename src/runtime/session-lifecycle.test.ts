@@ -8,6 +8,7 @@ import { gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { MergeGate } from "../../extensions/xio-sandbox/src/merge-gate.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { ExtensionHost } from "./extension-host.ts";
+import { RewindLedger } from "./rewind.ts";
 import {
   CONTEXT_SUMMARY_NAME,
   ContextCompactionController,
@@ -264,7 +265,10 @@ describe("createPromptRunner context compaction", () => {
       maxSessionMessages: 8,
       history,
       contextCompaction: controller,
+      onTurnStart: (info) => rewind.record(info),
     });
+    // The rewind point must be taken after compaction rewrote the history.
+    const rewind = new RewindLedger({ history, ask: async () => true });
 
     const result = await runPrompt("next");
 
@@ -275,6 +279,11 @@ describe("createPromptRunner context compaction", () => {
     expect(snapshots).toHaveLength(2);
     expect(history.getMessages().some((message) => message.content === "continued")).toBe(true);
     expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2, cacheTokens: 0, reasoningTokens: 0 });
+    expect(rewind.list()).toEqual([expect.objectContaining({ prompt: "next", conversation: { available: true } })]);
+    const compactedLength = history.getMessages().findIndex((message) => message.content === "next");
+    expect((await rewind.rewind(1, "conversation")).prompt).toBe("next");
+    expect(history.length).toBeLessThanOrEqual(compactedLength);
+    expect(history.getMessages().some((message) => message.name === CONTEXT_SUMMARY_NAME)).toBe(true);
   });
 
   it("blocks the user provider request when automatic compaction fails", async () => {

@@ -147,6 +147,11 @@ export function createPromptRunner(options: Readonly<{
   maxSessionMessages?: number;
   getSignal?: () => AbortSignal | undefined;
   beforePrompt?: () => Promise<unknown> | unknown;
+  /**
+   * After automatic compaction, before the turn's prompt joins the history:
+   * `messageCount` is the conversation the turn starts from (rewind point).
+   */
+  onTurnStart?: (info: Readonly<{ messageCount: number; prompt: string }>) => Promise<void> | void;
   sink?: SessionUiSink;
   history?: SessionHistory;
   contextCompaction?: ContextCompactionController;
@@ -232,6 +237,7 @@ export function createPromptRunner(options: Readonly<{
         if (compacted.compacted) compactionUsage = compacted.usage;
       }
 
+      await options.onTurnStart?.({ messageCount: history.length, prompt });
       const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       options.kernelTurn?.begin(turnId);
       try {

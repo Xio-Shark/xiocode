@@ -17,18 +17,29 @@ export type DirectCheckpoint = DurableTurnCheckpoint & Readonly<{
  * user's index, HEAD and branch are never touched; rollback is verified by the
  * kernel and reports its own coverage.
  *
- * Retention: the session baseline plus the current turn's snapshot. The
- * previous turn's snapshot is pruned when a new turn starts.
+ * Retention: the session baseline plus the snapshots taken at the start of the
+ * last `retainTurns` turns (rewind points). Older turn snapshots are pruned
+ * when a new turn starts.
  */
+export const DEFAULT_RETAINED_TURNS = 20;
+
 export class DirectRollbackGate {
   readonly #kernel: KernelSession;
+  readonly #retainTurns: number;
   #turnCheckpoint?: DirectCheckpoint;
   #baseline?: SnapshotRef;
+  /** Turn-start snapshot ids, oldest first. */
+  #turnSnapshots: string[] = [];
   /** Restored from a session written before kernel snapshots; it cannot be rolled back to. */
   readonly #legacyCheckpoint: boolean;
 
-  constructor(kernel: KernelSession, initialCheckpoint?: Partial<DirectCheckpoint> & DurableTurnCheckpoint) {
+  constructor(
+    kernel: KernelSession,
+    initialCheckpoint?: Partial<DirectCheckpoint> & DurableTurnCheckpoint,
+    options: Readonly<{ retainTurns?: number }> = {},
+  ) {
     this.#kernel = kernel;
+    this.#retainTurns = Math.max(1, options.retainTurns ?? DEFAULT_RETAINED_TURNS);
     const restored = initialCheckpoint?.snapshot_id ? kernel.getSnapshot(initialCheckpoint.snapshot_id) : undefined;
     this.#turnCheckpoint = restored ? toCheckpoint(restored, initialCheckpoint?.head ?? "") : undefined;
     this.#legacyCheckpoint = initialCheckpoint !== undefined && !restored;
@@ -42,24 +53,70 @@ export class DirectRollbackGate {
     return this.#baseline?.treeFingerprint;
   }
 
-  async initSessionBaseline(): Promise<string> {
+  /**
+   * Takes this launch's baseline. Earlier launches of the session left their
+   * own baselines and turn snapshots; only the new baseline, a restored turn
+   * checkpoint and `keepTurnSnapshots` (rewind points that are still listed,
+   * oldest first) stay live.
+   */
+  async initSessionBaseline(keepTurnSnapshots: readonly string[] = []): Promise<string> {
     this.#baseline = await this.#kernel.captureSnapshot();
-    // Earlier launches of this session left their own baselines and turn
-    // snapshots; only the new baseline and a restored turn checkpoint are live.
-    const keep = new Set([this.#baseline.id, this.#turnCheckpoint?.snapshot_id]);
-    await this.#kernel.pruneSnapshots(this.#kernel.listSnapshotIds().filter((id) => !keep.has(id)));
+    const existing = new Set(this.#kernel.listSnapshotIds());
+    this.#turnSnapshots = [...keepTurnSnapshots, this.#turnCheckpoint?.snapshot_id]
+      .filter((id): id is string => id !== undefined && existing.has(id))
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .slice(-this.#retainTurns);
+    const keep = new Set([this.#baseline.id, ...this.#turnSnapshots]);
+    await this.#kernel.pruneSnapshots([...existing].filter((id) => !keep.has(id)));
     return this.#baseline.treeFingerprint;
   }
 
   async captureTurnCheckpoint(): Promise<DirectCheckpoint> {
     const snapshot = await this.#kernel.captureSnapshot();
     const head = (await git(this.#kernel.workspaceRoot, ["rev-parse", "--verify", "HEAD"])).stdout;
-    const previous = this.#turnCheckpoint;
     this.#turnCheckpoint = toCheckpoint(snapshot, head);
-    if (previous && previous.snapshot_id !== this.#baseline?.id) {
-      await this.#kernel.pruneSnapshots([previous.snapshot_id]);
-    }
+    this.#turnSnapshots.push(snapshot.id);
+    const expired = this.#turnSnapshots.splice(0, Math.max(0, this.#turnSnapshots.length - this.#retainTurns))
+      .filter((id) => id !== this.#baseline?.id);
+    await this.#kernel.pruneSnapshots(expired);
     return this.#turnCheckpoint;
+  }
+
+  /** Whether a turn-start snapshot is still retained (rewind can restore its files). */
+  hasTurnSnapshot(snapshotId: string): boolean {
+    return this.#turnSnapshots.includes(snapshotId) && this.#kernel.getSnapshot(snapshotId) !== undefined;
+  }
+
+  /**
+   * Restores the files of a retained turn-start snapshot (rewind). Later turn
+   * snapshots are kept: the caller drops them (`dropTurnSnapshotsAfter`) when
+   * the conversation is rewound too.
+   */
+  async restoreTurnSnapshot(
+    snapshotId: string,
+    label: string,
+    ask: AskFn,
+    notify?: (message: string) => void,
+  ): Promise<RollbackResult> {
+    if (!this.hasTurnSnapshot(snapshotId)) {
+      throw new Error(`rewind is unavailable: the snapshot of ${label} is no longer retained`);
+    }
+    return this.#rollbackTo(snapshotId, "turn", ask, notify, label);
+  }
+
+  /**
+   * Forgets (and prunes) the turn snapshots taken after `snapshotId`, which
+   * becomes the turn checkpoint: files and conversation are back at that turn.
+   */
+  async dropTurnSnapshotsAfter(snapshotId: string): Promise<void> {
+    const index = this.#turnSnapshots.indexOf(snapshotId);
+    if (index < 0) return;
+    const later = this.#turnSnapshots.splice(index + 1);
+    const snapshot = this.#kernel.getSnapshot(snapshotId);
+    if (snapshot) {
+      this.#turnCheckpoint = toCheckpoint(snapshot, this.#turnCheckpoint?.head ?? "");
+    }
+    await this.#kernel.pruneSnapshots(later.filter((id) => id !== this.#baseline?.id));
   }
 
   async promptRollbackTurn(ask: AskFn, notify?: (message: string) => void): Promise<RollbackResult> {
@@ -89,6 +146,7 @@ export class DirectRollbackGate {
     scope: "turn" | "session",
     ask: AskFn,
     notify?: (message: string) => void,
+    label?: string,
   ): Promise<RollbackResult> {
     const snapshot = this.#kernel.getSnapshot(snapshotId);
     if (!snapshot) {
@@ -97,9 +155,9 @@ export class DirectRollbackGate {
     const root = this.#kernel.workspaceRoot;
     const currentTree = await this.#kernel.currentTreeAgainst(snapshot);
     if (currentTree === snapshot.treeFingerprint) {
-      const since = scope === "turn" ? "the current turn started" : "the session started";
+      const since = label ?? (scope === "turn" ? "the current turn started" : "the session started");
       notify?.(`No file changes since ${since}.`);
-      return { ok: true, skipped: true, summary: `${scope} rollback skipped: no changes` };
+      return { ok: true, skipped: true, unchanged: true, summary: `${scope} rollback skipped: no changes` };
     }
 
     const diffText = (await git(root, ["diff", "--no-ext-diff", snapshot.treeFingerprint, currentTree])).stdout.trim();
@@ -108,7 +166,7 @@ export class DirectRollbackGate {
     }
     const changed = (await git(root, ["diff-tree", "-r", "-z", "--name-only", snapshot.treeFingerprint, currentTree]))
       .stdout.split("\0").filter(Boolean).length;
-    const target = scope === "turn" ? "turn checkpoint" : "session baseline";
+    const target = label ?? (scope === "turn" ? "turn checkpoint" : "session baseline");
     const approved = await ask(`Discard ${changed} change(s) and restore the ${target}? [y/N] `, diffText);
     if (!approved) {
       return { ok: true, skipped: true, summary: `${scope} rollback skipped` };

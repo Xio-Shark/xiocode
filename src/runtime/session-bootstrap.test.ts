@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -76,6 +77,52 @@ describe("prepareSession provider bootstrap", () => {
         success: true,
         text: "injected-ok",
       });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("records a rewind point per turn and rewinds files and conversation together", async () => {
+    const fixture = await createFixture();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: fixture.root, stdio: "ignore" });
+    git("init");
+    git("config", "user.email", "xio@test");
+    git("config", "user.name", "xio");
+    await writeFile(path.join(fixture.root, "app.txt"), "v0\n", "utf8");
+    await writeFile(path.join(fixture.root, ".gitignore"), ".xiocode/\n", "utf8");
+    git("add", ".");
+    git("commit", "-m", "init");
+    const client: LlmClient = {
+      async complete() {
+        return { content: "ok", toolCalls: [] };
+      },
+    };
+    const session = await prepareSession({
+      cwd: fixture.root,
+      workspaceRoot: fixture.root,
+      runtimeConfig: runtimeConfig(fixture.root),
+      env: fixture.env,
+      projectTrust: trustedProject(fixture.root),
+      llmClient: client,
+      ask: async () => true,
+    });
+
+    try {
+      await session.runPrompt("first change");
+      await writeFile(path.join(fixture.root, "app.txt"), "v1\n", "utf8");
+      await session.runPrompt("second change");
+      await writeFile(path.join(fixture.root, "app.txt"), "v2\n", "utf8");
+
+      expect(session.rewind.list().map((point) => [point.prompt, point.code.available, point.conversation.available]))
+        .toEqual([["first change", true, true], ["second change", true, true]]);
+      expect(String(await session.host.runCommand("rewind", ""))).toContain("2. second change  [files + conversation]");
+
+      const outcome = await session.rewind.run(2, "both");
+      expect(outcome.prompt).toBe("second change");
+      await expect(readFile(path.join(fixture.root, "app.txt"), "utf8")).resolves.toBe("v1\n");
+      expect(session.getMessages().some((message) => message.content === "second change")).toBe(false);
+      expect(session.getMessages().some((message) => message.content === "first change")).toBe(true);
+      expect(session.rewind.list()).toHaveLength(1);
     } finally {
       await session.close();
     }

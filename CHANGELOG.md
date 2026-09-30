@@ -16,6 +16,9 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 Requires `@xioflow/kernel` 0.5.0.
 
+### Added
+- **Rewind to an earlier turn: press Esc twice on an empty prompt (or `/rewind`).** Pick a turn, then restore its files and the conversation, only the conversation, or only the files. Files come back from the snapshot the kernel took when that turn started and are verified by fingerprint; the conversation is cut back to just before that turn and its prompt is put back in the input so you can edit and resend it. Rewind points survive a restart. A point says plainly what it can no longer restore: files once its snapshot has aged out (the last 20 turns keep one), the conversation once it has been compacted. In worktree mode only the conversation can be rewound.
+
 ### Changed
 - **Commands run under the kernel's native process-tree holder where it ships** (Linux x64/arm64, macOS arm64/x64). A command that detaches (`setsid`, double fork) is now stopped with the rest of its tree instead of being reported as a leftover, and if XioCode itself dies the helper stops the tree. `/kernel` shows which driver is in use and why; `XIOCODE_KERNEL_DRIVER=node` selects the previous one, `=reaper` insists on the native one and fails loudly where it is missing.
 

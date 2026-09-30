@@ -93,6 +93,15 @@ import {
   truncateToolDetail,
 } from "./theme.ts";
 import { composerHint, shortcutGroups, ShortcutsOverlay } from "./shortcuts.ts";
+import {
+  backRewindPicker,
+  enterRewindPicker,
+  moveRewindPicker,
+  openRewindPicker,
+  RewindPickerOverlay,
+  type RewindPickerState,
+} from "./rewind-picker.ts";
+import type { RewindMode } from "../runtime/rewind.ts";
 import { BrandHeader } from "./shark-logo.ts";
 
 const h = React.createElement;
@@ -316,6 +325,7 @@ export function App(props: AppProps): React.JSX.Element {
     palette,
     foldedBlockIds,
     escArmed,
+    rewindPicker,
     shortcutsOpen,
     shortcutsOffset,
     setReview,
@@ -579,7 +589,9 @@ export function App(props: AppProps): React.JSX.Element {
       ? h(TasklistPanel, { lines: tasklist.slice(0, 10) })
       : null,
     h(InputCandidateRegion, {
-      candidateMenu: palette
+      candidateMenu: rewindPicker
+        ? h(RewindPickerOverlay, { state: rewindPicker })
+        : palette
         ? h(CommandPalette, {
           query: palette.query,
           selected: palette.index,
@@ -1127,9 +1139,11 @@ function useSessionInteraction(
   search: SearchState | undefined;
   /** Command palette (Ctrl+P). */
   palette: Readonly<{ query: string; index: number }> | undefined;
+  /** Esc Esc on an empty prompt: rewind picker. */
+  rewindPicker: RewindPickerState | undefined;
   /** Esc layering: cancel turn / double-press clear draft. */
   pressEsc: () => boolean;
-  escArmed: "clear-draft" | "exit" | undefined;
+  escArmed: "clear-draft" | "exit" | "rewind" | undefined;
   pressCtrlC: () => "cancelled" | "cleared" | "armed" | "exit";
   /** `?` shortcuts sheet. */
   shortcutsOpen: boolean;
@@ -1204,7 +1218,10 @@ function useSessionInteraction(
   // Esc layering (grok parity): busy → cancel (draft kept); idle non-empty
   // draft → double-press within 800ms clears it. A cancel suppresses the arm
   // for ~1s so mashing Esc to stop a turn can't wipe the draft.
-  const [escArmed, setEscArmed] = useState<"clear-draft" | "exit" | undefined>(undefined);
+  const [rewindPicker, setRewindPicker] = useState<RewindPickerState | undefined>(undefined);
+  const rewindPickerRef = useRef(rewindPicker);
+  rewindPickerRef.current = rewindPicker;
+  const [escArmed, setEscArmed] = useState<"clear-draft" | "exit" | "rewind" | undefined>(undefined);
   const escArmedRef = useRef(escArmed);
   escArmedRef.current = escArmed;
   const lastCancelAtRef = useRef(0);
@@ -1217,8 +1234,21 @@ function useSessionInteraction(
       return true;
     }
     if (composerRef.current.text.length === 0) {
-      setEscArmed(undefined);
-      return false;
+      // Empty prompt: Esc Esc opens the rewind picker (not right after a cancel,
+      // so mashing Esc to stop a turn does not also open it).
+      if (Date.now() - lastCancelAtRef.current < 1_000) {
+        setEscArmed(undefined);
+        return true;
+      }
+      if (escArmedRef.current === "rewind") {
+        setEscArmed(undefined);
+        setRewindPicker(openRewindPicker(props.session.rewind.list()));
+        return true;
+      }
+      setEscArmed("rewind");
+      if (escTimerRef.current) clearTimeout(escTimerRef.current);
+      escTimerRef.current = setTimeout(() => setEscArmed(undefined), 800);
+      return true;
     }
     if (escArmedRef.current === "clear-draft") {
       setComposerState(setComposerText(composerRef.current, "", 0));
@@ -1632,6 +1662,7 @@ function useSessionInteraction(
     }),
     paletteClose: () => setPalette(undefined),
     paletteRun,
+    ...rewindPickerHandlers,
     pressEsc,
     pressCtrlC,
     escArmed,
@@ -1769,6 +1800,32 @@ function useSessionInteraction(
     const block = topBlockOfCurrentView();
     if (block && (block.output?.length ?? 0) > 0) setTranscriptViewer(block);
   };
+  const runRewind = (index: number, mode: RewindMode) => {
+    setRewindPicker(undefined);
+    void (async () => {
+      try {
+        const outcome = await props.session.rewind.run(index, mode);
+        props.bridge.sink.notify?.(outcome.summary, "info");
+        if (outcome.prompt !== undefined) {
+          setComposerState(setComposerText(composerRef.current, outcome.prompt, outcome.prompt.length));
+        }
+      } catch (error) {
+        props.bridge.sink.notify?.(error instanceof Error ? error.message : String(error), "error");
+      }
+    })();
+  };
+  const rewindPickerHandlers = {
+    rewindPickerOpen: () => rewindPickerRef.current !== undefined,
+    rewindPickerMove: (delta: number) => setRewindPicker((current) => (current ? moveRewindPicker(current, delta) : current)),
+    rewindPickerEnter: () => {
+      const current = rewindPickerRef.current;
+      if (!current) return;
+      const next = enterRewindPicker(current);
+      if ("run" in next) runRewind(next.run.index, next.run.mode);
+      else setRewindPicker(next.state);
+    },
+    rewindPickerBack: () => setRewindPicker((current) => (current ? backRewindPicker(current) : current)),
+  };
   const paletteEntries = () => {
     const commands = collectSlashCommands(props.session.host);
     return commands.map((command) => ({ label: `/${command.name}`, description: command.description }));
@@ -1837,6 +1894,7 @@ function useSessionInteraction(
     pressEsc,
     pressCtrlC,
     escArmed,
+    rewindPicker,
     shortcutsOpen,
     shortcutsOffset,
     toggleShortcuts: () => {
@@ -1937,7 +1995,7 @@ function handleInput(options: Readonly<{
   /** Esc layering: cancel turn / double-press clear draft. Returns handled. */
   pressEsc: () => boolean;
   /** Esc / Ctrl+C arm state for the composer hint. */
-  escArmed: "clear-draft" | "exit" | undefined;
+  escArmed: "clear-draft" | "exit" | "rewind" | undefined;
   /** Ctrl+C layering: cancel turn → clear draft → arm exit → exit. */
   pressCtrlC: () => "cancelled" | "cleared" | "armed" | "exit";
   /** `?` shortcuts sheet. */
@@ -1952,6 +2010,11 @@ function handleInput(options: Readonly<{
   paletteMove?: (delta: number) => void;
   paletteClose?: () => void;
   paletteRun?: () => void;
+  /** Rewind picker (Esc Esc on an empty prompt). */
+  rewindPickerOpen?: () => boolean;
+  rewindPickerMove?: (delta: number) => void;
+  rewindPickerEnter?: () => void;
+  rewindPickerBack?: () => void;
 }>): void {
   if (options.interaction === "confirm") {
     handleConfirmInput(options);
@@ -1967,6 +2030,14 @@ function handleInput(options: Readonly<{
   }
   if (options.key.ctrl && options.character === "c") {
     if (options.pressCtrlC() === "exit") void options.close(0);
+    return;
+  }
+  // Rewind picker (Esc Esc on an empty prompt): owns navigation while open.
+  if (options.rewindPickerOpen?.()) {
+    if (options.key.escape) options.rewindPickerBack?.();
+    else if (options.key.return) options.rewindPickerEnter?.();
+    else if (options.key.upArrow) options.rewindPickerMove?.(-1);
+    else if (options.key.downArrow) options.rewindPickerMove?.(1);
     return;
   }
   // `?` shortcuts sheet: while open it owns navigation; Esc closes, and the

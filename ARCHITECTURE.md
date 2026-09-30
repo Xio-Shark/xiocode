@@ -24,6 +24,7 @@
 | 一次权限决策 | `XIOCODE_AUTHORIZATION` journal 事实 | 主语只存指纹；带 toolCallId，可与随后的操作对上 |
 | tool call id → 操作 | `XIOCODE_TOOL_OPERATION` journal 事实 | resume 按它查中断调用的真实结果 |
 | direct 模式的会话基线 / 每轮检查点 | 内核快照（git-shadow） | WAL checkpoint 记录 `snapshot_id` 与 `journal_seq` |
+| 回退点（每轮开始） | 该轮检查点快照 + `XIOCODE_REWIND_POINT` journal 事实 | 事实记快照 id、轮前消息数、prompt 指纹；`XIOCODE_REWIND` 记一次回退并截断之后的点 |
 
 **为什么 opId 不用 tool call id**：provider 返回的 tool call id 不保证会话内唯一（有的按响应编号 `call_0`）。
 opId 在域内唯一（D17），同 opId 同输入会被 0.3.0 幂等协议回放，因此复用 id 会让一条新命令拿到旧结果而不执行。
@@ -62,7 +63,16 @@ direct 模式的回滚结果如实呈现内核结论：`restored` / `partial`（
 快照不含被忽略文件；自检查点以来若有未受写入限制的命令运行（`outOfScopeEffects: possible`），会提示工作区外可能留有副作用。
 xiocode 目前不启用写入限制驱动（sandbox-exec / bubblewrap），因此 `coverage` 不会是 `complete`。
 
-保留策略：会话基线 + 当前 turn 的快照；新 turn 开始时回收上一轮快照，会话启动时回收之前启动留下的快照，删除会话时一并清理。
+保留策略：会话基线 + 最近 20 轮的轮前快照（回退点）；更早的在新 turn 开始时回收。会话启动时只保留 journal 里仍列出的回退点快照，
+其余之前启动留下的快照回收；删除会话时一并清理。
+
+### 回退（Esc Esc / `/rewind`）
+
+回到某一轮开始前：文件（该轮的轮前快照，经内核回滚并核验）、对话（截断到该轮 prompt 之前，prompt 放回输入框），或两者。
+- 回退点在自动压缩之后、该轮 prompt 进入历史之前记录，所以消息数对应模型真正看到的对话；
+- 回退点作为 journal 事实持久化，resume 后仍可列出；快照已回收的点不能恢复文件，压缩后 prompt 已不在原位置的点不能恢复对话，两者都写明原因，不猜；
+- 文件 + 对话回退会丢弃该轮及之后的回退点与快照；只回退文件保留对话里的回退点；只能在空闲时进行。
+- worktree 模式没有内核快照，只提供对话回退。
 
 ## 6. 有意没有接入内核的部分
 

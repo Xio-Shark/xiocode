@@ -37,6 +37,7 @@ export function shortcutGroups(
     { keys: "ctrl+u", description: "Kill the draft to the cursor" },
     { keys: "ctrl+c", description: "Clear the draft" },
     { keys: "esc esc", description: "Clear the draft, keeping it in history" },
+    { keys: "esc esc", description: "On an empty prompt: rewind files and chat to an earlier turn" },
     { keys: "tab", description: "Cycle thinking level" },
     { keys: "shift+tab", description: "Cycle permission mode" },
   ];
@@ -142,13 +143,14 @@ export function formatShortcutLines(groups: readonly ShortcutGroup[]): readonly 
 export function composerHint(state: Readonly<{
   busy: boolean;
   /** Keystroke waiting on its second press, if any. */
-  armed?: "clear-draft" | "exit";
+  armed?: "clear-draft" | "exit" | "rewind";
   queued: boolean;
   canSteer: boolean;
 }>): string | undefined {
   // An armed key is a question already on screen — answer it before anything else.
   if (state.armed === "exit") return "ctrl+c again to exit";
   if (state.armed === "clear-draft") return "esc again to clear the draft";
+  if (state.armed === "rewind") return "esc again to rewind to an earlier turn";
   if (state.busy) {
     const parts = ["esc cancel"];
     if (state.canSteer) parts.push("type to steer", "!now", ">>after");

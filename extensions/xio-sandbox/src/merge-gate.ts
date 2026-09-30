@@ -19,6 +19,8 @@ export type RollbackResult = Readonly<{
   ok: true;
   skipped: boolean;
   summary: string;
+  /** Skipped because the files already match the target (not declined). */
+  unchanged?: boolean;
 }>;
 
 /** Optional second arg is action-specific detail shown in the confirmation UI. */

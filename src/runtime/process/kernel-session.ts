@@ -222,6 +222,13 @@ export class KernelSession {
     });
   }
 
+  /** Product facts of one type, in journal order. */
+  listFacts(type: `XIOCODE_${string}`): readonly Readonly<{ seq: number; timestamp: string; payload: Record<string, unknown> }>[] {
+    return this.#domain.getStore().getJournalEvents(this.#domain.domainId)
+      .filter((event) => event.type === type)
+      .map(({ seq, timestamp, payload }) => ({ seq, timestamp, payload }));
+  }
+
   /**
    * What the kernel recorded for the latest operation submitted under `key`
    * (a tool call id). Undefined when nothing reached the kernel: the mapping

@@ -122,6 +122,7 @@ describe("App", () => {
       steer() {},
       followUp() {},
       getMessages: () => [],
+      rewind: { list: () => [], run: async () => ({ skipped: true, summary: "" }) },
       workspacePerception: stubWorkspacePerception(),
       async close() {},
       waitForIdle: async () => {},
@@ -219,6 +220,59 @@ describe("App", () => {
       (frame) => frame.includes("status-ok-after-connect-error"),
     );
     expect(recovered).toContain("status-ok-after-connect-error");
+  });
+
+  it("opens the rewind picker on Esc Esc with an empty prompt and puts the prompt back", async () => {
+    const calls: [number, string][] = [];
+    const point = (index: number, prompt: string, code = true) => ({
+      index,
+      at: "",
+      prompt,
+      code: code ? { available: true as const } : { available: false as const, reason: "snapshot pruned" },
+      conversation: { available: true as const },
+    });
+    const session: PreparedSession = {
+      ...createSession(new ExtensionHost()),
+      rewind: {
+        list: () => [point(1, "add feature A", false), point(2, "refactor A")],
+        run: async (index, mode) => {
+          calls.push([index, mode]);
+          return { skipped: false, summary: "rewound to turn 2", prompt: "refactor A" };
+        },
+      },
+    };
+    const instance = render(React.createElement(App, {
+      session,
+      bridge: new TuiSessionBridge(),
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+
+    instance.stdin.write("\x1b");
+    await waitForFrame(instance, (frame) => frame.includes("esc again to rewind"));
+    instance.stdin.write("\x1b");
+    const list = await waitForFrame(instance, (frame) => frame.includes("Rewind to the start of a turn"));
+    // Newest first; the pruned point says what it can still restore.
+    expect(list.indexOf("refactor A")).toBeLessThan(list.indexOf("add feature A"));
+    expect(list).toContain("(chat)");
+
+    instance.stdin.write("\x1b[B"); // older point: files unavailable
+    await waitForFrame(instance, (frame) => /❯?\s*1\. add feature A/.test(frame));
+    instance.stdin.write("\r");
+    const options = await waitForFrame(instance, (frame) => frame.includes("Rewind to before: add feature A"));
+    expect(options).toContain("Restore files only — snapshot pruned");
+    instance.stdin.write("\x1b"); // back to the list
+    await waitForFrame(instance, (frame) => frame.includes("Rewind to the start of a turn"));
+    instance.stdin.write("\x1b[A");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    instance.stdin.write("\r");
+    await waitForFrame(instance, (frame) => frame.includes("Rewind to before: refactor A"));
+    instance.stdin.write("\r");
+
+    const done = await waitForFrame(instance, (frame) => frame.includes("rewound to turn 2"));
+    expect(calls).toEqual([[2, "both"]]);
+    expect(done).toContain("refactor A");
+    expect(done).not.toContain("Rewind to the start of a turn");
   });
 
   it("folds completed thinking while retaining it in the transcript viewer", async () => {
@@ -1065,6 +1119,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     steer() {},
     followUp() {},
     getMessages: () => messages,
+    rewind: { list: () => [], run: async () => ({ skipped: true, summary: "" }) },
     workspacePerception: stubWorkspacePerception(),
     async close() {},
     waitForIdle: async () => {},
