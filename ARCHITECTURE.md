@@ -24,6 +24,7 @@
 | 一次权限决策 | `XIOCODE_AUTHORIZATION` journal 事实 | 主语只存指纹；带 toolCallId，可与随后的操作对上 |
 | tool call id → 操作 | `XIOCODE_TOOL_OPERATION` journal 事实 | resume 按它查中断调用的真实结果 |
 | direct 模式的会话基线 / 每轮检查点 | 内核快照（git-shadow） | WAL checkpoint 记录 `snapshot_id` 与 `journal_seq` |
+| `parallel_edit` 的每个 worker | 一个工作区事务（fork = 事务分叉） | worker 完成即 commit，先完成先应用；冲突（write_write / read_write / external_write）不应用并回报 |
 | 回退点（每轮开始） | 该轮检查点快照 + `XIOCODE_REWIND_POINT` journal 事实 | 事实记快照 id、轮前消息数、prompt 指纹；`XIOCODE_REWIND` 记一次回退并截断之后的点 |
 
 **为什么 opId 不用 tool call id**：provider 返回的 tool call id 不保证会话内唯一（有的按响应编号 `call_0`）。
@@ -78,6 +79,15 @@ direct 模式的回滚结果如实呈现内核结论：`restored` / `partial`（
 - 回退点作为 journal 事实持久化，resume 后仍可列出；快照已回收的点不能恢复文件，压缩后 prompt 已不在原位置的点不能恢复对话，两者都写明原因，不猜；
 - 文件 + 对话回退会丢弃该轮及之后的回退点与快照；只回退文件保留对话里的回退点；只能在空闲时进行。
 - worktree 模式没有内核快照，只提供对话回退。
+
+### 并行编辑（`parallel_edit`）
+
+主 agent 把互不相关的改动拆给 2–4 个 worker agent 同时做：
+- 每个 worker 一个内核工作区事务，分叉放在域目录 `forks/<txId>` 下；worker 只有 read / grep / glob / write / edit，
+  路径策略把写入限制在分叉内。worker 的 host 上没有权限闸门，所以不给 shell；
+- worker 完成即提交（commit 要工作区写租约，被命令占用时有界等待 60s）。内核按读集（atime）与写集校验：
+  先提交的事务改过、或有人直接改了工作区里的文件，后提交者记为冲突，不应用，分叉丢弃，结果告诉主 agent 与谁冲突；
+- 失败 / 取消的 worker 事务直接 abort；事务结束后回收其基线快照；写入限制开启时拒绝（分叉在工作区外）。
 
 ## 6. 有意没有接入内核的部分
 

@@ -29,6 +29,7 @@ import {
   RecoveryEngine,
   ResourceConflictError,
   type AdjudicationRecord,
+  type CommitResult,
   type DomainStatus,
   type KernelRunStatus,
   type Operation,
@@ -429,6 +430,38 @@ export class KernelSession {
   async pruneSnapshots(snapshotIds: readonly string[]): Promise<string[]> {
     if (snapshotIds.length === 0) return [];
     return this.#supervisor.pruneSnapshots([...snapshotIds], { runId: this.currentRunId });
+  }
+
+  /**
+   * Opens a workspace transaction: the kernel snapshots the workspace and
+   * forks it (a detached worktree under the domain), and an agent works in
+   * `forkRoot`. Commit validates its reads and writes against transactions
+   * committed since and against direct writes to the workspace.
+   */
+  async beginTransaction(name: string): Promise<Readonly<{ txId: string; forkRoot: string; baseSnapshotId: string }>> {
+    this.#assertOpen();
+    const txId = this.#oneOffOpId(`tx-${sanitizeId(name).slice(0, 24)}`);
+    const tx = await this.#supervisor.beginWorkspaceTransaction({
+      txId,
+      runId: this.currentRunId,
+      root: this.workspaceRoot,
+      forkPath: path.join(this.domainPath, "forks", txId),
+    });
+    return { txId: tx.txId, forkRoot: tx.forkRoot, baseSnapshotId: tx.baseSnapshotId };
+  }
+
+  /** Applies the fork's changes when nothing they read or wrote changed meanwhile; the fork is removed. */
+  async commitTransaction(txId: string, baseSnapshotId: string): Promise<CommitResult> {
+    this.#assertOpen();
+    const result = await this.#supervisor.commitWorkspaceTransaction(txId);
+    if (result.status === "committed") await this.pruneSnapshots([baseSnapshotId]);
+    return result;
+  }
+
+  async abortTransaction(txId: string, baseSnapshotId: string, reason: string): Promise<void> {
+    this.#assertOpen();
+    await this.#supervisor.abortWorkspaceTransaction(txId, reason);
+    await this.pruneSnapshots([baseSnapshotId]);
   }
 
   /**

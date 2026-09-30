@@ -69,6 +69,7 @@ import {
   registerKernelCommand,
 } from "./kernel-binding.ts";
 import { closeKernelSession, type KernelSession } from "./process/index.ts";
+import { createParallelEditTool, createWorkerRunner } from "./parallel-edit.ts";
 import {
   formatRewindPoints,
   RewindLedger,
@@ -454,6 +455,22 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   /** Snapshot taken by this turn's beforePrompt; recorded with the rewind point. */
   let pendingRewindSnapshot: string | undefined;
   registerRewindCommand(host, rewind);
+  // Parallel workers need kernel transactions, which fork a git workspace.
+  if (kernel && directGate) {
+    host.registerTool(createParallelEditTool({
+      getKernel: () => kernel,
+      runWorker: createWorkerRunner({
+        getClient: getOrCreateClient,
+        getModel: () => currentModel,
+        getProviderApi: () => registration.api,
+        maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
+        onEvent: (name, event, detail) => sink.notify?.(
+          event === "start" ? `parallel worker "${name}" started` : `parallel worker "${name}" ${detail}`,
+          "info",
+        ),
+      }),
+    }));
+  }
   const createTurnSignal = () => {
     turnAbort = new AbortController();
     return turnAbort.signal;

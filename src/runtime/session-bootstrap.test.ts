@@ -128,6 +128,58 @@ describe("prepareSession provider bootstrap", () => {
     }
   });
 
+  it("lets the main agent split edits across parallel workers applied through kernel transactions", async () => {
+    const fixture = await createFixture();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: fixture.root, stdio: "ignore" });
+    git("init");
+    git("config", "user.email", "xio@test");
+    git("config", "user.name", "xio");
+    await writeFile(path.join(fixture.root, ".gitignore"), ".xiocode/\n", "utf8");
+    git("add", ".");
+    git("commit", "-m", "init");
+    const client: LlmClient = {
+      async complete(request) {
+        const system = request.messages[0]?.content ?? "";
+        const toolResults = request.messages.filter((m) => m.role === "tool");
+        if (system.includes("coding worker")) {
+          const target = /write (\S+)/.exec(request.messages.find((m) => m.role === "user")?.content ?? "")?.[1] ?? "x.txt";
+          return toolResults.length === 0
+            ? { content: "", toolCalls: [{ id: `w-${target}`, name: "write", arguments: { path: target, content: `${target}\n` } }] }
+            : { content: `wrote ${target}`, toolCalls: [] };
+        }
+        if (toolResults.length === 0) {
+          return {
+            content: "",
+            toolCalls: [{
+              id: "p1",
+              name: "parallel_edit",
+              arguments: { tasks: [{ name: "one", instruction: "write one.txt" }, { name: "two", instruction: "write two.txt" }] },
+            }],
+          };
+        }
+        return { content: toolResults.at(-1)?.content ?? "", toolCalls: [] };
+      },
+    };
+    const session = await prepareSession({
+      cwd: fixture.root,
+      workspaceRoot: fixture.root,
+      runtimeConfig: runtimeConfig(fixture.root),
+      env: fixture.env,
+      projectTrust: trustedProject(fixture.root),
+      llmClient: client,
+      ask: async () => true,
+    });
+    try {
+      expect(session.host.listTools().some((tool) => tool.name === "parallel_edit")).toBe(true);
+      const result = await session.runPrompt("do both changes in parallel");
+      expect(result.text).toContain("2/2 task(s) applied");
+      await expect(readFile(path.join(fixture.root, "one.txt"), "utf8")).resolves.toBe("one.txt\n");
+      await expect(readFile(path.join(fixture.root, "two.txt"), "utf8")).resolves.toBe("two.txt\n");
+    } finally {
+      await session.close();
+    }
+  });
+
   it("keeps prompt-once bootstrap non-interactive and fails at the model boundary", async () => {
     const fixture = await createFixture();
     await expect(runSession({
