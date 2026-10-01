@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import type { RollbackOperationResult, SnapshotRef } from "@xioflow/kernel";
 
 import { KernelSession } from "../../../src/runtime/process/kernel-session.ts";
 import { gitOk } from "../src/git.ts";
-import { DirectRollbackGate } from "../src/direct-gate.ts";
+import { describeRollback, DirectRollbackGate } from "../src/direct-gate.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -69,7 +70,9 @@ describe("DirectRollbackGate (kernel snapshots)", () => {
     expect(result).toMatchObject({ ok: true, skipped: false });
     expect(asked[0]).toContain("Discard 3 change(s)");
     expect(result.summary).toContain("Restored the turn checkpoint");
-    expect(result.summary).toContain("Ignored files");
+    // No manifest was taken (confinement is off), so nothing is claimed about ignored files.
+    expect(result.summary).toContain("the kernel did not check whether they changed");
+    expect(result.summary).not.toContain("unchanged");
 
     await expect(readFile(path.join(mainRoot, "README.md"), "utf8")).resolves.toBe("user modified\n");
     await expect(readFile(path.join(mainRoot, "user-wip.txt"), "utf8")).resolves.toBe("important user work\n");
@@ -167,5 +170,79 @@ describe("DirectRollbackGate (kernel snapshots)", () => {
       head: "abc", tree: "def", ref: "refs/xiocode/checkpoints/direct/x", commit: "123",
     });
     await expect(gate.promptRollbackTurn(async () => true)).rejects.toThrow(/older XioCode/);
+  });
+});
+
+describe("describeRollback: ignored files", () => {
+  const snapshot = { treeFingerprint: "a".repeat(40), coverage: "worktree_non_ignored" } as SnapshotRef;
+  const rollback = (over: Partial<RollbackOperationResult>): RollbackOperationResult => ({
+    kind: "rollback",
+    status: "restored",
+    snapshotId: "snap",
+    coverage: "non_ignored",
+    outOfScopeEffects: "none_possible",
+    ignoredFiles: "not_captured",
+    coverageBasis: ["all_ops_confined", "ignored_not_captured"],
+    durationMs: 1,
+    completedAt: "2026-09-30T00:00:00.000Z",
+    ...over,
+  });
+
+  it("does not say ignored files are unchanged when the kernel never checked them", () => {
+    const text = describeRollback(rollback({}), snapshot, "turn checkpoint");
+    expect(text).toContain("were not snapshotted: the rollback did not restore them, and the kernel did not check whether they changed.");
+    expect(text).not.toContain("unchanged");
+    expect(text).not.toContain("complete");
+    expect(text).toContain("everything except the ignored files");
+  });
+
+  it("lists ignored files that differ from the checkpoint", () => {
+    const text = describeRollback(rollback({
+      coverageBasis: ["all_ops_confined", "ignored_manifest_changed"],
+      ignoredChanges: {
+        added: ["/ws/cache.tmp"],
+        removed: ["/ws/.env"],
+        modified: ["/ws/build/out.js"],
+        metadataOnly: ["/ws/build/kept.js"],
+        truncated: true,
+        counts: { added: 1, removed: 1, modified: 75, metadataOnly: 1 },
+      },
+    }), snapshot, "turn checkpoint");
+    expect(text).toContain("Ignored files that differ from the checkpoint and were left as they are:");
+    expect(text).toContain("  removed (1):\n    /ws/.env");
+    expect(text).toContain("  added (1):\n    /ws/cache.tmp");
+    expect(text).toContain("  modified (75):\n    /ws/build/out.js\n    ... and 74 more");
+    expect(text).toContain("1 ignored file(s) kept their size and modification time");
+    expect(text).not.toContain("did not check");
+    expect(text).not.toContain("complete");
+  });
+
+  it("says unchanged only when the manifest proved it, and restored only when they were in the snapshot", () => {
+    const verified = describeRollback(rollback({
+      coverage: "complete",
+      ignoredFiles: "unchanged_verified",
+      coverageBasis: ["all_ops_confined", "ignored_manifest_unchanged"],
+    }), snapshot, "turn checkpoint");
+    expect(verified).toContain("found them unchanged");
+    expect(verified).toContain("the kernel vouches for a complete rollback");
+
+    const restored = describeRollback(rollback({
+      coverage: "complete",
+      ignoredFiles: "restored",
+      coverageBasis: ["all_ops_confined", "snapshot_full_tree"],
+    }), { ...snapshot, coverage: "full_tree" }, "turn checkpoint");
+    expect(restored).toContain("were part of the snapshot and were restored with it");
+  });
+
+  it("lists new ignored files that a full snapshot's rollback left in place", () => {
+    const text = describeRollback(rollback({
+      status: "partial",
+      coverage: "declared_roots",
+      outOfScopeEffects: "possible",
+      ignoredFiles: "restored",
+      unrestoredPaths: ["/ws/node_modules/"],
+      coverageBasis: ["unrestored_paths", "snapshot_full_tree"],
+    }), { ...snapshot, coverage: "full_tree" }, "turn checkpoint");
+    expect(text).toContain("these paths could not be restored:\n  /ws/node_modules/");
   });
 });

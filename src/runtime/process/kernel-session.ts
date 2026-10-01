@@ -398,6 +398,10 @@ export class KernelSession {
       runId: this.currentRunId,
       opId: this.#oneOffOpId("snap"),
       roots: [this.workspaceRoot],
+      // Ignored files are outside the snapshot. Only under confinement can a
+      // rollback be vouched for at all, so only then is the manifest (which
+      // proves they did not change) worth its walk over them.
+      ...(this.#confinement ? { trackIgnored: "manifest" as const } : {}),
     });
     if (result.status !== "succeeded" || !result.snapshot) {
       throw new Error(`kernel snapshot failed: ${result.errorMessage ?? "no snapshot recorded"}`);

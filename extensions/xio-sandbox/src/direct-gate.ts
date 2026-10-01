@@ -208,9 +208,7 @@ export function describeRollback(
   } else {
     lines.push(`Rollback to the ${target} (${shortTree}) failed: ${result.errorMessage ?? "unknown error"}`);
   }
-  if (snapshot.coverage === "worktree_non_ignored") {
-    lines.push("Ignored files (.gitignore: e.g. .env, node_modules, build output) were not snapshotted and are unchanged.");
-  }
+  lines.push(...describeIgnoredFiles(result));
   // With the built-in executor, commands never reached the kernel: its view
   // of what ran since the checkpoint is incomplete, so it vouches for nothing.
   const bypassed = resolveProcessBackend().backend !== "kernel";
@@ -225,6 +223,57 @@ export function describeRollback(
       "Every command since this checkpoint ran confined to the workspace, so nothing outside it needs undoing "
         + "(the kernel vouches for a complete rollback).",
     );
+  } else if (result.coverage === "non_ignored") {
+    lines.push(
+      "Every command since this checkpoint ran confined to the workspace, so nothing outside it needs undoing. "
+        + "Inside it, the kernel vouches for everything except the ignored files above.",
+    );
   }
   return lines.join("\n");
+}
+
+const IGNORED_EXAMPLES = "(.gitignore: e.g. .env, node_modules, build output)";
+
+/** What the kernel knows about ignored files: only what it restored or checked, never an assumption. */
+function describeIgnoredFiles(result: RollbackOperationResult): string[] {
+  switch (result.ignoredFiles) {
+    case "restored":
+      return [`Ignored files ${IGNORED_EXAMPLES} were part of the snapshot and were restored with it.`];
+    case "unchanged_verified":
+      return [
+        `Ignored files ${IGNORED_EXAMPLES} were not snapshotted; the kernel compared their size, timestamps and mode `
+          + "with the checkpoint and found them unchanged.",
+      ];
+    case "unverified":
+      return [`Ignored files ${IGNORED_EXAMPLES} were part of the snapshot, but the rollback could not be verified.`];
+    case "not_captured":
+      return [
+        `Ignored files ${IGNORED_EXAMPLES} were not snapshotted: the rollback did not restore them`
+          + (result.ignoredChanges ? "." : ", and the kernel did not check whether they changed."),
+        ...describeIgnoredChanges(result.ignoredChanges),
+      ];
+  }
+}
+
+function describeIgnoredChanges(changes: RollbackOperationResult["ignoredChanges"]): string[] {
+  if (!changes) return [];
+  const lines: string[] = [];
+  const list = (label: string, paths: readonly string[], total: number): void => {
+    if (total === 0) return;
+    lines.push(`  ${label} (${total}):`, ...paths.map((p) => `    ${p}`));
+    if (total > paths.length) lines.push(`    ... and ${total - paths.length} more`);
+  };
+  if (changes.counts.added + changes.counts.removed + changes.counts.modified > 0) {
+    lines.push("Ignored files that differ from the checkpoint and were left as they are:");
+    list("added", changes.added, changes.counts.added);
+    list("removed", changes.removed, changes.counts.removed);
+    list("modified", changes.modified, changes.counts.modified);
+  }
+  if (changes.counts.metadataOnly > 0) {
+    lines.push(
+      `${changes.counts.metadataOnly} ignored file(s) kept their size and modification time but had their metadata `
+        + "touched, so the kernel cannot prove their content is unchanged.",
+    );
+  }
+  return lines;
 }

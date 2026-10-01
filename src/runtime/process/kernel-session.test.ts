@@ -386,8 +386,15 @@ describe("KernelSession: identity, snapshots, lifecycle", () => {
       fs.writeFileSync(path.join(h.workspace, "a.txt"), "v2\n");
       expect(await h.session.currentTreeAgainst(snapshot)).not.toBe(snapshot.treeFingerprint);
       // Nothing ran through the kernel since the snapshot: nothing can have escaped the roots.
+      // Ignored files were not snapshotted and no manifest was taken, so the claim stops short of complete.
       const clean = await h.session.rollback(snapshot.id);
-      expect(clean).toMatchObject({ status: "restored", outOfScopeEffects: "none_possible" });
+      expect(clean).toMatchObject({
+        status: "restored",
+        coverage: "non_ignored",
+        outOfScopeEffects: "none_possible",
+        ignoredFiles: "not_captured",
+        coverageBasis: ["all_ops_confined", "ignored_not_captured"],
+      });
 
       // An unconfined command since the snapshot could have written anywhere.
       await h.session.run({
@@ -398,7 +405,9 @@ describe("KernelSession: identity, snapshots, lifecycle", () => {
       });
       const rolled = await h.session.rollback(snapshot.id);
       expect(rolled.status).toBe("restored");
+      expect(rolled.coverage).toBe("declared_roots");
       expect(rolled.outOfScopeEffects).toBe("possible");
+      expect(rolled.coverageBasis).toEqual(["unconfined_op_since_snapshot", "ignored_not_captured"]);
       expect(fs.readFileSync(path.join(h.workspace, "a.txt"), "utf8")).toBe("v1\n");
 
       expect(await h.session.pruneSnapshots([snapshot.id])).toEqual([snapshot.id]);

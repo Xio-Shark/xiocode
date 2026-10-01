@@ -92,7 +92,26 @@ describe("write confinement", () => {
       await gate.captureTurnCheckpoint();
       expect((await edit("confined\n")).code).toBe(0);
       const complete = await gate.promptRollbackTurn(approve);
+      // The checkpoint was taken under confinement, so it carries the ignored-file manifest that proves them unchanged.
+      expect(complete.summary).toContain("found them unchanged");
       expect(complete.summary).toContain("the kernel vouches for a complete rollback");
+
+      // A confined command that touches an ignored file: nothing escaped the workspace, but the claim is no longer complete.
+      fs.writeFileSync(path.join(workspace, ".gitignore"), "*.cache\n");
+      await gate.captureTurnCheckpoint();
+      const touchIgnored = await session.run({
+        command: process.execPath,
+        args: ["-e", "require('fs').writeFileSync('app.txt', 'x\\n'); require('fs').writeFileSync('build.cache', 'junk')"],
+        cwd: workspace,
+        output: SMALL,
+      });
+      expect(touchIgnored.code).toBe(0);
+      const nonIgnored = await gate.promptRollbackTurn(approve);
+      expect(nonIgnored.summary).toContain(`added (1):\n    ${path.join(workspace, "build.cache")}`);
+      expect(nonIgnored.summary).toContain("everything except the ignored files");
+      expect(nonIgnored.summary).not.toContain("complete");
+      fs.rmSync(path.join(workspace, "build.cache"));
+      fs.rmSync(path.join(workspace, ".gitignore"));
 
       session.disableConfinement("test");
       await gate.captureTurnCheckpoint();
