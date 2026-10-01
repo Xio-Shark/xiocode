@@ -89,6 +89,7 @@ export class TuiSessionBridge implements InteractiveIO {
     onContextCompaction: (event) => this.emit({ kind: "context-compaction", event }),
     onCancelled: () => this.emit({ kind: "notice", text: "Turn cancelled.", level: "warning" }),
     onDoneContract: (summary) => this.emit({ kind: "notice", text: summary, level: "warning" }),
+    onEvidence: (summary) => this.emit({ kind: "notice", text: summary }),
   };
 
   /**

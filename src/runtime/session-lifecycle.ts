@@ -358,6 +358,9 @@ export function createPromptRunner(options: Readonly<{
         }
         if (lastDoneContract && !lastDoneContract.passed) {
           sink.onDoneContract?.(lastDoneContract.summary);
+        } else if (lastDoneContract?.results.some((item) => item.evidence?.reused || item.evidence?.previous)) {
+          // Shown by the harness, next to the reply: the model does not get to word its own evidence.
+          sink.onEvidence?.(lastDoneContract.summary);
         }
 
         // Post-settle only: never offer while a provider stream / tool batch is in flight.

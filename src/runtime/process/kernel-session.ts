@@ -30,6 +30,7 @@ import {
   ResourceConflictError,
   type AdjudicationRecord,
   type CommitOptions,
+  type EvidenceStatus,
   type CommitResult,
   type DomainStatus,
   type KernelRunStatus,
@@ -242,6 +243,12 @@ export class KernelSession {
       .map(({ seq, timestamp, payload }) => ({ seq, timestamp, payload }));
   }
 
+  /** Whether a result recorded with `trackReads` still describes the workspace (kernel README, "Evidence with dependencies"). */
+  evidenceStatus(opId: string): EvidenceStatus {
+    this.#assertOpen();
+    return this.#supervisor.evidenceStatus(opId);
+  }
+
   /**
    * What the kernel recorded for the latest operation submitted under `key`
    * (a tool call id). Undefined when nothing reached the kernel: the mapping
@@ -358,6 +365,9 @@ export class KernelSession {
         : undefined,
       ...(projection ? { onStreamChunk: projection.push } : {}),
       ...(confined ? { capabilityId: confined.capabilityId, confinement: confined.driver } : {}),
+      ...(options.trackReads
+        ? { trackReads: { roots: [...options.trackReads.roots], ...(options.trackReads.statCaches ? { statCaches: options.trackReads.statCaches } : {}) } }
+        : {}),
     });
 
     const onAbort = (): void => {

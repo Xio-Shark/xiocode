@@ -16,6 +16,8 @@ export type SessionUiSink = CommandUi & Readonly<{
   onContextCompaction?: (event: ContextCompactionUiEvent) => void;
   onCancelled?: () => void;
   onDoneContract?: (summary: string) => void;
+  /** A passing done contract whose summary says an earlier result was kept, or why it was run again. */
+  onEvidence?: (summary: string) => void;
 }>;
 
 export function toolResultOutput(result: ToolExecuteResult): string {
@@ -230,6 +232,9 @@ export function createStdoutSessionUiSink(write: (chunk: string) => void = (chun
       write("\n(cancelled)\n");
     },
     onDoneContract(summary) {
+      write(`\n${summary}\n`);
+    },
+    onEvidence(summary) {
       write(`\n${summary}\n`);
     },
   };

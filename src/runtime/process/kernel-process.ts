@@ -149,6 +149,17 @@ export async function runSupervisedProcessGated(
   return session.run(options);
 }
 
+/** The kernel session commands in `cwd` run through, or undefined when the built-in supervisor is in use. */
+export async function kernelSessionIfAvailable(cwd: string): Promise<KernelSession | undefined> {
+  if (resolveProcessBackend().backend === "legacy") return undefined;
+  try {
+    return await resolveKernelSession(cwd);
+  } catch {
+    // runSupervisedProcessGated reports the same failure when the command runs.
+    return undefined;
+  }
+}
+
 /**
  * The bound session, or an ephemeral one for callers outside a product
  * session. Throws when the domain cannot be opened; callers decide the fallback.

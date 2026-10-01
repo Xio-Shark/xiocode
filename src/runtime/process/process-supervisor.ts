@@ -53,6 +53,13 @@ export type ProcessRunOptions = Readonly<{
    */
   access?: "read" | "write";
   /**
+   * Kernel path: record which files under `roots` the command read, so the
+   * result can later be checked against the workspace (`evidenceStatus`).
+   * `statCaches: "ruled_out"` is the caller's statement that the command runs
+   * without stat-validated caches. Ignored by the built-in supervisor.
+   */
+  trackReads?: Readonly<{ roots: readonly string[]; statCaches?: "ruled_out" }>;
+  /**
    * Test seam: override platform tree termination.
    * Return true when the tree is gone; false to signal cleanup_failed.
    */

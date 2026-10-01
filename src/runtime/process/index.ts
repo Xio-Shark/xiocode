@@ -25,6 +25,7 @@ export {
   disposeSessionDomain,
   kernelDomainPath,
   kernelDomainRoot,
+  kernelSessionIfAvailable,
   notifyKernelFallback,
   resetKernelProcessForTests,
   resolveKernelSession,

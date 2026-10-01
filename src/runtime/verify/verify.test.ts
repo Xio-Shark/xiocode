@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { formatDoneContractFeedback, runDoneContract } from "./done-contract.ts";
+import { withoutStatCaches } from "./evidence.ts";
 import { hashContent, verifyWriteBack } from "./write-back.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 
@@ -40,6 +42,77 @@ describe("runDoneContract", () => {
     expect(feedback).toContain("DONE CONTRACT FAILED");
     expect(feedback).toMatch(/Fix:/i);
     expect(feedback.toLowerCase()).toMatch(/exit 0|do not claim/);
+  });
+});
+
+describe("runDoneContract evidence reuse", () => {
+  const READS_INPUT = ["node", "-e", "require('fs').readFileSync('input.txt')"];
+
+  async function workspace(): Promise<string> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-evidence-"));
+    tempDirs.push(root);
+    await writeFile(path.join(root, "input.txt"), "one\n", "utf8");
+    await writeFile(path.join(root, "other.txt"), "other\n", "utf8");
+    return root;
+  }
+  const check = (cwd: string, argv: readonly string[] = READS_INPUT) =>
+    runDoneContract({ commands: [{ name: "check", argv }] }, { cwd });
+
+  it("keeps an earlier pass while nothing changed, and runs again once something did", async () => {
+    const cwd = await workspace();
+    const first = await check(cwd);
+    // Built-in supervisor (no kernel): there is no evidence, every call runs the command.
+    if (!first.results[0]?.evidence) return;
+    expect(first.results[0].evidence).toEqual({ reused: false });
+
+    const second = await check(cwd);
+    expect(second.results[0]?.evidence).toMatchObject({ reused: true, previous: { status: "fresh", basis: "tree_unchanged" } });
+    expect(second.summary).toBe("done contract: PASS [check:pass (not re-run: nothing in the workspace has changed since it passed)]");
+
+    await writeFile(path.join(cwd, "input.txt"), "two\n", "utf8");
+    const third = await check(cwd);
+    expect(third.results[0]?.evidence?.reused).toBe(false);
+    const previous = third.results[0]?.evidence?.previous;
+    if (previous?.status === "stale") {
+      expect(third.summary).toContain("check:pass (re-run: input.txt changed since the last pass)");
+    } else {
+      // A filesystem that does not record access times: the read set is not observed.
+      expect(previous).toMatchObject({ status: "unknown", reason: "reads_unobserved" });
+    }
+  });
+
+  it("runs again when a file the command did not read changed, because a cache may hide the dependency", async () => {
+    const cwd = await workspace();
+    const first = await check(cwd);
+    if (!first.results[0]?.evidence) return;
+    await writeFile(path.join(cwd, "other.txt"), "changed\n", "utf8");
+    const second = await check(cwd);
+    expect(second.results[0]?.evidence).toMatchObject({ reused: false, previous: { status: "unknown" } });
+    expect(second.summary).toContain("re-run: files changed since the last pass, and it cannot be shown that this command does not depend on them");
+  });
+
+  it("never keeps a failure", async () => {
+    const cwd = await workspace();
+    const failing = ["node", "-e", "process.exit(2)"];
+    const first = await check(cwd, failing);
+    const second = await check(cwd, failing);
+    expect(first.passed).toBe(false);
+    expect(second.results[0]).toMatchObject({ passed: false, exitCode: 2 });
+    expect(second.results[0]?.evidence?.reused ?? false).toBe(false);
+  });
+
+  it("takes the bytecode cache out of the way for Python runners only", () => {
+    const python = withoutStatCaches(["/usr/bin/python3", "-m", "pytest"], { PATH: "/usr/bin" });
+    expect(python.statCaches).toBe("ruled_out");
+    expect(python.env.PYTHONDONTWRITEBYTECODE).toBe("1");
+    const cacheDir = python.env.PYTHONPYCACHEPREFIX!;
+    expect(existsSync(cacheDir)).toBe(true);
+    python.dispose();
+    expect(existsSync(cacheDir)).toBe(false);
+
+    const other = withoutStatCaches(["npm", "test"], { PATH: "/usr/bin" });
+    expect(other.statCaches).toBeUndefined();
+    expect(other.env).toEqual({ PATH: "/usr/bin" });
   });
 });
 
