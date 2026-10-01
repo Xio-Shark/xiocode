@@ -123,15 +123,22 @@ export function toKernelAcceptance(result: Readonly<{
 export function annotateInterruptedTools(
   messages: readonly ChatMessage[],
   session: KernelSession,
+  env: NodeJS.ProcessEnv = process.env,
 ): ChatMessage[] {
   return messages.map((message) => {
     if (message.role !== "tool" || !message.toolCallId) return message;
     if (!message.content.startsWith(INTERRUPTED_TOOL_PREFIX)) return message;
     const fact = session.getOperationByKey(message.toolCallId);
     if (!fact) {
+      // Only when commands run through the kernel does a missing record prove
+      // anything: with the built-in executor the kernel never sees them.
+      const viaKernel = resolveProcessBackend(env).backend === "kernel";
       return {
         ...message,
-        content: `${message.content}\nkernel: no process was registered for this call, so it never started.`,
+        content: viaKernel
+          ? `${message.content}\nkernel: no process was registered for this call, so it never started.`
+          : `${message.content}\nkernel: commands are not running through the kernel, so it has no record of `
+            + "this call: the command may have started, and a process it started may still be running.",
       };
     }
     return { ...message, content: `${message.content}\n${describeFact(fact)}` };
@@ -150,6 +157,11 @@ function describeFact(fact: NonNullable<ReturnType<KernelSession["getOperationBy
   if (result.kind === "process" && result.terminationReason === "exit_unobserved") {
     return `kernel: operation ${fact.opId} ran and exited while XioCode was down; its exit was never `
       + "observed, so it may have succeeded or failed. Check its effects before running it again.";
+  }
+  if (result.kind === "process" && result.status === "cancelled" && result.evidence === "unobserved") {
+    // Recovery found the process alive and stopped it: it did not finish.
+    return `kernel: operation ${fact.opId} was still running when XioCode came back, and recovery stopped it. `
+      + "It did not finish; whatever it had already done stays done. Check its effects before running it again.";
   }
   if (result.kind === "process") {
     const tail = result.stdout.slice(-2_000);

@@ -75,6 +75,35 @@ describe("provider usage normalization", () => {
     });
   });
 
+  it("sends the results of one turn's parallel tool calls in a single Anthropic user message", async () => {
+    let body: { messages: Array<{ role: string; content: Array<{ type: string; tool_use_id?: string }> | string }> } | undefined;
+    const client = createLlmClient({
+      registration: registration("anthropic-messages"),
+      apiKey: "test",
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        return jsonResponse({ content: [{ type: "text", text: "done" }], usage: { input_tokens: 1, output_tokens: 1 } });
+      },
+    });
+    await client.complete({
+      model: "test",
+      messages: [
+        { role: "user", content: "go" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "a", name: "grep", arguments: {} }, { id: "b", name: "read", arguments: {} }],
+        },
+        { role: "tool", toolCallId: "a", name: "grep", content: "hits" },
+        { role: "tool", toolCallId: "b", name: "read", content: "text" },
+        { role: "user", content: "next" },
+      ],
+    });
+    expect(body?.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "user"]);
+    const results = body?.messages[2]?.content as Array<{ type: string; tool_use_id?: string }>;
+    expect(results.map((block) => [block.type, block.tool_use_id])).toEqual([["tool_result", "a"], ["tool_result", "b"]]);
+  });
+
   it("normalizes DeepSeek prompt_cache_hit_tokens as cache usage", async () => {
     const client = createLlmClient({
       registration: registration("openai-completions"),

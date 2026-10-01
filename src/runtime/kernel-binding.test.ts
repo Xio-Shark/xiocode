@@ -110,6 +110,48 @@ describe("annotateInterruptedTools", () => {
     expect(message?.content).toContain("its exit was never observed");
     expect(message?.content).not.toContain("finished before the interruption");
   });
+
+  it("says recovery stopped a process that was still running, not that it had finished", () => {
+    const session = {
+      getOperationByKey: () => ({
+        opId: "op-y",
+        status: "done",
+        result: {
+          kind: "process",
+          status: "cancelled",
+          evidence: "unobserved",
+          identityVerification: "is_original_process",
+          exitCode: null,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        },
+      }),
+    } as unknown as KernelSession;
+    const [message] = annotateInterruptedTools([{
+      role: "tool",
+      toolCallId: "call-y",
+      name: "bash",
+      content: `${INTERRUPTED_TOOL_PREFIX} for bash`,
+    }], session);
+    expect(message?.content).toContain("was still running when XioCode came back, and recovery stopped it");
+    expect(message?.content).not.toContain("finished before the interruption");
+  });
+
+  it("does not claim a call never started when commands bypass the kernel", () => {
+    const session = { getOperationByKey: () => undefined } as unknown as KernelSession;
+    const interrupted: ChatMessage = {
+      role: "tool",
+      toolCallId: "call-z",
+      name: "bash",
+      content: `${INTERRUPTED_TOOL_PREFIX} for bash`,
+    };
+    const [bypassed] = annotateInterruptedTools([interrupted], session, { XIOCODE_PROCESS_KERNEL: "0" });
+    expect(bypassed?.content).toContain("it has no record of this call");
+    expect(bypassed?.content).not.toContain("never started");
+    const [viaKernel] = annotateInterruptedTools([interrupted], session, {});
+    expect(viaKernel?.content).toContain("never started");
+  });
 });
 
 describe("authorization recorder and /kernel", () => {

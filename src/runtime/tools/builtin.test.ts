@@ -742,6 +742,8 @@ describe("builtin bash process lifecycle", () => {
       const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
       expect(elapsed).toBeLessThan(20_000);
       expect(text).toMatch(/process_output limited|…\[truncated\]…/);
+      // The stop note is on the first line, where a later cap on the result's length cannot drop it.
+      expect(text.split("\n")[0]).toMatch(/^exit_code=\d+ \(stopped by XioCode: its output exceeded the hard cap/);
       expect(text.length).toBeLessThan(20 * 1024 * 1024);
     } finally {
       await rm(root, { recursive: true, force: true });

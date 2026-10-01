@@ -15,6 +15,7 @@ export function createReadlineInteractiveIO(
         output.write(`  ${index + 1}) ${choice.label}\n`);
       }
       output.write("  0) Cancel\n");
+      const wasFlowing = input.readableFlowing === true;
       const rl = createInterface({ input, output, terminal: true });
       try {
         const raw = (await rl.question("Select number: ")).trim();
@@ -29,9 +30,12 @@ export function createReadlineInteractiveIO(
         return choices[index - 1]?.value;
       } finally {
         rl.close();
+        // close() pauses stdin; the REPL's own interface still needs it (see defaultAsk).
+        if (wasFlowing) input.resume();
       }
     },
     async prompt(question, options) {
+      const wasFlowing = input.readableFlowing === true;
       const rl = createInterface({ input, output, terminal: true });
       try {
         const suffix = options?.secret ? " (visible in REPL)" : "";
@@ -39,6 +43,7 @@ export function createReadlineInteractiveIO(
         return answer.length > 0 ? answer : undefined;
       } finally {
         rl.close();
+        if (wasFlowing) input.resume();
       }
     },
   };

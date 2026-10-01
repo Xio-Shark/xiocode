@@ -492,7 +492,10 @@ function createBashTool(cwd: string, childEnv: NodeJS.ProcessEnv): ToolDefinitio
     async execute(toolCallId, params, ctx) {
       const command = String(params.command ?? "");
       const result = await runCommand(command, cwd, ctx?.signal, childEnv, toolCallId);
-      const body = `exit_code=${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
+      // The stop note rides on the first line: a later length cap on tool results keeps the head, and an
+      // exit code alone would read as the command's own failure.
+      const status = `exit_code=${result.exitCode}${result.stoppedBy ? ` (${result.stoppedBy})` : ""}`;
+      const body = `${status}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
       if (result.exitCode !== 0) {
         return errorResult("bash", body);
       }
@@ -726,6 +729,8 @@ type CommandResult = {
   stdout: string;
   stderr: string;
   spawnError?: boolean;
+  /** Set when XioCode ended the command itself; the exit code is then not the command's. */
+  stoppedBy?: string;
 };
 
 async function runCommand(
@@ -788,6 +793,9 @@ async function runArgv(
     exitCode: result.code ?? 1,
     stdout: result.stdout,
     stderr: limitedNote,
+    ...(result.outputLimited
+      ? { stoppedBy: "stopped by XioCode: its output exceeded the hard cap, so the command did not run to completion" }
+      : {}),
   };
 }
 

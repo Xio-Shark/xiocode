@@ -501,9 +501,21 @@ function buildAnthropicMessages(
     ? nonSystem.length - 2
     : -1;
 
-  return nonSystem.map((message, index) =>
-    toAnthropicMessage(message, index === breakpointIndex),
-  );
+  // The Messages API wants every tool_result of one assistant turn in the single
+  // next message. One user message per result is rejected by compatible
+  // endpoints that do not merge consecutive user messages (DeepSeek), as soon
+  // as the model calls two tools in one turn.
+  const out: Array<Record<string, unknown>> = [];
+  nonSystem.forEach((message, index) => {
+    const converted = toAnthropicMessage(message, index === breakpointIndex);
+    const previous = out[out.length - 1];
+    if (message.role === "tool" && index > 0 && nonSystem[index - 1]?.role === "tool" && previous) {
+      (previous.content as unknown[]).push(...(converted.content as unknown[]));
+    } else {
+      out.push(converted);
+    }
+  });
+  return out;
 }
 
 function toAnthropicMessage(message: ChatMessage, withBreakpoint = false): Record<string, unknown> {

@@ -55,12 +55,16 @@ export function registerXioSandbox(api: XioExtensionAPI, options: SandboxExtensi
 }
 
 export async function defaultAsk(question: string): Promise<boolean> {
+  // Closing a readline interface pauses stdin. When the REPL's own interface is
+  // reading it, that would leave the REPL deaf after the first question.
+  const wasFlowing = input.readableFlowing === true;
   const rl = createInterface({ input, output, terminal: true });
   try {
     const answer = (await rl.question(question)).trim().toLowerCase();
     return answer === "y" || answer === "yes";
   } finally {
     rl.close();
+    if (wasFlowing) input.resume();
   }
 }
 
