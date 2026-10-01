@@ -29,6 +29,7 @@ import {
   RecoveryEngine,
   ResourceConflictError,
   type AdjudicationRecord,
+  type CommitOptions,
   type CommitResult,
   type DomainStatus,
   type KernelRunStatus,
@@ -454,10 +455,14 @@ export class KernelSession {
     return { txId: tx.txId, forkRoot: tx.forkRoot, baseSnapshotId: tx.baseSnapshotId };
   }
 
-  /** Applies the fork's changes when nothing they read or wrote changed meanwhile; the fork is removed. */
-  async commitTransaction(txId: string, baseSnapshotId: string): Promise<CommitResult> {
+  /**
+   * Applies the fork's changes when nothing they read or wrote changed meanwhile; the fork is removed.
+   * With `observations`, a change to a file the transaction only read is not a conflict when replaying
+   * the log on the current workspace gives the same results (the kernel decides; ARCHITECTURE §3.9).
+   */
+  async commitTransaction(txId: string, baseSnapshotId: string, options?: CommitOptions): Promise<CommitResult> {
     this.#assertOpen();
-    const result = await this.#supervisor.commitWorkspaceTransaction(txId);
+    const result = await this.#supervisor.commitWorkspaceTransaction(txId, options);
     if (result.status === "committed") await this.pruneSnapshots([baseSnapshotId]);
     return result;
   }

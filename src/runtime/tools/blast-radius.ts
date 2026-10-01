@@ -107,7 +107,9 @@ export async function probeBlastRadius(
       if (grepResult.kind !== "ok" || !grepResult.text) continue;
 
       const filteredRefs: BlastRadiusReference[] = [];
-      const lines = grepResult.text.split("\n");
+      // Sorted, so the same tree always yields the same references: a multi-threaded search returns files
+      // in no stable order, and which ones fall under the cap would otherwise change from run to run.
+      const lines = grepResult.text.split("\n").sort();
       for (const line of lines) {
         if (!line.trim()) continue;
         const firstColon = line.indexOf(":");

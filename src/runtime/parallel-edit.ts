@@ -8,24 +8,49 @@
  * that committed first, or by a write straight to the workspace — and reports
  * the conflicting paths otherwise (optimistic concurrency, ARCHITECTURE §3.9).
  *
+ * A changed file that the worker only read is a conflict by that rule even
+ * when the change is nowhere near what the worker looked at. So the commit
+ * also carries the worker's log: the kernel re-runs it on the current
+ * workspace, and when every read and search returns what the worker saw, the
+ * replayed edits are applied. A real difference stays a conflict and goes back
+ * to the caller; the worker is not resumed.
+ *
  * Workers get file tools only (read / grep / glob / write / edit), confined to
  * their fork by the path policy. No shell: a worker host has no permission
  * gate, and nothing a worker does reaches the workspace except through commit.
  */
 
-import { ResourceConflictError, type CommitResult, type TransactionConflict, type WriteEntry } from "@xioflow/kernel";
+import {
+  ResourceConflictError,
+  type CommitOptions,
+  type CommitResult,
+  type CommitValidation,
+  type ObservationOutcome,
+  type TransactionConflict,
+  type WriteEntry,
+} from "@xioflow/kernel";
 
 import { runAgentLoop } from "./agent-loop.ts";
 import { defineTool } from "./define-tool.ts";
 import { ExtensionHost } from "./extension-host.ts";
 import type { KernelSession } from "./process/index.ts";
+import { observationValidation, toObservationEntry, type ObservationEntry } from "./parallel-observations.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
-import type { LlmClient, ModelInfo, ToolDefinition } from "./types.ts";
+import type { LlmClient, ModelInfo, TokenUsage, ToolDefinition } from "./types.ts";
 import { WorkspacePathPolicy } from "./workspace-path-policy.ts";
 
 export type ParallelTask = Readonly<{ name: string; instruction: string }>;
 
-export type WorkerOutcome = Readonly<{ success: boolean; cancelled?: boolean; summary: string }>;
+export type WorkerOutcome = Readonly<{
+  success: boolean;
+  cancelled?: boolean;
+  summary: string;
+  /** What the worker read and changed, in order. */
+  observations?: readonly ObservationEntry[];
+  /** True when `observations` is everything the worker could see of the fork (file tools only, no shell). */
+  replayable?: boolean;
+  usage?: TokenUsage;
+}>;
 
 export type RunWorker = (input: Readonly<{
   task: ParallelTask;
@@ -41,6 +66,12 @@ export type TaskReport = Readonly<{
   conflicts: readonly TransactionConflict[];
   /** Other tasks this one lost to (their tx ids mapped to names). */
   lostTo: readonly string[];
+  /** committed: the evidence the kernel had that nothing this task relied on had changed. */
+  validation?: CommitValidation;
+  /** conflict: how far re-running the task's reads on the current workspace got, or why it was not tried. */
+  observation?: ObservationOutcome;
+  observations?: readonly ObservationEntry[];
+  usage?: TokenUsage;
 }>;
 
 type TransactionPort = Pick<KernelSession, "beginTransaction" | "commitTransaction" | "abortTransaction">;
@@ -77,26 +108,39 @@ export async function runParallelEdit(
     } catch (error) {
       outcome = { success: false, summary: `worker failed: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const base = { name: tx.task.name, summary: outcome.summary, conflicts: [], lostTo: [] };
+    const base = {
+      name: tx.task.name, summary: outcome.summary, conflicts: [], lostTo: [],
+      ...(outcome.observations ? { observations: outcome.observations } : {}),
+      ...(outcome.usage ? { usage: outcome.usage } : {}),
+    };
     if (!outcome.success || outcome.cancelled || signal?.aborted) {
       await kernel.abortTransaction(tx.txId, tx.baseSnapshotId, outcome.cancelled ? "cancelled" : "worker failed");
       return { ...base, status: outcome.cancelled || signal?.aborted ? "cancelled" : "failed", writeSet: [] };
     }
-    const result = await commitWhenLeaseFree(kernel, tx.txId, tx.baseSnapshotId);
-    if (result.status === "committed") return { ...base, status: "committed", writeSet: result.writeSet };
+    const options = outcome.replayable && outcome.observations ? { observations: observationValidation(outcome.observations) } : undefined;
+    const result = await commitWhenLeaseFree(kernel, tx.txId, tx.baseSnapshotId, options);
+    if (result.status === "committed") return { ...base, status: "committed", writeSet: result.writeSet, validation: result.validation };
     await kernel.abortTransaction(tx.txId, tx.baseSnapshotId, "conflict");
     const lostTo = [...new Set(result.conflicts.flatMap((c) => (c.otherTxId ? [names.get(c.otherTxId) ?? c.otherTxId] : [])))];
-    return { ...base, status: "conflict", writeSet: result.writeSet, conflicts: result.conflicts, lostTo };
+    return {
+      ...base, status: "conflict", writeSet: result.writeSet, conflicts: result.conflicts, lostTo,
+      ...(result.observation ? { observation: result.observation } : {}),
+    };
   }));
   return reports;
 }
 
 /** Commit takes the workspace write lease; a command holding it right now is waited out (bounded). */
-async function commitWhenLeaseFree(kernel: TransactionPort, txId: string, baseSnapshotId: string): Promise<CommitResult> {
+async function commitWhenLeaseFree(
+  kernel: TransactionPort,
+  txId: string,
+  baseSnapshotId: string,
+  options?: CommitOptions,
+): Promise<CommitResult> {
   const deadline = Date.now() + COMMIT_LEASE_WAIT_MS;
   for (;;) {
     try {
-      return await kernel.commitTransaction(txId, baseSnapshotId);
+      return await kernel.commitTransaction(txId, baseSnapshotId, options);
     } catch (error) {
       if (!(error instanceof ResourceConflictError) || Date.now() > deadline) throw error;
       await new Promise((resolve) => setTimeout(resolve, COMMIT_LEASE_POLL_MS));
@@ -108,12 +152,16 @@ export function formatParallelEditReport(reports: readonly TaskReport[]): string
   const lines = reports.map((report) => {
     const files = report.writeSet.map((entry) => `${entry.status} ${entry.path}`).join(", ") || "no file changes";
     switch (report.status) {
-      case "committed":
-        return `- ${report.name}: applied (${files})\n  ${indent(report.summary)}`;
+      case "committed": {
+        const replayed = report.validation === "observations"
+          ? "\n  Files it had read were changed meanwhile; its reads and searches were re-run on the current workspace and returned the same results, so its edits were applied on top."
+          : "";
+        return `- ${report.name}: applied (${files})${replayed}\n  ${indent(report.summary)}`;
+      }
       case "conflict": {
         const why = report.conflicts.map((c) => `${c.path} (${describeConflict(c)})`).join("; ");
         const against = report.lostTo.length > 0 ? ` after ${report.lostTo.join(", ")} was applied` : "";
-        return `- ${report.name}: NOT applied — conflict${against}: ${why}. Its fork was discarded; `
+        return `- ${report.name}: NOT applied — conflict${against}: ${why}.${describeReplay(report)} Its fork was discarded; `
           + "redo it against the current workspace if it is still needed.";
       }
       case "cancelled":
@@ -132,6 +180,25 @@ function describeConflict(conflict: TransactionConflict): string {
     case "read_write": return "changed after this task read it";
     case "external_write": return "changed in the workspace outside the transaction";
   }
+}
+
+/** What re-running the task's log on the current workspace showed; empty when it was not tried. */
+function describeReplay(report: TaskReport): string {
+  const outcome = report.observation;
+  if (!outcome?.attempted) return "";
+  if (outcome.reason === "workspace_changed") {
+    return " Its reads and searches still matched the workspace, but the workspace was changed again while that was being checked.";
+  }
+  const step = report.observations?.[outcome.divergedAt];
+  const where = step ? ` (${step.tool} ${describeArgs(step.args)})` : "";
+  return outcome.reason === "observation_changed"
+    ? ` Re-run on the current workspace, step ${outcome.divergedAt + 1}${where} returns something different from what the task saw.`
+    : ` Re-run on the current workspace, step ${outcome.divergedAt + 1}${where} can no longer be applied.`;
+}
+
+function describeArgs(args: Record<string, unknown>): string {
+  const target = args.path ?? args.file_path ?? args.pattern;
+  return typeof target === "string" ? target.replaceAll("<root>/", "") : "";
 }
 
 function indent(text: string): string {
@@ -163,11 +230,18 @@ export function createWorkerRunner(options: Readonly<{
     const model = options.getModel();
     const host = new ExtensionHost({ initialModel: model });
     const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot: forkRoot, cwd: forkRoot });
-    for (const tool of createBuiltinTools({ cwd: forkRoot, workspaceRoot: forkRoot, pathPolicy, contextId: `parallel-${task.name}` })) {
+    // No grep outline: it remembers what earlier searches showed, so the same search on the same tree
+    // would not return the same text twice, and the observation log could not be replayed.
+    for (const tool of createBuiltinTools({ cwd: forkRoot, workspaceRoot: forkRoot, pathPolicy, contextId: `parallel-${task.name}`, grepOutline: false })) {
       if (WORKER_TOOLS.has(tool.name)) host.registerTool(tool);
     }
     options.onEvent?.(task.name, "start", task.instruction);
+    const observations: ObservationEntry[] = [];
     const result = await runAgentLoop(task.instruction, {
+      onToolEnd: (call, toolResult) => {
+        const entry = toObservationEntry(call, toolResult, forkRoot);
+        if (entry) observations.push(entry);
+      },
       host,
       client: options.getClient(),
       model: model.id,
@@ -182,6 +256,10 @@ export function createWorkerRunner(options: Readonly<{
       success: result.success,
       ...(result.cancelled ? { cancelled: true } : {}),
       summary: result.finalText || (result.success ? "(no summary)" : "worker stopped without finishing"),
+      observations,
+      // The worker's only view of the fork is WORKER_TOOLS, and every one of them is in the log.
+      replayable: true,
+      usage: result.usage,
     };
     options.onEvent?.(task.name, "end", outcome.cancelled ? "cancelled" : outcome.success ? "done" : "failed");
     return outcome;
@@ -198,7 +276,8 @@ export function createParallelEditTool(options: Readonly<{
     description: [
       `Split independent code changes across 2–${MAX_PARALLEL_TASKS} worker agents that edit the repository at the same time,`,
       "each in its own kernel transaction (an isolated fork). A worker's changes are applied when it finishes,",
-      "unless a file it read or wrote was changed meanwhile: then it is reported as a conflict and not applied.",
+      "unless a file it wrote was changed meanwhile, or something it read or searched now returns a different result:",
+      "then it is reported as a conflict and not applied.",
       "Use it for tasks that touch different files; workers can only read and edit files (no shell).",
     ].join(" "),
     parameters: {
