@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +10,7 @@ import {
   isLuminanceLight,
   padSlashName,
   parseOsc11Color,
+  queryTerminalBackground,
   resolveTheme,
   setTheme,
   theme,
@@ -25,7 +27,7 @@ describe("theme helpers", () => {
 
   it("defaults to the groknight palette (XIO_THEME unset or unknown)", () => {
     expect(resolveTheme(undefined).accent).toBe("#7aa2f7");
-    expect(resolveTheme("groknight").brand).toBe("#e2e8f0");
+    expect(resolveTheme("groknight").brand).toBe("#e6e8ec");
     expect(resolveTheme("bogus").tool).toBe("#e0af68");
   });
 
@@ -35,7 +37,7 @@ describe("theme helpers", () => {
     expect(claude.userBar).toBe("#303030");
   });
 
-  it("supports minimal and nord themes inspired by awesome-tui-design", () => {
+  it("supports the minimal and nord alternates", () => {
     const minimal = resolveTheme("minimal");
     expect(minimal.brand).toBe("#ededed");
     expect(minimal.userBar).toBe("#1a1a1a");
@@ -114,7 +116,7 @@ describe("theme helpers", () => {
     it("supports switching themes via setTheme and reflects active theme name", () => {
       setTheme("light");
       expect(getActiveThemeName()).toBe("light");
-      expect(theme.accent).toBe("#2563eb");
+      expect(theme.accent).toBe("#3b5bdb");
 
       setTheme("groknight");
       expect(getActiveThemeName()).toBe("groknight");
@@ -150,3 +152,64 @@ describe("theme helpers", () => {
   });
 });
 
+
+describe("queryTerminalBackground", () => {
+  class FakeTty extends EventEmitter {
+    isTTY = true;
+    isRaw = false;
+    paused = true;
+    written = "";
+    setRawMode(mode: boolean) { this.isRaw = mode; return this; }
+    resume() { this.paused = false; return this; }
+    pause() { this.paused = true; return this; }
+    isPaused() { return this.paused; }
+    write(chunk: string) { this.written += chunk; return true; }
+  }
+  const run = (reply: (tty: FakeTty) => void, env: NodeJS.ProcessEnv = {}, timeoutMs = 50) => {
+    const tty = new FakeTty();
+    const promise = queryTerminalBackground({
+      env,
+      timeoutMs,
+      stdin: tty as unknown as NodeJS.ReadStream,
+      stdout: tty as unknown as NodeJS.WriteStream,
+    });
+    reply(tty);
+    return { tty, promise };
+  };
+
+  it("reads a light background and restores the tty", async () => {
+    const { tty, promise } = run((t) => t.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62;22c"));
+    expect(await promise).toEqual({ background: "light", typed: "" });
+    expect(tty.isRaw).toBe(false);
+    expect(tty.paused).toBe(true);
+    expect(tty.listenerCount("data")).toBe(0);
+    expect(tty.written).toBe("\x1b]11;?\x07\x1b[c");
+  });
+
+  it("waits for the DA1 reply so it never reaches the composer, and returns typed keys", async () => {
+    const { promise } = run((t) => {
+      t.emit("data", "a\x1b]11;rgb:1a1a/1b1b/2626\x07");
+      t.emit("data", "b\x1b[?1;2c");
+    });
+    expect(await promise).toEqual({ background: "dark", typed: "ab" });
+  });
+
+  it("ends early with a reason when the terminal only answers DA1", async () => {
+    const { promise } = run((t) => t.emit("data", "\x1b[?62c"));
+    expect(await promise).toEqual({ background: undefined, reason: "unsupported", typed: "" });
+  });
+
+  it("times out when nothing answers", async () => {
+    const { promise } = run(() => undefined, {}, 5);
+    expect(await promise).toEqual({ background: undefined, reason: "timeout", typed: "" });
+  });
+
+  it("wraps the query for tmux and skips NO_COLOR terminals", async () => {
+    const { tty, promise } = run((t) => t.emit("data", "\x1b[?62c"), { TMUX: "1" });
+    await promise;
+    expect(tty.written.startsWith("\x1bPtmux;")).toBe(true);
+    const skipped = run(() => undefined, { NO_COLOR: "1" });
+    expect(await skipped.promise).toEqual({ background: undefined, reason: "no-color", typed: "" });
+    expect(skipped.tty.written).toBe("");
+  });
+});

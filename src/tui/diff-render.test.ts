@@ -73,3 +73,23 @@ describe("diff-render", () => {
     expect(delContrast).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe("formatDiffDetail edge cases", () => {
+  it("names both sides of a rename", () => {
+    const lines = formatDiffDetail("diff --git a/old.ts b/new.ts\nrename from old.ts\nrename to new.ts\n--- a/old.ts\n+++ b/new.ts\n@@ -1 +1 @@\n-a\n+b");
+    expect(lines[0]).toMatchObject({ type: "file-header", text: "diff old.ts → new.ts (+1, -1)" });
+  });
+
+  it("does not number the no-newline marker", () => {
+    const lines = formatDiffDetail("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n\\ No newline at end of file\n+b\n c");
+    expect(lines.find((line) => line.rawText.startsWith("\\"))).toMatchObject({ type: "plain" });
+    expect(lines.at(-1)).toMatchObject({ type: "context", oldLine: 2, newLine: 2 });
+  });
+
+  it("caps a huge diff with a visible marker", () => {
+    const big = "--- a/big\n+++ b/big\n@@ -1,5000 +1,5000 @@\n" + Array.from({ length: 5000 }, (_, i) => `+line ${i}`).join("\n");
+    const lines = formatDiffDetail(big);
+    expect(lines).toHaveLength(4000);
+    expect(lines.at(-1)?.text).toContain("truncated at 4000 lines");
+  });
+});

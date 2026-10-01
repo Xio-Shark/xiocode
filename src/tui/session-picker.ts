@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 
 import type { SessionMetadata } from "../runtime/session-store.ts";
+import { t } from "../i18n/messages.ts";
 import { theme } from "./theme.ts";
 
 const h = React.createElement;
@@ -35,11 +36,11 @@ export function SessionPicker(props: Readonly<{ sessions: readonly SessionMetada
   });
   const header = h(Text, null,
     h(Text, { color: theme.brand, bold: true }, `${theme.sym.brand} `),
-    h(Text, { bold: true }, `Resume session (${props.sessions.length})`));
+    h(Text, { bold: true }, t("picker.resume", { count: props.sessions.length })));
   if (props.sessions.length === 0) {
     return h(Box, { flexDirection: "column", height: rows },
       header,
-      h(Text, { dimColor: true }, "No sessions to resume."));
+      h(Text, { color: theme.muted }, t("picker.none")));
   }
   const visibleCount = Math.max(1, rows - 2);
   const start = Math.min(Math.max(0, selected - visibleCount + 1), Math.max(0, props.sessions.length - visibleCount));
@@ -58,8 +59,7 @@ function SessionRow(props: Readonly<{ session: SessionMetadata; active: boolean 
   const text = `${updated} | ${props.session.model.id} | ${props.session.cwd} | ${props.session.id}`;
   const marker = props.active ? `${theme.sym.select} ` : "  ";
   return h(Text, {
-    color: props.active ? theme.accent : undefined,
-    dimColor: !props.active,
+    color: props.active ? theme.accent : theme.muted,
     wrap: "truncate-end",
   }, `${marker}${text}`);
 }

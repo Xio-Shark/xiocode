@@ -4,12 +4,12 @@
  */
 
 import { getWebUiHtml, getClientScript } from "./ui-bundle.ts";
-import { personalize } from "./assemble-page.ts";
+import { personalize, type PageOptions } from "./assemble-page.ts";
 
-export function renderWebUiHtml(options: { version: string; defaultSessionId?: string }): string {
+export function renderWebUiHtml(options: PageOptions): string {
   return getWebUiHtml(options);
 }
 
-export function renderUiScript(options?: { defaultSessionId?: string }): string {
+export function renderUiScript(options?: Omit<PageOptions, "version">): string {
   return personalize(getClientScript(), { version: "", ...options });
 }

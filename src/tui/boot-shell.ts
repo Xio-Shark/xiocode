@@ -10,11 +10,11 @@ import {
   applyInputChunk,
   deleteBackward,
   emptyComposer,
-  insertAtCursor,
   moveCursor,
   setComposerText,
   type ComposerState,
 } from "./composer.ts";
+import { t } from "../i18n/messages.ts";
 import { formatShortCwd, theme } from "./theme.ts";
 import { BrandHeader } from "./shark-logo.ts";
 
@@ -177,24 +177,40 @@ export function BootShell(props: BootShellProps): React.JSX.Element {
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(BrandHeader, {
       version: props.version,
-      meta: props.confirmation ? "project trust" : statusLabel,
+      meta: props.confirmation ? t("boot.projectTrust") : statusLabel,
       path: formatShortCwd(props.cwd),
       columns: props.columns,
     }),
     props.confirmation
       ? h(Box, { flexDirection: "column", marginTop: 1 },
-        h(Text, { color: theme.accent, bold: true }, props.confirmation.question),
+        h(Text, { color: theme.accent, bold: true }, stripAnswerHint(props.confirmation.question)),
         props.confirmation.detail
-          ? h(Text, { dimColor: true }, props.confirmation.detail)
+          ? h(Text, { color: theme.muted }, shortenDetailPaths(props.confirmation.detail))
           : null,
-        h(Text, { dimColor: true }, "y allow · n / Enter / Esc deny · Ctrl+C exit"))
+        h(Text, { color: theme.muted }, t("boot.trustKeys")))
       : h(React.Fragment, null,
         h(Box, { marginTop: 1 },
-          h(Text, { dimColor: true }, theme.sym.prompt),
+          h(Text, { color: theme.muted }, theme.sym.prompt),
           h(Text, null, ` ${draft}${pending ? " ↵" : ""}`)),
         pending
-          ? h(Text, { dimColor: true }, "Buffered · will send when session is ready")
+          ? h(Text, { color: theme.muted }, t("boot.buffered"))
           : null));
+}
+
+/**
+ * The `[y/N]` suffix is for the line-mode REPL; full-screen views list their keys
+ * on a line of their own, and the suffix only made the question wrap.
+ */
+export function stripAnswerHint(question: string): string {
+  return question.replace(/\s*\[y\/N\]\s*$/i, "");
+}
+
+/** `cwd: /Users/me/…/repo` lines shown like the footer path (home → ~, middle ellipsis). */
+function shortenDetailPaths(detail: string): string {
+  return detail.split("\n").map((line) => {
+    const match = /^(cwd|path): (\/.*)$/.exec(line);
+    return match ? `${match[1]}: ${formatShortCwd(match[2]!, 56)}` : line;
+  }).join("\n");
 }
 
 export function bootConfirmationIntent(
@@ -214,13 +230,13 @@ export function readinessLabel(readiness: BootReadiness, status: string): string
   }
   switch (readiness) {
     case "boot":
-      return "starting…";
+      return t("boot.starting");
     case "core_session":
-      return "loading session…";
+      return t("boot.loadingSession");
     case "prompt_context":
-      return "loading context…";
+      return t("boot.loadingContext");
     case "ready":
-      return "ready";
+      return t("boot.ready");
     default: {
       const _exhaustive: never = readiness;
       return _exhaustive;
@@ -240,14 +256,3 @@ export function applyBootKeyForTest(
   });
   return buffer.snapshot();
 }
-
-/** Seed buffer text without key simulation (tests). */
-export function seedBootText(buffer: BootInputBuffer, text: string): void {
-  buffer.setText(text);
-  if (text.length > 0) {
-    // keep as draft only
-  }
-}
-
-// Keep insertAtCursor imported path warm for potential paste tests.
-void insertAtCursor;

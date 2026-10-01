@@ -16,24 +16,18 @@ import {
   filterSlashCommands,
   formatExploreFooter,
   formatMcpFooter,
-  formatToolOutputBody,
   formatWorkspaceFooter,
-  estimateTranscriptEntryLines,
   isDefaultPermissionMode,
-  isExploreTool,
   livePreviewCharBudget,
   reduceEvent,
   slashQuery,
-  sliceTranscriptWindow,
-  thoughtLabel,
-  toggleLatestExpandable,
   viewerScrollBounds,
   VIEWER_CHROME_ROWS,
   type ViewState,
 } from "./app.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
 import { emptyComposer, setComposerText } from "./composer.ts";
-import { theme, truncateToolDetail } from "./theme.ts";
+import { theme } from "./theme.ts";
 
 import { WorkspacePerceptionService } from "../runtime/workspace/index.ts";
 
@@ -290,7 +284,7 @@ describe("App", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const collapsed = instance.lastFrame() ?? "";
     expect(collapsed).toMatch(/Thought for \d+s/);
-    expect(collapsed).toContain("Ctrl+O");
+    expect(collapsed).toContain("ctrl+o");
     // Folded block keeps a one-line nested peek; full body stays in the viewer.
     expect(collapsed).toContain("└ inspect private reasoning");
 
@@ -385,7 +379,7 @@ describe("App", () => {
     const collapsed = instance.lastFrame() ?? "";
     expect(collapsed).toContain("success");
     expect(collapsed).toContain("found the route");
-    expect(collapsed).toContain("Ctrl+O");
+    expect(collapsed).toContain("ctrl+o");
     expect(collapsed).not.toContain("private reasoning");
     expect(collapsed).not.toContain("route hit");
 
@@ -551,7 +545,7 @@ describe("App", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(session.getPermissionMode()).toBe("full");
-    expect(instance.lastFrame()).toContain("permissions full on");
+    expect(instance.lastFrame()).toContain("⚠ full · shift+tab to cycle");
     expect(instance.lastFrame()).not.toContain("bypass permissions on");
 
     // Merge/rollback confirms are not short-circuited.
@@ -559,6 +553,60 @@ describe("App", () => {
     expect(bridge.confirmPending).toBe(true);
     bridge.answerConfirmation(false);
     await expect(merge).resolves.toBe(false);
+  });
+
+  it("answers every approval from one choice list: Esc and the default Enter deny", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+    const first = bridge.ask("Merge changes? [y/N]", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b");
+    await tick();
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("Merge changes?");
+    expect(frame).not.toContain("[y/N]");
+    expect(frame).toContain("› Deny");
+    expect(frame).toContain("↑↓ choose · enter confirm · y allow once · n / esc deny");
+    instance.stdin.write("\x1b");
+    await expect(first).resolves.toBe(false);
+
+    const second = bridge.ask("Rollback?", "detail");
+    await tick();
+    instance.stdin.write("\r");
+    await expect(second).resolves.toBe(false);
+
+    const third = bridge.ask("Rollback?", "detail");
+    await tick();
+    instance.stdin.write("\x1b[A");
+    await tick();
+    instance.stdin.write("\r");
+    await expect(third).resolves.toBe(true);
+
+    const permission = bridge.select("Run this shell command?", [
+      { label: "Allow once", value: "once", scope: "this call only" },
+      { label: "Deny", value: "deny" },
+      { label: "Deny and tell the model why", value: "deny-reason" },
+    ], "rm -rf build");
+    await tick();
+    const permissionFrame = instance.lastFrame() ?? "";
+    expect(permissionFrame).toContain("rm -rf build");
+    expect(permissionFrame).toContain("Allow once  this call only");
+    expect(permissionFrame).toContain("› Deny");
+    instance.stdin.write("y");
+    await expect(permission).resolves.toBe("once");
+
+    const cancelled = bridge.select("Run this shell command?", [
+      { label: "Allow once", value: "once" },
+      { label: "Deny", value: "deny" },
+    ], "rm -rf dist");
+    await tick();
+    instance.stdin.write("\x1b");
+    await expect(cancelled).resolves.toBeUndefined();
   });
 
   it("masks secret prompt input and does not append the secret to the transcript", async () => {
@@ -650,7 +698,7 @@ describe("App", () => {
     const compacting = instance.lastFrame() ?? "";
     expect(compacting).toContain("? for shortcuts");
     expect(compacting).toContain("/tmp/project");
-    expect(compacting).toContain("compacting...");
+    expect(compacting).toContain("compacting…");
     expect(compacting).not.toContain("think:off · perm:auto · compacting...");
 
     bridge.sink.onContextCompaction?.({
@@ -661,216 +709,35 @@ describe("App", () => {
       usage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, reasoningTokens: 0 },
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(instance.lastFrame()).not.toContain("compacting...");
-    expect(instance.lastFrame()).toContain("Context compacted: 80 -> 20 messages.");
+    expect(instance.lastFrame()).not.toContain("· compacting…");
+    expect(instance.lastFrame()).toContain("Context compacted: 80 → 20 messages.");
   });
 
-  it("renders context compaction failure as an error notice", () => {
-    const state = reduceEvent(emptyView(), {
+  it("clears the compaction status when compaction ends, whatever the outcome", () => {
+    let state = reduceEvent(emptyView(), {
+      kind: "context-compaction",
+      event: { stage: "start", mode: "manual", before: 20 },
+    });
+    expect(state.statuses.context).toBe("compacting…");
+    state = reduceEvent(state, {
       kind: "context-compaction",
       event: { stage: "failure", mode: "manual", before: 20, error: "provider unavailable" },
     });
-    expect(state.entries.at(-1)).toMatchObject({
-      kind: "notice",
-      error: true,
-      text: "Context compaction failed: provider unavailable",
-    });
+    expect(state.statuses.context).toBeUndefined();
   });
 
-  it("streams thinking expanded then auto-collapses on first assistant delta", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "thinking-delta", text: "consider options" });
-    expect(state.entries.at(-1)).toMatchObject({ kind: "thinking", text: "consider options", collapsed: false });
-    state = reduceEvent(state, { kind: "assistant-delta", text: "final" });
-    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({
-      collapsed: true,
-      thoughtSeconds: expect.any(Number),
-    });
-    expect(state.entries.at(-1)).toMatchObject({ kind: "assistant", text: "final" });
-  });
-
-  it("collapses open thinking when a tool starts (avoids Thought/⚙ line merge)", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "thinking-delta", text: "plan next step" });
-    expect(state.entries.at(-1)).toMatchObject({ kind: "thinking", collapsed: false });
-    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "pwd", callId: "t1" });
-    const thinking = state.entries.find((entry) => entry.kind === "thinking");
-    expect(thinking).toMatchObject({ collapsed: true, thoughtSeconds: expect.any(Number) });
-    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", title: "bash", detail: "pwd" });
-  });
-
-  it("labels think rows and empty tool output for layered display", () => {
-    expect(thoughtLabel({ collapsed: false })).toBe("Thinking…");
-    expect(thoughtLabel({ collapsed: true, thoughtSeconds: 8 })).toBe("Thought for 8s");
-    expect(isExploreTool("explore")).toBe(true);
-    expect(isExploreTool("bash")).toBe(false);
-    expect(formatToolOutputBody("", true, true)).toEqual([`  ${theme.sym.nest} (empty)`]);
-    expect(formatToolOutputBody("hi", true, true)).toEqual([]);
-    expect(formatToolOutputBody("hi", false, true)[0]).toContain("hi");
-    expect(truncateToolDetail("a".repeat(100)).endsWith("…")).toBe(true);
-  });
-
-  it("slices transcript window for scroll (offset 0 = latest, unit heights)", () => {
-    const entries = Array.from({ length: 20 }, (_, i) => i);
-    const bottom = sliceTranscriptWindow(entries, 5, 0);
-    expect(bottom.visible).toEqual([15, 16, 17, 18, 19]);
-    expect(bottom.hiddenAbove).toBe(15);
-    expect(bottom.hiddenBelow).toBe(0);
-    expect(bottom.maxOffset).toBe(15);
-
-    const up = sliceTranscriptWindow(entries, 5, 3);
-    expect(up.visible).toEqual([12, 13, 14, 15, 16]);
-    expect(up.hiddenAbove).toBe(12);
-    expect(up.hiddenBelow).toBe(3);
-
-    const top = sliceTranscriptWindow(entries, 5, 10_000);
-    expect(top.offset).toBe(15);
-    expect(top.visible).toEqual([0, 1, 2, 3, 4]);
-    expect(top.hiddenAbove).toBe(0);
-  });
-
-  it("line-based window: few tall tools still allow scroll (maxOffset > 0)", () => {
-    // Expanded tools each ~10 rows; viewport 12 → cannot show all; must scroll.
-    const entries = [
-      { id: 1, kind: "tool" as const, text: "done", title: "read", output: "a\n".repeat(12), previewCollapsed: false },
-      { id: 2, kind: "tool" as const, text: "done", title: "glob", output: "b\n".repeat(12), previewCollapsed: false },
-      { id: 3, kind: "tool" as const, text: "done", title: "bash", output: "c\n".repeat(12), previewCollapsed: false },
-    ];
-    const height = (entry: (typeof entries)[number]) => estimateTranscriptEntryLines(entry, 80);
-    const total = entries.reduce((sum, e) => sum + height(e), 0);
-    expect(total).toBeGreaterThan(12);
-
-    const bottom = sliceTranscriptWindow(entries, 12, 0, height);
-    expect(bottom.maxOffset).toBeGreaterThan(0);
-    expect(bottom.hiddenBelow).toBe(0);
-    // Bottom window should include the last tool.
-    expect(bottom.visible.some((e) => e.id === 3)).toBe(true);
-
-    const up = sliceTranscriptWindow(entries, 12, Math.min(15, bottom.maxOffset), height);
-    expect(up.offset).toBeGreaterThan(0);
-    expect(up.hiddenBelow).toBe(up.offset);
-    // Scrolling up should reveal older tools.
-    expect(up.visible.some((e) => e.id === 1 || e.id === 2)).toBe(true);
-  });
-
-  it("estimates multi-line tool rows taller when expanded", () => {
-    const short = estimateTranscriptEntryLines({
-      id: 1, kind: "notice", text: "hi",
-    }, 80);
-    const collapsed = estimateTranscriptEntryLines({
-      id: 2,
-      kind: "tool",
-      text: "done",
-      title: "read",
-      output: Array.from({ length: 20 }, (_, i) => `${i}|line`).join("\n"),
-      previewCollapsed: true,
-    }, 80);
-    const tall = estimateTranscriptEntryLines({
-      id: 3,
-      kind: "tool",
-      text: "done",
-      title: "read",
-      output: Array.from({ length: 20 }, (_, i) => `${i}|line`).join("\n"),
-      previewCollapsed: false,
-    }, 80);
-    expect(short).toBe(1);
-    expect(collapsed).toBeLessThanOrEqual(3);
-    expect(tall).toBeGreaterThan(short + 5);
-  });
-
-  it("renders think Ns and bullet assistant in the tree", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "thinking-delta", text: "plan" });
-    state = {
-      ...state,
-      entries: state.entries.map((entry) =>
-        entry.kind === "thinking"
-          ? { ...entry, collapsed: true, thoughtSeconds: 8 }
-          : entry
-      ),
-    };
-    state = reduceEvent(state, { kind: "assistant-delta", text: "你好" });
-    const thinking = state.entries.find((entry) => entry.kind === "thinking");
-    expect(thinking).toMatchObject({ collapsed: true, thoughtSeconds: 8 });
-    expect(thoughtLabel(thinking!)).toBe("Thought for 8s");
-    expect(state.entries.at(-1)).toMatchObject({ kind: "assistant", text: "你好" });
-  });
-
-  it("manually re-expands collapsed thinking via toggleLatestExpandable", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "thinking-delta", text: "plan" });
-    state = reduceEvent(state, { kind: "assistant-delta", text: "answer" });
-    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({ collapsed: true });
-    state = toggleLatestExpandable(state);
-    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({ collapsed: false });
-  });
-
-  it("keeps tool output as preview when longer than eight lines", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "seq 1 12", callId: "c1" });
-    const output = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
-    state = reduceEvent(state, {
-      kind: "tool-end",
-      name: "bash",
-      error: false,
-      output,
-      callId: "c1",
-    });
-    const tool = state.entries.find((entry) => entry.kind === "tool");
-    expect(tool).toMatchObject({
-      title: "bash",
-      detail: "seq 1 12",
-      text: "done",
-      output,
-      previewCollapsed: true,
-      callId: "c1",
-    });
-  });
-
-  it("pairs parallel same-name tools by callId", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "tool-start", name: "read", detail: "a.ts", callId: "r1" });
-    state = reduceEvent(state, { kind: "tool-start", name: "read", detail: "b.ts", callId: "r2" });
-    // Finish second first (out of order) — must not attach to first start.
-    state = reduceEvent(state, {
-      kind: "tool-end",
-      name: "read",
-      error: false,
-      output: "body-b",
-      callId: "r2",
-    });
-    state = reduceEvent(state, {
-      kind: "tool-end",
-      name: "read",
-      error: false,
-      output: "body-a",
-      callId: "r1",
-    });
-    const tools = state.entries.filter((entry) => entry.kind === "tool");
-    expect(tools).toHaveLength(2);
-    expect(tools[0]).toMatchObject({ callId: "r1", detail: "a.ts", output: "body-a" });
-    expect(tools[1]).toMatchObject({ callId: "r2", detail: "b.ts", output: "body-b" });
-  });
-
-  it("toggles latest tool body via Ctrl+O (collapsed by default)", () => {
-    let state: ViewState = emptyView();
-    state = reduceEvent(state, { kind: "thinking-delta", text: "reason" });
-    state = reduceEvent(state, { kind: "assistant-delta", text: "ok" });
-    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "echo hi" });
-    state = reduceEvent(state, { kind: "tool-end", name: "bash", error: false, output: "hi" });
-    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", previewCollapsed: true });
-    // Latest tool wins over older thinking.
-    state = toggleLatestExpandable(state);
-    expect(state.entries.at(-1)).toMatchObject({ kind: "tool", previewCollapsed: false });
-    expect(state.entries.find((entry) => entry.kind === "thinking")).toMatchObject({ collapsed: true });
-
-    const long = Array.from({ length: 12 }, (_, i) => `line${i}`).join("\n");
-    state = reduceEvent(state, { kind: "tool-start", name: "bash", detail: "seq" });
-    state = reduceEvent(state, { kind: "tool-end", name: "bash", error: true, output: long });
-    const failed = state.entries.at(-1);
-    expect(failed).toMatchObject({ kind: "tool", text: "failed", error: true, previewCollapsed: true, output: long });
-    state = toggleLatestExpandable(state);
-    expect(state.entries.at(-1)).toMatchObject({ previewCollapsed: false });
+  it("shows a widget without its own panel as a transcript notice", async () => {
+    const bridge = new TuiSessionBridge();
+    const instance = render(React.createElement(App, {
+      session: createSession(new ExtensionHost()),
+      bridge,
+      cwd: "/tmp/project",
+      async onExit() {},
+    }));
+    bridge.sink.setWidget?.("xiocode-status", ["evolve: 3 runs recorded", "context: 2 hints"]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(instance.lastFrame()).toContain("evolve: 3 runs recorded");
+    expect(instance.lastFrame()).toContain("context: 2 hints");
   });
 
   it("bounds Ctrl+O viewer scrolling to the retained output length", () => {
@@ -1063,7 +930,7 @@ describe("InputCandidateRegion & ComposerChrome", () => {
 });
 
 function emptyView(): ViewState {
-  return { entries: [] as ViewState["entries"], statuses: {}, widgets: {} };
+  return { statuses: {}, widgets: {} };
 }
 
 /**

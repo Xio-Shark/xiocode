@@ -15,7 +15,7 @@ let currentTrajectorySteps = [];
 let currentStats = {};
 let currentTimelineError = null;
 let defaultModel = null;
-const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0, toolErrors: 0, costLabel: "未计价" };
+const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0, toolErrors: 0, costLabel: t("web.unpriced") };
 const pendingApprovals = [];
 const connection = { source: null, sessionId: null, attempts: 0, timer: null, lost: false };
 const RECONNECT_ATTEMPTS = 6;
@@ -32,9 +32,9 @@ const sessionSearch = $("session-search");
 const narrowScreen = window.matchMedia("(max-width: 900px)");
 
 const STARTERS = [
-  { icon: "test", title: "跑一遍测试", desc: "运行测试并报告失败用例", prompt: "运行测试套件并报告失败的用例" },
-  { icon: "diff", title: "审查未提交的改动", desc: "解释 git diff 的影响面", prompt: "检查 git diff 并分析未暂存的改动" },
-  { icon: "layers", title: "梳理项目结构", desc: "模块分层与依赖关系", prompt: "分析代码库架构与核心模块分层约定" },
+  { icon: "test", title: t("web.starterTest"), desc: t("web.starterTestDesc"), prompt: t("web.chipTestPrompt") },
+  { icon: "diff", title: t("web.starterReview"), desc: t("web.starterReviewDesc"), prompt: t("web.starterReviewPrompt") },
+  { icon: "layers", title: t("web.starterArch"), desc: t("web.starterArchDesc"), prompt: t("web.starterArchPrompt") },
 ];
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -231,7 +231,7 @@ async function fetchStatus() {
     $("meta-session-cwd").textContent = workspaceName || "—";
     $("meta-session-cwd").title = data.cwd || "";
   } catch (err) {
-    showToast("无法读取控制台状态：" + err.message, "error");
+    showToast(t("web.statusReadFailed", { error: err.message }), "error");
   }
 }
 
@@ -240,7 +240,7 @@ async function setPermissionMode(mode) {
     const data = await api("/api/permission", { method: "POST", body: { mode } });
     reflectPermissionMode(data.mode);
   } catch (err) {
-    showToast("切换权限失败：" + err.message, "error");
+    showToast(t("web.permSwitchFailed", { error: err.message }), "error");
   }
 }
 
@@ -266,18 +266,18 @@ function setHeader(title, model) {
 function updateComposerMeta() {
   const steps = currentStats.totalSteps || currentTrajectorySteps.length;
   const turns = steps > 0 ? (currentStats.totalTurns || 0) : 0;
-  $("meta-turns-info").textContent = turns + " 轮 · " + steps + " 步";
-  $("meta-tools-info").textContent = "工具调用 " + usageTotals.toolCalls + " 次";
+  $("meta-turns-info").textContent = t("web.turnsStepsN", { turns, steps });
+  $("meta-tools-info").textContent = t("web.toolCallsN", { n: usageTotals.toolCalls });
 }
 
 /** Header pill: connection problems outrank a waiting question, which outranks running. */
 function renderStatusPill() {
   const pill = $("status-pill");
   let cls = "";
-  let text = "就绪";
-  if (connection.lost) { cls = "offline"; text = "已断开"; }
-  else if (pendingApprovals.length) { cls = "waiting"; text = "等待确认"; }
-  else if (isRunning) { cls = "running"; text = "运行中 · " + formatElapsed(Date.now() - turnStartedAt); }
+  let text = t("web.ready");
+  if (connection.lost) { cls = "offline"; text = t("web.offline"); }
+  else if (pendingApprovals.length) { cls = "waiting"; text = t("web.waiting"); }
+  else if (isRunning) { cls = "running"; text = t("web.running", { elapsed: formatElapsed(Date.now() - turnStartedAt) }); }
   pill.className = "status-pill" + (cls ? " " + cls : "");
   $("status-text").textContent = text;
 }

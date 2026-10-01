@@ -1,6 +1,8 @@
 export type SelectChoice = Readonly<{
   label: string;
   value: string;
+  /** What an approval covers, shown beside the label (e.g. "this session: mcp__github"). */
+  scope?: string;
 }>;
 
 export type PromptOptions = Readonly<{

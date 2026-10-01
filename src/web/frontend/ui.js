@@ -4,6 +4,16 @@
  * may use these globals.
  */
 
+// Interface copy for the configured language, filled in by the server (src/i18n).
+const MESSAGES = {};
+
+/** `t("web.key", { n: 3 })` — `{n}` placeholders are filled; a missing key shows the key. */
+function t(key, vars) {
+  const template = Object.prototype.hasOwnProperty.call(MESSAGES, key) ? MESSAGES[key] : key;
+  if (!vars) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name) => (name in vars ? String(vars[name]) : match));
+}
+
 /** `el("div", "cls", child, "text")` — strings become text nodes, never markup. */
 function el(tag, className, ...children) {
   const node = document.createElement(tag);
@@ -49,7 +59,7 @@ async function api(url, options = {}) {
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
   } catch {
-    throw new Error("连不上本地服务，确认 xio web 还在运行");
+    throw new Error(t("web.unreachable"));
   }
   const text = await res.text();
   let data = null;
@@ -57,12 +67,12 @@ async function api(url, options = {}) {
     try {
       data = JSON.parse(text);
     } catch {
-      if (res.ok) throw new Error("服务返回了无法解析的响应（HTTP " + res.status + "）");
+      if (res.ok) throw new Error(t("web.badResponse", { status: res.status }));
     }
   }
   if (!res.ok) {
     const err = new Error(res.status === 401
-      ? "访问凭据已失效，请重新打开 xio web 打印的链接"
+      ? t("web.expired")
       : (data && data.error) || ("HTTP " + res.status));
     err.status = res.status;
     throw err;
@@ -84,7 +94,7 @@ function showToast(message, type = "success") {
 }
 
 /** Resolves true only when the user picks the confirm button; Esc and Cancel resolve false. */
-function confirmDialog({ title, description, confirmLabel = "确认" }) {
+function confirmDialog({ title, description, confirmLabel = t("web.confirm") }) {
   const dialog = $("confirm-modal");
   $("confirm-title").textContent = title;
   $("confirm-desc").textContent = description || "";
@@ -100,32 +110,33 @@ async function copyText(text, button) {
   try {
     await navigator.clipboard.writeText(text);
   } catch (err) {
-    showToast("复制失败：" + (err && err.message ? err.message : "浏览器拒绝访问剪贴板"), "error");
+    showToast(t("web.copyFailed", { error: err && err.message ? err.message : t("web.clipboardDenied") }), "error");
     return;
   }
   const label = button.querySelector("span");
   button.classList.add("copied");
-  if (label) label.textContent = "已复制";
+  if (label) label.textContent = t("web.copied");
   setTimeout(() => {
     button.classList.remove("copied");
-    if (label) label.textContent = "复制";
+    if (label) label.textContent = t("web.copy");
   }, 1500);
 }
 
 // ---------- Formatting ----------
 
-/** 45 秒 · 12 分 5 秒 · 3 小时 20 分 · 2 天 4 小时 — units carry over, never "26717m". */
+/** 45s · 12m 5s · 3h 20m · 2d 4h (in the page language) — units carry over, never "26717m". */
 function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
   const sec = Math.round(ms / 1000);
-  if (sec < 1) return "不到 1 秒";
-  if (sec < 60) return sec + " 秒";
+  const part = (key, n) => t(key, { n });
+  if (sec < 1) return t("web.lessThanSecond");
+  if (sec < 60) return part("web.seconds", sec);
   const min = Math.floor(sec / 60);
-  if (min < 60) return min + " 分" + (sec % 60 ? " " + (sec % 60) + " 秒" : "");
+  if (min < 60) return part("web.minutes", min) + (sec % 60 ? " " + part("web.seconds", sec % 60) : "");
   const hr = Math.floor(min / 60);
-  if (hr < 24) return hr + " 小时" + (min % 60 ? " " + (min % 60) + " 分" : "");
+  if (hr < 24) return part("web.hours", hr) + (min % 60 ? " " + part("web.minutes", min % 60) : "");
   const day = Math.floor(hr / 24);
-  return day + " 天" + (hr % 24 ? " " + (hr % 24) + " 小时" : "");
+  return part("web.days", day) + (hr % 24 ? " " + part("web.hours", hr % 24) : "");
 }
 
 /** Compact live timer: 8s · 1:05 · 1:02:03. */
@@ -143,14 +154,14 @@ function formatRelativeTime(dateStr) {
   const then = new Date(dateStr).getTime();
   const min = Math.floor((Date.now() - then) / 60000);
   if (!Number.isFinite(min)) return "";
-  if (min < 1) return "刚刚";
-  if (min < 60) return min + " 分钟前";
+  if (min < 1) return t("web.justNow");
+  if (min < 60) return t("web.minutesAgo", { n: min });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return hr + " 小时前";
+  if (hr < 24) return t("web.hoursAgo", { n: hr });
   const day = Math.floor(hr / 24);
-  if (day < 7) return day + " 天前";
+  if (day < 7) return t("web.daysAgo", { n: day });
   const d = new Date(then);
-  return (d.getMonth() + 1) + "月" + d.getDate() + "日";
+  return t("web.monthDay", { month: d.getMonth() + 1, day: d.getDate() });
 }
 
 function formatNumber(n) {

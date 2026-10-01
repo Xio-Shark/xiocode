@@ -34,7 +34,7 @@ function openStream() {
     try {
       event = JSON.parse(e.data);
     } catch {
-      showToast("收到一条无法解析的运行事件，已跳过", "error");
+      showToast(t("web.badEvent"), "error");
       return;
     }
     handleRuntimeEvent(event);
@@ -76,8 +76,8 @@ function scheduleReconnect() {
 }
 
 const CONNECTION_TEXT = {
-  down: "连不上本地服务。确认 xio web 还在运行，然后重试。",
-  expired: "xio web 重启过，这个页面的凭据已失效。请打开它新打印的链接。",
+  down: "web.connDown",
+  expired: "web.connExpired",
 };
 
 /** state: ok · reconnecting · down (retries used up) · expired (server restarted, new token). */
@@ -87,7 +87,8 @@ function showConnection(state) {
   banner.classList.toggle("failed", state === "down" || state === "expired");
   $("btn-reconnect").hidden = state !== "down";
   $("connection-text").textContent = CONNECTION_TEXT[state]
-    || "与本地服务的连接断开了，正在重连（第 " + connection.attempts + " 次）…";
+    ? t(CONNECTION_TEXT[state])
+    : t("web.connRetrying", { n: connection.attempts });
   renderStatusPill();
 }
 
@@ -106,7 +107,7 @@ function handleRuntimeEvent(event) {
       finishAssistant();
       chat.assistantBox = null;
       setRunningState(true);
-      setWorking("正在思考");
+      setWorking(t("web.workingThink"));
       break;
     case "text.delta":
       appendTextDelta(payload.text || "");
@@ -124,7 +125,7 @@ function handleRuntimeEvent(event) {
       const failed = event.event === "tool.error" || payload.isError === true;
       updateToolResult(payload.toolCallId, payload.content, failed);
       if (failed) usageTotals.toolErrors += 1;
-      if (isRunning) setWorking("正在思考");
+      if (isRunning) setWorking(t("web.workingThink"));
       break;
     }
     case "mcp.status":
@@ -142,12 +143,12 @@ function handleRuntimeEvent(event) {
       }
       break;
     case "web.error":
-      appendSystemNote("运行出错：" + (payload.message || "未知错误"), "error");
+      appendSystemNote(t("web.runError", { error: payload.message || t("web.unknownError") }), "error");
       break;
     case "web.turn_end":
       if (payload.cost) usageTotals.costLabel = payload.cost;
       addUsage(payload.usage);
-      if (payload.cancelled) appendSystemNote("已停止。", "info");
+      if (payload.cancelled) appendSystemNote(t("web.stopped"), "info");
       break;
     case "web.idle":
       finishAssistant();
@@ -184,12 +185,12 @@ async function handleSend() {
   scrollToBottom();
   composerInput.value = "";
   setRunningState(true);
-  setWorking("正在启动会话");
+  setWorking(t("web.workingStart"));
   try {
     await api(`/api/sessions/${activeSessionId}/prompt`, { method: "POST", body: { prompt: text } });
   } catch (err) {
     clearWorking();
-    appendSystemNote("没有开始运行：" + err.message, "error");
+    appendSystemNote(t("web.notStarted", { error: err.message }), "error");
     setRunningState(false);
   }
 }
@@ -198,9 +199,9 @@ async function handleAbort() {
   if (!activeSessionId || !isRunning) return;
   try {
     await api(`/api/sessions/${activeSessionId}/abort`, { method: "POST" });
-    setWorking("正在停止");
+    setWorking(t("web.workingStop"));
   } catch (err) {
-    showToast("停止失败：" + err.message, "error");
+    showToast(t("web.stopFailed", { error: err.message }), "error");
   }
 }
 
@@ -220,22 +221,40 @@ function enqueueApproval(payload) {
   renderStatusPill();
 }
 
+// Approval choices come from the runtime by value; the page words them itself.
+const APPROVAL_LABELS = { once: "web.approveOnce", session: "web.approveSession", "deny-reason": "web.denyReason" };
+
+/** A patch shown as file cards (numbers, +/− colours, stats); anything else as plain text. */
+function renderApprovalDetail(text) {
+  const box = $("approval-detail");
+  box.hidden = !text;
+  if (!text) return box.replaceChildren();
+  let files = parseUnifiedDiff(text);
+  if (files.length === 0 && /^@@ /m.test(text)) {
+    const name = (/^\+\+\+ (?:b\/)?(.+)$/m.exec(text) || [])[1] || "diff";
+    files = parseUnifiedDiff(`diff --git a/${name} b/${name}\n${text}`);
+  }
+  box.classList.toggle("is-diff", files.length > 0);
+  box.replaceChildren(...(files.length > 0 ? files.map(diffFileCard) : [el("pre", "approval-text", text)]));
+}
+
 function showApproval(payload) {
   const dialog = $("approval-modal");
   $("approval-question").textContent = (payload.question || "").replace(/\s*\[y\/N\]\s*$/i, "");
-  const detail = $("approval-detail");
-  detail.textContent = payload.detail || "";
-  detail.hidden = !payload.detail;
+  renderApprovalDetail(payload.detail || "");
+  if (payload.input) return showApprovalInput(payload, dialog);
+  $("approval-sub").textContent = t("web.waitingConfirm");
   const choices = Array.isArray(payload.choices) && payload.choices.length > 0
     ? payload.choices
-    : [{ label: "允许", value: "__allow" }, { label: "拒绝", value: "deny" }];
+    : [{ label: t("web.allow"), value: "__allow" }, { label: t("web.deny"), value: "deny" }];
   // Declining is always last and focused: Enter never approves by accident.
-  const ordered = [...choices.filter(c => c.value !== "deny"), { label: "拒绝", value: "deny" }];
+  const ordered = [...choices.filter(c => c.value !== "deny"), { label: t("web.deny"), value: "deny" }];
   let declineButton = null;
   $("approval-actions").replaceChildren(...ordered.map((choice, i) => {
     const isDeny = choice.value === "deny";
-    const b = el("button", isDeny || i > 0 ? "btn-secondary" : "btn-primary", isDeny ? "拒绝" : choice.label);
+    const b = el("button", isDeny || i > 0 ? "btn-secondary" : "btn-primary", isDeny ? t("web.deny") : APPROVAL_LABELS[choice.value] ? t(APPROVAL_LABELS[choice.value]) : choice.label);
     if (isDeny) b.append(" ", el("kbd", null, "Esc"));
+    if (choice.scope) b.title = choice.scope;
     b.type = "button";
     b.addEventListener("click", () => answerApproval(!isDeny, choice.value));
     if (isDeny) declineButton = b;
@@ -243,22 +262,50 @@ function showApproval(payload) {
   }));
   if (!dialog.open) dialog.showModal();
   declineButton.focus();
-  setWorking("等待你的确认");
+  setWorking(t("web.workingApprove"));
 }
 
-async function answerApproval(approve, value) {
+/** A free-text question (why a call was denied, a model id). Esc skips it. */
+function showApprovalInput(payload, dialog) {
+  $("approval-sub").textContent = t("web.reasonHint");
+  const field = el("textarea", "approval-input");
+  field.rows = 3;
+  field.placeholder = payload.placeholder || "";
+  field.setAttribute("aria-label", payload.question || "");
+  const send = el("button", "btn-primary", t("web.send"));
+  send.type = "button";
+  send.addEventListener("click", () => answerApproval(field.value.trim() !== "", "", field.value.trim()));
+  const skip = el("button", "btn-secondary", t("web.skip"));
+  skip.append(" ", el("kbd", null, "Esc"));
+  skip.type = "button";
+  skip.addEventListener("click", () => answerApproval(false));
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send.click(); }
+  });
+  $("approval-actions").replaceChildren(field, skip, send);
+  if (!dialog.open) dialog.showModal();
+  field.focus();
+  setWorking(t("web.workingReplyWait"));
+}
+
+async function answerApproval(approve, value, text) {
   const current = pendingApprovals.shift();
   if (!current) return closeApprovalDialog();
   try {
-    const body = { id: current.id, approve, ...(value && value !== "__allow" && value !== "deny" ? { value } : {}) };
+    const body = {
+      id: current.id,
+      approve,
+      ...(value && value !== "__allow" && value !== "deny" ? { value } : {}),
+      ...(text ? { text } : {}),
+    };
     await api(`/api/sessions/${activeSessionId}/approval`, { method: "POST", body });
   } catch (err) {
-    showToast("提交确认失败：" + err.message, "error");
+    showToast(t("web.answerFailed", { error: err.message }), "error");
   }
   if (pendingApprovals.length > 0) showApproval(pendingApprovals[0]);
   else {
     closeApprovalDialog();
-    if (isRunning) setWorking(approve ? "正在运行" : "正在思考");
+    if (isRunning) setWorking(approve ? t("web.workingRun") : t("web.workingThink"));
   }
 }
 

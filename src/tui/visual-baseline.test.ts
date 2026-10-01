@@ -10,6 +10,7 @@ import { TuiSessionBridge } from "./session-bridge.ts";
 import { stripAnsi } from "./text-selection.ts";
 import { WorkspacePerceptionService } from "../runtime/workspace/index.ts";
 import { emptyScrollbackState, reduceScrollback } from "./transcript-log.ts";
+import { setLanguage } from "../i18n/messages.ts";
 
 import type { PreparedSession } from "../runtime/session.ts";
 import type { ChatMessage } from "../runtime/types.ts";
@@ -323,5 +324,57 @@ describe("TUI Visual Regression Baseline [T00]", () => {
     expect(corruptedWindow.lines.length).not.toBe(baselineWindow.lines.length);
     expect(baselineWindow.lines.length).toBe(13);
     expect(corruptedWindow.lines.length).toBe(10);
+  });
+});
+
+describe("TUI Visual Regression Baseline [T00] — 中文界面", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env["XIO_ANIMATION"] = "off";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-30T12:00:00.000Z"));
+    setLanguage("zh");
+  });
+
+  afterEach(() => {
+    setLanguage("en");
+    vi.useRealTimers();
+    process.env = { ...originalEnv };
+  });
+
+  it("renders the 80x24 welcome screen in Chinese", async () => {
+    const bridge = new TuiSessionBridge();
+    const app = await mountVisualApp(createVisualSession(), bridge, { columns: 80, rows: 24 });
+    try {
+      bridge.sink.notify?.("项目信任：已信任 /srv/work/xiocode");
+      await app.flush(60);
+      const frame = app.getFrame();
+      expect(frame).toContain("引用文件，让智能体先读它");
+      expect(frame).toContain("? 查看快捷键");
+      expect(frame).not.toMatch(/for shortcuts|Ask a question/);
+      expect(frame).toMatchSnapshot();
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("renders an 80x24 approval in Chinese", async () => {
+    const bridge = new TuiSessionBridge();
+    const app = await mountVisualApp(createVisualSession(), bridge, { columns: 80, rows: 24 });
+    try {
+      void bridge.select("运行这条 shell 命令？", [
+        { label: "仅本次允许", value: "once", scope: "只对这一次调用" },
+        { label: "拒绝", value: "deny" },
+        { label: "拒绝并告诉模型原因", value: "deny-reason" },
+      ], "rm -rf build");
+      await app.flush(60);
+      const frame = app.getFrame();
+      expect(frame).toContain("↑↓ 选择 · enter 确认 · y 仅本次允许 · n / esc 拒绝");
+      expect(frame).toMatchSnapshot();
+      bridge.answerSelect(undefined);
+    } finally {
+      app.unmount();
+    }
   });
 });

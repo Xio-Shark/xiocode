@@ -6,9 +6,9 @@
  */
 
 const LANES = [
-  { key: "input", label: "输入" },
-  { key: "model", label: "模型" },
-  { key: "tool", label: "工具" },
+  { key: "input", label: t("web.legendInput") },
+  { key: "model", label: t("web.model") },
+  { key: "tool", label: t("web.legendTool") },
 ];
 const TOOL_ROWS_MAX = 4;
 
@@ -84,8 +84,8 @@ function timelineBlock(step, axis, row) {
   b.style.left = (left * 100).toFixed(3) + "%";
   b.style.width = (width * 100).toFixed(3) + "%";
   if (row) b.style.top = row * 10 + "px";
-  const took = step.endedAt ? formatToolTime(stepEnd(step) - start) : "未结束";
-  const label = "#" + step.stepNumber + " " + (STEP_LABELS[step.type] || step.type) + (step.name ? " " + step.name : "") + " · " + took + (step.isError ? " · 失败" : "");
+  const took = step.endedAt ? formatToolTime(stepEnd(step) - start) : t("web.notEnded");
+  const label = "#" + step.stepNumber + " " + (STEP_LABELS[step.type] || step.type) + (step.name ? " " + step.name : "") + " · " + took + (step.isError ? t("web.failedSuffix") : "");
   b.setAttribute("aria-label", label);
   b.title = label + (step.argsPreview ? "\n" + step.argsPreview : "");
   b.addEventListener("click", () => focusStep(step.id));
@@ -108,7 +108,7 @@ function timelineLane(lane, steps, axis) {
 /** Labels for the folded idle gaps; the active total is in the header, said once. */
 function timelineAxis(axis) {
   const labels = axis.breaks.map(b => {
-    const tag = el("span", "tl-break-label", "空闲 " + formatDuration(b.idle));
+    const tag = el("span", "tl-break-label", t("web.idle", { duration: formatDuration(b.idle) }));
     tag.style.left = (b.at * 100).toFixed(3) + "%";
     return tag;
   });
@@ -125,17 +125,17 @@ function renderTimeline(steps, stats, timelineError) {
   $("step-strip").hidden = timed.length > 0;
   $("tl-chart").hidden = timed.length === 0;
   if (timed.length === 0) {
-    $("timeline-title").textContent = "步骤顺序";
+    $("timeline-title").textContent = t("web.stepOrder");
     note.textContent = timelineError
-      ? "时间线读取失败：" + timelineError
-      : "这个会话没有时间记录（早于时间线功能），按顺序排列，宽度不代表耗时";
+      ? t("web.timelineFailed", { error: timelineError })
+      : t("web.noTimeline");
     note.classList.toggle("error", Boolean(timelineError));
     renderStepStrip(steps || []);
     return;
   }
   const axis = buildAxis(timed);
-  $("timeline-title").textContent = "时间线";
-  note.textContent = untimed > 0 ? untimed + " 步没有时间记录，未画出" : "";
+  $("timeline-title").textContent = t("web.timeline");
+  note.textContent = untimed > 0 ? t("web.untimed", { n: untimed }) : "";
   note.classList.remove("error");
   $("tl-chart").replaceChildren(...LANES.map(lane => timelineLane(lane, timed, axis)), axis.breaks.length ? timelineAxis(axis) : null);
 }

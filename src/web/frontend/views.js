@@ -4,7 +4,7 @@
 
 // ---------- Trajectory ----------
 
-const STEP_LABELS = { input: "用户", thinking: "思考", assistant: "回复", tool: "工具" };
+const STEP_LABELS = { input: t("web.step.input"), thinking: t("web.step.thinking"), assistant: t("web.step.assistant"), tool: t("web.step.tool") };
 
 function renderTrajectory(steps, stats, timelineError) {
   const span = stats && stats.createdAt && stats.updatedAt
@@ -12,17 +12,17 @@ function renderTrajectory(steps, stats, timelineError) {
     : NaN;
   const duration = $("traj-stat-duration");
   // Active = time inside turns (from the timeline); span = first save to last save, idle included.
-  duration.textContent = (typeof stats?.activeMs === "number" ? "活跃 " + formatDuration(stats.activeMs) + " · " : "")
-    + "跨度 " + (Number.isFinite(span) ? formatDuration(span) : "—");
-  duration.title = "活跃：各轮从开始到结束的时间之和；跨度：会话创建到最后一次保存，含空闲";
+  duration.textContent = (typeof stats?.activeMs === "number" ? t("web.active", { duration: formatDuration(stats.activeMs) }) + " · " : "")
+    + t("web.span", { duration: Number.isFinite(span) ? formatDuration(span) : "—" });
+  duration.title = t("web.durationHelp");
   const stepCount = stats?.totalSteps || steps.length;
-  $("traj-stat-turns").textContent = (stepCount > 0 ? (stats?.totalTurns || 0) : 0) + " 轮 · " + stepCount + " 步";
-  $("traj-stat-calls").textContent = (stats?.totalToolCalls || 0) + " 次工具调用" + (stats?.totalErrors ? "（" + stats.totalErrors + " 次失败）" : "");
+  $("traj-stat-turns").textContent = t("web.turnsStepsN", { turns: stepCount > 0 ? (stats?.totalTurns || 0) : 0, steps: stepCount });
+  $("traj-stat-calls").textContent = t("web.toolCallsTotal", { n: stats?.totalToolCalls || 0 }) + (stats?.totalErrors ? t("web.toolCallsFailed", { n: stats.totalErrors }) : "");
   renderTimeline(steps, stats, timelineError);
   renderTrajectoryList(steps, $("trajectory-search-input").value.trim());
 }
 
-/** Fallback for steps without times: equal-width blocks in order (the header says "步骤顺序"). */
+/** Fallback for steps without times: equal-width blocks in order (the header says so). */
 function renderStepStrip(steps) {
   const strip = $("step-strip");
   strip.replaceChildren(...(steps || []).map(s => {
@@ -30,7 +30,7 @@ function renderStepStrip(steps) {
     const b = el("button", "step-block " + lane + (s.isError ? " error" : ""));
     b.type = "button";
     b.setAttribute("role", "listitem");
-    const label = "#" + s.stepNumber + " " + (STEP_LABELS[s.type] || s.type) + " " + (s.name || "") + (s.isError ? "（失败）" : "");
+    const label = "#" + s.stepNumber + " " + (STEP_LABELS[s.type] || s.type) + " " + (s.name || "") + (s.isError ? t("web.failedParen") : "");
     b.setAttribute("aria-label", label);
     b.title = label + "\n" + (s.argsPreview || s.content || "").slice(0, 120);
     b.addEventListener("click", () => focusStep(s.id));
@@ -55,7 +55,7 @@ function renderTrajectoryList(steps, query = "") {
     : steps;
   if (filtered.length === 0) {
     stream.replaceChildren(el("div", "trajectory-empty", xioIcon(q ? "search" : "route"),
-      q ? "没有包含「" + query + "」的步骤" : "还没有轨迹。在对话里发起任务后，每一步都会记在这里。"));
+      q ? t("web.noStepsMatch", { query }) : t("web.noTrajectory")));
     return;
   }
   stream.replaceChildren(...filtered.map(trajectoryItem));
@@ -81,15 +81,15 @@ function trajectoryItem(s) {
   summary.setAttribute("aria-expanded", "false");
 
   const detail = el("div", "traj-detail-panel",
-    el("div", "traj-detail-meta", "第 " + s.turnNumber + " 轮"
-      + (s.startedAt ? " · " + new Date(s.startedAt).toLocaleTimeString("zh-CN", { hour12: false }) : " · 无时间记录")
-      + (s.callId ? " · " + s.callId : "") + (s.isError ? " · 失败" : "")));
+    el("div", "traj-detail-meta", t("web.turnN", { n: s.turnNumber })
+      + (s.startedAt ? " · " + new Date(s.startedAt).toLocaleTimeString(document.documentElement.lang, { hour12: false }) : t("web.untimedStep"))
+      + (s.callId ? " · " + s.callId : "") + (s.isError ? t("web.failedSuffix") : "")));
   if (s.type === "tool") {
-    detail.append(section("参数", XioMarkdown.codeBlock(JSON.stringify(s.args || {}, null, 2), "json")),
-      section("输出", XioMarkdown.codeBlock(s.output || "（无输出）", "text")));
+    detail.append(section(t("web.params"), XioMarkdown.codeBlock(JSON.stringify(s.args || {}, null, 2), "json")),
+      section(t("web.output"), XioMarkdown.codeBlock(s.output || t("web.noOutput"), "text")));
   } else {
-    if (s.thought) detail.appendChild(section("思考", XioMarkdown.codeBlock(s.thought, "text")));
-    detail.appendChild(section(STEP_LABELS[s.type] || "内容", XioMarkdown.codeBlock(s.content || "", "text")));
+    if (s.thought) detail.appendChild(section(t("web.thinkingSection"), XioMarkdown.codeBlock(s.thought, "text")));
+    detail.appendChild(section(STEP_LABELS[s.type] || t("web.content"), XioMarkdown.codeBlock(s.content || "", "text")));
   }
   const item = el("div", "traj-item" + (s.isError ? " error" : ""), summary, detail);
   item.id = "traj-step-" + s.id;
@@ -98,7 +98,7 @@ function trajectoryItem(s) {
 
 /** One line of plain text from a markdown reply: no #, *, backticks or table pipes. */
 function previewText(text) {
-  if (text === "(tool call only)") return "（只调用了工具，没有文字回复）";
+  if (text === "(tool call only)") return t("web.toolOnly");
   return text.replace(/```[\s\S]*?```/g, " ").replace(/[#*`>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
@@ -141,7 +141,7 @@ function parseUnifiedDiff(text) {
   return files;
 }
 
-const DIFF_TAGS = { new: "新增", deleted: "删除", renamed: "重命名" };
+const DIFF_TAGS = { new: t("web.diffNew"), deleted: t("web.diffDeleted"), renamed: t("web.diffRenamed") };
 
 function diffStat(added, removed) {
   return el("span", "diff-stat", el("span", "add", "+" + added), el("span", "del", "−" + removed));
@@ -165,10 +165,10 @@ function diffFileCard(file, index) {
   header.type = "button";
   header.setAttribute("aria-expanded", "true");
   const lines = el("div", "diff-lines");
-  if (file.binary) lines.appendChild(el("div", "diff-more", "二进制文件，不显示内容"));
+  if (file.binary) lines.appendChild(el("div", "diff-more", t("web.binary")));
   else {
     file.lines.slice(0, DIFF_LINE_LIMIT).forEach(l => lines.appendChild(diffLine(l)));
-    if (file.lines.length > DIFF_LINE_LIMIT) lines.appendChild(el("div", "diff-more", "还有 " + formatNumber(file.lines.length - DIFF_LINE_LIMIT) + " 行未显示"));
+    if (file.lines.length > DIFF_LINE_LIMIT) lines.appendChild(el("div", "diff-more", t("web.moreLines", { n: formatNumber(file.lines.length - DIFF_LINE_LIMIT) })));
   }
   const card = el("section", "diff-file", header, lines);
   card.id = "diff-file-" + index;
@@ -194,14 +194,14 @@ function diffFileLink(file, index) {
 async function fetchDiff() {
   const body = $("diff-output-body");
   const files = $("diff-files");
-  body.replaceChildren(el("div", "empty-view", el("span", "spinner"), "正在读取 git diff…"));
+  body.replaceChildren(el("div", "empty-view", el("span", "spinner"), t("web.readingDiff")));
   let data;
   try {
     data = await api("/api/workspace/diff");
   } catch (err) {
     files.replaceChildren();
     $("diff-summary").textContent = "";
-    body.replaceChildren(el("div", "empty-view", xioIcon("alert"), "读取失败：" + err.message));
+    body.replaceChildren(el("div", "empty-view", xioIcon("alert"), t("web.readFailedShort", { error: err.message })));
     return;
   }
   const parsed = parseUnifiedDiff(data.diff || "");
@@ -209,17 +209,17 @@ async function fetchDiff() {
   if (parsed.length === 0 && untracked.length === 0) {
     files.replaceChildren();
     $("diff-summary").textContent = "";
-    body.replaceChildren(el("div", "empty-view", xioIcon("check"), "工作区没有未提交的改动。"));
+    body.replaceChildren(el("div", "empty-view", xioIcon("check"), t("web.noChanges")));
     return;
   }
   const added = parsed.reduce((n, f) => n + f.added, 0);
   const removed = parsed.reduce((n, f) => n + f.removed, 0);
-  $("diff-summary").textContent = parsed.length + " 个文件 · +" + added + " −" + removed + (untracked.length ? " · " + untracked.length + " 个未跟踪" : "");
+  $("diff-summary").textContent = t("web.diffSummary", { files: parsed.length, added, removed }) + (untracked.length ? t("web.untrackedN", { n: untracked.length }) : "");
   files.replaceChildren(...parsed.map(diffFileLink));
   const cards = parsed.map(diffFileCard);
   if (untracked.length) {
     cards.push(el("section", "diff-file",
-      el("div", "diff-file-header", xioIcon("file-plus"), el("span", "path", "未跟踪的文件（git diff 不包含，内容未显示）")),
+      el("div", "diff-file-header", xioIcon("file-plus"), el("span", "path", t("web.untrackedFiles"))),
       el("div", "diff-lines", ...untracked.map(p => el("div", "diff-line ctx", el("span", "ln"), el("span", "ln"), el("span", "sign", "?"), el("span", "code", p))))));
   }
   body.replaceChildren(...cards);
@@ -230,7 +230,7 @@ async function fetchDiff() {
 function setMetric(id, value, foot) {
   const node = $(id);
   const empty = value === null;
-  node.textContent = empty ? "暂无数据" : value;
+  node.textContent = empty ? t("web.noData") : value;
   node.classList.toggle("muted", empty);
   if (foot !== undefined) $(id + "-foot").textContent = foot;
 }
@@ -238,15 +238,15 @@ function setMetric(id, value, foot) {
 function renderMetrics() {
   const total = usageTotals.input + usageTotals.output;
   setMetric("val-tokens", total > 0 ? formatNumber(total) : null,
-    total > 0 ? "输入 " + formatNumber(usageTotals.input) + " · 输出 " + formatNumber(usageTotals.output) : "发起一轮后统计输入与输出");
+    total > 0 ? t("web.inOut", { input: formatNumber(usageTotals.input), output: formatNumber(usageTotals.output) }) : t("web.tokensFoot"));
   const cacheKnown = usageTotals.cacheKnown && usageTotals.input > 0;
   setMetric("val-cache", cacheKnown ? Math.round((usageTotals.cacheRead / usageTotals.input) * 100) + "%" : null,
-    cacheKnown ? "缓存读取 " + formatNumber(usageTotals.cacheRead) + " Token" : "供应商未报告缓存读取");
-  const priced = usageTotals.costLabel && usageTotals.costLabel !== "未计价" && usageTotals.costLabel !== "~unknown";
-  setMetric("val-cost", priced ? usageTotals.costLabel : null, priced ? "按内置定价表折算" : "尚未发起请求或当前模型未计价");
+    cacheKnown ? t("web.cacheRead", { n: formatNumber(usageTotals.cacheRead) }) : t("web.noCacheReport"));
+  const priced = usageTotals.costLabel && usageTotals.costLabel !== t("web.unpriced") && usageTotals.costLabel !== "~unknown";
+  setMetric("val-cost", priced ? usageTotals.costLabel : null, priced ? t("web.pricedFoot") : t("web.costFoot"));
   $("metrics-note-text").textContent = (usageTotals.persisted
-    ? "Token 与缓存按会话时间线累计，刷新后仍在；早于时间线功能的轮次不计入。"
-    : "这个会话没有时间线记录，Token 与缓存只统计本页打开之后的轮次。")
-    + "费用只在会话运行时可得，按内置定价表折算。";
-  setMetric("val-turns", String(usageTotals.toolCalls), usageTotals.toolErrors ? "其中 " + usageTotals.toolErrors + " 次失败" : "当前会话累计");
+    ? t("web.usageTimeline")
+    : t("web.usageNoTimeline"))
+    + t("web.costNote");
+  setMetric("val-turns", String(usageTotals.toolCalls), usageTotals.toolErrors ? t("web.ofWhichFailed", { n: usageTotals.toolErrors }) : t("web.sessionTotal"));
 }

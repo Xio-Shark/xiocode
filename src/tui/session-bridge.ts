@@ -5,6 +5,7 @@ import {
   toolResultOutput,
 } from "../runtime/session-ui.ts";
 import type { SessionUiSink } from "../runtime/session-ui.ts";
+import { t } from "../i18n/messages.ts";
 import type { SubagentUiBridge } from "../runtime/explore/subagent-ui.ts";
 import type { ContextCompactionUiEvent } from "../runtime/types.ts";
 
@@ -90,7 +91,7 @@ export class TuiSessionBridge implements InteractiveIO {
       });
     },
     onContextCompaction: (event) => this.emit({ kind: "context-compaction", event }),
-    onCancelled: () => this.emit({ kind: "notice", text: "Turn cancelled.", level: "warning" }),
+    onCancelled: () => this.emit({ kind: "notice", text: t("notice.cancelled"), level: "warning" }),
     onDoneContract: (summary) => this.emit({ kind: "notice", text: summary, level: "warning" }),
     onEvidence: (summary) => this.emit({ kind: "notice", text: summary }),
   };

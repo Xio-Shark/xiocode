@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages.ts";
 import {
   DEFAULT_PERMISSION_MODE,
   allowedRiskClasses,
@@ -106,7 +107,7 @@ export function registerPermissionCommands(
     options.sink.setStatus?.("permission", permissionStatusLabel(mode));
     options.sink.setStatus?.("agent", undefined);
     options.sink.notify?.(
-      `权限模式: ${permissionModeDisplay(mode)} (${mode})`,
+      t("mode.changed", { label: permissionModeDisplay(mode), mode }),
       mode === "full" ? "warning" : "info",
     );
     return mode;

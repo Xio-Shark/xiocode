@@ -7,7 +7,9 @@ import { App } from "./app.ts";
 import { startInteractiveBoot } from "./interactive-boot.ts";
 import type { EarlyBootHandle } from "./early-boot.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
-import { applyConfiguredTheme, registerThemeCommands } from "./theme-commands.ts";
+import { applyStartupTheme, registerThemeCommands } from "./theme-commands.ts";
+import { applyConfiguredLanguage, t } from "../i18n/messages.ts";
+import type { RecentSession } from "./welcome.ts";
 import { getGlobalTracer, isPerfEnabled } from "../runtime/perf/index.ts";
 
 import type { SessionOptions } from "../runtime/session.ts";
@@ -17,6 +19,8 @@ export type RunInkSessionOptions = SessionOptions & Readonly<{
   earlyBoot?: EarlyBootHandle;
   /** Background npm update check; delivered as a TUI notice when ready. */
   updateNotice?: Promise<string | null>;
+  /** This repository's latest sessions, for the welcome screen of a new session. */
+  recentSessions?: Promise<readonly RecentSession[]>;
 }>;
 
 /**
@@ -36,15 +40,21 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
   const fullscreen = env.XIO_TUI_FULLSCREEN !== "0";
   const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
-  const themeWarning = applyConfiguredTheme(options.runtimeConfig.ui?.theme, env);
-  if (themeWarning) bridge.sink.notify?.(themeWarning, "warning");
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
   let bootInterrupted = false;
 
+  // Language before anything paints: every later string is read through t().
+  const languageWarning = applyConfiguredLanguage(options.runtimeConfig.ui?.language);
+  if (languageWarning) bridge.sink.notify?.(languageWarning, "warning");
   const early = options.earlyBoot;
-  early?.setStatus("loading session…");
+  early?.setStatus(t("boot.loadingSession"));
   const earlyDraft = early?.drain() ?? { text: "", pendingSubmit: false };
   early?.unmount();
+
+  // Before the first Ink paint: the theme cannot change under a painted screen without a full redraw.
+  const startupTheme = await applyStartupTheme(options.runtimeConfig.ui?.theme, env);
+  for (const warning of startupTheme.warnings) bridge.sink.notify?.(warning, "warning");
+  const draftText = earlyDraft.text + startupTheme.typed.replace(/[\x00-\x1f\x7f]/g, "");
 
   const inkBoot = startInteractiveBoot({
     cwd,
@@ -54,10 +64,10 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       bootInterrupted = true;
     },
   });
-  if (earlyDraft.text.length > 0) {
-    inkBoot.buffer.setText(earlyDraft.text);
+  if (draftText.length > 0) {
+    inkBoot.buffer.setText(draftText);
   }
-  if (earlyDraft.pendingSubmit && earlyDraft.text.trim().length > 0) {
+  if (earlyDraft.pendingSubmit && draftText.trim().length > 0) {
     inkBoot.buffer.applyKey("", { return: true });
   }
 
@@ -70,7 +80,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
 
   try {
     await inkBoot.firstFrameReady();
-    inkBoot.setStatus("prompt_context", "loading context…");
+    inkBoot.setStatus("prompt_context", t("boot.loadingContext"));
 
     const session = await prepareSession({
       ...options,
@@ -87,7 +97,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       return 130;
     }
 
-    inkBoot.setStatus("ready", "ready");
+    inkBoot.setStatus("ready", t("boot.ready"));
     tracer?.mark("prompt_ready", "success", { attrs: { ui: "ink" } });
 
     if (bootExit) {
@@ -117,6 +127,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       // XIO_TUI_FULLSCREEN=0: Static scrollback mode (terminal owns scroll).
       appendScrollback: !fullscreen,
       initialDraft: drained.text,
+      recentSessions: options.recentSessions,
       autoSubmitInitial: drained.pendingSubmit,
       onExit: async (code) => {
         await session.close();

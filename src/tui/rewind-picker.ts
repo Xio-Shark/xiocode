@@ -9,6 +9,7 @@ import React from "react";
 import { Box, Text } from "ink";
 
 import type { RewindMode, RewindPointView } from "../runtime/rewind.ts";
+import { t } from "../i18n/messages.ts";
 import { theme } from "./theme.ts";
 
 const h = React.createElement;
@@ -37,9 +38,9 @@ export function rewindModeOptions(point: RewindPointView): RewindModeOption[] {
   const code = point.code.available ? undefined : point.code.reason;
   const conversation = point.conversation.available ? undefined : point.conversation.reason;
   return [
-    { mode: "both", label: "Restore files and conversation", ...optional(code ?? conversation) },
-    { mode: "conversation", label: "Restore conversation only", ...optional(conversation) },
-    { mode: "code", label: "Restore files only", ...optional(code) },
+    { mode: "both", label: t("rewind.both"), ...optional(code ?? conversation) },
+    { mode: "conversation", label: t("rewind.conversation"), ...optional(conversation) },
+    { mode: "code", label: t("rewind.code"), ...optional(code) },
   ];
 }
 
@@ -80,27 +81,26 @@ export function RewindPickerOverlay(props: Readonly<{ state: RewindPickerState }
   const { state } = props;
   if (state.points.length === 0) {
     return h(Box, { flexDirection: "column", marginBottom: 1 },
-      h(Text, { color: theme.accent, bold: true }, "Rewind"),
-      h(Text, { dimColor: true }, "Nothing to rewind to yet: a point is recorded when a turn starts · esc close"));
+      h(Text, { color: theme.accent, bold: true }, t("rewind.title")),
+      h(Text, { color: theme.muted }, t("rewind.empty")));
   }
   const point = state.points[state.index]!;
   if (state.stage === "mode") {
     const options = rewindModeOptions(point);
     return h(Box, { flexDirection: "column", marginBottom: 1 },
-      h(Text, { color: theme.accent, bold: true, wrap: "truncate-end" }, `Rewind to before: ${point.prompt}`),
+      h(Text, { color: theme.accent, bold: true, wrap: "truncate-end" }, t("rewind.before", { prompt: point.prompt })),
       ...options.map((option, i) => {
         const active = i === state.modeIndex;
         const marker = active ? `${theme.sym.select} ` : "  ";
         const suffix = option.unavailable ? ` — ${option.unavailable}` : "";
         return h(Text, {
           key: option.mode,
-          color: active && !option.unavailable ? theme.accent : undefined,
+          color: active && !option.unavailable ? theme.accent : theme.muted,
           bold: active,
-          dimColor: option.unavailable !== undefined || !active,
           wrap: "truncate-end",
         }, `${marker}${option.label}${suffix}`);
       }),
-      h(Text, { dimColor: true }, "↑↓ · Enter · esc back"));
+      h(Text, { color: theme.muted }, t("rewind.modeKeys")));
   }
   const start = Math.min(
     Math.max(0, state.index - VISIBLE_POINTS + 1),
@@ -108,24 +108,23 @@ export function RewindPickerOverlay(props: Readonly<{ state: RewindPickerState }
   );
   const visible = state.points.slice(start, start + VISIBLE_POINTS);
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, { color: theme.accent, bold: true }, "Rewind to the start of a turn"),
+    h(Text, { color: theme.accent, bold: true }, t("rewind.pick")),
     ...visible.map((item, i) => {
       const active = start + i === state.index;
       const marker = active ? `${theme.sym.select} ` : "  ";
       const what = [
-        item.code.available ? "files" : undefined,
-        item.conversation.available ? "chat" : undefined,
+        item.code.available ? t("rewind.files") : undefined,
+        item.conversation.available ? t("rewind.chat") : undefined,
       ].filter(Boolean).join("+") || "—";
       return h(Text, {
         key: item.index,
-        color: active ? theme.accent : undefined,
+        color: active ? theme.accent : theme.muted,
         bold: active,
-        dimColor: !active,
         wrap: "truncate-end",
       }, `${marker}${String(item.index).padStart(2)}. ${item.prompt}  (${what})`);
     }),
-    h(Text, { dimColor: true },
-      `(${state.index + 1}/${state.points.length}) ↑↓ · Enter choose what to restore · esc close`));
+    h(Text, { color: theme.muted },
+      t("rewind.pointKeys", { index: state.index + 1, total: state.points.length })));
 }
 
 function optional(reason: string | undefined): Readonly<{ unavailable?: string }> {

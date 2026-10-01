@@ -1,17 +1,19 @@
 /*
  * XioCode console — design tokens first, components after.
  *
- * Colour: cool neutral chrome, one brand accent. The dark accent is the TUI's
- * #7aa2f7; light mode uses the same hue darkened to keep text contrast ≥ 4.5:1.
+ * Colour: cool neutral chrome, one brand accent. Brand colours come from
+ * src/design/tokens.ts, the same source as the TUI themes; contrast ≥ 4.5:1.
  * Type: six sizes (12/13/14/16/20/28). Motion: three durations, ease-out,
  * transform/opacity only, and none at all under prefers-reduced-motion.
  */
 
-/* Every colour is light-dark(light, dark); the theme switch only sets color-scheme. */
+/* Every colour is light-dark(light, dark); the theme switch only sets color-scheme.
+   The marker below becomes the brand tokens from src/design/tokens.ts (shared with
+   the TUI): --bg, --text, --text-3, --accent, --success, --warn, --danger, --diff-*-fg. */
 :root {
   color-scheme: light dark;
+  /* @design-tokens */
 
-  --bg: light-dark(#ffffff, #0f1115);
   --bg-sidebar: light-dark(#f7f8fa, #0b0d10);
   --bg-subtle: light-dark(#f3f4f7, #171a20);
   --bg-muted: light-dark(#e9ecf1, #20242c);
@@ -21,22 +23,16 @@
   --border-subtle: light-dark(#eef0f3, #1e2128);
   --border-strong: light-dark(#c5cbd5, #3b414d);
 
-  --text: light-dark(#16181d, #e6e8ec);
   --text-2: light-dark(#474d59, #b1b7c3);
-  --text-3: light-dark(#5b6372, #8d94a3);
   --text-on-accent: light-dark(#ffffff, #0b0d10);
 
-  --accent: light-dark(#3b5bdb, #7aa2f7);
   --accent-hover: light-dark(#2f4bc0, #96b5f9);
   --accent-soft: light-dark(#eef1fd, rgba(122, 162, 247, 0.12));
   --accent-border: light-dark(#c5cff6, rgba(122, 162, 247, 0.34));
 
-  --success: light-dark(#18794e, #73c991);
-  --success-soft: light-dark(#e8f5ee, rgba(115, 201, 145, 0.12));
-  --warn: light-dark(#9a5b00, #e0af68);
+  --success-soft: light-dark(#e8f5ee, rgba(158, 206, 106, 0.12));
   --warn-soft: light-dark(#fdf3e1, rgba(224, 175, 104, 0.12));
   --warn-border: light-dark(#f1d7a6, rgba(224, 175, 104, 0.34));
-  --danger: light-dark(#c4262e, #f7768e);
   --danger-soft: light-dark(#fdeded, rgba(247, 118, 142, 0.12));
   --danger-border: light-dark(#f5c2c4, rgba(247, 118, 142, 0.34));
   --think: light-dark(#6741d9, #bb9af7);
@@ -48,10 +44,8 @@
   --tok-number: light-dark(#b4540a, #ff9e64);
   --tok-comment: light-dark(#6a7282, #7a82a6);
   --tok-fn: light-dark(#2251c9, #7aa2f7);
-  --diff-add-bg: light-dark(#e7f5eb, rgba(115, 201, 145, 0.11));
-  --diff-add-fg: light-dark(#116329, #9ece6a);
+  --diff-add-bg: light-dark(#e7f5eb, rgba(158, 206, 106, 0.11));
   --diff-del-bg: light-dark(#fcebec, rgba(247, 118, 142, 0.11));
-  --diff-del-fg: light-dark(#a40e26, #f7768e);
 
   --overlay: light-dark(rgba(12, 14, 18, 0.42), rgba(0, 0, 0, 0.58));
   --shadow-sm: 0 1px 2px light-dark(rgba(16, 24, 40, 0.05), rgba(0, 0, 0, 0.3));
@@ -1122,6 +1116,20 @@ main:not([data-view="chat"]) .composer-section { display: none; }
   border-radius: var(--radius-md);
 }
 .approval-detail[hidden] { display: none; }
+.approval-detail.is-diff { padding: 0; white-space: normal; background: none; border: 0; display: flex; flex-direction: column; gap: 8px; }
+.approval-text { font-size: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-input {
+  flex: 1 1 100%;
+  min-height: 72px;
+  padding: 10px 12px;
+  font-size: var(--fs-md);
+  resize: vertical;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+.approval-input:focus-visible { border-color: var(--accent); }
+.approval-dialog .dialog-actions:has(.approval-input) { flex-wrap: wrap; }
 .approval-dialog .dialog-actions { margin-top: 20px; }
 
 .settings-dialog { width: 880px; height: min(640px, calc(100dvh - 48px)); }

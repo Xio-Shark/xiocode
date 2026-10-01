@@ -6,6 +6,7 @@
  * In-flight tools are keyed by callId so parallel same-name calls pair correctly.
  */
 
+import { t } from "../i18n/messages.ts";
 import {
   exploreReportBody,
   exploreReportStatus,
@@ -372,48 +373,48 @@ export function resolveRemedyHint(
     case "auth":
       return {
         code,
-        title: "Connection Error",
-        hint: "Run /connect to verify provider credentials",
+        title: t("error.connection"),
+        hint: t("error.connectionHint"),
       };
     case "model_not_found":
       return {
         code,
-        title: "Provider Error",
-        hint: "Check base_url or run /model to pick an available model",
+        title: t("error.provider"),
+        hint: t("error.modelHint"),
       };
     case "rate_limit":
       return {
         code,
-        title: "Rate Limit Exceeded",
-        hint: "Wait a moment and retry, or check provider quota/billing",
+        title: t("error.rateLimit"),
+        hint: t("error.rateLimitHint"),
       };
     case "context_overflow":
       return {
         code,
-        title: "Compaction Error",
-        hint: "Run /compact or inspect context window",
+        title: t("error.compaction"),
+        hint: t("error.compactionHint"),
       };
     case "permission_denied":
       return {
         code,
-        title: "Permission Notice",
-        hint: "Run /bypass or adjust permission mode",
+        title: t("error.permission"),
+        hint: t("error.permissionHint"),
       };
     case "network":
       return {
         code,
-        title: "Network Error",
-        hint: "Check your internet connection and proxy settings (HTTPS_PROXY)",
+        title: t("error.network"),
+        hint: t("error.networkHint"),
       };
     case "provider_error":
       return {
         code,
-        title: "Provider Error",
-        hint: "The provider returned an error; retry in a moment or switch models",
+        title: t("error.provider"),
+        hint: t("error.providerHint"),
       };
     case "unknown":
     default:
-      return { code: "unknown", title: "Error" };
+      return { code: "unknown", title: t("error.generic") };
   }
 }
 
@@ -606,7 +607,7 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
           return buildCalloutLines(title, event.text, hint);
         })()
       : event.text.split("\n").map((line) => `${theme.sym.meta} ${line}`);
-    const title = event.detail ? "Recovery Notice" : undefined;
+    const title = event.detail ? t("viewer.recovery") : undefined;
     return {
       ...next,
       blocks: [...next.blocks, {
@@ -625,10 +626,10 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
   if (event.kind === "context-compaction") {
     const e = event.event;
     let text: string | undefined;
-    if (e.stage === "start") text = "Context compacting…";
-    else if (e.stage === "success") text = `Context compacted: ${e.before} -> ${e.after} messages.`;
-    else if (e.stage === "skip") text = "Context is already compact.";
-    else if (e.stage === "failure") text = `Context compaction failed: ${e.error}`;
+    if (e.stage === "start") text = t("context.compacting");
+    else if (e.stage === "success") text = t("context.compacted", { before: e.before, after: e.after });
+    else if (e.stage === "skip") text = t("context.alreadyCompact");
+    else if (e.stage === "failure") text = t("context.failed", { error: e.error ?? "" });
     if (!text) return state;
     return reduceScrollback(state, {
       kind: "notice",
@@ -938,7 +939,7 @@ export function blocksFromRestoredMessages(
       if (message.name === CONTEXT_SUMMARY_NAME) {
         state = reduceScrollback(state, {
           kind: "notice",
-          text: "Earlier context was compacted.",
+          text: t("context.earlier"),
         });
         continue;
       }
@@ -1398,7 +1399,7 @@ function formatInFlightSubagentLines(
   const goal = worker.goal.trim().length > 0 ? ` ${truncateToolDetail(worker.goal)}` : "";
   const activity = formatSubagentActivity(worker, charBudget, now);
   return [
-    `${theme.sym.explore} subagent #${worker.workerId}${name} · ${worker.model}${role}${goal} ${theme.sym.meta} ${activity}`,
+    `${theme.sym.explore} ${t("subagent.title", { id: worker.workerId })}${name} · ${worker.model}${role}${goal} ${theme.sym.meta} ${activity}`,
   ];
 }
 
@@ -1407,10 +1408,10 @@ export function formatSubagentActivity(worker: InFlightSubagent, charBudget: num
   const elapsed = Math.max(1, Math.round((now - worker.startedAt) / 1000));
   if (worker.activity.kind === "thinking") {
     const active = Math.max(1, Math.round((now - worker.activity.startedAt) / 1000));
-    return `Thinking ${active}s`;
+    return t("subagent.thinking", { seconds: active });
   }
   if (worker.activity.kind === "responding") {
-    return `Responding ${elapsed}s`;
+    return t("subagent.responding", { seconds: elapsed });
   }
   if (worker.activity.kind === "tool") {
     const active = Math.max(1, Math.round((now - worker.activity.startedAt) / 1000));
@@ -1418,12 +1419,12 @@ export function formatSubagentActivity(worker: InFlightSubagent, charBudget: num
       ? ` ${truncateToolDetail(worker.activity.detail, Math.min(48, charBudget))}`
       : "";
     const more = Math.max(0, worker.inFlightTools.length - 1);
-    return `Running: ${worker.activity.name}${detail}${more > 0 ? ` +${more}` : ""} ${theme.sym.meta} ${active}s`;
+    return `${t("subagent.running", { name: worker.activity.name })}${detail}${more > 0 ? ` +${more}` : ""} ${theme.sym.meta} ${active}s`;
   }
   if (worker.activity.kind === "starting") {
-    return `Starting ${theme.sym.meta} ${elapsed}s`;
+    return `${t("subagent.starting")} ${theme.sym.meta} ${elapsed}s`;
   }
-  return `Working ${theme.sym.meta} ${elapsed}s`;
+  return `${t("subagent.working")} ${theme.sym.meta} ${elapsed}s`;
 }
 
 function buildSubagentInnerToolLines(input: Readonly<{
@@ -1463,7 +1464,7 @@ function buildSubagentHistoryBlock(input: Readonly<{
   });
   const fullOutput = worker.lines.join("\n");
   const lineCount = fullOutput.length === 0 ? 0 : fullOutput.split("\n").length;
-  const header = `${theme.sym.explore} subagent #${worker.workerId}${name} · ${worker.model}${role}${goal}`
+  const header = `${theme.sym.explore} ${t("subagent.title", { id: worker.workerId })}${name} · ${worker.model}${role}${goal}`
     + ` (${statusLabel} ${theme.sym.meta} ${seconds}s)`
     + ` ${theme.sym.meta} ${formatToolExpandHint(lineCount)}`;
   const lines = [header];
@@ -1476,7 +1477,7 @@ function buildSubagentHistoryBlock(input: Readonly<{
     lines,
     error: !input.success,
     output: fullOutput,
-    title: `subagent #${worker.workerId}`,
+    title: t("subagent.title", { id: worker.workerId }),
     workerId: worker.workerId,
     model: worker.model,
     detail: worker.goal,

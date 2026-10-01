@@ -1,3 +1,4 @@
+import { hasMessage, t } from "../i18n/messages.ts";
 import type {
   ProviderModelConfig,
   ProviderRegistration,
@@ -36,7 +37,8 @@ export function parseThinkingLevel(value: string): ThinkingLevel | undefined {
 }
 
 export function thinkingStatusLabel(level: ThinkingLevel): string {
-  return `think:${level}`;
+  const key = `think.${level}`;
+  return t("status.think", { level: hasMessage(key) ? t(key) : level });
 }
 
 export function findProviderModel(

@@ -337,6 +337,8 @@ export type XioConfig = Readonly<{
 
 export type XioUiConfig = Readonly<{
   theme?: string;
+  /** Interface language: "zh" (default) or "en"; checked at TUI start (src/i18n). */
+  language?: string;
   autoThemeSwitching?: boolean;
 }>;
 
@@ -562,9 +564,11 @@ function parseUi(table: Record<string, unknown> | undefined): XioUiConfig | unde
   if (!table) return undefined;
   const theme = getOptionalString(table, "theme");
   const autoThemeSwitching = getOptionalBoolean(table, "auto_theme_switching");
-  if (theme === undefined && autoThemeSwitching === undefined) return undefined;
+  const language = getOptionalString(table, "language");
+  if (theme === undefined && autoThemeSwitching === undefined && language === undefined) return undefined;
   return {
     ...(theme !== undefined ? { theme } : {}),
+    ...(language !== undefined ? { language } : {}),
     ...(autoThemeSwitching !== undefined ? { autoThemeSwitching } : {}),
   };
 }

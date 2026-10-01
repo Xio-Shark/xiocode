@@ -7,12 +7,12 @@ let selectedThinkingLevel = "high";
 let settingsReturnFocus = null;
 
 /** Display names only; which levels exist and their order come from the server (runtime/thinking.ts). */
-const THINKING_LABELS = { off: "关闭", minimal: "极简", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最高", ultra: "极限" };
+const thinkingLabel = (level) => (MESSAGES["web.think." + level] === undefined ? level : t("web.think." + level));
 
 const RULE_PRESETS = {
-  Surgical: "\n## 最小改动\n- 只改实现需求所必需的文件与代码行。\n- 不做无关的格式化、重构或清理。\n",
-  TestFirst: "\n## 交付前跑测试\n- 交付前运行受影响模块的测试并确认通过。\n- 回复里附上测试命令与结果。\n",
-  Security: "\n## 不硬编码凭据\n- 源码与日志里不写任何 API Key 或密钥，使用环境变量。\n- 数据库与命令调用一律参数化。\n",
+  Surgical: t("web.ruleSurgicalText"),
+  TestFirst: t("web.ruleTestsText"),
+  Security: t("web.ruleSecretsText"),
 };
 
 function initSettingsModal() {
@@ -52,7 +52,7 @@ function providerChoices(data) {
       known.hasKey = known.hasKey || p.hasKey;
       if (p.model && !known.models.includes(p.model)) known.models.unshift(p.model);
     } else {
-      catalog.push({ id: p.name, label: p.name + "（配置文件）", apiKeyEnv: p.apiKeyEnv, defaultModel: p.model, models: p.model ? [p.model] : [], hasKey: p.hasKey });
+      catalog.push({ id: p.name, label: t("web.fromConfig", { name: p.name }), apiKeyEnv: p.apiKeyEnv, defaultModel: p.model, models: p.model ? [p.model] : [], hasKey: p.hasKey });
     }
   }
   return catalog;
@@ -61,12 +61,12 @@ function providerChoices(data) {
 function renderSettingsCatalog(data) {
   const select = $("setting-provider-select");
   select.replaceChildren(...providerChoices(data).map(p => {
-    const option = el("option", null, p.label + (p.hasKey ? "" : " · 未配置凭据"));
+    const option = el("option", null, p.label + (p.hasKey ? "" : t("web.noKey")));
     option.value = p.id;
     return option;
   }));
   $("setting-thinking-picker").replaceChildren(...(data.thinkingLevels || []).map(level => {
-    const b = el("button", "segmented-btn", THINKING_LABELS[level] || level);
+    const b = el("button", "segmented-btn", thinkingLabel(level));
     b.type = "button";
     b.setAttribute("role", "radio");
     b.dataset.level = level;
@@ -81,7 +81,7 @@ function reflectProvider(providerId) {
   $("setting-model-options").replaceChildren(...(provider?.models || []).map(m => { const o = el("option"); o.value = m; return o; }));
   $("provider-key-env-name").textContent = provider?.apiKeyEnv || "";
   $("provider-key-status").className = "key-badge" + (provider?.hasKey ? "" : " missing");
-  $("provider-key-status-text").textContent = provider?.hasKey ? "已找到凭据" : "未找到凭据";
+  $("provider-key-status-text").textContent = provider?.hasKey ? t("web.keyFound") : t("web.keyMissing");
 }
 
 function selectThinkingLevel(level) {
@@ -113,7 +113,7 @@ async function loadSettings() {
     const select = $("setting-provider-select");
     // A default the catalog does not know is still the user's setting: show it rather than silently picking another.
     if (g.defaultProvider && ![...select.options].some(o => o.value === g.defaultProvider)) {
-      const option = el("option", null, g.defaultProvider + "（未配置）");
+      const option = el("option", null, t("web.notConfigured", { name: g.defaultProvider }));
       option.value = g.defaultProvider;
       select.prepend(option);
     }
@@ -125,7 +125,7 @@ async function loadSettings() {
     selectThinkingLevel(g.defaultThinkingLevel || "off");
     reflectProvider($("setting-provider-select").value);
   } catch (err) {
-    showToast("无法读取设置：" + err.message, "error");
+    showToast(t("web.settingsReadFailed", { error: err.message }), "error");
   }
 }
 
@@ -133,10 +133,10 @@ async function loadRules(force = false) {
   try {
     const data = await api("/api/rules");
     $("setting-rules-editor").value = data.content || "";
-    $("rules-file-indicator").textContent = (data.filename || "AGENTS.md") + (data.exists ? "" : "（尚未创建）");
-    if (force) showToast("已重新读取 AGENTS.md", "success");
+    $("rules-file-indicator").textContent = (data.filename || "AGENTS.md") + (data.exists ? "" : t("web.notCreated"));
+    if (force) showToast(t("web.rulesReloaded"), "success");
   } catch (err) {
-    showToast("无法读取 AGENTS.md：" + err.message, "error");
+    showToast(t("web.rulesReadFailed", { error: err.message }), "error");
   }
 }
 
@@ -149,25 +149,20 @@ function itemRow(icon, name, tag, desc, aside) {
     aside || null);
 }
 
-const MCP_SOURCES = {
-  config: "配置文件",
-  project: "工作区 .mcp.json",
-  "claude-user": "Claude 用户配置",
-  "cursor-user": "Cursor 用户配置",
-};
+const mcpSourceLabel = (source) => (MESSAGES["web.mcpSource." + source] === undefined ? source : t("web.mcpSource." + source));
 
 function mcpStateBadge(server) {
   const label = {
-    ok: "已连接 · " + (server.tools ?? 0) + " 个工具",
-    connecting: "连接中",
-    failed: "连接失败",
-    idle: "未连接",
+    ok: t("web.mcpOk", { n: server.tools ?? 0 }),
+    connecting: t("web.mcpConnecting"),
+    failed: t("web.mcpFailed"),
+    idle: t("web.mcpIdle"),
   }[server.state] || server.state;
   return el("span", "mcp-state " + server.state, el("span", "status-dot"), label);
 }
 
 function mcpRow(server) {
-  const source = "来源：" + (MCP_SOURCES[server.source] || server.source);
+  const source = t("web.mcpSourceLabel", { source: mcpSourceLabel(server.source) });
   const desc = server.state === "failed" && server.error ? source + " · " + server.error : source;
   const row = itemRow("plug", server.name, server.transport || null, desc, mcpStateBadge(server));
   if (server.state === "failed") row.classList.add("failed");
@@ -177,10 +172,10 @@ function mcpRow(server) {
 function renderMcpServers(servers, liveSessionId) {
   $("mcp-container").replaceChildren(...(servers.length
     ? servers.map(mcpRow)
-    : [el("li", "item-empty", "没有发现 MCP 服务器。可以在工作区 .mcp.json 或配置文件的 [mcp] 段里添加。")]));
+    : [el("li", "item-empty", t("web.noMcp"))]));
   $("mcp-live-note").textContent = liveSessionId
-    ? "连接状态来自当前运行的会话。"
-    : "还没有会话在运行：发送第一条消息后，会话启动并建立连接。";
+    ? t("web.mcpLive")
+    : t("web.mcpNoSession");
 }
 
 /** Live update from the session's event bus while the dialog is open. */
@@ -190,6 +185,11 @@ function onMcpStatus() {
 
 let extensionsRequest = 0;
 
+/** Bundled extensions are described in the page language; anything else keeps the server's text. */
+function extensionText(suffix, fallback) {
+  return MESSAGES["web." + suffix] === undefined ? fallback : t("web." + suffix);
+}
+
 async function loadExtensions() {
   // Status events can arrive in bursts; only the latest answer may render.
   const request = ++extensionsRequest;
@@ -198,11 +198,11 @@ async function loadExtensions() {
     if (request !== extensionsRequest) return;
     const extensions = data.extensions || [];
     $("plugins-container").replaceChildren(...(extensions.length
-      ? extensions.map(ext => itemRow("layers", ext.name, ext.category || null, ext.description))
-      : [el("li", "item-empty", "没有装配扩展。")]));
+      ? extensions.map(ext => itemRow("layers", ext.name, extensionText("category." + ext.category, ext.category) || null, extensionText("ext." + ext.id, ext.description)))
+      : [el("li", "item-empty", t("web.noExtensions"))]));
     renderMcpServers(data.mcpServers || [], data.mcpSessionId);
   } catch (err) {
-    showToast("无法读取扩展列表：" + err.message, "error");
+    showToast(t("web.extensionsFailed", { error: err.message }), "error");
   }
 }
 
@@ -218,7 +218,7 @@ function readInt(id, fallback) {
 
 async function saveSettings() {
   const btnSave = $("btn-save-settings");
-  btnSave.textContent = "保存中…";
+  btnSave.textContent = t("web.saving");
   btnSave.disabled = true;
   try {
     const providerName = $("setting-provider-select").value;
@@ -240,13 +240,13 @@ async function saveSettings() {
     });
     await api("/api/rules", { method: "POST", body: { content: $("setting-rules-editor").value } });
     $("setting-api-key-input").value = "";
-    showToast("已保存，新会话生效", "success");
+    showToast(t("web.saved"), "success");
     closeSettingsModal();
     fetchStatus();
   } catch (err) {
-    showToast("保存失败：" + err.message, "error");
+    showToast(t("web.saveFailed", { error: err.message }), "error");
   } finally {
-    btnSave.textContent = "保存";
+    btnSave.textContent = t("web.save");
     btnSave.disabled = false;
   }
 }

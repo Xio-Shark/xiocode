@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{{lang}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <title>XioCode 控制台</title>
+  <title>{{t:web.title}}</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b5bdb'/%3E%3Cpath d='M4 22.7c5.3-2 11.3-9.3 16-17.3-.5 7.3.8 14.1 5.3 17.3z' fill='%23fff'/%3E%3Cpath d='M3.5 27.3c2 0 2-1.3 4-1.3s2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' opacity='.75'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -57,14 +57,14 @@
   </svg>
 
   <div class="app-layout">
-    <aside id="sidebar" aria-label="会话">
+    <aside id="sidebar" aria-label="{{t:web.sessions}}">
       <div class="sidebar-brand-row">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#i-fin"/></svg></span>
           <span class="brand-name">XioCode</span>
           <span class="brand-version">__VERSION__</span>
         </div>
-        <button id="btn-toggle-sidebar" class="icon-btn" type="button" aria-label="收起边栏" title="收起边栏">
+        <button id="btn-toggle-sidebar" class="icon-btn" type="button" aria-label="{{t:web.collapseSidebar}}" title="{{t:web.collapseSidebar}}">
           <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
         </button>
       </div>
@@ -72,25 +72,25 @@
       <div class="sidebar-action-box">
         <button id="btn-new-session" class="btn-new-session" type="button">
           <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
-          <span>新会话</span>
+          <span>{{t:web.newSession}}</span>
         </button>
         <div class="search-field">
           <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-          <input type="search" id="session-search" placeholder="搜索会话" aria-label="搜索会话" autocomplete="off">
+          <input type="search" id="session-search" placeholder="{{t:web.searchSessions}}" aria-label="{{t:web.searchSessions}}" autocomplete="off">
         </div>
       </div>
 
-      <nav id="session-list" class="session-list" aria-label="会话列表"></nav>
+      <nav id="session-list" class="session-list" aria-label="{{t:web.sessionList}}"></nav>
 
       <div class="sidebar-footer">
         <button id="btn-open-settings" class="sidebar-footer-btn" type="button">
           <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
-          <span>设置</span>
+          <span>{{t:web.settings}}</span>
         </button>
-        <div class="theme-switch" role="radiogroup" aria-label="外观">
-          <button type="button" role="radio" data-theme-choice="light" title="浅色" aria-label="浅色"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
-          <button type="button" role="radio" data-theme-choice="system" title="跟随系统" aria-label="跟随系统"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
-          <button type="button" role="radio" data-theme-choice="dark" title="深色" aria-label="深色"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
+        <div class="theme-switch" role="radiogroup" aria-label="{{t:web.appearance}}">
+          <button type="button" role="radio" data-theme-choice="light" title="{{t:web.light}}" aria-label="{{t:web.light}}"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="system" title="{{t:web.system}}" aria-label="{{t:web.system}}"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="dark" title="{{t:web.dark}}" aria-label="{{t:web.dark}}"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
         </div>
       </div>
     </aside>
@@ -100,124 +100,124 @@
       <header class="main-header">
         <div class="header-row">
           <div class="header-left">
-            <button id="btn-expand-sidebar" class="icon-btn btn-expand-sidebar" type="button" aria-label="展开会话列表" title="展开会话列表">
+            <button id="btn-expand-sidebar" class="icon-btn btn-expand-sidebar" type="button" aria-label="{{t:web.expandSidebar}}" title="{{t:web.expandSidebar}}">
               <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
             </button>
-            <h1 id="current-session-title" class="header-title">新会话</h1>
-            <span id="current-mode-badge" class="model-chip" title="模型"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg><span id="current-model-text">—</span></span>
+            <h1 id="current-session-title" class="header-title">{{t:web.newSession}}</h1>
+            <span id="current-mode-badge" class="model-chip" title="{{t:web.model}}"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg><span id="current-model-text">—</span></span>
           </div>
 
           <div class="header-right">
             <div id="status-pill" class="status-pill" role="status" aria-live="polite">
               <span class="status-dot" aria-hidden="true"></span>
-              <span id="status-text">就绪</span>
+              <span id="status-text">{{t:web.ready}}</span>
             </div>
-            <label class="perm-select-wrap" title="新会话使用的权限模式（写入配置）">
+            <label class="perm-select-wrap" title="{{t:web.permTitle}}">
               <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
-              <span class="visually-hidden">权限模式</span>
+              <span class="visually-hidden">{{t:web.permMode}}</span>
               <select id="permission-select" class="perm-select">
-                <option value="auto">自动</option>
-                <option value="strict">只读</option>
-                <option value="full">完全</option>
+                <option value="auto">{{t:web.modeAuto}}</option>
+                <option value="strict">{{t:web.modeStrict}}</option>
+                <option value="full">{{t:web.modeFull}}</option>
               </select>
             </label>
-            <button id="btn-export-log" class="icon-btn" type="button" title="下载完整会话记录 (JSON)" aria-label="导出会话记录">
+            <button id="btn-export-log" class="icon-btn" type="button" title="{{t:web.exportTitle}}" aria-label="{{t:web.exportLabel}}">
               <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
             </button>
           </div>
         </div>
 
-        <nav class="nav-tabs" role="tablist" aria-label="视图">
-          <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>对话</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>轨迹</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>代码差异</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>用量</button>
+        <nav class="nav-tabs" role="tablist" aria-label="{{t:web.views}}">
+          <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>{{t:web.tabChat}}</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>{{t:web.tabTrajectory}}</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.tabDiff}}</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>{{t:web.tabUsage}}</button>
           <span class="nav-tab-indicator" aria-hidden="true"></span>
         </nav>
       </header>
 
       <div id="connection-banner" class="connection-banner" role="alert" hidden>
         <svg class="icon" aria-hidden="true"><use href="#i-wifi-off"/></svg>
-        <span id="connection-text">与本地服务的连接已断开，正在重连…</span>
-        <button id="btn-reconnect" class="link-btn" type="button" hidden>立即重试</button>
+        <span id="connection-text">{{t:web.disconnected}}</span>
+        <button id="btn-reconnect" class="link-btn" type="button" hidden>{{t:web.retryNow}}</button>
       </div>
 
       <div class="views">
-        <section id="view-chat" class="view-panel active" role="tabpanel" aria-label="对话">
+        <section id="view-chat" class="view-panel active" role="tabpanel" aria-label="{{t:web.tabChat}}">
           <div id="chat-messages" class="chat-scroll">
             <div class="chat-column" id="chat-flow-container" role="log" aria-live="polite" aria-relevant="additions"></div>
           </div>
-          <button id="btn-jump-bottom" class="jump-bottom" type="button" aria-label="回到底部" hidden>
+          <button id="btn-jump-bottom" class="jump-bottom" type="button" aria-label="{{t:web.jumpBottom}}" hidden>
             <svg class="icon" aria-hidden="true"><use href="#i-arrow-down"/></svg>
-            <span>回到底部</span>
+            <span>{{t:web.jumpBottom}}</span>
           </button>
         </section>
 
-        <section id="view-trajectory" class="view-panel" role="tabpanel" aria-label="轨迹">
+        <section id="view-trajectory" class="view-panel" role="tabpanel" aria-label="{{t:web.tabTrajectory}}">
           <div class="trajectory-container">
             <div class="view-toolbar">
               <div class="stat-row">
                 <span class="stat" id="traj-stat-duration">—</span>
-                <span class="stat" id="traj-stat-turns">0 轮 · 0 步</span>
-                <span class="stat" id="traj-stat-calls">0 次工具调用</span>
+                <span class="stat" id="traj-stat-turns">{{t:web.turnsSteps}}</span>
+                <span class="stat" id="traj-stat-calls">{{t:web.toolCallsZero}}</span>
               </div>
               <div class="search-field">
                 <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-                <input type="search" id="trajectory-search-input" placeholder="搜索工具、参数或输出" aria-label="搜索轨迹" autocomplete="off">
+                <input type="search" id="trajectory-search-input" placeholder="{{t:web.searchTrajectoryHint}}" aria-label="{{t:web.searchTrajectory}}" autocomplete="off">
               </div>
             </div>
 
             <div class="step-strip-wrap" id="timeline-waterfall">
               <div class="step-strip-head">
-                <span><span id="timeline-title" class="tl-title">时间线</span><span id="timeline-note" class="tl-note"></span></span>
-                <span class="legend"><i class="lg-input"></i>输入<i class="lg-model"></i>模型<i class="lg-tool"></i>工具<i class="lg-error"></i>失败</span>
+                <span><span id="timeline-title" class="tl-title">{{t:web.timeline}}</span><span id="timeline-note" class="tl-note"></span></span>
+                <span class="legend"><i class="lg-input"></i>{{t:web.legendInput}}<i class="lg-model"></i>{{t:web.model}}<i class="lg-tool"></i>{{t:web.legendTool}}<i class="lg-error"></i>{{t:web.legendError}}</span>
               </div>
-              <div class="tl-chart" id="tl-chart" aria-label="时间线，点击跳到对应步骤"></div>
-              <div class="step-strip" id="step-strip" role="list" aria-label="步骤顺序，点击跳到对应步骤"></div>
+              <div class="tl-chart" id="tl-chart" aria-label="{{t:web.timelineAria}}"></div>
+              <div class="step-strip" id="step-strip" role="list" aria-label="{{t:web.stepsAria}}"></div>
             </div>
 
             <div class="trajectory-stream" id="trajectory-stream"></div>
           </div>
         </section>
 
-        <section id="view-diff" class="view-panel" role="tabpanel" aria-label="代码差异">
+        <section id="view-diff" class="view-panel" role="tabpanel" aria-label="{{t:web.tabDiff}}">
           <div class="diff-view">
             <div class="view-toolbar">
               <div class="stat-row">
-                <span class="stat-title">工作区未提交的改动</span>
+                <span class="stat-title">{{t:web.uncommitted}}</span>
                 <span class="stat" id="diff-summary"></span>
               </div>
-              <button class="btn-ghost" type="button" data-action="refresh-diff"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+              <button class="btn-ghost" type="button" data-action="refresh-diff"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>{{t:web.refresh}}</button>
             </div>
             <div class="diff-body">
-              <nav class="diff-files" id="diff-files" aria-label="改动的文件"></nav>
+              <nav class="diff-files" id="diff-files" aria-label="{{t:web.changedFiles}}"></nav>
               <div class="diff-content" id="diff-output-body"></div>
             </div>
           </div>
         </section>
 
-        <section id="view-metrics" class="view-panel" role="tabpanel" aria-label="用量">
+        <section id="view-metrics" class="view-panel" role="tabpanel" aria-label="{{t:web.tabUsage}}">
           <div class="metrics-view">
             <div class="metrics-grid">
               <div class="metric-card">
                 <span class="metric-label">Token</span>
                 <span class="metric-value" id="val-tokens">—</span>
-                <span class="metric-foot" id="val-tokens-foot">发起一轮后统计输入与输出</span>
+                <span class="metric-foot" id="val-tokens-foot">{{t:web.tokensFoot}}</span>
               </div>
               <div class="metric-card">
-                <span class="metric-label">缓存命中</span>
+                <span class="metric-label">{{t:web.cacheHit}}</span>
                 <span class="metric-value" id="val-cache">—</span>
-                <span class="metric-foot" id="val-cache-foot">缓存读取占输入 Token 的比例</span>
+                <span class="metric-foot" id="val-cache-foot">{{t:web.cacheFoot}}</span>
               </div>
               <div class="metric-card">
-                <span class="metric-label">费用</span>
+                <span class="metric-label">{{t:web.cost}}</span>
                 <span class="metric-value" id="val-cost">—</span>
-                <span class="metric-foot" id="val-cost-foot">尚未发起请求或当前模型未计价</span>
+                <span class="metric-foot" id="val-cost-foot">{{t:web.costFoot}}</span>
               </div>
               <div class="metric-card">
-                <span class="metric-label">工具调用</span>
+                <span class="metric-label">{{t:web.toolCalls}}</span>
                 <span class="metric-value" id="val-turns">0</span>
-                <span class="metric-foot" id="val-turns-foot">当前会话累计</span>
+                <span class="metric-foot" id="val-turns-foot">{{t:web.sessionTotal}}</span>
               </div>
             </div>
             <p class="metrics-note"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span id="metrics-note-text"></span></p>
@@ -227,19 +227,19 @@
 
       <div class="composer-section">
         <div class="composer-card">
-          <label class="visually-hidden" for="composer-input">给智能体发消息</label>
-          <textarea id="composer-input" class="composer-input" rows="1" placeholder="描述你要做的事…"></textarea>
+          <label class="visually-hidden" for="composer-input">{{t:web.composerLabel}}</label>
+          <textarea id="composer-input" class="composer-input" rows="1" placeholder="{{t:web.composerPlaceholder}}"></textarea>
           <div class="composer-bar">
             <div class="chip-list">
-              <button type="button" class="chip" data-prompt="运行测试套件并报告失败的用例"><svg class="icon" aria-hidden="true"><use href="#i-test"/></svg>运行测试</button>
-              <button type="button" class="chip" data-prompt="检查 git diff 并分析未暂存的改动"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>查看改动</button>
+              <button type="button" class="chip" data-prompt="{{t:web.chipTestPrompt}}"><svg class="icon" aria-hidden="true"><use href="#i-test"/></svg>{{t:web.chipTest}}</button>
+              <button type="button" class="chip" data-prompt="{{t:web.chipDiffPrompt}}"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.chipDiff}}</button>
             </div>
             <div class="composer-actions">
-              <span class="key-tip" aria-hidden="true"><kbd>↵</kbd> 发送 <kbd>⇧↵</kbd> 换行</span>
-              <button id="btn-abort" class="btn-stop" type="button" aria-label="停止运行" title="停止 (Esc)">
+              <span class="key-tip" aria-hidden="true"><kbd>↵</kbd> {{t:web.send}} <kbd>⇧↵</kbd> {{t:web.newline}}</span>
+              <button id="btn-abort" class="btn-stop" type="button" aria-label="{{t:web.stop}}" title="{{t:web.stopTitle}}">
                 <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
               </button>
-              <button id="btn-send" class="btn-send" type="button" aria-label="发送" disabled>
+              <button id="btn-send" class="btn-send" type="button" aria-label="{{t:web.send}}" disabled>
                 <svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg>
               </button>
             </div>
@@ -247,8 +247,8 @@
         </div>
         <div class="composer-statusbar" id="composer-statusbar">
           <span class="meta-item"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span id="meta-session-cwd">—</span></span>
-          <span class="meta-item" id="meta-turns-info">0 轮 · 0 步</span>
-          <span class="meta-item" id="meta-tools-info">工具调用 0 次</span>
+          <span class="meta-item" id="meta-turns-info">{{t:web.turnsSteps}}</span>
+          <span class="meta-item" id="meta-tools-info">{{t:web.toolCallsCount0}}</span>
         </div>
       </div>
     </main>
@@ -260,10 +260,10 @@
       <span class="approval-icon" aria-hidden="true"><svg class="icon"><use href="#i-shield"/></svg></span>
       <div>
         <h2 id="approval-question" class="approval-question"></h2>
-        <p class="approval-sub" id="approval-sub">智能体在等你确认，确认前不会继续。</p>
+        <p class="approval-sub" id="approval-sub">{{t:web.waitingConfirm}}</p>
       </div>
     </div>
-    <pre id="approval-detail" class="approval-detail"></pre>
+    <div id="approval-detail" class="approval-detail"></div>
     <div class="dialog-actions" id="approval-actions"></div>
   </dialog>
 
@@ -271,60 +271,60 @@
     <h2 id="confirm-title" class="dialog-title"></h2>
     <p id="confirm-desc" class="dialog-desc"></p>
     <form method="dialog" class="dialog-actions">
-      <button class="btn-secondary" value="cancel" type="submit" autofocus>取消</button>
-      <button class="btn-danger" value="confirm" type="submit" id="confirm-ok">删除</button>
+      <button class="btn-secondary" value="cancel" type="submit" autofocus>{{t:web.cancel}}</button>
+      <button class="btn-danger" value="confirm" type="submit" id="confirm-ok">{{t:web.delete}}</button>
     </form>
   </dialog>
 
   <dialog id="settings-modal" class="dialog settings-dialog" aria-labelledby="settings-title">
     <div class="settings-header">
       <div>
-        <h2 class="dialog-title" id="settings-title">设置</h2>
-        <p class="dialog-desc">保存后写入配置文件，新会话生效。</p>
+        <h2 class="dialog-title" id="settings-title">{{t:web.settings}}</h2>
+        <p class="dialog-desc">{{t:web.settingsDesc}}</p>
       </div>
-      <button id="btn-close-settings" class="icon-btn" type="button" aria-label="关闭设置"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+      <button id="btn-close-settings" class="icon-btn" type="button" aria-label="{{t:web.closeSettings}}"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
     </div>
 
     <div class="settings-body">
-      <div class="settings-nav" role="tablist" aria-label="设置分类" aria-orientation="vertical">
-        <button class="settings-tab active" type="button" role="tab" aria-selected="true" data-settings-tab="models"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>模型</button>
-        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="rules" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-scroll"/></svg>规则</button>
-        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="plugins" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>扩展与 MCP</button>
-        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="safety" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>权限</button>
+      <div class="settings-nav" role="tablist" aria-label="{{t:web.settingsSections}}" aria-orientation="vertical">
+        <button class="settings-tab active" type="button" role="tab" aria-selected="true" data-settings-tab="models"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>{{t:web.model}}</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="rules" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-scroll"/></svg>{{t:web.rules}}</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="plugins" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>{{t:web.extensionsMcp}}</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="safety" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>{{t:web.permissions}}</button>
       </div>
 
       <div class="settings-main">
         <div id="settings-pane-models" class="settings-pane active" role="tabpanel">
           <div class="pane-head">
-            <h3 class="pane-title">模型与推理</h3>
-            <p class="pane-desc">默认供应商、模型、思考深度与上下文压缩预算。</p>
+            <h3 class="pane-title">{{t:web.modelsTitle}}</h3>
+            <p class="pane-desc">{{t:web.modelsDesc}}</p>
           </div>
 
           <div class="form-grid-2">
             <div class="form-field">
-              <label for="setting-provider-select">默认供应商</label>
+              <label for="setting-provider-select">{{t:web.defaultProvider}}</label>
               <select id="setting-provider-select"></select>
             </div>
             <div class="form-field">
-              <label for="setting-model-input">默认模型</label>
+              <label for="setting-model-input">{{t:web.defaultModel}}</label>
               <input type="text" id="setting-model-input" placeholder="deepseek-chat" list="setting-model-options" autocomplete="off">
               <datalist id="setting-model-options"></datalist>
             </div>
           </div>
 
           <div class="form-field">
-            <span class="form-label" id="thinking-label">思考深度</span>
+            <span class="form-label" id="thinking-label">{{t:web.thinkingDepth}}</span>
             <div class="segmented" id="setting-thinking-picker" role="radiogroup" aria-labelledby="thinking-label"></div>
-            <span class="form-hint">模型不支持的档位会在运行时自动降到它能用的最近一档。</span>
+            <span class="form-hint">{{t:web.thinkingHint}}</span>
           </div>
 
           <div class="form-grid-2">
             <div class="form-field">
-              <label for="setting-max-turns">每次请求的最大轮数（1–40）</label>
+              <label for="setting-max-turns">{{t:web.maxTurns}}</label>
               <input type="number" id="setting-max-turns" min="1" max="40" value="24">
             </div>
             <div class="form-field">
-              <label for="setting-max-tokens">自动压缩阈值（Token）</label>
+              <label for="setting-max-tokens">{{t:web.compactThreshold}}</label>
               <input type="number" id="setting-max-tokens" min="1024" step="1024" value="48000">
             </div>
           </div>
@@ -334,44 +334,44 @@
             <div class="key-status-row">
               <span id="provider-key-status" class="key-badge">
                 <span class="status-dot" aria-hidden="true"></span>
-                <span id="provider-key-status-text">检测中…</span>
+                <span id="provider-key-status-text">{{t:web.checking}}</span>
               </span>
               <code class="key-env-name" id="provider-key-env-name"></code>
             </div>
-            <input type="password" id="setting-api-key-input" autocomplete="off" placeholder="留空则保持现有凭据">
-            <span class="form-hint">保存到本机 ~/.xiocode/credentials.json（仅当前用户可读，未加密）。也可以只设置上面的环境变量。</span>
+            <input type="password" id="setting-api-key-input" autocomplete="off" placeholder="{{t:web.keyPlaceholder}}">
+            <span class="form-hint">{{t:web.keyHint}}</span>
           </div>
         </div>
 
         <div id="settings-pane-rules" class="settings-pane" role="tabpanel">
           <div class="pane-head">
-            <h3 class="pane-title">工作区规则</h3>
-            <p class="pane-desc">编辑当前工作区的 <code>AGENTS.md</code>，每次会话开始时注入给智能体。</p>
+            <h3 class="pane-title">{{t:web.rulesTitle}}</h3>
+            <p class="pane-desc">{{t:web.rulesDesc}}</p>
           </div>
           <div class="chip-list">
-            <button type="button" class="chip" data-rule-preset="Surgical"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>最小改动</button>
-            <button type="button" class="chip" data-rule-preset="TestFirst"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>交付前跑测试</button>
-            <button type="button" class="chip" data-rule-preset="Security"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>不硬编码凭据</button>
+            <button type="button" class="chip" data-rule-preset="Surgical"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>{{t:web.ruleSurgical}}</button>
+            <button type="button" class="chip" data-rule-preset="TestFirst"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>{{t:web.ruleTests}}</button>
+            <button type="button" class="chip" data-rule-preset="Security"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>{{t:web.ruleSecrets}}</button>
           </div>
           <div class="rules-box">
             <div class="rules-box-header">
               <span class="rules-file" id="rules-file-indicator">AGENTS.md</span>
-              <button type="button" class="btn-ghost" data-action="reload-rules"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重新读取</button>
+              <button type="button" class="btn-ghost" data-action="reload-rules"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>{{t:web.reload}}</button>
             </div>
-            <label class="visually-hidden" for="setting-rules-editor">AGENTS.md 内容</label>
-            <textarea id="setting-rules-editor" class="rules-editor" placeholder="# 工作区规则…" spellcheck="false"></textarea>
+            <label class="visually-hidden" for="setting-rules-editor">{{t:web.rulesContent}}</label>
+            <textarea id="setting-rules-editor" class="rules-editor" placeholder="{{t:web.rulesPlaceholder}}" spellcheck="false"></textarea>
           </div>
         </div>
 
         <div id="settings-pane-plugins" class="settings-pane" role="tabpanel">
           <div class="pane-head">
-            <h3 class="pane-title">扩展</h3>
-            <p class="pane-desc">随 XioCode 提供的扩展，启动会话时自动装配。</p>
+            <h3 class="pane-title">{{t:web.extensions}}</h3>
+            <p class="pane-desc">{{t:web.extensionsDesc}}</p>
           </div>
           <ul class="item-list" id="plugins-container"></ul>
           <div class="pane-head">
-            <h3 class="pane-title">MCP 服务器</h3>
-            <p class="pane-desc">从配置、<code>.mcp.json</code>、Claude / Cursor 配置中发现。连接在会话启动时建立。</p>
+            <h3 class="pane-title">{{t:web.mcpServers}}</h3>
+            <p class="pane-desc">{{t:web.mcpDesc}}</p>
           </div>
           <ul class="item-list" id="mcp-container"></ul>
           <p class="pane-foot" id="mcp-live-note"></p>
@@ -379,28 +379,28 @@
 
         <div id="settings-pane-safety" class="settings-pane" role="tabpanel">
           <div class="pane-head">
-            <h3 class="pane-title">权限模式</h3>
-            <p class="pane-desc">决定智能体改文件、跑命令、调用 MCP 之前要不要问你。会话中也可以用 Shift+Tab 切换。</p>
+            <h3 class="pane-title">{{t:web.permMode}}</h3>
+            <p class="pane-desc">{{t:web.permDesc}}</p>
           </div>
-          <div class="perm-cards" role="radiogroup" aria-label="权限模式">
+          <div class="perm-cards" role="radiogroup" aria-label="{{t:web.permMode}}">
             <button type="button" class="perm-card" role="radio" data-perm-mode="auto">
-              <span class="perm-card-title"><span class="perm-dot ok" aria-hidden="true"></span>自动<span class="tag">推荐</span></span>
-              <span class="perm-card-desc">所有工具可用。每种高风险工具（bash、MCP 等）首次使用时问一次；只读白名单内的命令直接运行，其他命令每条单独确认。</span>
+              <span class="perm-card-title"><span class="perm-dot ok" aria-hidden="true"></span>{{t:web.modeAuto}}<span class="tag">{{t:web.recommended}}</span></span>
+              <span class="perm-card-desc">{{t:web.permAutoDesc}}</span>
             </button>
             <button type="button" class="perm-card" role="radio" data-perm-mode="strict">
-              <span class="perm-card-title"><span class="perm-dot warn" aria-hidden="true"></span>只读</span>
-              <span class="perm-card-desc">只能读文件、搜索和加载 skill。写文件、执行命令和 MCP 调用一律拒绝，不会询问。</span>
+              <span class="perm-card-title"><span class="perm-dot warn" aria-hidden="true"></span>{{t:web.modeStrict}}</span>
+              <span class="perm-card-desc">{{t:web.permStrictDesc}}</span>
             </button>
             <button type="button" class="perm-card" role="radio" data-perm-mode="full">
-              <span class="perm-card-title"><span class="perm-dot danger" aria-hidden="true"></span>完全</span>
-              <span class="perm-card-desc">高风险工具不再询问。白名单之外的命令、合并与回滚仍然逐条确认。建议配合 worktree 沙盒使用。</span>
+              <span class="perm-card-title"><span class="perm-dot danger" aria-hidden="true"></span>{{t:web.modeFull}}</span>
+              <span class="perm-card-desc">{{t:web.permFullDesc}}</span>
             </button>
           </div>
           <div class="form-field">
-            <label for="setting-repeat-tool-limit">同一工具连续相同调用的上限（0 为不限）</label>
+            <label for="setting-repeat-tool-limit">{{t:web.repeatLimit}}</label>
             <input type="number" id="setting-repeat-tool-limit" min="0" max="20" value="3">
           </div>
-          <p class="form-hint">命令风险由内置规则判定（例如 <code>rm -rf</code>、<code>git reset --hard</code>、<code>git push --force</code> 归为高风险），在任何模式下都不会被自动放行。</p>
+          <p class="form-hint">{{t:web.riskHint}}</p>
         </div>
       </div>
     </div>
@@ -408,8 +408,8 @@
     <div class="settings-footer">
       <code class="config-path" id="setting-config-path">~/.xiocode/config.toml</code>
       <div class="dialog-actions">
-        <button type="button" class="btn-secondary" id="btn-cancel-settings">取消</button>
-        <button type="button" class="btn-primary" id="btn-save-settings">保存</button>
+        <button type="button" class="btn-secondary" id="btn-cancel-settings">{{t:web.cancel}}</button>
+        <button type="button" class="btn-primary" id="btn-save-settings">{{t:web.save}}</button>
       </div>
     </div>
   </dialog>

@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages.ts";
 import { readFile } from "node:fs/promises";
 
 import {
@@ -52,22 +53,22 @@ export function registerConnectCommands(options: ConnectCommandOptions): void {
 
 async function runConnect(options: ConnectCommandOptions): Promise<string> {
   const choice = await options.interactive.select(
-    "Select a provider",
+    t("connect.selectProvider"),
     PROVIDER_PRESETS.map((preset) => ({
       label: `${preset.label} (${preset.id})`,
       value: preset.id,
     })),
   );
-  if (!choice) return "connect cancelled";
+  if (!choice) return t("connect.cancelled");
 
   const preset = findProviderPreset(choice);
   if (!preset) return `unknown provider: ${choice}`;
 
   const resolved = await resolvePresetForConnect(preset, options.interactive);
-  if (!resolved) return "connect cancelled";
+  if (!resolved) return t("connect.cancelled");
 
-  const apiKey = await options.interactive.prompt("API key", { secret: true });
-  if (!apiKey) return "connect cancelled";
+  const apiKey = await options.interactive.prompt(t("connect.apiKey"), { secret: true });
+  if (!apiKey) return t("connect.cancelled");
 
   const probe = await probeApiKey({
     kind: resolved.kind,
@@ -83,22 +84,22 @@ async function runConnect(options: ConnectCommandOptions): Promise<string> {
   let modelId = resolved.defaultModel;
   if (probe.models.length > 0) {
     const picked = await options.interactive.select(
-      "Select default model",
+      t("connect.selectModel"),
       [
         ...probe.models.slice(0, 40).map((id) => ({ label: id, value: id })),
-        { label: "Enter model id manually…", value: "__manual__" },
+        { label: t("connect.manual"), value: "__manual__" },
       ],
     );
-    if (!picked) return "connect cancelled";
+    if (!picked) return t("connect.cancelled");
     if (picked === "__manual__") {
-      const manual = await options.interactive.prompt("Model id");
-      if (!manual) return "connect cancelled";
+      const manual = await options.interactive.prompt(t("connect.modelId"));
+      if (!manual) return t("connect.cancelled");
       modelId = manual;
     } else {
       modelId = picked;
     }
   } else {
-    const manual = await options.interactive.prompt(`Model id (default: ${resolved.defaultModel})`);
+    const manual = await options.interactive.prompt(t("connect.modelIdDefault", { model: resolved.defaultModel }));
     if (manual) modelId = manual;
   }
 
@@ -121,7 +122,7 @@ async function runConnect(options: ConnectCommandOptions): Promise<string> {
   });
   options.sink.setStatus?.("model", qualifyModelId(resolved.id, modelId));
   // Return value is shown by TUI/REPL — avoid duplicate sink.notify.
-  return `connected ${resolved.id}/${modelId} (key saved to credentials, not config.toml)`;
+  return t("connect.done", { model: `${resolved.id}/${modelId}` });
 }
 
 async function runModel(options: ConnectCommandOptions): Promise<string> {
@@ -142,29 +143,29 @@ async function runModel(options: ConnectCommandOptions): Promise<string> {
       });
     }
   }
-  entries.push({ label: "Enter model id manually…", value: "__manual__", provider: "", model: "" });
+  entries.push({ label: t("connect.manual"), value: "__manual__", provider: "", model: "" });
 
-  const picked = await options.interactive.select("Select model", entries.map((entry) => ({
+  const picked = await options.interactive.select(t("model.select"), entries.map((entry) => ({
     label: entry.label,
     value: entry.value,
   })));
-  if (!picked) return "model cancelled";
+  if (!picked) return t("model.cancelled");
 
   let providerName: string;
   let modelId: string;
   if (picked === "__manual__") {
     const providerChoice = await options.interactive.select(
-      "Provider for manual model id",
+      t("model.manualProvider"),
       connected.map((provider) => ({ label: provider.name, value: provider.name })),
     );
-    if (!providerChoice) return "model cancelled";
-    const manual = await options.interactive.prompt("Model id");
-    if (!manual) return "model cancelled";
+    if (!providerChoice) return t("model.cancelled");
+    const manual = await options.interactive.prompt(t("connect.modelId"));
+    if (!manual) return t("model.cancelled");
     providerName = providerChoice;
     modelId = manual;
   } else {
     const entry = entries.find((item) => item.value === picked);
-    if (!entry) return "model cancelled";
+    if (!entry) return t("model.cancelled");
     providerName = entry.provider;
     modelId = entry.model;
   }
@@ -180,7 +181,7 @@ async function runModel(options: ConnectCommandOptions): Promise<string> {
     api: providerApi(provider.kind),
   });
   options.sink.setStatus?.("model", qualifyModelId(providerName, modelId));
-  return `model ${qualifyModelId(providerName, modelId)}`;
+  return t("model.switched", { model: qualifyModelId(providerName, modelId) });
 }
 
 async function resolvePresetForConnect(

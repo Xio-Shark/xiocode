@@ -8,6 +8,7 @@ import { parseXioConfig } from "./config-parser.ts";
 import { PROVIDER_PRESETS } from "./provider-catalog.ts";
 import { discoverModels } from "../runtime/providers/discover.ts";
 import { providerErrorGuidance } from "../runtime/providers/error-guidance.ts";
+import { queryTerminalBackground, type TerminalBackground } from "../tui/theme.ts";
 
 const MIN_NODE_MAJOR = 22;
 const MIN_NODE_MINOR = 13;
@@ -21,6 +22,8 @@ export type DoctorCliOptions = Readonly<{
   offline?: boolean;
   nodeVersion?: string;
   platform?: NodeJS.Platform;
+  /** Terminal background probe (OSC 11); injectable for tests. */
+  queryBackground?: () => Promise<TerminalBackground>;
 }>;
 
 type CheckStatus = "ok" | "warn" | "fail";
@@ -45,7 +48,7 @@ export async function runDoctorCli(options: DoctorCliOptions = {}): Promise<numb
   rows.push(checkNode(options.nodeVersion ?? process.versions.node));
   rows.push(checkPlatform(options.platform ?? process.platform));
   rows.push(await checkConfig(env));
-  rows.push(checkTheme(env));
+  rows.push(await checkTheme(env, options.queryBackground ?? (() => queryTerminalBackground({ env }))));
 
   const keyed = await collectProviderKeys(env);
   rows.push(checkKeys(keyed, env));
@@ -285,27 +288,29 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
-function checkTheme(env: NodeJS.ProcessEnv): CheckRow {
-  const custom = env.XIO_THEME;
-  const isTmux = Boolean(env.TMUX);
-  const term = env.TERM ?? "";
-  if (isTmux) {
-    return {
-      status: "ok",
-      name: "theme",
-      detail: `tmux active${custom ? ` (override: ${custom})` : ""}`,
-    };
+const BACKGROUND_UNKNOWN: Readonly<Record<string, string>> = {
+  "not-a-tty": "not run in a terminal, so the background was not asked for",
+  "no-color": "colour is off (NO_COLOR or TERM=dumb)",
+  unsupported: "the terminal does not answer OSC 11 background queries",
+  timeout: "the terminal did not answer the OSC 11 background query in time",
+};
+
+async function checkTheme(
+  env: NodeJS.ProcessEnv,
+  query: () => Promise<TerminalBackground>,
+): Promise<CheckRow> {
+  if (env.TERM === "dumb") {
+    return { status: "warn", name: "theme", detail: "TERM=dumb lacks color support; theme styling is disabled" };
   }
-  if (term === "dumb") {
-    return {
-      status: "warn",
-      name: "theme",
-      detail: "TERM=dumb lacks color support; theme styling is disabled",
-    };
+  const source = env.XIO_THEME ? `XIO_THEME=${env.XIO_THEME}` : "config.toml [ui] theme, else picked from the terminal background";
+  const { background, reason } = await query();
+  if (background) {
+    return { status: "ok", name: "theme", detail: `${source}; terminal background is ${background}${env.TMUX ? " (via tmux)" : ""}` };
   }
+  const why = reason && reason in BACKGROUND_UNKNOWN ? BACKGROUND_UNKNOWN[reason] : reason;
   return {
     status: "ok",
     name: "theme",
-    detail: custom ? `active: ${custom} (via XIO_THEME)` : "from config.toml [ui] theme, or groknight; switch with /theme (the terminal background is not detected)",
+    detail: `${source}; background unknown (${why}), so the dark theme is the default — on a light terminal run /theme light`,
   };
 }

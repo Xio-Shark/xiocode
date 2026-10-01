@@ -102,6 +102,17 @@ xio web           # Launches the lightweight visual console at http://localhost:
 ```
 Inspect model interactions, tool call arguments, execution output, and timeline progression.
 
+### Language and Theme
+The terminal UI and the web console share one copy table and one colour palette:
+```toml
+[ui]
+language = "zh"   # "zh" (default) or "en"; the web console re-reads it on reload
+theme = "light"   # groknight | light | claude | minimal | nord; written by /theme
+```
+Without a saved theme, `xio` asks the terminal for its background colour at start and picks `light` or the dark default; `xio doctor` shows what it detected. `XIO_THEME` overrides both.
+
+Approvals list their choices (allow once, allow for the session where it is safe, deny, deny and tell the model why); Esc always declines.
+
 ---
 
 ## Command Reference
@@ -126,6 +137,7 @@ Inspect model interactions, tool call arguments, execution output, and timeline 
 | `/immunity` | View or clear distilled negative project constraints (`/immunity [clear]`) |
 | `/race` | Show experimental worktree racing engine status (not wired into the default loop) |
 | `/compact` | Compress conversation history to optimize context window |
+| `/theme` | Show or switch the colour theme (saved to `[ui] theme`) |
 | `/clear` | Clear screen buffer and redraw active turn |
 | `/help` | Display shortcuts and command manual |
 

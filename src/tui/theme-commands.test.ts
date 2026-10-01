@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ExtensionHost } from "../runtime/extension-host.ts";
-import { applyConfiguredTheme, registerThemeCommands } from "./theme-commands.ts";
+import { applyConfiguredTheme, applyStartupTheme, registerThemeCommands } from "./theme-commands.ts";
 import { getActiveThemeName, setTheme, theme } from "./theme.ts";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,7 +47,7 @@ describe("theme slash command", () => {
       const output = await cmd!.handler("light", host.createContext());
       expect(output).toContain('Switched theme to "light"');
       expect(getActiveThemeName()).toBe("light");
-      expect(theme.accent).toBe("#2563eb");
+      expect(theme.accent).toBe("#3b5bdb");
       expect(changed).toBe("light");
       expect(notified).toBe('Theme changed to "light"');
 
@@ -106,5 +106,47 @@ describe("applyConfiguredTheme", () => {
     } finally {
       setTheme("groknight");
     }
+  });
+});
+
+describe("startup theme", () => {
+  const reply = (background: "light" | "dark" | undefined) => async () => ({ background, typed: "" });
+
+  it("picks the light theme on a light terminal when nothing is configured", async () => {
+    setTheme("groknight");
+    const result = await applyStartupTheme(undefined, {}, reply("light"));
+    expect(getActiveThemeName()).toBe("light");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("keeps the dark default when the background is dark or unknown", async () => {
+    setTheme("groknight");
+    await applyStartupTheme(undefined, {}, reply(undefined));
+    expect(getActiveThemeName()).toBe("groknight");
+    await applyStartupTheme(undefined, {}, reply("dark"));
+    expect(getActiveThemeName()).toBe("groknight");
+  });
+
+  it("keeps a saved theme that clashes with the background, and says so once", async () => {
+    setTheme("groknight");
+    const result = await applyStartupTheme("nord", {}, reply("light"));
+    expect(getActiveThemeName()).toBe("nord");
+    expect(result.warnings).toEqual([expect.stringContaining("/theme light")]);
+  });
+
+  it("lets XIO_THEME win over detection", async () => {
+    setTheme("minimal");
+    const result = await applyStartupTheme("light", { XIO_THEME: "minimal" }, reply("light"));
+    expect(getActiveThemeName()).toBe("minimal");
+    expect(result.warnings).toEqual([expect.stringContaining('"minimal"')]);
+    setTheme("groknight");
+  });
+
+  it("falls back to detection when the saved name is unknown", async () => {
+    setTheme("groknight");
+    const result = await applyStartupTheme("solarized", {}, reply("light"));
+    expect(getActiveThemeName()).toBe("light");
+    expect(result.warnings).toEqual([expect.stringContaining("not a known theme")]);
+    setTheme("groknight");
   });
 });

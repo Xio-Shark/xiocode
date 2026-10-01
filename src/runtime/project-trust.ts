@@ -9,6 +9,7 @@
  * inheritance. Optional head/tree identity binds persisted grants when Git
  * is available. Product-created worktrees may use an in-memory session grant.
  */
+import { t } from "../i18n/messages.ts";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -484,7 +485,7 @@ export async function ensureProjectTrust(input: Readonly<{
   if (denied?.level === "denied" && input.mode === "ask") {
     const state = decideTrust({ cwd: input.cwd, mode: input.mode, store, currentIdentity });
     input.notify?.(
-      `Project trust: untrusted (${state.normalizedPath}). Persisted denial; project resources skipped.`,
+      t("trust.persistedDenial", { path: state.normalizedPath }),
     );
     return state;
   }
@@ -499,7 +500,7 @@ export async function ensureProjectTrust(input: Readonly<{
     });
     if (state.decision === "session_only") {
       input.notify?.(
-        `Project trust: session grant for ${state.normalizedPath} (product worktree; not persisted).`,
+        t("trust.sessionGrant", { path: state.normalizedPath }),
       );
       return state;
     }
@@ -515,7 +516,7 @@ export async function ensureProjectTrust(input: Readonly<{
   if (input.mode !== "ask" || initial.persisted || initial.decision === "trusted") {
     if (initial.decision === "untrusted" && input.mode === "ask") {
       input.notify?.(
-        `Project trust: untrusted (${initial.normalizedPath}). Project hooks/skills/MCP skipped; write/exec restricted.`,
+        t("trust.untrusted", { path: initial.normalizedPath }),
       );
     }
     return initial;
@@ -524,7 +525,7 @@ export async function ensureProjectTrust(input: Readonly<{
   const interactive = input.interactiveSession !== false;
   if (!interactive || !input.ask) {
     input.notify?.(
-      `Project trust: untrusted (${initial.normalizedPath}). Non-interactive session — project resources skipped.`,
+      t("trust.nonInteractive", { path: initial.normalizedPath }),
     );
     return initial;
   }
@@ -533,12 +534,12 @@ export async function ensureProjectTrust(input: Readonly<{
     ? `\nhead: ${currentIdentity.headCommit.slice(0, 12)}\ntree: ${currentIdentity.headTree.slice(0, 12)}`
     : "";
   const ok = await input.ask(
-    `Trust this project directory for hooks/skills/extensions and write/exec tools? [y/N] `,
-    `cwd: ${initial.normalizedPath}${identityDetail}\npersist: ~/.xiocode/trust.json\nuntrusted: skip project hooks/skills/MCP; restrict write/exec`,
+    `${t("trust.question")} [y/N] `,
+    `cwd: ${initial.normalizedPath}${identityDetail}\n${t("trust.persist")}\n${t("trust.untrustedEffect")}`,
   );
   if (!ok) {
     input.notify?.(
-      `Project trust: declined (${initial.normalizedPath}). Running with degraded capabilities.`,
+      t("trust.declined", { path: initial.normalizedPath }),
     );
     return initial;
   }
@@ -549,7 +550,7 @@ export async function ensureProjectTrust(input: Readonly<{
     home,
     identity: currentIdentity,
   });
-  input.notify?.(`Project trust: granted for ${granted.normalizedPath}`);
+  input.notify?.(t("trust.granted", { path: granted.normalizedPath }));
   return granted;
 }
 

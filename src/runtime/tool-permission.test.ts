@@ -22,8 +22,15 @@ function fakeIo(answers: boolean[] = [], choices: string[] = []): InteractiveIO 
       asks.push(detail ? `${question}\n${detail}` : question);
       return queue.shift() ?? false;
     },
-    select: async (question) => {
-      selects.push(question);
+    // Approvals are choice lists now; a queued boolean answers the next one as allow-once / deny.
+    select: async (question, options, detail) => {
+      const text = detail ? `${question}\n${detail}` : question;
+      const isApproval = options.some((choice) => choice.value === "once");
+      if (isApproval && choiceQueue.length === 0) {
+        asks.push(text);
+        return (queue.shift() ?? false) ? "once" : "deny";
+      }
+      selects.push(text);
       return choiceQueue.shift();
     },
     prompt: async () => undefined,
@@ -460,5 +467,59 @@ describe("authorization ledger (recordDecision)", () => {
 
     expect(facts[0]).toMatchObject({ gate: "mode", decision: "allow", by: "user", detail: "auto->strict", mode: "strict" });
     expect(facts[1]).toMatchObject({ gate: "mode", decision: "deny", by: "policy", tool: "bash", toolCallId: "c1" });
+  });
+});
+
+describe("approval choices", () => {
+  const bashCall = (command: string) => ({ toolName: "bash", call: { id: "1", name: "bash", args: { command } } });
+  function choiceIo(picks: (string | undefined)[], reasons: (string | undefined)[] = []) {
+    const seen: { question: string; values: string[]; detail?: string }[] = [];
+    const prompts: string[] = [];
+    const io: InteractiveIO = {
+      ask: async () => {
+        throw new Error("approvals must use the choice list");
+      },
+      select: async (question, choices, detail) => {
+        seen.push({ question, values: choices.map((choice) => choice.value), detail });
+        return picks.shift();
+      },
+      prompt: async (question) => {
+        prompts.push(question);
+        return reasons.shift();
+      },
+    };
+    return { io, seen, prompts };
+  }
+
+  it("never offers a session-wide grant for an unproven shell command", async () => {
+    const host = new ExtensionHost();
+    const { io, seen } = choiceIo(["deny"]);
+    registerToolPermissionGate({ host, interactive: io, sink: {}, getMode: () => "auto" });
+    await host.emit("tool_call", bashCall("rm -rf build"));
+    expect(seen[0]!.values).toEqual(["once", "deny", "deny-reason"]);
+    expect(seen[0]!.detail).toContain("rm -rf build");
+  });
+
+  it("hands the user's reason to the model with the denial", async () => {
+    const host = new ExtensionHost();
+    const { io, prompts } = choiceIo(["deny-reason"], ["use the build script, not rm"]);
+    registerToolPermissionGate({ host, interactive: io, sink: {}, getMode: () => "auto" });
+    const results = await host.emit("tool_call", bashCall("rm -rf build"));
+    expect(prompts).toHaveLength(1);
+    const reason = (results.find((item) => (item as { block?: boolean })?.block) as { reason: string }).reason;
+    expect(reason).toContain("user denied command");
+    expect(reason).toContain("The user says: use the build script, not rm");
+  });
+
+  it("treats a cancelled question (Esc) and an empty reason as a plain denial", async () => {
+    const host = new ExtensionHost();
+    const { io } = choiceIo([undefined, "deny-reason"], [undefined]);
+    registerToolPermissionGate({ host, interactive: io, sink: {}, getMode: () => "auto" });
+    for (const command of ["rm -rf build", "rm -rf dist"]) {
+      const results = await host.emit("tool_call", bashCall(command));
+      expect(blocked(results)).toBe(true);
+      const reason = (results.find((item) => (item as { block?: boolean })?.block) as { reason: string }).reason;
+      expect(reason).not.toContain("The user says");
+    }
   });
 });

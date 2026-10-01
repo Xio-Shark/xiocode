@@ -126,9 +126,11 @@ describe.skipIf(process.platform === "win32")("WebAgentHost", () => {
       broadcast: (_sessionId, event) => {
         events.push(event as WebEvent);
         if (event.event === "web.approval") {
-          const payload = event.payload as { id: string; question: string; detail?: string };
+          const payload = event.payload as { id: string; question: string; detail?: string; choices?: { value: string }[] };
           questions.push(`${payload.question}\n${payload.detail ?? ""}`);
-          setImmediate(() => host.answerApproval("web-1", payload.id, { approve: true }));
+          // The page answers a choice list with the picked value, as the "仅本次允许" button does.
+          const value = payload.choices ? "once" : undefined;
+          setImmediate(() => host.answerApproval("web-1", payload.id, { approve: true, ...(value ? { value } : {}) }));
         }
         return 1;
       },

@@ -2,6 +2,8 @@ import React from "react";
 import { cleanup, render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { t } from "../i18n/messages.ts";
+import { displayWidth } from "./text-selection.ts";
 import {
   BootInputBuffer,
   BootShell,
@@ -90,6 +92,34 @@ describe("BootShell", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(answers).toEqual([true]);
     expect(buffer.snapshot()).toEqual({ text: "", pendingSubmit: false });
+  });
+
+  it("keeps the real trust question on one 80-column line without the [y/N] suffix", () => {
+    const question = "Trust this project directory for hooks/skills/extensions and write/exec tools? [y/N] ";
+    const home = process.env.HOME ?? "/Users/test";
+    const instance = render(React.createElement(BootShell, {
+      version: "1.2.3",
+      cwd: "/tmp/project",
+      status: "loading context…",
+      readiness: "prompt_context",
+      buffer: new BootInputBuffer(),
+      confirmation: { question, detail: `cwd: ${home}/code/projects/a-rather-long-directory/nested/repository-name` },
+      columns: 80,
+    }));
+    const lines = (instance.lastFrame() ?? "").split("\n");
+    const row = lines.find((line) => line.startsWith("Trust this project"));
+    expect(row).toBe("Trust this project directory for hooks/skills/extensions and write/exec tools?");
+    expect(lines.some((line) => line.trim().startsWith("y/N]"))).toBe(false);
+    const cwd = lines.find((line) => line.startsWith("cwd: "))!;
+    expect(cwd.startsWith("cwd: ~/")).toBe(true);
+    expect(cwd).toContain("…");
+    instance.unmount();
+  });
+
+  it("keeps the trust question under 80 columns in both languages", () => {
+    for (const language of ["zh", "en"] as const) {
+      expect(displayWidth(t("trust.question", undefined, language)), language).toBeLessThan(80);
+    }
   });
 
   it("routes default deny and Ctrl+C interruption", async () => {

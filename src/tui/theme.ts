@@ -1,11 +1,19 @@
 /**
- * Semantic theme slots. Two palettes ship: `groknight` (default — neutral
- * gray base + TokyoNight-style accents, following grok-build's groknight)
- * and `claude` (the original magenta/cyan quiet theme). Select with
- * `XIO_THEME=groknight|claude`; unknown values fall back to groknight.
+ * Semantic theme slots. `groknight` (dark, default) and `light` are the xio
+ * brand palettes: their shared slots come from src/design/tokens.ts, the same
+ * source as the web console. `claude`, `minimal` and `nord` are alternates.
+ * Chosen by `XIO_THEME`, then config.toml `[ui] theme` (/theme), then the
+ * terminal background detected at start; unknown names fall back to groknight.
  */
 
 import { homedir } from "node:os";
+
+import { COLOR_TOKENS, type ColorToken } from "../design/tokens.ts";
+import { t } from "../i18n/messages.ts";
+
+function brand(scheme: "light" | "dark", token: ColorToken): ThemeColor {
+  return COLOR_TOKENS[token][scheme];
+}
 
 export type ThemeColor = string;
 
@@ -29,6 +37,8 @@ export type Theme = Readonly<{
   diffDel: ThemeColor;
   /** Muted secondary text / line numbers. */
   muted: ThemeColor;
+  /** Whether faint (SGR 2) still reads on this palette's background; false on light themes. */
+  faint: boolean;
   /** Pixel shark body (header mascot). */
   shark: ThemeColor;
   /** Shark eye socket fill (dark so pupils read). */
@@ -59,20 +69,21 @@ export type Theme = Readonly<{
   }>;
 }>;
 
-/** Modern minimalist palette: neutral platinum/slate base with subtle slate-blue accents. */
+/** Brand dark palette: neutral slate base, shark-fin blue accent (tokens.ts `dark`). */
 const GROKNIGHT: Theme = {
-  brand: "#e2e8f0",
-  accent: "#7aa2f7",
+  brand: brand("dark", "text"),
+  accent: brand("dark", "accent"),
   userBar: "#1a1b26",
-  tool: "#e0af68",
-  think: "#565f89",
+  tool: brand("dark", "warn"),
+  think: brand("dark", "muted"),
   explore: "#73daca",
-  error: "#f7768e",
-  success: "#9ece6a",
-  warn: "#e0af68",
-  diffAdd: "#9ece6a",
-  diffDel: "#f7768e",
-  muted: "#565f89",
+  error: brand("dark", "danger"),
+  success: brand("dark", "success"),
+  warn: brand("dark", "warn"),
+  diffAdd: brand("dark", "diffAdd"),
+  diffDel: brand("dark", "diffDel"),
+  muted: brand("dark", "muted"),
+  faint: true,
   shark: "#c0caf5",
   sharkEyeBg: "#16161e",
   pathMax: 42,
@@ -116,7 +127,7 @@ const CLAUDE: Theme = {
   sharkEyeBg: "#1a1a1a",
 };
 
-/** Minimal palette: clean, focused, zero noise (inspired by Vercel/Linear). */
+/** Minimal palette: near-monochrome, one accent. */
 const MINIMAL: Theme = {
   ...GROKNIGHT,
   brand: "#ededed",
@@ -135,7 +146,7 @@ const MINIMAL: Theme = {
   sharkEyeBg: "#0a0a0a",
 };
 
-/** Nord palette: arctic, serene clean aesthetic (inspired by Nord Theme). */
+/** Nord palette (nordtheme.com colours). */
 const NORD: Theme = {
   ...GROKNIGHT,
   brand: "#eceff4",
@@ -154,20 +165,21 @@ const NORD: Theme = {
   sharkEyeBg: "#2e3440",
 };
 
-/** Light palette: high contrast on light backgrounds (all text contrast ≥ 4.5:1 against #ffffff). */
+/** Brand light palette (tokens.ts `light`): every text slot ≥ 4.5:1 against white. */
 const LIGHT: Theme = {
-  brand: "#1e293b",
-  accent: "#2563eb",
+  brand: brand("light", "text"),
+  accent: brand("light", "accent"),
   userBar: "#f1f5f9",
-  tool: "#b45309",
-  think: "#64748b",
+  tool: brand("light", "warn"),
+  think: brand("light", "muted"),
   explore: "#0f766e",
-  error: "#dc2626",
-  success: "#15803d",
-  warn: "#b45309",
-  diffAdd: "#15803d",
-  diffDel: "#dc2626",
-  muted: "#64748b",
+  error: brand("light", "danger"),
+  success: brand("light", "success"),
+  warn: brand("light", "warn"),
+  diffAdd: brand("light", "diffAdd"),
+  diffDel: brand("light", "diffDel"),
+  muted: brand("light", "muted"),
+  faint: false,
   shark: "#475569",
   sharkEyeBg: "#f8fafc",
   pathMax: 42,
@@ -280,10 +292,10 @@ export function contrastRatio(hex1: string, hex2: string): number {
 
 export function checkThemeBackgroundMismatch(themeName: ThemeName, isLightBg: boolean): string | undefined {
   if (isLightBg && themeName !== "light") {
-    return `Theme mismatch: terminal background is light, but theme is "${themeName}". Tip: /theme light`;
+    return t("theme.mismatchLight", { name: themeName });
   }
   if (!isLightBg && themeName === "light") {
-    return `Theme mismatch: terminal background is dark, but theme is "light". Tip: /theme groknight`;
+    return t("theme.mismatchDark");
   }
   return undefined;
 }
@@ -295,78 +307,87 @@ export type TerminalBackgroundQueryOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
 }>;
 
+export type TerminalBackground = Readonly<{
+  background: "light" | "dark" | undefined;
+  /** Why `background` is undefined: the dark default applies and `xio doctor` says why. */
+  reason?: "not-a-tty" | "no-color" | "unsupported" | "timeout" | `error: ${string}`;
+  /** Keys the user typed while the query held stdin; the caller hands them to the composer. */
+  typed: string;
+}>;
+
+const OSC11_REPLY = /\x1b\]11;rgb:[0-9a-fA-F]+\/[0-9a-fA-F]+\/[0-9a-fA-F]+(?:\x07|\x1b\\)?/;
+const DA1_REPLY = /\x1b\[\?[0-9;]*c/;
+
+/**
+ * Ask the terminal for its background colour (OSC 11), followed by a DA1
+ * query: every terminal answers DA1, so one that ignores OSC 11 ends the wait
+ * early instead of holding the first paint for the whole timeout.
+ */
 export async function queryTerminalBackground(
   options: TerminalBackgroundQueryOptions = {},
-): Promise<"light" | "dark" | undefined> {
+): Promise<TerminalBackground> {
   const env = options.env ?? process.env;
-  if (env.NO_COLOR !== undefined && env.NO_COLOR !== "") return undefined;
-  if (env.TERM === "dumb") return undefined;
+  if (env.NO_COLOR !== undefined && env.NO_COLOR !== "") return { background: undefined, reason: "no-color", typed: "" };
+  if (env.TERM === "dumb") return { background: undefined, reason: "no-color", typed: "" };
 
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
-  if (!stdin.isTTY || !stdout.isTTY) return undefined;
+  if (!stdin.isTTY || !stdout.isTTY) return { background: undefined, reason: "not-a-tty", typed: "" };
 
   const timeoutMs = options.timeoutMs ?? 20;
+  const wasRaw = stdin.isRaw;
+  const wasPaused = stdin.isPaused();
+  let buffer = "";
 
-  return new Promise<"light" | "dark" | undefined>((resolve) => {
-    let resolved = false;
+  return new Promise<TerminalBackground>((resolve) => {
     let timer: NodeJS.Timeout | undefined;
-    let buffer = "";
-
-    let wasRaw: boolean | undefined;
-
-    const cleanup = () => {
+    const finish = (result: Omit<TerminalBackground, "typed">) => {
       if (timer) clearTimeout(timer);
-      try {
-        stdin.removeListener("data", onData);
-        if (wasRaw !== undefined && stdin.setRawMode) {
-          stdin.setRawMode(wasRaw);
-        }
-      } catch {}
+      stdin.removeListener("data", onData);
+      stdin.setRawMode?.(wasRaw);
+      if (wasPaused) stdin.pause();
+      const typed = buffer.replace(OSC11_REPLY, "").replace(DA1_REPLY, "");
+      resolve({ ...result, typed });
     };
-
-    const finish = (result: "light" | "dark" | undefined) => {
-      if (resolved) return;
-      resolved = true;
-      cleanup();
-      resolve(result);
+    const detected = (): "light" | "dark" | undefined => {
+      const color = parseOsc11Color(buffer);
+      if (!color) return undefined;
+      return isLuminanceLight(color.luminance) ? "light" : "dark";
     };
-
+    // Replies arrive in query order, so the DA1 reply means the OSC 11 one (if any) is in;
+    // stopping before it would leave the DA1 reply to land in the composer.
     const onData = (chunk: Buffer | string) => {
       buffer += chunk.toString();
-      const color = parseOsc11Color(buffer);
-      if (color) {
-        finish(isLuminanceLight(color.luminance) ? "light" : "dark");
-        return;
-      }
-      // DA1 response ends with 'c' — if received without OSC 11, terminal lacks OSC 11 support
-      if (/\x1b\[\?[0-9;]*c/.test(buffer)) {
-        finish(undefined);
-      }
+      if (!DA1_REPLY.test(buffer)) return;
+      const background = detected();
+      finish(background ? { background } : { background: undefined, reason: "unsupported" });
     };
 
     try {
-      if (stdin.setRawMode) {
-        wasRaw = stdin.isRaw;
-        stdin.setRawMode(true);
-      }
+      stdin.setRawMode?.(true);
       stdin.on("data", onData);
       stdin.resume();
-
       timer = setTimeout(() => {
-        finish(undefined);
+        const background = detected();
+        finish(background ? { background } : { background: undefined, reason: "timeout" });
       }, timeoutMs);
-
-      const isTmux = Boolean(env.TMUX);
-      const osc = isTmux
-        ? "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\\x1b[c"
-        : "\x1b]11;?\x07\x1b[c";
-
-      stdout.write(osc);
-    } catch {
-      finish(undefined);
+      // tmux swallows OSC 11 unless it is wrapped in a DCS passthrough.
+      const query = env.TMUX ? "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\\x1b[c" : "\x1b]11;?\x07\x1b[c";
+      stdout.write(query);
+    } catch (error) {
+      finish({ background: undefined, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
     }
   });
+}
+
+/**
+ * Ink props for de-emphasised text. Uncoloured text takes the muted slot (contrast-checked);
+ * coloured text is faded only where faint keeps it readable, so light terminals stay ≥ 4.5:1.
+ */
+export function quietText(color: ThemeColor | undefined, quiet: boolean): { color?: ThemeColor; dimColor: boolean } {
+  if (!quiet) return { color, dimColor: false };
+  if (color === undefined) return { color: theme.muted, dimColor: false };
+  return { color, dimColor: theme.faint };
 }
 
 /** Single-line ellipsis for tool args on the transcript title row. */

@@ -178,10 +178,17 @@ async function runPreparedLaunch(input: Readonly<{
     },
     inkEnv,
   )) {
+    const recentSessions = input.stored
+      ? undefined
+      : import("../tui/welcome.ts").then(({ loadRecentSessions }) => loadRecentSessions(input.store, {
+        mainRoot: input.launch.mainRoot,
+        currentId: input.sessionId,
+      }));
     return (await import("../tui/run-ink-session.ts")).runInkSession({
       ...sessionOptions,
       earlyBoot: input.earlyBoot,
       updateNotice: input.updateNotice,
+      recentSessions,
     });
   }
   input.earlyBoot?.unmount();

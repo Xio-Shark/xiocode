@@ -290,9 +290,9 @@ const XioMarkdown = (() => {
     const copy = el("button", "code-copy");
     copy.type = "button";
     copy.dataset.action = "copy";
-    copy.setAttribute("aria-label", "复制代码");
+    copy.setAttribute("aria-label", t("web.copyCode"));
     copy.appendChild(window.xioIcon ? window.xioIcon("copy") : document.createTextNode(""));
-    copy.appendChild(withText("span", "复制"));
+    copy.appendChild(withText("span", t("web.copy")));
     head.appendChild(copy);
     const pre = el("pre");
     const c = el("code");

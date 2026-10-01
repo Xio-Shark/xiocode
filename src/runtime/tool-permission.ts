@@ -19,7 +19,8 @@ import {
 } from "./workspace-path-policy.ts";
 
 import type { ExtensionHost } from "./extension-host.ts";
-import type { InteractiveIO } from "./interactive-io.ts";
+import type { InteractiveIO, SelectChoice } from "./interactive-io.ts";
+import { t } from "../i18n/messages.ts";
 import type { SessionUiSink } from "./session-ui.ts";
 
 /** How to treat high-risk (exec/network) tools under auto mode. */
@@ -168,7 +169,7 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
         approved.add(name);
         note({ gate: "tool", decision: "allow", by: "policy", scope: "session", detail: risk });
         options.sink.notify?.(
-          `High-risk auto-allowed: ${name} (${risk})`,
+          t("approve.autoAllowed", { name, risk }),
           "warning",
         );
       } else if (policy === "deny") {
@@ -182,25 +183,23 @@ export function registerToolPermissionGate(options: ToolPermissionGateOptions): 
       } else if (name !== "bash") {
         // bash is gated per command below, with the command shown; a session-wide
         // "allow bash" would only ever cover the read-only allowlist.
-        const choice = await options.interactive.select(
-          `Allow ${risk} tool "${name}"? This call: ${describeCallArgs(toolArgsFromEvent(record))}`,
-          [
-            { label: "Allow this call", value: "once" },
-            { label: `Allow "${name}" for the rest of this session`, value: "session" },
-            { label: "Deny", value: "deny" },
-          ],
+        const answer = await askPermission(
+          options.interactive,
+          t("approve.tool", { risk, name }),
+          describeCallArgs(toolArgsFromEvent(record)),
+          { label: t("approve.session", { name }), scope: t("approve.sessionScope", { name }) },
         );
-        if (choice !== "once" && choice !== "session") {
+        if (!answer.allow) {
           note({ gate: "tool", decision: "deny", by: "user", scope: "call", detail: risk });
           return {
             block: true,
-            reason: `user denied high-risk tool: ${name} (${risk})`,
+            reason: withFeedback(`user denied high-risk tool: ${name} (${risk})`, answer.feedback),
           };
         }
-        note({ gate: "tool", decision: "allow", by: "user", scope: choice === "session" ? "session" : "call", detail: risk });
-        if (choice === "session") {
+        note({ gate: "tool", decision: "allow", by: "user", scope: answer.scope, detail: risk });
+        if (answer.scope === "session") {
           approved.add(name);
-          options.sink.notify?.(`Approved ${name} (${risk}) for this session.`, "info");
+          options.sink.notify?.(t("approve.sessionGranted", { name, risk }), "info");
         }
       }
     }
@@ -291,7 +290,7 @@ async function enforceUntrustedTool(input: Readonly<{
   }
 
   const ok = await input.interactive.ask(
-    `Untrusted project: allow ${risk} tool "${input.name}" for this session? [y/N] `,
+    t("approve.untrustedTool", { risk, name: input.name }),
     `tool: ${input.name}\nrisk: ${risk}\ntrust: untrusted\nscope: session\nthis call: ${describeCallArgs(input.callArgs)}`,
   );
   if (!ok) {
@@ -304,7 +303,7 @@ async function enforceUntrustedTool(input: Readonly<{
   input.note({ gate: "trust", decision: "allow", by: "user", scope: "session", detail: risk });
   input.approved.add(approvalKey);
   input.sink.notify?.(
-    `Approved ${input.name} (${risk}) for this untrusted session.`,
+    t("approve.untrustedGranted", { name: input.name, risk }),
     "warning",
   );
   return undefined;
@@ -359,32 +358,33 @@ async function enforceCommandExecution(input: Readonly<{
   }
 
   const question = decision.reason === "known-risk" && decision.risk
-    ? `Run this ${decision.risk.severity} command? [y/N] `
+    ? t("approve.riskCommand", { severity: decision.risk.severity })
     : decision.reason === "complex-shell"
-      ? "Run this complex shell command? [y/N] "
-      : "Run this shell command? [y/N] ";
+      ? t("approve.complexCommand")
+      : t("approve.command");
 
-  const ok = await input.interactive.ask(question, decision.detail);
+  // Unproven shell is approved one call at a time: no session choice, ever.
+  const answer = await askPermission(input.interactive, question, decision.detail);
   input.note({
     gate: "command",
-    decision: ok ? "allow" : "deny",
+    decision: answer.allow ? "allow" : "deny",
     by: "user",
     scope: "call",
     detail: riskBit,
     subjectFingerprint,
   });
-  if (!ok) {
+  if (!answer.allow) {
     return {
       block: true,
-      reason: decision.risk
+      reason: withFeedback(decision.risk
         ? `user denied command (${decision.risk.id}): ${decision.risk.match}`
-        : `user denied command (${decision.reason})`,
+        : `user denied command (${decision.reason})`, answer.feedback),
     };
   }
   input.sink.notify?.(
     decision.risk
-      ? `Approved once: ${decision.risk.match} (${decision.risk.severity}).`
-      : `Approved once (${decision.reason}).`,
+      ? t("approve.onceRisk", { match: decision.risk.match, severity: decision.risk.severity })
+      : t("approve.onceReason", { reason: decision.reason }),
     "warning",
   );
   return undefined;
@@ -440,29 +440,63 @@ async function enforceExternalPathAccess(input: Readonly<{
     };
   }
 
-  const ok = await input.interactive.ask(
-    `Allow outside ${operation} for this tool call only? [y/N] `,
+  const answer = await askPermission(
+    input.interactive,
+    t("approve.outside", { name: input.name, operation }),
     [
       `tool: ${input.name}`,
       `operation: ${operation}`,
       `requested: ${decision.request.requestedPath}`,
       `canonical: ${decision.request.canonicalPath}`,
-      "scope: this tool call only (not reusable)",
     ].join("\n"),
   );
-  input.note({ gate: "path", decision: ok ? "allow" : "deny", by: "user", scope: "call", detail: operation, subjectFingerprint });
-  if (!ok) {
+  input.note({ gate: "path", decision: answer.allow ? "allow" : "deny", by: "user", scope: "call", detail: operation, subjectFingerprint });
+  if (!answer.allow) {
     return {
       block: true,
-      reason: `user denied outside path: ${decision.request.canonicalPath}`,
+      reason: withFeedback(`user denied outside path: ${decision.request.canonicalPath}`, answer.feedback),
     };
   }
   input.pathPolicy.grantOnce(input.callId, decision.request);
   input.sink.notify?.(
-    `Granted outside ${operation} once for ${input.name} (${input.callId}).`,
+    t("approve.outsideGranted", { operation, name: input.name, id: input.callId }),
     "warning",
   );
   return undefined;
+}
+
+const DENY_WITH_REASON = "deny-reason";
+
+type PermissionAnswer =
+  | Readonly<{ allow: true; scope: "call" | "session" }>
+  | Readonly<{ allow: false; feedback?: string }>;
+
+/**
+ * One approval question as a choice list: allow once, allow for the session (only when
+ * `session` is given), deny, or deny and tell the model why. Cancelling (Esc) is a denial.
+ */
+async function askPermission(
+  interactive: InteractiveIO,
+  question: string,
+  detail: string,
+  session?: Readonly<{ label: string; scope: string }>,
+): Promise<PermissionAnswer> {
+  const choices: SelectChoice[] = [
+    { label: t("approve.once"), value: "once", scope: t("approve.onceScope") },
+    ...(session ? [{ label: session.label, value: "session", scope: session.scope }] : []),
+    { label: t("approve.deny"), value: "deny" },
+    { label: t("approve.denyReason"), value: DENY_WITH_REASON },
+  ];
+  const picked = await interactive.select(question, choices, detail);
+  if (picked === "once") return { allow: true, scope: "call" };
+  if (picked === "session" && session) return { allow: true, scope: "session" };
+  if (picked !== DENY_WITH_REASON) return { allow: false };
+  const feedback = (await interactive.prompt(t("approve.why")))?.trim();
+  return feedback ? { allow: false, feedback } : { allow: false };
+}
+
+function withFeedback(reason: string, feedback: string | undefined): string {
+  return feedback ? `${reason}. The user says: ${feedback}` : reason;
 }
 
 /** One-line view of a tool call's arguments for an approval question. */

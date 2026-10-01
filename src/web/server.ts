@@ -14,6 +14,7 @@ import { upsertSectionValue, upsertProviderBlock } from "../cli/config-mutate.ts
 import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { renderWebUiHtml } from "./ui-template.ts";
+import { applyConfiguredLanguage, getLanguage, type Language } from "../i18n/messages.ts";
 import { buildSessionTrajectory, isToolResultError } from "./trajectory.ts";
 import { parseTimelineRecords } from "./trajectory-timing.ts";
 import { TIMELINE_FILE } from "../runtime/session-timeline.ts";
@@ -141,6 +142,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         const html = renderWebUiHtml({
           version: XIO_VERSION,
           defaultSessionId: latestSession?.metadata.id,
+          language: await readUiLanguage(env, cwd),
         });
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(html);
@@ -294,7 +296,8 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               return msg;
             });
             const liveCost = agentHost.getCostSummary?.(id);
-            const cost = liveCost && liveCost.costUsd !== null ? formatSessionCost(liveCost) : "未计价";
+            // null when unpriced; the page words that in its own language.
+            const cost = liveCost && liveCost.costUsd !== null ? formatSessionCost(liveCost) : null;
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({
               ...session,
@@ -392,11 +395,12 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
       const approvalMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/approval$/);
       if (approvalMatch && req.method === "POST") {
         const id = approvalMatch[1]!;
-        const body = await readJsonBody<{ id?: string; approve?: boolean; value?: string }>(req);
+        const body = await readJsonBody<{ id?: string; approve?: boolean; value?: string; text?: string }>(req);
         const answered = typeof body.id === "string"
           && agentHost.answerApproval(id, body.id, {
             approve: body.approve === true,
             ...(typeof body.value === "string" ? { value: body.value } : {}),
+            ...(typeof body.text === "string" ? { text: body.text } : {}),
           });
         res.writeHead(answered ? 200 : 404, { "Content-Type": "application/json" });
         res.end(JSON.stringify(answered ? { status: "answered" } : { error: "no such pending question" }));
@@ -763,6 +767,17 @@ function unauthorizedPage(): string {
     + "<h1 style=\"font-size:18px\">Open the link printed by <code>xio web</code></h1>"
     + "<p>The console only accepts the address shown in your terminal, which carries a one-time access token. "
     + "This keeps other web pages from reading your sessions or changing your settings.</p></body>";
+}
+
+/**
+ * `[ui] language`, re-read per page load so a changed config applies on refresh. It also
+ * sets the process language, which words the approval questions the agent host forwards.
+ */
+async function readUiLanguage(env: NodeJS.ProcessEnv, cwd: string): Promise<Language> {
+  const config = await ensureConfigFile(env);
+  const warning = applyConfiguredLanguage(parseXioConfig(config.content, { cwd }).xio.ui?.language);
+  if (warning) process.stderr.write(`${warning}\n`);
+  return getLanguage();
 }
 
 async function readDefaultModel(env: NodeJS.ProcessEnv, cwd: string): Promise<{ provider: string; id: string } | undefined> {

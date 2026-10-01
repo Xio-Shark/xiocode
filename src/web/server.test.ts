@@ -193,7 +193,7 @@ describe("Web Console & Server", () => {
     expect(detailData.metadata.id).toBe(postData.id);
     expect(Array.isArray(detailData.trajectory)).toBe(true);
     expect(detailData.stats).toBeDefined();
-    expect(detailData.cost).toBe("未计价");
+    expect(detailData.cost).toBeNull();
     expect(detailData.running).toBe(false);
 
     // 4b. Test GET /api/sessions/:id/trajectory

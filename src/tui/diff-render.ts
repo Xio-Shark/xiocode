@@ -27,6 +27,16 @@ function formatLineNumbers(oldLine?: number, newLine?: number): string {
   return `${oldStr} ${newStr} `;
 }
 
+/** `old → new` for a rename; the one real name for an add or delete. */
+function patchFileLabel(oldName: string | undefined, newName: string | undefined): string {
+  const clean = (name: string | undefined) =>
+    name && name !== "/dev/null" ? name.replace(/^[ab]\//, "") : undefined;
+  const from = clean(oldName);
+  const to = clean(newName);
+  if (from && to && from !== to) return `${from} → ${to}`;
+  return to ?? from ?? "diff";
+}
+
 /**
  * Parses raw diff or plain-text detail into formatted lines with file headers,
  * hunk headers, +/- line stats, line numbers, and max length protection.
@@ -49,8 +59,7 @@ export function formatDiffDetail(detail: string): readonly FormattedDiffLine[] {
           }
         }
 
-        const fileName = (patch.newFileName || patch.oldFileName || "diff")
-          .replace(/^[ab]\//, "");
+        const fileName = patchFileLabel(patch.oldFileName, patch.newFileName);
         const statStr = `(+${additions}, -${deletions})`;
         const fileHeaderText = `diff ${fileName} ${statStr}`;
 
@@ -82,7 +91,10 @@ export function formatDiffDetail(detail: string): readonly FormattedDiffLine[] {
               return result;
             }
 
-            if (line.startsWith("+")) {
+            if (line.startsWith("\\")) {
+              // "\ No newline at end of file" annotates the previous line; it is not a line itself.
+              result.push({ type: "plain", text: `${formatLineNumbers()}${line}`, rawText: line });
+            } else if (line.startsWith("+")) {
               const numPrefix = formatLineNumbers(undefined, newNum);
               result.push({
                 type: "add",

@@ -47,7 +47,7 @@ type ActiveSession = {
 };
 
 /** A browser's answer: yes/no for questions, the picked value for choices. */
-export type ApprovalAnswer = Readonly<{ approve: boolean; value?: string }>;
+export type ApprovalAnswer = Readonly<{ approve: boolean; value?: string; text?: string }>;
 
 type PendingApproval = Readonly<{ sessionId: string; resolve: (answer: ApprovalAnswer) => void }>;
 
@@ -100,7 +100,8 @@ export class WebAgentHost {
           toolCalls: result.toolCalls,
           toolErrors: result.toolErrors,
           usage: result.usage,
-          cost: costSummary.costUsd !== null ? formatSessionCost(costSummary) : "未计价",
+          // null when the model has no price; the page words that in its own language.
+          cost: costSummary.costUsd !== null ? formatSessionCost(costSummary) : null,
           costUsd: costSummary.costUsd,
         });
       },
@@ -226,12 +227,25 @@ export class WebAgentHost {
   #interactive(sessionId: string): InteractiveIO {
     return {
       ask: async (question, detail) => (await this.#askBrowser(sessionId, { question, ...(detail ? { detail } : {}) })).approve,
-      select: async (question, choices) => {
-        const answer = await this.#askBrowser(sessionId, { question, choices: choices.map((c) => ({ ...c })) });
+      select: async (question, choices, detail) => {
+        const answer = await this.#askBrowser(sessionId, {
+          question,
+          choices: choices.map((c) => ({ ...c })),
+          ...(detail ? { detail } : {}),
+        });
         return answer.approve ? answer.value : undefined;
       },
-      // Free-text prompts (/connect) are TUI-only for now.
-      prompt: async () => undefined,
+      // Plain text questions (a denial reason, a model id) go to the browser; secrets
+      // (/connect API keys) stay TUI-only so a key never travels through the page.
+      prompt: async (question, options) => {
+        if (options?.secret) return undefined;
+        const answer = await this.#askBrowser(sessionId, {
+          question,
+          input: true,
+          ...(options?.placeholder ? { placeholder: options.placeholder } : {}),
+        });
+        return answer.approve ? answer.text : undefined;
+      },
     };
   }
 

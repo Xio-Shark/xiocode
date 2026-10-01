@@ -27,14 +27,6 @@ export const BRAND_MARK_MIN_COLUMNS = 54;
 
 /** Four-row high-definition XIO wordmark with trailing shark dorsal fin (~29 cols). */
 export function XioMark(): React.JSX.Element {
-  if (process.env.XIO_DEBUG_WINDOW) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("node:fs").appendFileSync(process.env.XIO_DEBUG_WINDOW, `XioMark\n${new Error().stack}\n`);
-    } catch {
-      // ignore
-    }
-  }
   const letters = theme.shark;
   const accent = theme.accent;
   return h(Box, { flexDirection: "column", flexShrink: 0 },
@@ -96,11 +88,11 @@ export function BrandHeader(props: Readonly<{
     h(Box, { flexDirection: "column", flexGrow: 1 },
       h(Text, null,
         h(Text, { bold: true, color: theme.brand }, "XioCode"),
-        h(Text, { dimColor: true }, ` v${props.version}`)),
+        h(Text, { color: theme.muted }, ` v${props.version}`)),
       props.meta
-        ? h(Text, { dimColor: true, wrap: "truncate-end" }, props.meta)
+        ? h(Text, { color: theme.muted, wrap: "truncate-end" }, props.meta)
         : null,
       props.path
-        ? h(Text, { dimColor: true, wrap: "truncate-end" }, props.path)
+        ? h(Text, { color: theme.muted, wrap: "truncate-end" }, props.path)
         : null));
 }

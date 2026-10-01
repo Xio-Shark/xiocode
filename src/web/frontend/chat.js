@@ -7,14 +7,14 @@ const TOOL_OUTPUT_LIMIT = 20000;
 
 /** How each tool reads in the transcript: an icon, a verb and the thing it acts on. */
 const TOOL_KINDS = {
-  read: { icon: "file", title: "读取", target: a => a.path || a.file_path },
-  write: { icon: "file-plus", title: "写入", target: a => a.path || a.file_path },
-  edit: { icon: "pen", title: "编辑", target: a => a.path || a.file_path },
-  bash: { icon: "terminal", title: "运行", target: a => a.command },
-  grep: { icon: "text-search", title: "搜索", target: a => [a.pattern, a.path].filter(Boolean).join("  ·  ") },
-  glob: { icon: "folder", title: "查找文件", target: a => a.pattern },
-  skill: { icon: "sparkle", title: "加载 skill", target: a => a.name || a.skill },
-  parallel_edit: { icon: "layers", title: "并行编辑", target: a => Array.isArray(a.tasks) ? a.tasks.length + " 个子任务" : "" },
+  read: { icon: "file", title: t("web.toolRead"), target: a => a.path || a.file_path },
+  write: { icon: "file-plus", title: t("web.toolWrite"), target: a => a.path || a.file_path },
+  edit: { icon: "pen", title: t("web.toolEdit"), target: a => a.path || a.file_path },
+  bash: { icon: "terminal", title: t("web.toolBash"), target: a => a.command },
+  grep: { icon: "text-search", title: t("web.toolGrep"), target: a => [a.pattern, a.path].filter(Boolean).join("  ·  ") },
+  glob: { icon: "folder", title: t("web.toolGlob"), target: a => a.pattern },
+  skill: { icon: "sparkle", title: t("web.toolSkill"), target: a => a.name || a.skill },
+  parallel_edit: { icon: "layers", title: t("web.toolParallel"), target: a => Array.isArray(a.tasks) ? t("web.subtasks", { n: a.tasks.length }) : "" },
 };
 
 function toolKind(name, args) {
@@ -23,7 +23,7 @@ function toolKind(name, args) {
   const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name || "");
   if (mcp) return { icon: "plug", title: mcp[2], target: mcp[1] };
   const firstValue = Object.values(args).find(v => typeof v === "string");
-  return { icon: "wrench", title: name || "工具", target: firstValue || "" };
+  return { icon: "wrench", title: name || t("web.tool"), target: firstValue || "" };
 }
 
 const chat = {
@@ -63,8 +63,8 @@ function renderHero() {
   });
   const hero = el("div", "hero-state",
     el("div", "hero-mark", xioIcon("fin")),
-    el("h2", "hero-title", "要做点什么？"),
-    el("p", "hero-subtitle", "智能体会在这个工作区里读代码、改文件、跑命令。需要确认的操作，会先停下来问你。"),
+    el("h2", "hero-title", t("web.heroTitle")),
+    el("p", "hero-subtitle", t("web.heroSubtitle")),
     workspaceName ? el("span", "hero-workspace", xioIcon("folder"), workspaceName) : null,
     grid);
   hero.id = "hero-state";
@@ -82,7 +82,7 @@ function messageRow(role) {
   if (role === "assistant") {
     row.append(el("div", "message-role", el("span", "avatar", xioIcon("fin")), "XioCode"));
   } else {
-    row.setAttribute("aria-label", "你");
+    row.setAttribute("aria-label", t("web.you"));
   }
   row.appendChild(body);
   appendToColumn(row);
@@ -142,7 +142,7 @@ function appendTextDelta(delta) {
   }
   prose._src += delta;
   scheduleRender(prose);
-  setWorking("正在写回复");
+  setWorking(t("web.workingReply"));
 }
 
 /** Deltas arrive faster than frames; render each streaming block at most once per frame. */
@@ -169,7 +169,7 @@ function finishProse() {
 // ---------- Thinking ----------
 
 function thoughtBlock(live) {
-  const label = el("span", live ? "shimmer" : null, live ? "正在思考" : "思考过程");
+  const label = el("span", live ? "shimmer" : null, live ? t("web.workingThink") : t("web.thinkingProcess"));
   const header = el("button", "thought-header", xioIcon("brain", "icon-brain"), label, xioIcon("chevron", "chev"));
   header.type = "button";
   header.dataset.toggle = "thought";
@@ -188,7 +188,7 @@ function appendThinkingDelta(delta) {
     box.appendChild(block);
   }
   block.querySelector(".thought-body").textContent += delta;
-  setWorking("正在思考");
+  setWorking(t("web.workingThink"));
   followIfStuck();
 }
 
@@ -197,7 +197,7 @@ function finishThinking() {
     block.classList.remove("live");
     block._label.className = "";
     const took = formatDuration(Date.now() - block._started);
-    block._label.textContent = "思考了" + (took.startsWith("不到") ? took : " " + took);
+    block._label.textContent = t("web.thoughtFor", { took });
   });
 }
 
@@ -218,10 +218,10 @@ function toolList(box) {
 }
 
 const TOOL_STATES = {
-  running: { label: "运行中", node: () => el("span", "spinner") },
-  done: { label: "完成", node: () => xioIcon("check") },
-  error: { label: "失败", node: () => xioIcon("x") },
-  unknown: { label: "状态未知", node: () => xioIcon("help") },
+  running: { label: t("web.stateRunning"), node: () => el("span", "spinner") },
+  done: { label: t("web.stateDone"), node: () => xioIcon("check") },
+  error: { label: t("web.stateFailed"), node: () => xioIcon("x") },
+  unknown: { label: t("web.stateUnknown"), node: () => xioIcon("help") },
 };
 
 function setToolState(entry, state) {
@@ -252,8 +252,8 @@ function appendToolCall(id, name, args, live) {
   header.dataset.toggle = "tool-row";
   header.setAttribute("aria-expanded", "false");
   const input = name === "bash" && params.command
-    ? toolSection("命令", "$ " + params.command)
-    : toolSection("参数", JSON.stringify(params, null, 2));
+    ? toolSection(t("web.command"), "$ " + params.command)
+    : toolSection(t("web.params"), JSON.stringify(params, null, 2));
   const output = el("div", "tool-output");
   const row = el("div", "tool-row", header, el("div", "tool-body", input, output));
   toolList(assistantBox()).appendChild(row);
@@ -268,7 +268,7 @@ function appendToolCall(id, name, args, live) {
 /** errorState: true / false / "unknown" (the server could not tell). */
 function updateToolResult(id, content, errorState) {
   // A result without a matching call is shown on its own row, never attached to a guess.
-  const entry = (id && chat.toolRows.get(id)) || appendToolCall(id, "工具结果", {}, false);
+  const entry = (id && chat.toolRows.get(id)) || appendToolCall(id, t("web.toolResult"), {}, false);
   const text = typeof content === "string" ? content : JSON.stringify(content ?? "", null, 2);
   const state = errorState === true ? "error" : errorState === false ? "done" : "unknown";
   setToolState(entry, state);
@@ -276,10 +276,10 @@ function updateToolResult(id, content, errorState) {
     entry.meta.textContent = formatToolTime(Date.now() - entry.started);
     entry.started = null;
   }
-  const parts = [toolSection(state === "error" ? "错误输出" : "输出", text.length > TOOL_OUTPUT_LIMIT ? text.slice(0, TOOL_OUTPUT_LIMIT) : (text || "（无输出）"), "out")];
+  const parts = [toolSection(state === "error" ? t("web.errorOutput") : t("web.output"), text.length > TOOL_OUTPUT_LIMIT ? text.slice(0, TOOL_OUTPUT_LIMIT) : (text || t("web.noOutput")), "out")];
   if (text.length > TOOL_OUTPUT_LIMIT) {
     parts.push(el("div", "tool-note", xioIcon("alert"),
-      "输出共 " + formatNumber(text.length) + " 字符，这里只显示前 " + formatNumber(TOOL_OUTPUT_LIMIT) + " 字符。完整内容见「导出记录」。"));
+      t("web.outputClipped", { total: formatNumber(text.length), shown: formatNumber(TOOL_OUTPUT_LIMIT) })));
   }
   entry.output.replaceChildren(...parts);
   // Failures are what the reader needs to see; open them.
@@ -307,7 +307,7 @@ function settleRunningTools() {
     if (entry.row.classList.contains("running")) {
       entry.started = null;
       setToolState(entry, "unknown");
-      entry.meta.textContent = "未返回结果";
+      entry.meta.textContent = t("web.noResult");
     }
   });
 }

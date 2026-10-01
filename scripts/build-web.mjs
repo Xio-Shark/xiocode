@@ -32,7 +32,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { inlinePage, inlineScripts, personalize, type FrontendFiles } from "./assemble-page.ts";
+import { inlinePage, inlineScripts, personalize, type FrontendFiles, type PageOptions } from "./assemble-page.ts";
 
 const EMBEDDED: FrontendFiles = ${JSON.stringify(files, null, 2)};
 
@@ -47,7 +47,7 @@ function frontendFiles(): FrontendFiles {
   );
 }
 
-export function getWebUiHtml(options: { version: string; defaultSessionId?: string }): string {
+export function getWebUiHtml(options: PageOptions): string {
   return personalize(inlinePage(frontendFiles()), options);
 }
 

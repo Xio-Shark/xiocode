@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages.ts";
 import { toolRisk, type ToolRiskClass } from "./tool-risk.ts";
 
 /**
@@ -54,26 +55,26 @@ export function permissionStatusLabel(mode: PermissionMode): string {
 }
 
 export function permissionModeDisplay(mode: PermissionMode): string {
-  if (mode === "strict") return "严格";
-  if (mode === "full") return "完全";
-  return "自动";
+  if (mode === "strict") return t("mode.strict");
+  if (mode === "full") return t("mode.full");
+  return t("mode.auto");
 }
 
 export function formatPermissionModeHelp(mode: PermissionMode): string {
   const label = permissionModeDisplay(mode);
   const detail = mode === "strict"
-    ? "read/search only — write/exec/MCP denied"
+    ? t("mode.helpStrict")
     : mode === "full"
-      ? "all tools; high-risk tools auto-allowed — unsafe/complex shell and merge/rollback still confirm"
-      : "all tools; high-risk asks once per tool (non-interactive: deny)";
+      ? t("mode.helpFull")
+      : t("mode.helpAuto");
   return [
-    `permission mode: ${mode} (${label})`,
+    t("mode.helpTitle", { mode, label }),
     detail,
-    `risks: ${allowedRiskClasses(mode).join(",")}`,
-    "shell: proven-safe allowlist auto; other commands confirm each time",
-    "usage: /permission [auto|full|strict]  ·  Shift+Tab cycles",
-    "aliases: a/f/s · 自动/完全/严格 · /bypass → full (not a global ask bypass)",
-    mode === "full" ? "restore: /permission auto" : undefined,
+    t("mode.helpRisks", { risks: allowedRiskClasses(mode).join(",") }),
+    t("mode.helpShell"),
+    t("mode.helpUsage"),
+    t("mode.helpAliases"),
+    mode === "full" ? t("mode.helpRestore") : undefined,
   ].filter(Boolean).join("\n");
 }
 

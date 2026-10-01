@@ -44,6 +44,7 @@ afterEach(async () => {
   tempDirs.length = 0;
 });
 
+// The real binary starts in the default interface language, Chinese.
 describe.skipIf(process.platform === "win32")("first-use boot state machine (PTY)", () => {
   it("allows trust, persists it, and reaches disconnected UI within an isolated HOME", async () => {
     const fixture = await createFixture();
@@ -52,8 +53,8 @@ describe.skipIf(process.platform === "win32")("first-use boot state machine (PTY
       cwd: fixture.project,
       env: fixture.env,
       actions: [
-        { waitFor: "Trust this project directory", send: "y", timeoutMs: 1_000 },
-        { waitFor: "not connected · /connect", send: "/exit\r", timeoutMs: 5_000 },
+        { waitFor: "信任这个项目目录", send: "y", timeoutMs: 1_000 },
+        { waitFor: "未连接 · /connect", send: "/exit\r", timeoutMs: 5_000 },
       ],
     });
 
@@ -74,16 +75,16 @@ describe.skipIf(process.platform === "win32")("first-use boot state machine (PTY
       cwd: fixture.project,
       env: fixture.env,
       actions: [
-        { waitFor: "Trust this project directory", send: "n", timeoutMs: 2_000 },
-        { waitFor: "not connected · /connect", send: "/connect\r", timeoutMs: 5_000 },
-        { waitFor: "Select a provider", send: "\x1b", timeoutMs: 2_000 },
-        { waitFor: "connect cancelled", send: "/help\r", timeoutMs: 2_000 },
-        { waitFor: "Commands:", send: "/exit\r", timeoutMs: 2_000 },
+        { waitFor: "信任这个项目目录", send: "n", timeoutMs: 2_000 },
+        { waitFor: "未连接 · /connect", send: "/connect\r", timeoutMs: 5_000 },
+        { waitFor: "选择提供方", send: "\x1b", timeoutMs: 2_000 },
+        { waitFor: "已取消连接", send: "/help\r", timeoutMs: 2_000 },
+        { waitFor: "命令：", send: "/exit\r", timeoutMs: 2_000 },
       ],
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.output).toContain("degraded capabilities");
+    expect(result.output).toContain("项目信任：已拒绝");
     const trustPath = path.join(fixture.home, ".xiocode", "trust.json");
     const trust = await readFile(trustPath, "utf8")
       .then((raw) => JSON.parse(raw) as { entries?: Record<string, { level?: string }> })
@@ -103,7 +104,7 @@ describe.skipIf(process.platform === "win32")("first-use boot state machine (PTY
       cwd: fixture.project,
       env: fixture.env,
       actions: [
-        { waitFor: "Trust this project directory", send: "\x03", timeoutMs: 2_000 },
+        { waitFor: "信任这个项目目录", send: "\x03", timeoutMs: 2_000 },
       ],
       exitTimeoutMs: 5_000,
     });

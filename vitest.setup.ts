@@ -20,3 +20,8 @@ if (!process.env[MARKER]) {
     rmSync(home, { recursive: true, force: true });
   });
 }
+
+// The suite asserts the English interface copy; the product default is Chinese.
+// Chinese is covered by src/i18n tests and the zh T00 snapshots, which set it explicitly.
+import { setLanguage } from "./src/i18n/messages.ts";
+setLanguage("en");

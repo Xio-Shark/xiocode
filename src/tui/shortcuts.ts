@@ -15,7 +15,7 @@
  * │ Esc Esc      │ idle (has draft) │ Clear draft                 │ double press clears draft into history   │
  * │ Esc Esc      │ idle (empty)     │ Rewind picker               │ double press opens turn rewind picker    │
  * │ Tab          │ menu open        │ Accept completion           │ tab inserts completion candidate         │
- * │ Tab          │ idle (no menu)   │ No-op                       │ thinking level moved to /think           │
+ * │ Tab          │ idle (no menu)   │ No-op                       │ thinking level moved to /thinking        │
  * │ Shift+Tab    │ idle             │ Cycle permission mode       │ auto → full → strict                     │
  * │ Ctrl+R       │ idle             │ Reverse history search      │ shell-standard reverse prompt search     │
  * │ Alt+Z        │ idle / review    │ Fold/unfold top block       │ replacement for previous Ctrl+R binding  │
@@ -29,6 +29,7 @@ import React from "react";
 import { Box, Text } from "ink";
 
 import { sliceViewerWindow } from "./composer.ts";
+import { t } from "../i18n/messages.ts";
 import { theme } from "./theme.ts";
 
 const h = React.createElement;
@@ -37,80 +38,80 @@ export type Shortcut = Readonly<{ keys: string; description: string }>;
 export type ShortcutGroup = Readonly<{ title: string; items: readonly Shortcut[] }>;
 
 /**
- * Fullscreen (route A) owns its own transcript window, so it binds scroll keys.
- * Default interactive `xio` (route B) prints into the terminal buffer and leaves
- * scrollback to the terminal — advertising PgUp there would be a lie.
+ * Fullscreen (route A, the default for interactive `xio`) owns its transcript window,
+ * so it binds scroll keys. `XIO_TUI_FULLSCREEN=0` (route B) prints into the terminal
+ * buffer and leaves scrollback to the terminal; there PgUp opens the review overlay.
  */
 export function shortcutGroups(
   options: Readonly<{ fullscreen: boolean }> = { fullscreen: false },
 ): readonly ShortcutGroup[] {
   const prompt: Shortcut[] = [
-    { keys: "enter", description: "Send the prompt" },
-    { keys: "shift+enter", description: "New line in the draft" },
+    { keys: "enter", description: t("shortcuts.send") },
+    { keys: "shift+enter", description: t("shortcuts.newline") },
     options.fullscreen
-      ? { keys: "↑ ↓", description: "Scroll the transcript" }
-      : { keys: "↑ ↓", description: "Walk prompt history (or draft lines)" },
-    { keys: "home end ctrl+a ctrl+e", description: "Jump to the draft start / end" },
-    { keys: "alt+←→ alt+b/f", description: "Move one word" },
-    { keys: "alt+backspace alt+d", description: "Delete a word" },
-    { keys: "ctrl+u", description: "Kill the draft to the cursor" },
-    { keys: "esc esc", description: "Clear draft (or rewind on empty prompt)" },
-    { keys: "tab", description: "Accept completion in slash / @ menu" },
-    { keys: "shift+tab", description: "Cycle permission mode" },
-    { keys: "ctrl+r", description: "Search prompt history" },
+      ? { keys: "↑ ↓", description: t("shortcuts.scrollTranscript") }
+      : { keys: "↑ ↓", description: t("shortcuts.history") },
+    { keys: "home end ctrl+a ctrl+e", description: t("shortcuts.draftEnds") },
+    { keys: "alt+←→ alt+b/f", description: t("shortcuts.word") },
+    { keys: "alt+backspace alt+d", description: t("shortcuts.deleteWord") },
+    { keys: "ctrl+u", description: t("shortcuts.kill") },
+    { keys: "esc esc", description: t("shortcuts.escEsc") },
+    { keys: "tab", description: t("shortcuts.tab") },
+    { keys: "shift+tab", description: t("shortcuts.cyclePermission") },
+    { keys: "ctrl+r", description: t("shortcuts.searchHistory") },
   ];
 
   const running: Shortcut[] = [
-    { keys: "esc", description: "Cancel the running task (draft is kept)" },
-    { keys: "ctrl+c", description: "Cancel the running task" },
-    { keys: "text", description: "Steer at the next tool/provider boundary" },
-    { keys: "!text", description: "Steer now — abort the step, then continue" },
-    { keys: ">>text", description: "Queue a follow-up for after the task ends" },
-    { keys: "ctrl+x", description: "Drop the queued input" },
+    { keys: "esc", description: t("shortcuts.cancelKeep") },
+    { keys: "ctrl+c", description: t("shortcuts.cancel") },
+    { keys: "text", description: t("shortcuts.steer") },
+    { keys: "!text", description: t("shortcuts.steerNow") },
+    { keys: ">>text", description: t("shortcuts.queue") },
+    { keys: "ctrl+x", description: t("shortcuts.dropQueued") },
   ];
 
   const find: Shortcut[] = [
-    { keys: "ctrl+f", description: "Search the transcript — type to filter, enter/↓ next, ↑ prev" },
-    { keys: "alt+z", description: "Fold / unfold the block at the top of the view" },
-    { keys: "ctrl+p", description: "Command palette — fuzzy filter slash commands" },
-    { keys: "ctrl+t", description: "Switch model (runs /model)" },
-    { keys: "esc", description: "Close the search / palette" },
+    { keys: "ctrl+f", description: t("shortcuts.search") },
+    { keys: "alt+z", description: t("shortcuts.fold") },
+    { keys: "ctrl+p", description: t("shortcuts.palette") },
+    { keys: "ctrl+t", description: t("shortcuts.model") },
+    { keys: "esc", description: t("shortcuts.closeSearch") },
   ];
 
   const output: Shortcut[] = [
-    { keys: "ctrl+o", description: "Open the last tool output in full" },
-    { keys: "↑ ↓ pgup pgdn", description: "Scroll inside that overlay" },
-    { keys: "ctrl+g ctrl+e", description: "Jump to its top / bottom" },
-    { keys: "y", description: "Copy the open block (or review top) to clipboard" },
-    { keys: "esc", description: "Close the overlay" },
+    { keys: "ctrl+o", description: t("shortcuts.openOutput") },
+    { keys: "↑ ↓ pgup pgdn", description: t("shortcuts.scrollOverlay") },
+    { keys: "ctrl+g ctrl+e", description: t("shortcuts.overlayEnds") },
+    { keys: "y", description: t("shortcuts.copy") },
+    { keys: "esc", description: t("shortcuts.closeOverlay") },
   ];
   if (options.fullscreen) {
     output.push(
-      { keys: "pgup pgdn", description: "Page through the transcript" },
-      { keys: "ctrl+j k", description: "Scroll the transcript by line" },
-      { keys: "ctrl+d", description: "Scroll half a page down" },
-      { keys: "drag", description: "Select with the mouse — copies on release" },
+      { keys: "pgup pgdn", description: t("shortcuts.page") },
+      { keys: "ctrl+j k", description: t("shortcuts.line") },
+      { keys: "ctrl+d", description: t("shortcuts.half") },
+      { keys: "drag", description: t("shortcuts.drag") },
     );
   } else {
     output.push(
-      { keys: "pgup pgdn", description: "Open the transcript review (keyboard scroll)" },
-      { keys: "ctrl+j k", description: "Scroll the review by line" },
-      { keys: "ctrl+d", description: "Scroll the review half a page down" },
+      { keys: "pgup pgdn", description: t("shortcuts.review") },
+      { keys: "ctrl+j k", description: t("shortcuts.reviewLine") },
+      { keys: "ctrl+d", description: t("shortcuts.reviewHalf") },
     );
   }
 
   return [
-    { title: "Prompt", items: prompt },
-    { title: "While a task runs", items: running },
-    { title: "Output", items: output },
-    { title: "Find", items: find },
+    { title: t("shortcuts.groupPrompt"), items: prompt },
+    { title: t("shortcuts.groupRunning"), items: running },
+    { title: t("shortcuts.groupOutput"), items: output },
+    { title: t("shortcuts.groupFind"), items: find },
     {
-      title: "Session",
+      title: t("shortcuts.groupSession"),
       items: [
-        { keys: "/", description: "Slash menu — fuzzy search, ↑↓ move, tab complete, enter run" },
-        { keys: "@", description: "Mention a file — tab/enter insert, esc dismiss" },
-        { keys: "?", description: "This help" },
-        { keys: "ctrl+c ctrl+c", description: "Exit (double press)" },
+        { keys: "/", description: t("shortcuts.slash") },
+        { keys: "@", description: t("shortcuts.mention") },
+        { keys: "?", description: t("shortcuts.help") },
+        { keys: "ctrl+c ctrl+c", description: t("shortcuts.exit") },
       ],
     },
   ];
@@ -165,16 +166,16 @@ export function composerHint(state: Readonly<{
   canSteer: boolean;
 }>): string | undefined {
   // An armed key is a question already on screen — answer it before anything else.
-  if (state.armed === "exit") return "ctrl+c again to exit";
-  if (state.armed === "clear-draft") return "esc again to clear the draft";
-  if (state.armed === "rewind") return "esc again to rewind to an earlier turn";
+  if (state.armed === "exit") return t("hint.ctrlcExit");
+  if (state.armed === "clear-draft") return t("hint.escClear");
+  if (state.armed === "rewind") return t("hint.escRewind");
   if (state.busy) {
-    const parts = ["esc cancel"];
-    if (state.canSteer) parts.push("type to steer", "!now", ">>after");
-    if (state.queued) parts.push("ctrl+x drop queued");
+    const parts = [t("hint.escCancel")];
+    if (state.canSteer) parts.push(t("hint.steer"), t("hint.steerNow"), t("hint.after"));
+    if (state.queued) parts.push(t("hint.dropQueued"));
     return parts.join(` ${theme.sym.meta} `);
   }
-  if (state.queued) return `enter to send queued ${theme.sym.meta} ctrl+x to drop it`;
+  if (state.queued) return t("hint.sendQueued");
   return undefined;
 }
 
@@ -206,16 +207,16 @@ export function ShortcutsOverlay(props: Readonly<{
   );
   const visible = all.slice(window.offset, window.offset + window.visible.length);
   const commands = typeof props.commandCount === "number" && props.commandCount > 0
-    ? `Type / for ${props.commandCount} commands ${theme.sym.meta} @ to mention files`
-    : `Type / for commands ${theme.sym.meta} @ to mention files`;
+    ? t("shortcuts.commandsCount", { count: props.commandCount })
+    : t("shortcuts.commands");
   return h(Box, {
     flexDirection: "column",
     borderStyle: "round",
-    borderColor: "gray",
+    borderColor: theme.muted,
     paddingX: 1,
     marginY: 1,
   },
-    h(Text, { bold: true }, `${theme.sym.brand} Shortcuts`),
+    h(Text, { bold: true }, `${theme.sym.brand} ${t("shortcuts.title")}`),
     ...visible.map((row, index) => {
       const key = `row-${window.offset + index}`;
       if (row.kind === "spacer") return h(Text, { key }, " ");
@@ -224,11 +225,11 @@ export function ShortcutsOverlay(props: Readonly<{
       }
       return h(Text, { key, wrap: "truncate-end" },
         h(Text, { color: theme.brand }, `  ${row.keys.padEnd(width)}`),
-        h(Text, { dimColor: true }, `  ${row.description}`));
+        h(Text, { color: theme.muted }, `  ${row.description}`));
     }),
     h(Text, null, " "),
-    h(Text, { dimColor: true }, commands),
-    h(Text, { dimColor: true }, window.indicator
-      ? `${window.indicator} ${theme.sym.meta} ↑↓ scroll ${theme.sym.meta} esc close`
-      : "esc close"));
+    h(Text, { color: theme.muted }, commands),
+    h(Text, { color: theme.muted }, window.indicator
+      ? t("shortcuts.scrollClose", { indicator: window.indicator })
+      : t("common.escClose")));
 }

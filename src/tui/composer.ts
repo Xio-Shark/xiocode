@@ -12,6 +12,7 @@
  *   boundaries; not deferred-to-idle user work.
  */
 
+import { t } from "../i18n/messages.ts";
 export type ComposerState = Readonly<{
   /** Full draft text (may contain newlines). */
   text: string;
@@ -405,7 +406,7 @@ export function sliceViewerWindow(
   const clamped = Math.max(0, Math.min(Math.floor(offset), maxOffset));
   const visible = lines.slice(clamped, clamped + size);
   const indicator = total > size
-    ? `lines ${clamped + 1}–${clamped + visible.length}/${total}`
+    ? t("window.lines", { from: clamped + 1, to: clamped + visible.length, total })
     : undefined;
   return { visible, offset: clamped, maxOffset, total, indicator };
 }

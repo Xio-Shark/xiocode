@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages.ts";
 import { stdout as output } from "node:process";
 
 import type { SubagentUiBridge } from "./explore/subagent-ui.ts";
@@ -99,7 +100,7 @@ export function previewText(text: string, maxLines = TOOL_OUTPUT_PREVIEW_LINES):
   const lines = text.split("\n");
   if (lines.length <= maxLines) return { text, truncated: false };
   return {
-    text: `${lines.slice(0, maxLines).join("\n")}\n… (${lines.length - maxLines} more lines)`,
+    text: `${lines.slice(0, maxLines).join("\n")}\n${t("tool.moreLines", { count: lines.length - maxLines })}`,
     truncated: true,
   };
 }
@@ -129,8 +130,8 @@ export function exploreReportBody(output: string): string | undefined {
  * One-line Static expand hint (Claude-quiet): bodies stay in Ctrl+O, not history.
  */
 export function formatToolExpandHint(lineCount: number): string {
-  if (lineCount <= 0) return "(empty)";
-  return `Ctrl+O/dblclick · ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+  if (lineCount <= 0) return t("tool.empty");
+  return lineCount === 1 ? t("tool.expandOne") : t("tool.expand", { count: lineCount });
 }
 
 /**

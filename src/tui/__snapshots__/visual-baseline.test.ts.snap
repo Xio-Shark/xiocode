@@ -125,16 +125,16 @@ exports[`TUI Visual Regression Baseline [T00] > renders 120x40 wide terminal wit
 `;
 
 exports[`TUI Visual Regression Baseline [T00] > renders multi-tool execution with success and warning notices in 80x24 1`] = `
-"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+"█   █  ███   ▄██▄          ▄▄
+ ▀▄▀    █   █▀  ▀█       ▄███  XioCode v1.6.0
+ ▄▀▄    █   █▄  ▄█    ▄▄█████  anthropic/claude-3-7-sonnet · think:off
+█   █  ███   ▀██▀   ▀▀▀██████
+
+  @          mention a file so the agent reads it first
+  ?          all shortcuts
+  /rollback  undo the files the agent changed
+
 · 发现 2 处待处理的架构契约冲突，建议立即检查
-
-
-
-
-
-
-
-
 
 
 
@@ -149,4 +149,58 @@ exports[`TUI Visual Regression Baseline [T00] > renders multi-tool execution wit
 ────────────────────────────────────────────────────────────────────────────────
 
 ? for shortcuts · /srv/work/xiocode · ctx:38% | $0.042"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] — 中文界面 > renders an 80x24 approval in Chinese 1`] = `
+"█   █  ███   ▄██▄          ▄▄
+ ▀▄▀    █   █▀  ▀█       ▄███  XioCode v1.6.0
+ ▄▀▄    █   █▄  ▄█    ▄▄█████  anthropic/claude-3-7-sonnet · 思考：关
+█   █  ███   ▀██▀   ▀▀▀██████
+
+  @          引用文件，让智能体先读它
+  ?          查看全部快捷键
+  /rollback  撤销智能体改过的文件
+
+运行这条 shell 命令？
+┌──────────────────────────────────────────────────────────────────────────────┐
+│rm -rf build                                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+  仅本次允许  只对这一次调用
+› 拒绝
+  拒绝并告诉模型原因
+↑↓ 选择 · enter 确认 · y 仅本次允许 · n / esc 拒绝
+
+
+────────────────────────────────────────────────────────────────────────────────
+ ❯   提问、输入 / 打开命令，或粘贴代码…
+────────────────────────────────────────────────────────────────────────────────
+
+? 查看快捷键 · /srv/work/xiocode"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] — 中文界面 > renders the 80x24 welcome screen in Chinese 1`] = `
+"█   █  ███   ▄██▄          ▄▄
+ ▀▄▀    █   █▀  ▀█       ▄███  XioCode v1.6.0
+ ▄▀▄    █   █▄  ▄█    ▄▄█████  anthropic/claude-3-7-sonnet · 思考：关
+█   █  ███   ▀██▀   ▀▀▀██████
+
+  @          引用文件，让智能体先读它
+  ?          查看全部快捷键
+  /rollback  撤销智能体改过的文件
+
+· 项目信任：已信任 /srv/work/xiocode
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+ ❯   提问、输入 / 打开命令，或粘贴代码…
+────────────────────────────────────────────────────────────────────────────────
+
+? 查看快捷键 · /srv/work/xiocode"
 `;

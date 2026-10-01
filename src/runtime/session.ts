@@ -1,3 +1,4 @@
+import { t } from "../i18n/messages.ts";
 import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -375,7 +376,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       secretEnvironment.resolveProvider(registration);
       return qualifyModelId(currentModel.provider, currentModel.id);
     } catch {
-      return "not connected · /connect";
+      return t("status.notConnected");
     }
   };
   let parallelToolCalls = options.runtimeConfig.providers[currentModel.provider]?.parallelToolCalls ?? true;

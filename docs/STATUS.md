@@ -1,6 +1,6 @@
 # XioCode Status
 
-> Single delivery snapshot. Updated **2026-08-27** (v1.3.0; **Web Console (`xio web`) & DeepSeek Harness-grade Trajectory View** — built-in web server with real-time SSE streaming, DeepSeek Harness (`dsh web`) aligned 3-track timeline waterfall (`Input`, `Model`, `Tools`), metrics ribbon with duration / turns / tool calls / errors / search filter, chronological event stream with error indicators and pill badges, accordion inspector with structured JSON args and dark terminal output card with one-click clipboard copy, shared bottom docked composer, session log JSON export endpoint & download button (`Session log 📥`), Claude Warm Paper style Web Settings modal; **TUI Visual Refresh** — 4-row high-definition dorsal fin shark ASCII logo (`src/tui/shark-logo.ts`), dual horizontal divider lines replacing 4-sided rounded boxes for `InputCandidateRegion`, Chinese LLM providers (DeepSeek, etc.) first-class citizen support + fetch-retry network resilience; **grok-parity TUI upgrade** — fullscreen alternate-screen TUI default, word/kill editing keys, Ctrl+J/K/U/D line+half-page scroll, Ctrl+F transcript search with highlighting, y block copy, Ctrl+R fold, Ctrl+P fuzzy command palette (fzf), Ctrl+T model switch, real Esc cancel/double-press-clear layering, `?` shortcuts sheet, footer turn counter, **groknight default palette** (`XIO_THEME=claude` opt-out); **Full test suite** — **128 test files, 1312 unit tests passing**; TUI test suite **17 test files, 205 tests passing**).
+> Single delivery snapshot. Updated **2026-10-01** (package 1.6.0; **UI review batch T00–T22 complete** — shared design tokens for TUI and web (`src/design/tokens.ts`), light theme with OSC 11 background detection, one approval component with scoped choices and deny-with-reason, footer priorities and danger colour, welcome screen with tips and recent sessions, zh/en interface copy (`src/i18n`, `[ui] language`, default zh), app.ts split into `app-*.ts` modules; **Full test suite** — **143 test files, 1428 tests passing** (`./test.sh`); web behaviour check 41/41).
 > Active plan: [ROUTE-B-PRODUCT-PLAN.md](./ROUTE-B-PRODUCT-PLAN.md) (Phase 1 code complete; TUI & Web parity achieved).
 > Product endpoint: [GOAL.md](./GOAL.md). Near-term: [ROADMAP.md](../ROADMAP.md). Self-improve loop: [self-improve.md](./self-improve.md).
 > Archive index: [archive/INDEX.md](./archive/INDEX.md) (historical audits & design proposals archived).
@@ -9,11 +9,11 @@
 
 | Capability | Status | Highlights |
 |------------|--------|------------|
-| **Web Console & Trajectory** | **Shipped (v1.3.0)** | `xio web` local server; DeepSeek Harness 3-track waterfall (`Input`, `Model`, `Tools`); summary ribbon; expandable monospace terminal inspection cards; copy button; `Session log 📥` export; Claude Warm Paper settings modal |
-| **TUI Interaction & Visuals** | **Shipped (v1.3.0)** | HD 4-row shark ASCII mark; dual horizontal divider lines for candidate region; grok-parity fullscreen TUI; fzf command palette (`Ctrl+P`); transcript search (`Ctrl+F`) |
+| **Web Console & Trajectory** | **Shipped (1.6.0)** | `xio web` local server; markdown chat with smart scroll and visible disconnects; trajectory drawn on real time (`timeline.jsonl`); diff view; settings from the runtime catalog; approvals show coloured diffs and take a denial reason; zh/en copy; brand tokens shared with the TUI |
+| **TUI Interaction & Visuals** | **Shipped (1.6.0)** | Shark-fin XIO mark; fullscreen TUI; `/theme` with light theme and terminal background detection; contrast ≥ 4.5:1 on light and dark; one approval list (once / session / deny / deny with reason); footer drops items by priority, full mode in the danger colour; welcome tips + recent sessions; command palette (`Ctrl+P`); transcript search (`Ctrl+F`) |
 | **Provider Resilience** | **Shipped (v1.3.0)** | First-class DeepSeek & Chinese providers support; fetch-retry exponential backoff for transient errors; schema cache & stable prefix |
 | **Agent Harness Core** | **Shipped** | WAL cursor journal; turn snapshot/admission; same-path write queue + edit-before-read; direct-cwd default (no git/worktree requirement on daily path) |
-| **Verification & Tests** | **Green** | 128 test files / 1312 unit tests passing (`npm test`); 17 test files / 205 unit tests in TUI passing |
+| **Verification & Tests** | **Green** | 143 test files / 1428 tests passing (`./test.sh`); T00 TUI snapshots (en + zh); `npm run test:web` 41/41 incl. contrast audit and an English pass |
 
 ## Product priorities (north star)
 

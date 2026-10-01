@@ -29,3 +29,25 @@ describe("assemble-page", () => {
     expect(out).toContain('const DEFAULT_SESSION_ID = "x\\"; alert(1); \\"";');
   });
 });
+
+describe("assemble-page copy", () => {
+  it("words the real console entirely in the configured language", async () => {
+    const { getWebUiHtml } = await import("./ui-bundle.ts");
+    const english = getWebUiHtml({ version: "1.0.0", language: "en" });
+    expect(english).toContain('<html lang="en">');
+    expect(english).not.toMatch(/[一-鿿]/);
+    expect(english).not.toContain("{{t:");
+    const chinese = getWebUiHtml({ version: "1.0.0" });
+    expect(chinese).toContain('<html lang="zh-CN">');
+    expect(chinese).toContain("<title>XioCode 控制台</title>");
+  });
+
+  it("refuses a page that names a message key that does not exist", () => {
+    expect(() => personalize("<p>{{t:web.nope}}</p>", { version: "1" })).toThrow(/web\.nope/);
+  });
+
+  it("keeps injected messages inert inside the script element", () => {
+    const out = personalize("const MESSAGES = {};", { version: "1", language: "en" });
+    expect(out).not.toContain("</");
+  });
+});

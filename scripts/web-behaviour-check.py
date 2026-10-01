@@ -180,6 +180,31 @@ def run(page, server_proc):
     check("Esc answers the question with a denial", any(p and '"approve":false' in p for p in posted), str(posted))
     check("approval dialog closes", not page.evaluate("document.getElementById('approval-modal').open"))
 
+    # 3b. A patch in a question is drawn as a coloured diff; "deny and say why" sends the reason.
+    patch = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,2 @@\n const a = 1;\n-const b = 2;\n+const b = 3;"
+    choices = [{"label": "Allow once", "value": "once", "scope": "this call only"}, {"label": "Deny", "value": "deny"},
+               {"label": "Deny and tell the model why", "value": "deny-reason"}]
+    feed(page, [{"event": "web.approval", "payload": {"id": "q10", "question": "Allow edit?", "detail": patch, "choices": choices}}])
+    page.wait_for_timeout(150)
+    diff = page.evaluate("""(() => {
+      const box = document.getElementById('approval-detail');
+      const add = box.querySelector('.diff-line.add .code');
+      return { add: box.querySelectorAll('.diff-line.add').length, del: box.querySelectorAll('.diff-line.del').length,
+               stat: box.querySelector('.diff-stat')?.textContent, color: add && getComputedStyle(add).color,
+               buttons: [...document.querySelectorAll('#approval-actions button')].map(b => b.textContent) };
+    })()""")
+    check("approval diff has coloured +/- lines and a stat", diff["add"] == 1 and diff["del"] == 1 and diff["stat"] == "+1−1" and diff["color"] != "rgb(0, 0, 0)", diff)
+    check("approval choices are worded by the page", diff["buttons"][:2] == ["仅本次允许", "拒绝并说明原因"] and diff["buttons"][-1].startswith("拒绝"), diff["buttons"])
+    page.click("#approval-actions button:nth-child(2)")
+    page.wait_for_timeout(200)
+    feed(page, [{"event": "web.approval", "payload": {"id": "q11", "question": "Why not? The model reads this and tries another way.", "input": True}}])
+    page.wait_for_timeout(150)
+    page.keyboard.type("用 build 脚本")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(300)
+    check("deny-reason is posted as a choice", any(p and '"value":"deny-reason"' in p for p in posted), str(posted[-2:]))
+    check("the reason is posted as text", any(p and '"text":"用 build 脚本"' in p for p in posted), str(posted[-1:]))
+
     # 4. Tabs work from the keyboard.
     page.focus(".nav-tab.active")
     page.keyboard.press("ArrowRight")
@@ -217,6 +242,33 @@ def run(page, server_proc):
     check("connection loss is visible within 5s", seen, f"{time.time() - started:.1f}s")
     check("status pill reads 已断开", page.text_content("#status-text") == "已断开")
     return started
+
+
+def check_english(browser, url, fixture):
+    """[ui] language = "en" turns every piece of chrome English (re-read on page load)."""
+    with open(fixture["config"], "a", encoding="utf-8") as f:
+        f.write('\n[ui]\nlanguage = "en"\n')
+    page, _ = baseline.open_page(browser, url, viewport={"width": 1280, "height": 800})
+    page.wait_for_timeout(300)
+    chrome = page.evaluate("""(() => {
+      // Session titles and messages are user content; everything else is interface copy.
+      const skip = el => el.closest('#session-list, #chat-messages, #current-session-title, [id^="traj-step-"], .traj-detail, #approval-modal');
+      const out = [];
+      const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walk.nextNode()) {
+        const node = walk.currentNode;
+        if (!node.textContent.trim() || skip(node.parentElement)) continue;
+        out.push(node.textContent.trim());
+      }
+      for (const el of document.querySelectorAll('[placeholder], [aria-label], [title]')) {
+        if (skip(el)) continue;
+        for (const attr of ['placeholder', 'aria-label', 'title']) if (el.getAttribute(attr)) out.push(el.getAttribute(attr));
+      }
+      return { lang: document.documentElement.lang, cjk: out.filter(t => /[\u4e00-\u9fff]/.test(t)), sample: out.slice(0, 6) };
+    })()""")
+    check("english: page language is en", chrome["lang"] == "en", chrome["lang"])
+    check("english: no Chinese left in the interface", not chrome["cjk"], chrome["cjk"][:5] or chrome["sample"])
+    page.context.close()
 
 
 def check_restart(page, project_root, fixture):
@@ -277,6 +329,12 @@ def main():
             check_mcp_status(browser, url)
             check_session_list(page)
             check_timeline(page)
+            # Before run(): it stops the server to test connection loss. Restore Chinese after.
+            with open(fixture["config"], encoding="utf-8") as f:
+                original_config = f.read()
+            check_english(browser, url, fixture)
+            with open(fixture["config"], "w", encoding="utf-8") as f:
+                f.write(original_config)
             run(page, proc)
             check_restart(page, project_root, fixture)
             check("no uncaught page errors", not [e for e in errors if not e.startswith("console:")], "; ".join(errors))

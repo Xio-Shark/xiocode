@@ -39,7 +39,7 @@ describe("reduceScrollback", () => {
     expect(state.inFlightTools).toHaveLength(1);
     expect(state.blocks.some((b) => b.kind === "thinking")).toBe(true);
     const thinking = state.blocks.find((b) => b.kind === "thinking")!;
-    expect(thinking.lines[0]).toMatch(/Thought for \d+s.*Ctrl\+O/);
+    expect(thinking.lines[0]).toMatch(/Thought for \d+s.*ctrl\+o/);
     expect(thinking.lines[1]).toBe("  └ plan A");
     expect(thinking.output).toBe("plan A");
   });
@@ -114,7 +114,7 @@ describe("reduceScrollback", () => {
     const tool = state.blocks.find((b) => b.kind === "tool");
     expect(tool?.output).toBe(long);
     expect(tool?.previewCollapsed).toBe(true);
-    expect(tool?.lines.join("\n")).toContain("Ctrl+O");
+    expect(tool?.lines.join("\n")).toContain("ctrl+o");
     // Tree preview: first rows nested under the header, rest stays in Ctrl+O.
     expect(tool?.lines[1]).toBe("  └ line0");
     expect(tool?.lines.join("\n")).toContain("line2");
@@ -193,7 +193,7 @@ describe("reduceScrollback", () => {
     expect(block).toBeDefined();
     expect(block!.lines.join("\n")).toMatch(/subagent #1/);
     expect(block!.lines.join("\n")).toContain("found auth");
-    expect(block!.lines.join("\n")).toContain("Ctrl+O");
+    expect(block!.lines.join("\n")).toContain("ctrl+o");
     // Tool-call history collapsed out of Static; retained in output for Ctrl+O.
     expect(block!.lines.join("\n")).not.toMatch(/\bread\b.*done/);
     expect(block!.output).toMatch(/read/);
@@ -327,7 +327,7 @@ describe("reduceScrollback", () => {
     const tool = state.blocks.find((b) => b.kind === "tool");
     expect(tool).toBeDefined();
     expect(tool!.lines.join("\n")).toContain("done");
-    expect(tool!.lines.join("\n")).toContain("Ctrl+O");
+    expect(tool!.lines.join("\n")).toContain("ctrl+o");
     expect(tool!.output).toContain("AGENTS.md");
   });
 
@@ -542,6 +542,14 @@ describe("reduceScrollback", () => {
     expect(lines[0]!.startsWith("● ")).toBe(true);
     expect(stripAnsi(lines[100]!)).toBe("const var_99 = 99;▊");
     expect(lines[100]!.endsWith("▊")).toBe(true);
+  });
+
+  it("projects a failed compaction as an error notice", () => {
+    const state = reduceScrollback(emptyScrollbackState(), {
+      kind: "context-compaction",
+      event: { stage: "failure", mode: "manual", before: 20, error: "provider unavailable" },
+    });
+    expect(state.blocks.at(-1)?.lines.join("\n")).toContain("Context compaction failed: provider unavailable");
   });
 
   it("handles thinking and assistant alternation cleanly", () => {

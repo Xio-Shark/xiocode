@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { ExtensionHost } from "../runtime/extension-host.ts";
 import {
+  footerModeColor,
+  layoutFooter,
   collectSlashCommands,
   filterSlashCommands,
   slashGroupPriority,
   formatSlashDescription,
   BUILTIN_SLASH_COMMANDS,
 } from "./overlays.ts";
+import { setTheme, theme } from "./theme.ts";
 
 describe("T10: Slash menu ordering and alias folding", () => {
   it("defaults empty query to group + weight priority (connect, model, rollback, compact, help at top)", () => {
@@ -59,7 +62,7 @@ describe("T10: Slash menu ordering and alias folding", () => {
     expect(names).not.toContain("quit");
   });
 
-  it("folds aliases into primary command description with 「别名 /alias」", () => {
+  it("folds aliases into primary command description with (alias /x)", () => {
     const host = new ExtensionHost();
     host.registerCommand("thinking", {
       description: "Set thinking / reasoning effort for this session.",
@@ -84,15 +87,15 @@ describe("T10: Slash menu ordering and alias folding", () => {
     const all = collectSlashCommands(host);
     const thinking = all.find((c) => c.name === "thinking");
     expect(thinking).toBeDefined();
-    expect(thinking?.description).toContain("(别名 /effort)");
+    expect(thinking?.description).toContain("(alias /effort)");
 
     const permission = all.find((c) => c.name === "permission");
     expect(permission).toBeDefined();
-    expect(permission?.description).toContain("(别名 /agent, /bypass)");
+    expect(permission?.description).toContain("(alias /agent, /bypass)");
 
     const exit = all.find((c) => c.name === "exit");
     expect(exit).toBeDefined();
-    expect(exit?.description).toContain("(别名 /quit)");
+    expect(exit?.description).toContain("(alias /quit)");
   });
 
   it("matches primary command when querying by alias prefix (/eff -> /thinking)", () => {
@@ -184,5 +187,53 @@ describe("T10: Slash menu ordering and alias folding", () => {
     const all = collectSlashCommands(host);
     const cmd = all.find((c) => c.name === "standalone-alias");
     expect(cmd).toBeDefined();
+  });
+});
+
+describe("footer layout", () => {
+  const home = process.env.HOME ?? "/Users/test";
+  const parts = {
+    permissionMode: "strict",
+    cwd: `${home}/code/projects/some-long-repository-name/packages/app`,
+    context: "ctx:42%",
+    turn: "turn 6",
+    mcp: "3 mcp",
+    workspace: "worktree",
+  };
+
+  it("shows everything when there is room", () => {
+    const layout = layoutFooter(parts, 160);
+    expect(layout.mode).toBe("strict");
+    expect(layout.hint).toBe("shift+tab to cycle");
+    expect(layout.left).toContain("turn 6");
+    expect(layout.right).toEqual(["worktree", "3 mcp"]);
+  });
+
+  it("keeps workspace and mcp at 60 columns by dropping the hint, turn and path middle first", () => {
+    const layout = layoutFooter(parts, 60);
+    expect(layout.hint).toBeUndefined();
+    expect(layout.left).not.toContain("turn 6");
+    expect(layout.right).toEqual(["worktree", "3 mcp"]);
+    expect(layout.left[0]).toContain("…");
+    expect(layout.mode).toBe("strict");
+  });
+
+  it("drops mcp before workspace when even the shortest path does not fit", () => {
+    expect(layoutFooter(parts, 44).right).toEqual(["worktree"]);
+    expect(layoutFooter(parts, 30).right).toEqual([]);
+    expect(layoutFooter(parts, 30).mode).toBe("strict");
+  });
+
+  it("marks full mode in words and in the danger colour; auto shows no mode", () => {
+    expect(layoutFooter({ ...parts, permissionMode: "full" }, 160).mode).toBe("⚠ full");
+    for (const name of ["groknight", "light", "claude", "minimal", "nord"] as const) {
+      setTheme(name);
+      expect(footerModeColor("full")).toBe(theme.error);
+      expect(footerModeColor("strict")).toBe(theme.muted);
+    }
+    setTheme("groknight");
+    const auto = layoutFooter({ ...parts, permissionMode: "auto" }, 160);
+    expect(auto.mode).toBeUndefined();
+    expect(auto.hint).toBe("? for shortcuts");
   });
 });
