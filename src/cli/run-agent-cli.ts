@@ -10,6 +10,7 @@ import { prepareLaunch } from "./launch.ts";
 import { shouldUseInk } from "./cli-args.ts";
 import { createSessionStore, resolveResume } from "./session-resume.ts";
 import { recoverStoredSession } from "../runtime/session-recovery.ts";
+import { createTimelineRecorder } from "../runtime/session-timeline.ts";
 
 import type { SessionOptions } from "../runtime/session.ts";
 import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
@@ -215,6 +216,7 @@ export function createLaunchSessionOptions(input: Readonly<{
     initialMessages: input.recovered?.messages ?? input.stored?.messages,
     initialExecution: input.recovered?.execution,
     model: restoredModel(input.stored),
+    onRuntimeEvent: createTimelineRecorder(input.store, input.sessionId),
     onSessionSnapshot: (snapshot) => input.store.save({
       id: input.sessionId,
       model: snapshot.model,

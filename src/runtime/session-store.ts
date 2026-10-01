@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { access, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -16,12 +16,14 @@ import { checkpointSchema } from "./session-wal.ts";
 import type { WalCompactionFact } from "./session-wal.ts";
 import type { SessionCompactionFact } from "./context-compaction.ts";
 import type { ChatMessage, ModelInfo } from "./types.ts";
-import { ensurePrivateDir, writePrivateFile } from "./private-fs.ts";
+import { appendPrivateFile, ensurePrivateDir, writePrivateFile } from "./private-fs.ts";
 
 export type { SessionCompactionFact } from "./context-compaction.ts";
 
 const SESSION_ID = /^[A-Za-z0-9_-]+$/;
 const STATE_FILE = "state.json";
+/** Side files next to state.json: append-only JSON lines owned by other modules (e.g. the timeline). */
+const SIDE_FILE = /^[a-z][a-z-]*\.jsonl$/;
 
 const toolCallSchema = z.object({
   id: z.string(),
@@ -282,6 +284,52 @@ export class SessionStore {
       ? sessions.find((item) => path.resolve(item.main_root) === path.resolve(mainRoot))
       : sessions[0];
     return metadata ? this.load(metadata.id) : undefined;
+  }
+
+  /**
+   * Append records to a per-session side file. Writes nothing and returns false while the
+   * session has no saved state yet: a directory without state.json is listed as damaged.
+   */
+  async appendSideRecords(id: string, file: string, records: readonly unknown[]): Promise<boolean> {
+    assertSessionId(id);
+    assertSideFile(file);
+    const directory = this.#sessionDirectory(id);
+    try {
+      await access(path.join(directory, STATE_FILE));
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return false;
+      throw error;
+    }
+    if (records.length > 0) {
+      await appendPrivateFile(path.join(directory, file), records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+    }
+    return true;
+  }
+
+  /** Records of a side file in write order; [] when it does not exist. Unparsable lines are skipped with a warning. */
+  async readSideRecords(id: string, file: string): Promise<unknown[]> {
+    assertSessionId(id);
+    assertSideFile(file);
+    let text: string;
+    try {
+      text = await readFile(path.join(this.#sessionDirectory(id), file), "utf8");
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return [];
+      throw error;
+    }
+    const records: unknown[] = [];
+    let skipped = 0;
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        records.push(JSON.parse(line));
+      } catch {
+        skipped += 1;
+      }
+    }
+    // A torn last line after a crash is expected; anything more is worth knowing about.
+    if (skipped > 0) this.#onWarning(`session ${id}: ${skipped} unreadable line(s) in ${file} were skipped`);
+    return records;
   }
 
   async remove(id: string): Promise<void> {
@@ -602,6 +650,10 @@ function workspaceEqual(
     && left.repo_id === right.repo_id
     && left.session_id === right.session_id
     && left.epoch === right.epoch;
+}
+
+function assertSideFile(file: string): void {
+  if (!SIDE_FILE.test(file)) throw new Error(`invalid session side file name: ${file}`);
 }
 
 function assertSessionId(id: string): void {

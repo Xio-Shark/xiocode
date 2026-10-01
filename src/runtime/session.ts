@@ -90,7 +90,7 @@ import type { SessionUiSink } from "./session-ui.ts";
 import type { LlmClient } from "./types.ts";
 import type { AskFn } from "../../extensions/xio-sandbox/src/merge-gate.ts";
 import type { XioRuntimeConfig, XioVerifyConfig } from "../cli/config-parser.ts";
-import type { RuntimeEventEmitter } from "./events/types.ts";
+import type { RuntimeEventEmitter, RuntimeEventHandler } from "./events/types.ts";
 import { applyThinkingLevel, cycleSessionThinkingLevel } from "./thinking-commands.ts";
 import { availableThinkingLevels, clampThinkingLevel, findProviderModel } from "./thinking.ts";
 
@@ -142,6 +142,8 @@ export type SessionOptions = Readonly<{
   streamJsonStderr?: (chunk: string) => void;
   /** Inject RuntimeEvent bus (tests). When omitted, one is always created for the session. */
   runtimeEvents?: RuntimeEventEmitter;
+  /** Extra bus subscriber (the stored-session timeline). Failures surface as notices, like other sinks. */
+  onRuntimeEvent?: RuntimeEventHandler;
   /** Optional bridge for explore subagent UI streaming (TUI passes TuiSessionBridge bridge). */
   subagentUi?: SubagentUiBridge;
   /** Test escape hatch: inject LLM client instead of building from provider registry. */
@@ -249,6 +251,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         sink.notify?.(`runtime-event subscriber failed (${phase}) on ${event}: ${message}`, "warn");
       },
     });
+  if (options.onRuntimeEvent) runtimeEvents.subscribe(options.onRuntimeEvent);
   const subagentUi = options.subagentUi
     ?? (streamJson ? noopSubagentUiBridge : createStdoutSubagentUiBridge());
   if (streamJson) {
