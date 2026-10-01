@@ -20,8 +20,8 @@ else
   )
 fi
 
-XIO_BIN="${XIO_BIN:-node /Users/xioshark/code/projects/xiocode/dist/xio.js}"
-SCRIPTS=/Users/xioshark/code/projects/xiocode/scripts
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+XIO_BIN="${XIO_BIN:-node $SCRIPTS/../dist/xio.js}"
 OUT_DIR="${OUT_DIR:-/tmp/xio-browser-bench}"
 mkdir -p "$OUT_DIR"
 

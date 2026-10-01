@@ -39,7 +39,7 @@ describe("BrandHeader", () => {
     const render = (width: number) => renderToString(React.createElement(BrandHeader, {
       version: "1.1.0",
       meta: "opencodego/deepseek-v4-flash-vision-exp · think:off",
-      path: "/Users/xioshark/code/projects/xiocode",
+      path: "/Users/demouser/code/projects/xiocode",
       columns: width,
     }), { columns: width });
 

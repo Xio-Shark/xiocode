@@ -136,7 +136,7 @@ POST https://opencode.ai/zen/go/v1/chat/completions
 headers = { "x-opencode-session" = "xiocode-1.3.0", "user-agent" = "xiocode/1.3.0" }
 ```
 
-- **遗留**：当前是静态 id。网关按「一个 id = 一个会话」优化路由与 prompt cache，跨会话共用一个 id 会削弱缓存收益。要做到每会话一个 id，需要在会话 bootstrap 时把 header 注入 registration（`src/cli/xio-extension.ts` 构建 `models[0].headers`，`src/runtime/providers/client.ts` 在 client 创建时读取一次）——目前未做，记录待办。
+- **遗留（2026-10-01 已解决）**：静态 id 让所有会话共用一个 id，削弱网关按会话的路由与 prompt cache。现在每个请求自动带 `user-agent: xiocode/<版本>`；provider 的 `session_header`（`opencode.ai` 端点默认 `x-opencode-session`）携带当前会话 id，explore 子 agent 用 `<会话>-explore-<n>`；会话 id 覆盖同名静态 header。上面那行静态配置可以删掉；`session_header = ""` 关闭。
 
 ## 十、工具面实测修正：动作工具的参数名是 `target`（2026-09-12）
 
@@ -163,7 +163,7 @@ headers = { "x-opencode-session" = "xiocode-1.3.0", "user-agent" = "xiocode/1.3.
 | 命令 | 判定 | 原因 |
 |---|---|---|
 | `cat ~/.claude/AGENTS.ondemand.md` | confirm | complex-shell（`~`） |
-| `cat /Users/xioshark/.claude/...` | confirm | unknown-command（词法通过，`cat` 未放行） |
+| `cat ~/.claude/...` | confirm | unknown-command（词法通过，`cat` 未放行） |
 | `sed -n 1,160p /tmp/x` | confirm | unknown-command（`sed` 未放行） |
 
 修法（`src/runtime/command-risk.ts`）：`~` 从元字符表移除，改为**只接受整 token 的前导 `~`/`~/...`**，展开成真实 home 后再做 allowlist 匹配（`ls` 规则原本只收相对路径，故展开后按"home 下的绝对路径"同等对待）。风险识别保留：`~user/x`、`ls /tmp/~x`、`ls ~/a/../b`、`ls /etc`、`ls "$HOME/x"`、`sed -i` 均仍要确认；没有 home 可展开时 fail closed。单测见 `src/runtime/command-risk.test.ts`。
