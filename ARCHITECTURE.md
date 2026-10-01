@@ -19,12 +19,13 @@
 | 一次启动 | launch Run | turn 之外的操作（MCP service、斜杠命令触发的进程）归它；退出时收尾 |
 | 一次用户 prompt（turn） | 一个 Run | `beginTurn` / `endTurn`，按完成协议上报 succeeded / failed / cancelled |
 | done-contract 结论 | `XIOCODE_ACCEPTANCE` journal 事实 | 验收失败让 Run 记为 failed，执行事实与业务验收分开 |
+| done-contract 每条命令的结果 | 带读集证据的 process Operation + `XIOCODE_EVIDENCE` journal 事实（命令指纹 → opId、是否通过） | 命令以 `trackReads` 运行。下次验收前先问内核这份结果是否还有效：上次通过且证据为 `fresh` 就沿用、不重跑；`stale` / `unknown` 都重跑。结论旁的说明由 harness 渲染（`onEvidence`），不进模型上下文。Python 运行器会把字节码缓存指到空目录并声明已排除 stat 缓存；其他命令只有在工作区完全没变时才会沿用 |
 | 一条受监督命令 | 一个 process Operation | bash、done-contract、搜索后端、plan dispatch、sandbox 的 git 调用 |
 | 一个 MCP stdio server | 一个 service Operation（`svc-…#n`） | `restart: never`；journal 里只记命令形状，不记 env / 参数值 |
 | 一次权限决策 | `XIOCODE_AUTHORIZATION` journal 事实 | 主语只存指纹；带 toolCallId，可与随后的操作对上 |
 | tool call id → 操作 | `XIOCODE_TOOL_OPERATION` journal 事实 | resume 按它查中断调用的真实结果 |
 | direct 模式的会话基线 / 每轮检查点 | 内核快照（git-shadow） | WAL checkpoint 记录 `snapshot_id` 与 `journal_seq` |
-| `parallel_edit` 的每个 worker | 一个工作区事务（fork = 事务分叉） | worker 完成即 commit，先完成先应用；冲突（write_write / read_write / external_write）不应用并回报 |
+| `parallel_edit` 的每个 worker | 一个工作区事务（fork = 事务分叉） | worker 完成即 commit，先完成先应用；冲突（write_write / read_write / external_write）不应用并回报。只读过的文件被别人改了时，内核重放 worker 的观测，结果全部相同就应用 |
 | 回退点（每轮开始） | 该轮检查点快照 + `XIOCODE_REWIND_POINT` journal 事实 | 事实记快照 id、轮前消息数、prompt 指纹；`XIOCODE_REWIND` 记一次回退并截断之后的点 |
 
 **为什么 opId 不用 tool call id**：provider 返回的 tool call id 不保证会话内唯一（有的按响应编号 `call_0`）。
@@ -87,6 +88,13 @@ direct 模式的回滚结果如实呈现内核结论：`restored` / `partial`（
   路径策略把写入限制在分叉内。worker 的 host 上没有权限闸门，所以不给 shell；
 - worker 完成即提交（commit 要工作区写租约，被命令占用时有界等待 60s）。内核按读集（atime）与写集校验：
   先提交的事务改过、或有人直接改了工作区里的文件，后提交者记为冲突，不应用，分叉丢弃，结果告诉主 agent 与谁冲突；
+- 「读过这个文件」比 worker 真正依据的东西粗：它看的常常只是几行，或一次搜索的结果。所以提交时带上 worker 的观测日志
+  （`parallel-observations.ts`：每一步的参数与规范化结果哈希。write / edit 的返回值也算观测：`edit` 会在结果里附上别处对被改符号的引用，worker 看到的引用不同，改法就可能不同）。文件级校验报了冲突、
+  且冲突只落在 worker 读过但没写过的文件上时，内核在工作区当前状态的一个分叉上让 XioCode 重放这份日志：每次观测的结果
+  都和当时相同，就把重放出来的改动应用到工作区（报告里写明是靠重放放行的），不需要再调用模型；有一处不同就保持冲突，
+  并告诉主 agent 是第几步、哪个调用。不做「从不同处续跑」：冲突仍然交回主 agent。
+  日志能代表 worker 看到的一切，是因为 worker 只有这五个文件工具；grep 的大纲功能对 worker 关闭（它带状态，同一次搜索
+  跑两遍结果不同，无法重放）；
 - 失败 / 取消的 worker 事务直接 abort；事务结束后回收其基线快照；写入限制开启时拒绝（分叉在工作区外）。
 
 ## 6. 有意没有接入内核的部分
