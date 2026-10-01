@@ -46,6 +46,8 @@ export const RUNTIME_EVENT_NAMES = [
   "harness.settled",
   /** A file one context read was overwritten by another concurrent context (stale view). */
   "workspace.file_shifted",
+  /** MCP server connection states changed (connecting → ok / failed). */
+  "mcp.status",
 ] as const;
 
 export type RuntimeEventName = (typeof RUNTIME_EVENT_NAMES)[number];

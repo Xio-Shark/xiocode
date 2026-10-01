@@ -140,25 +140,67 @@ async function loadRules(force = false) {
   }
 }
 
-function itemRow(icon, name, tag, desc) {
+function itemRow(icon, name, tag, desc, aside) {
   return el("li", "item-row",
     el("span", "item-icon", xioIcon(icon)),
     el("div", "item-main",
       el("div", "item-name", name, tag ? el("span", "item-tag", tag) : null),
-      desc ? el("p", "item-desc", desc) : null));
+      desc ? el("p", "item-desc", desc) : null),
+    aside || null);
 }
 
+const MCP_SOURCES = {
+  config: "配置文件",
+  project: "工作区 .mcp.json",
+  "claude-user": "Claude 用户配置",
+  "cursor-user": "Cursor 用户配置",
+};
+
+function mcpStateBadge(server) {
+  const label = {
+    ok: "已连接 · " + (server.tools ?? 0) + " 个工具",
+    connecting: "连接中",
+    failed: "连接失败",
+    idle: "未连接",
+  }[server.state] || server.state;
+  return el("span", "mcp-state " + server.state, el("span", "status-dot"), label);
+}
+
+function mcpRow(server) {
+  const source = "来源：" + (MCP_SOURCES[server.source] || server.source);
+  const desc = server.state === "failed" && server.error ? source + " · " + server.error : source;
+  const row = itemRow("plug", server.name, server.transport || null, desc, mcpStateBadge(server));
+  if (server.state === "failed") row.classList.add("failed");
+  return row;
+}
+
+function renderMcpServers(servers, liveSessionId) {
+  $("mcp-container").replaceChildren(...(servers.length
+    ? servers.map(mcpRow)
+    : [el("li", "item-empty", "没有发现 MCP 服务器。可以在工作区 .mcp.json 或配置文件的 [mcp] 段里添加。")]));
+  $("mcp-live-note").textContent = liveSessionId
+    ? "连接状态来自当前运行的会话。"
+    : "还没有会话在运行：发送第一条消息后，会话启动并建立连接。";
+}
+
+/** Live update from the session's event bus while the dialog is open. */
+function onMcpStatus() {
+  if ($("settings-modal").open) loadExtensions();
+}
+
+let extensionsRequest = 0;
+
 async function loadExtensions() {
+  // Status events can arrive in bursts; only the latest answer may render.
+  const request = ++extensionsRequest;
   try {
     const data = await api("/api/extensions");
+    if (request !== extensionsRequest) return;
     const extensions = data.extensions || [];
     $("plugins-container").replaceChildren(...(extensions.length
       ? extensions.map(ext => itemRow("layers", ext.name, ext.category || null, ext.description))
       : [el("li", "item-empty", "没有装配扩展。")]));
-    const servers = data.mcpServers || [];
-    $("mcp-container").replaceChildren(...(servers.length
-      ? servers.map(s => itemRow("plug", s.name, s.transport, "来源：" + s.source))
-      : [el("li", "item-empty", "没有发现 MCP 服务器。可以在工作区 .mcp.json 或配置文件的 [mcp] 段里添加。")]));
+    renderMcpServers(data.mcpServers || [], data.mcpSessionId);
   } catch (err) {
     showToast("无法读取扩展列表：" + err.message, "error");
   }

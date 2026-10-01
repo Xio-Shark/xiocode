@@ -53,6 +53,46 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + (f" — {detail}" if detail else ""))
 
 
+# One server in each connection state, as a live session would report them.
+MCP_STATES = [
+    {"name": "docs", "transport": "http", "source": "config", "state": "ok", "tools": 3},
+    {"name": "browser", "transport": "stdio", "source": "claude-user", "state": "connecting", "tools": 0},
+    {"name": "search", "transport": "stdio", "source": "project", "state": "failed", "tools": 0,
+     "error": "spawn open-websearch ENOENT"},
+    {"name": "design", "transport": "sse", "source": "cursor-user", "state": "idle"},
+]
+
+
+def mock_mcp_states(page):
+    """Serve the real /api/extensions with MCP_STATES as the live session's servers; returns the request log."""
+    seen = []
+    def handle(route):
+        seen.append(route.request.url)
+        response = route.fetch()
+        data = response.json()
+        data["mcpServers"], data["mcpSessionId"] = MCP_STATES, "demo"
+        route.fulfill(response=response, json=data)
+    page.route("**/api/extensions", handle)
+    return seen
+
+
+def check_mcp_status(browser, url):
+    page, _ = baseline.open_page(browser, url, viewport={"width": 1280, "height": 800})
+    seen = mock_mcp_states(page)
+    page.click("#btn-open-settings")
+    page.click('[data-settings-tab="plugins"]')
+    page.wait_for_selector("#mcp-container .mcp-state")
+    badges = page.eval_on_selector_all("#mcp-container .mcp-state", "els => els.map(e => e.textContent.trim())")
+    check("MCP card shows each server's connection state", badges == ["已连接 · 3 个工具", "连接中", "连接失败", "未连接"], str(badges))
+    check("a failed server shows why", "spawn open-websearch ENOENT" in page.text_content("#mcp-container .item-row.failed"))
+    check("sources read as places, not ids", "Claude 用户配置" in page.text_content("#mcp-container"))
+    before = len(seen)
+    feed(page, [{"event": "mcp.status", "payload": {"servers": []}}])
+    page.wait_for_timeout(300)
+    check("an mcp.status event refreshes the open dialog", len(seen) == before + 1, f"{before} → {len(seen)}")
+    page.context.close()
+
+
 def feed(page, events):
     page.evaluate("events => events.forEach(e => handleRuntimeEvent(e))", events)
     page.wait_for_timeout(120)
@@ -193,6 +233,7 @@ def audit_typography(browser, url):
     """WCAG 1.4.3 contrast for all visible text, and the six-size type scale, in both themes."""
     for scheme in ("light", "dark"):
         page, _ = baseline.open_page(browser, url, viewport={"width": 1440, "height": 900}, color_scheme=scheme)
+        mock_mcp_states(page)
         feed(page, baseline.LIVE_EVENTS)
         sizes, bad = set(), {}
         def take():
@@ -226,6 +267,7 @@ def main():
             browser = p.chromium.launch(executable_path=baseline.find_chrome(), headless=True)
             page, errors = baseline.open_page(browser, url, viewport={"width": 1280, "height": 800})
             audit_typography(browser, url)
+            check_mcp_status(browser, url)
             check_timeline(page)
             run(page, proc)
             check_restart(page, project_root, fixture)

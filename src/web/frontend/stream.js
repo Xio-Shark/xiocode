@@ -127,6 +127,9 @@ function handleRuntimeEvent(event) {
       if (isRunning) setWorking("正在思考");
       break;
     }
+    case "mcp.status":
+      onMcpStatus();
+      break;
     case "web.approval":
       enqueueApproval(payload);
       break;

@@ -114,6 +114,31 @@ export type McpConnectionStatus = Readonly<{
   source: McpServerSource;
 }>;
 
+export type McpServerState = "connecting" | "ok" | "failed";
+
+/** Payload of the `mcp.status` runtime event: one entry per configured server. */
+export type McpStatusPayload = Readonly<{
+  servers: readonly Readonly<{
+    name: string;
+    source: McpServerSource;
+    state: McpServerState;
+    tools: number;
+    error?: string;
+  }>[];
+}>;
+
+export function mcpStatusPayload(statuses: readonly McpConnectionStatus[]): McpStatusPayload {
+  return {
+    servers: statuses.map((status) => ({
+      name: status.name,
+      source: status.source,
+      state: status.ok ? "ok" : status.error !== undefined ? "failed" : "connecting",
+      tools: status.toolNames.length,
+      ...(status.error !== undefined ? { error: status.error } : {}),
+    })),
+  };
+}
+
 export type McpBridgeRegistration = Readonly<{
   getLoaded: () => LoadedMcpConfigs | undefined;
   getStatuses: () => readonly McpConnectionStatus[];
@@ -396,6 +421,8 @@ export function registerMcpBridge(
       closeAll,
       setStatuses: (next) => {
         statuses = next;
+        // Hosts without a status line (the web console) follow connections through the event bus.
+        ctx.getRuntimeEvents?.()?.emit("mcp.status", mcpStatusPayload(next));
       },
       getLive: () => live,
       ui,
@@ -566,6 +593,13 @@ async function connectServersInBackground(options: Readonly<{
       if (options.config.failClosed) {
         aborted = true;
         await options.closeAll();
+        // closeAll took every server down, including ones that had connected or were still connecting.
+        nextStatuses.forEach((status, i) => {
+          if (status.error === undefined) {
+            nextStatuses[i] = { ...status, ok: false, toolNames: [], error: `closed: fail_closed after "${server.name}" failed` };
+          }
+        });
+        options.setStatuses([...nextStatuses]);
         options.ui?.notify?.(`mcp: fail_closed — aborting after "${server.name}"`, "error");
         options.ui?.setStatus?.("mcp", `mcp:failed(${server.name})`);
       }

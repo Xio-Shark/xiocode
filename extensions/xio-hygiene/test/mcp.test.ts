@@ -16,9 +16,11 @@ import {
   registerMcpBridge,
   sanitizeMcpSegment,
   type McpConfig,
+  type McpStatusPayload,
 } from "../src/mcp.ts";
 import { registerXioHygiene } from "../src/index.ts";
 import { ExtensionHost } from "../../../src/runtime/extension-host.ts";
+import { createRuntimeEventEmitter } from "../../../src/runtime/events/emitter.ts";
 import { startHttpMcpFixture, startSseMcpFixture } from "./fixtures/mcp-local-servers.ts";
 
 const tempDirs: string[] = [];
@@ -422,6 +424,45 @@ describe("registerMcpBridge transports", () => {
     expect(warnings.some((w) => w.includes("broken"))).toBe(true);
   });
 
+  it("publishes each connection state on the runtime event bus", async () => {
+    const root = await tempRoot("xio-mcp-status-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+
+    const bus = createRuntimeEventEmitter({ sessionId: "s", runId: "r", redact: false });
+    const published: McpStatusPayload[] = [];
+    bus.subscribe((event) => {
+      if (event.event === "mcp.status") published.push(event.payload as McpStatusPayload);
+    });
+    const host = new ExtensionHost();
+    const bridge = registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler), getRuntimeEvents: () => bus },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({
+          readClaude: false,
+          readCursor: false,
+          servers: {
+            ok: { transport: "stdio", command: process.execPath, args: [STDIO_FIXTURE] },
+            broken: { transport: "stdio", command: process.execPath, args: ["-e", "process.exit(1)"] },
+          },
+        }),
+        registerTool: (tool) => host.registerTool(tool),
+        warn: () => undefined,
+      },
+    );
+
+    await host.emit("session_start", {});
+    await bridge.waitUntilSettled();
+    expect(published[0]?.servers.map((s) => s.state)).toEqual(["connecting", "connecting"]);
+    const last = published.at(-1)!.servers;
+    expect(last.find((s) => s.name === "ok")).toMatchObject({ state: "ok", tools: 1 });
+    expect(last.find((s) => s.name === "broken")).toMatchObject({ state: "failed", tools: 0 });
+    expect(last.find((s) => s.name === "broken")?.error).toBeTruthy();
+    await host.emit("session_end", {});
+  });
+
   it("fail-closed closes peers after a failed server without blocking session_start", async () => {
     const root = await tempRoot("xio-mcp-failclosed-");
     const cwd = path.join(root, "project");
@@ -463,6 +504,8 @@ describe("registerMcpBridge transports", () => {
       expect(afterAbort.content[0]?.text).toMatch(/closed/i);
     }
     expect(bridge.getStatuses().some((s) => s.name === "broken" && !s.ok)).toBe(true);
+    // Every peer was closed, so none may still report itself as connected.
+    expect(bridge.getStatuses().every((s) => !s.ok && s.error)).toBe(true);
   });
 
   it("session_start resolves before slow MCP connects finish", async () => {

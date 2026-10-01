@@ -1228,6 +1228,27 @@ main:not([data-view="chat"]) .composer-section { display: none; }
 .item-desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.55; }
 .item-tag { padding: 0 6px; font-size: var(--fs-xs); font-weight: 500; color: var(--text-3); background: var(--bg-muted); border-radius: var(--radius-sm); }
 .item-empty { padding: 16px 14px; font-size: var(--fs-sm); color: var(--text-3); }
+.item-row.failed .item-desc { color: var(--danger); overflow-wrap: anywhere; }
+.pane-foot { margin-top: 8px; font-size: var(--fs-xs); color: var(--text-3); }
+.mcp-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 9px;
+  font-size: var(--fs-xs);
+  font-weight: 550;
+  white-space: nowrap;
+  border-radius: var(--radius-full);
+}
+.mcp-state.ok { color: var(--success); background: var(--success-soft); }
+.mcp-state.connecting { color: var(--accent); background: var(--accent-soft); }
+.mcp-state.connecting .status-dot { background: var(--accent); animation: pulse 1.6s var(--ease-out) infinite; }
+.mcp-state.failed { color: var(--danger); background: var(--danger-soft); }
+.mcp-state.failed .status-dot { background: var(--danger); }
+.mcp-state.idle { color: var(--text-3); background: var(--bg-muted); }
+.mcp-state.idle .status-dot { background: var(--text-3); }
 
 .perm-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .perm-card {

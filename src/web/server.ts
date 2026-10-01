@@ -18,7 +18,7 @@ import { buildSessionTrajectory, isToolResultError } from "./trajectory.ts";
 import { parseTimelineRecords } from "./trajectory-timing.ts";
 import { TIMELINE_FILE } from "../runtime/session-timeline.ts";
 import { AgentHostBusyError, WebAgentHost, type WebEvent } from "./agent-host.ts";
-import { DEFAULT_MCP_CONFIG, loadMcpConfigs } from "../../extensions/xio-hygiene/src/mcp.ts";
+import { DEFAULT_MCP_CONFIG, loadMcpConfigs, type McpServerState, type McpStatusPayload } from "../../extensions/xio-hygiene/src/mcp.ts";
 import { toHygieneMcp } from "../cli/xio-extension.ts";
 import { parsePermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
@@ -45,6 +45,7 @@ export type WebServerOptions = Readonly<{
     "prompt" | "abort" | "answerApproval" | "close" | "isRunning" | "activeSessionId" | "permissionMode" | "setPermissionMode"
   > & {
     getCostSummary?: (sessionId: string) => import("../runtime/pricing.ts").SessionCostSummary | undefined;
+    getMcpStatus?: WebAgentHost["getMcpStatus"];
   };
 }>;
 
@@ -606,9 +607,10 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           { id: "xio-evolve", name: "Evolve", description: "Records run trajectories, trims noisy tool output and injects relevant context each turn.", enabled: true, category: "runtime" },
           { id: "xio-setup", name: "Setup", description: "xio-setup CLI: provider setup and optional config sections.", enabled: true, category: "setup" },
         ];
-        const mcpServers = await listMcpServers(env, cwd);
+        const live = agentHost.getMcpStatus?.();
+        const mcpServers = withMcpStates(await listMcpServers(env, cwd), live?.status);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ extensions, mcpServers }));
+        res.end(JSON.stringify({ extensions, mcpServers, mcpSessionId: live?.sessionId ?? null }));
         return;
       }
 
@@ -709,6 +711,36 @@ async function loadTrajectory(store: SessionStore, session: StoredSession) {
     const reason = error instanceof Error ? error.message : String(error);
     return { ...buildSessionTrajectory(session), timelineError: `timeline unreadable: ${reason}` };
   }
+}
+
+export type McpServerView = Readonly<{
+  name: string;
+  transport?: string;
+  source: string;
+  /** idle: no live session has connected this server (servers connect when a session starts). */
+  state: McpServerState | "idle";
+  tools?: number;
+  error?: string;
+}>;
+
+/**
+ * Configured servers with the live session's connection states. A server the live
+ * session connected but the config no longer lists still appears: it is what the agent has.
+ */
+export function withMcpStates(
+  configured: readonly Readonly<{ name: string; transport: string; source: string }>[],
+  live: McpStatusPayload | undefined,
+): McpServerView[] {
+  const byName = new Map(live?.servers.map((s) => [s.name, s]));
+  const rows: McpServerView[] = configured.map((server) => {
+    const state = byName.get(server.name);
+    byName.delete(server.name);
+    return state
+      ? { ...server, state: state.state, tools: state.tools, ...(state.error !== undefined ? { error: state.error } : {}) }
+      : { ...server, state: "idle" };
+  });
+  for (const state of byName.values()) rows.push({ ...state });
+  return rows;
 }
 
 /** Paths shown in the page start at ~ so screenshots and shares do not carry the account name. */

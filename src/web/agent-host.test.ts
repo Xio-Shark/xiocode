@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -58,7 +59,9 @@ async function startFakeProvider(command: string): Promise<{ baseUrl: string; re
   };
 }
 
-function setup(baseUrl: string) {
+const MCP_ECHO = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../extensions/xio-hygiene/test/fixtures/mcp-stdio-echo.mjs");
+
+function setup(baseUrl: string, extraConfig: readonly string[] = []) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "xio-agent-host-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
@@ -69,6 +72,7 @@ function setup(baseUrl: string) {
     "[general]", 'default_provider = "local"', 'default_model = "stub"', "",
     "[providers.local]", 'kind = "openai"', `base_url = "${baseUrl}"`, 'model = "stub"', 'api_key_env = "XIO_TEST_KEY"', 'session_header = "x-conversation"', "",
     "[trust]", 'mode = "trust"', "",
+    ...extraConfig,
   ].join("\n"));
   execFileSync("git", ["init", "-q"], { cwd: workspace });
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: workspace });
@@ -98,10 +102,20 @@ function waitFor(events: WebEvent[], name: string, timeoutMs = 20_000): Promise<
   });
 }
 
+async function waitUntil(check: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) throw new Error("condition not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 describe.skipIf(process.platform === "win32")("WebAgentHost", () => {
   it("runs a real turn, routes permission questions through the browser and persists the session", async () => {
     const provider = await startFakeProvider("touch web-made.txt && echo made");
-    const { workspace, env, store } = setup(provider.baseUrl);
+    const { workspace, env, store } = setup(provider.baseUrl, [
+      "[mcp.servers.echo]", `command = ${JSON.stringify(process.execPath)}`, `args = [${JSON.stringify(MCP_ECHO)}]`, "",
+    ]);
     const events: WebEvent[] = [];
     const questions: string[] = [];
     let host: WebAgentHost;
@@ -136,6 +150,11 @@ describe.skipIf(process.platform === "win32")("WebAgentHost", () => {
     // One question, and it shows the exact command — no blind "allow bash for this session".
     expect(questions).toHaveLength(1);
     expect(questions[0]).toContain("touch web-made.txt && echo made");
+
+    // The console learns MCP connection states from the session's event bus.
+    expect(host.getMcpStatus()?.sessionId).toBe("web-1");
+    await waitUntil(() => host.getMcpStatus()?.status?.servers.every((s) => s.state !== "connecting") === true);
+    expect(host.getMcpStatus()?.status?.servers).toEqual([{ name: "echo", source: "config", state: "ok", tools: 1 }]);
 
     await host.close();
     const saved = await store.load("web-1");

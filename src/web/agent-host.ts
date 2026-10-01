@@ -13,6 +13,7 @@
  * left hanging.
  */
 
+import type { McpStatusPayload } from "../../extensions/xio-hygiene/src/mcp.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { createLaunchSessionOptions, launchStoredSession } from "../cli/run-agent-cli.ts";
 import { prepareSession, type PreparedSession } from "../runtime/session.ts";
@@ -41,6 +42,8 @@ type ActiveSession = {
   releaseLease: () => Promise<void>;
   unsubscribe: () => void;
   running: boolean;
+  /** Latest `mcp.status` of this session; undefined until the MCP bridge reports. */
+  readonly observed: { mcp?: McpStatusPayload };
 };
 
 /** A browser's answer: yes/no for questions, the picked value for choices. */
@@ -125,6 +128,11 @@ export class WebAgentHost {
     return true;
   }
 
+  /** MCP connection states of the live session (only one session is live at a time). */
+  getMcpStatus(): Readonly<{ sessionId: string; status: McpStatusPayload | undefined }> | undefined {
+    return this.#active ? { sessionId: this.#active.sessionId, status: this.#active.observed.mcp } : undefined;
+  }
+
   getCostSummary(sessionId: string): SessionCostSummary | undefined {
     if (this.#active?.sessionId === sessionId) {
       return this.#active.prepared.getCostSummary();
@@ -165,8 +173,15 @@ export class WebAgentHost {
       });
       const options = createLaunchSessionOptions({ launch, store, stored, recovered, sessionId });
       const interactive = this.#interactive(sessionId);
+      // MCP starts connecting during prepareSession, before the bus subscription below exists.
+      const observed: ActiveSession["observed"] = {};
+      const record = options.onRuntimeEvent;
       const prepared = await prepareSession({
         ...options,
+        onRuntimeEvent: (event) => {
+          if (event.event === "mcp.status") observed.mcp = event.payload as McpStatusPayload;
+          return record?.(event);
+        },
         uiSink: this.#sink(sessionId),
         interactive,
         ask: (question) => interactive.ask(question),
@@ -178,7 +193,7 @@ export class WebAgentHost {
           this.#options.broadcast(sessionId, event);
         })
         : () => undefined;
-      this.#active = { sessionId, prepared, releaseLease, unsubscribe, running: false };
+      this.#active = { sessionId, prepared, releaseLease, unsubscribe, running: false, observed };
       return this.#active;
     } catch (error) {
       await releaseLease();

@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import http from "node:http";
 
-import { displayPath, startWebServer, type WebServerHandle } from "./server.ts";
+import { displayPath, startWebServer, withMcpStates, type WebServerHandle } from "./server.ts";
 import { parseWebCliArgs } from "../cli/web-cli.ts";
 import { SessionStore } from "../runtime/session-store.ts";
 import { THINKING_LEVELS } from "../runtime/thinking.ts";
@@ -295,6 +295,7 @@ describe("Web Console & Server", () => {
     expect(extData.extensions.map((e: { id: string }) => e.id).sort()).toEqual(["xio-evolve", "xio-hygiene", "xio-sandbox", "xio-setup"]);
     expect(JSON.stringify(extData)).not.toContain("deepseek-harness");
     expect(Array.isArray(extData.mcpServers)).toBe(true);
+    expect(extData.mcpSessionId).toBeNull();
   });
 
   it("serves the provider catalog and thinking levels, and saves a preset provider with its own kind", async () => {
@@ -340,6 +341,28 @@ describe("Web Console & Server", () => {
     const res = await globalThis.fetch(`${handle.url}/api/workspace/diff`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ diff: "", untracked: ["new.txt"] });
+  });
+
+  it("puts the live session's MCP connection states on the configured servers", () => {
+    const configured = [
+      { name: "docs", transport: "http", source: "config" },
+      { name: "browser", transport: "stdio", source: "claude-user" },
+      { name: "later", transport: "stdio", source: "project" },
+    ];
+    const rows = withMcpStates(configured, {
+      servers: [
+        { name: "docs", source: "config", state: "ok", tools: 3 },
+        { name: "browser", source: "claude-user", state: "failed", tools: 0, error: "spawn ENOENT" },
+        { name: "gone", source: "config", state: "connecting", tools: 0 },
+      ],
+    });
+    expect(rows.map((r) => [r.name, r.state])).toEqual([
+      ["docs", "ok"], ["browser", "failed"], ["later", "idle"], ["gone", "connecting"],
+    ]);
+    expect(rows[0]).toMatchObject({ transport: "http", tools: 3 });
+    expect(rows[1]?.error).toBe("spawn ENOENT");
+    // Without a live session nothing has connected yet.
+    expect(withMcpStates(configured, undefined).every((r) => r.state === "idle")).toBe(true);
   });
 
   it("shows home-directory paths from ~", () => {
