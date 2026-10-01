@@ -2,16 +2,18 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { SessionStore } from "../runtime/session-store.ts";
-import { deleteStoredSession } from "./run-agent-cli.ts";
+import type { ChatMessage } from "../runtime/types.ts";
+import { deleteStoredSession, discardUnusedSession } from "./run-agent-cli.ts";
 
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
   tempDirs.length = 0;
 });
@@ -108,5 +110,68 @@ describe("deleteStoredSession", () => {
     await expect(deleteStoredSession(store, "badid")).rejects.toThrow();
     const stillThere = await store.load("badid");
     expect(stillThere.metadata.id).toBe("badid");
+  });
+});
+
+describe("discardUnusedSession", () => {
+  async function storeWith(
+    id: string,
+    messages: ChatMessage[],
+    workspace?: Readonly<{ lifecycle: "active" | "clean_removed" }>,
+  ): Promise<SessionStore> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-discard-"));
+    tempDirs.push(root);
+    // Kernel domains of these sessions are looked up here, never in the real ~/.xiocode.
+    vi.stubEnv("XIOCODE_KERNEL_DOMAIN_ROOT", path.join(root, "kernel"));
+    const store = new SessionStore({ root: path.join(root, "sessions") });
+    // Deleting a worktree session releases its checkpoint refs, which needs a real repository.
+    const mainRoot = workspace ? await initGitRepo() : path.join(root, "repo");
+    await store.save({
+      id,
+      model: { provider: "test", id: "m" },
+      cwd: mainRoot,
+      mainRoot,
+      messages,
+      workspace: workspace
+        ? {
+          mode: "worktree",
+          lifecycle: workspace.lifecycle,
+          main_root: mainRoot,
+          worktree_path: path.join(root, "wt"),
+          branch: "xio/" + id,
+          base_ref: "HEAD",
+          baseline_tree: "",
+          repo_id: "r",
+          session_id: id,
+          epoch: 0,
+        }
+        : { mode: "main", lifecycle: "active", main_root: mainRoot, epoch: 0 },
+    });
+    return store;
+  }
+
+  it("deletes a session that ended without a prompt", async () => {
+    const store = await storeWith("unused1", [{ role: "system", content: "sys" }]);
+    expect(await discardUnusedSession(store, "unused1")).toBe(true);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("keeps a session that received a prompt", async () => {
+    const store = await storeWith("used1", [{ role: "system", content: "sys" }, { role: "user", content: "hi" }]);
+    expect(await discardUnusedSession(store, "used1")).toBe(false);
+    expect((await store.list()).map((s) => s.id)).toEqual(["used1"]);
+  });
+
+  it("does nothing for a session that was never saved", async () => {
+    const store = await storeWith("other1", [{ role: "user", content: "hi" }]);
+    expect(await discardUnusedSession(store, "never1")).toBe(false);
+  });
+
+  it("keeps an unused session whose worktree still exists, and deletes one whose worktree is gone", async () => {
+    const active = await storeWith("wtactive1", [], { lifecycle: "active" });
+    expect(await discardUnusedSession(active, "wtactive1")).toBe(false);
+    const removed = await storeWith("wtgone1", [], { lifecycle: "clean_removed" });
+    expect(await discardUnusedSession(removed, "wtgone1")).toBe(true);
+    expect(await removed.list()).toEqual([]);
   });
 });

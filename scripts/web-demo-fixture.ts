@@ -213,6 +213,13 @@ async function seedSessions(): Promise<void> {
   // The main session started 2.5 hours ago; its last turn ended just now.
   const t0 = Date.now() - (2 * 3600 + 14 * 60 + 7) * 1000;
   const sessions: Array<{ cwd: string; messages: ChatMessage[]; timeline?: TimelineRecord[]; createdAt?: string }> = [
+    // Opened and closed without a prompt (as older versions left them): the list hides it.
+    { cwd: repo, messages: [{ role: "system", content: "You are XioCode." }] },
+    // The same first prompt as a later session: the list tells them apart by start time.
+    { cwd: path.join(root, "web-dashboard"), createdAt: new Date(t0 - 26 * 3600_000).toISOString(), messages: [
+      { role: "user", content: "把图表的颜色换成设计系统里的 token" },
+      { role: "assistant", content: "先列出了 9 处硬编码颜色，还没有改。" },
+    ] },
     { cwd: path.join(root, "web-dashboard"), messages: [
       { role: "user", content: "把图表的颜色换成设计系统里的 token" },
       { role: "assistant", content: "已替换 6 处硬编码颜色。" },

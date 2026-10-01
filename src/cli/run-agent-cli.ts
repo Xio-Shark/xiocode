@@ -87,7 +87,7 @@ export async function runAgentCli(
         runtimeExtensionEnabled: xioArgs.runtimeExtensionEnabled,
         allowDirty: xioArgs.allowDirty,
       });
-      return await runPreparedLaunch({
+      const exitCode = await runPreparedLaunch({
         xioArgs,
         launch,
         store,
@@ -97,6 +97,8 @@ export async function runAgentCli(
         earlyBoot,
         updateNotice: options.updateNotice,
       });
+      if (!stored) await discardUnusedSession(store, sessionId);
+      return exitCode;
     } finally {
       await releaseLease();
     }
@@ -269,6 +271,24 @@ function restoredModel(stored: StoredSession | undefined): SessionOptions["model
   };
 }
 
+/** Worktree lifecycles in which the worktree is already gone, so deleting the session loses nothing. */
+const WORKTREE_GONE: ReadonlySet<string> = new Set(["merged", "discarded", "clean_removed"]);
+
+/**
+ * Deletes a new session that ended without a single prompt. Sessions are saved as
+ * soon as they start, so quitting right away used to leave an empty entry in every
+ * session list (and its kernel domain on disk). A worktree that still exists —
+ * active or retained — is kept with its session: it may hold work.
+ */
+export async function discardUnusedSession(store: SessionStore, id: string): Promise<boolean> {
+  const saved = await store.loadIfPresent(id);
+  if (!saved || saved.messages.some((message) => message.role === "user")) return false;
+  const workspace = saved.workspace;
+  if (workspace?.mode === "worktree" && !WORKTREE_GONE.has(workspace.lifecycle)) return false;
+  await deleteStoredSession(store, id);
+  return true;
+}
+
 /**
  * Delete session metadata only after associated Git resources are cleaned.
  * active/retained worktree sessions must remove the registered worktree, branch,
@@ -292,35 +312,43 @@ export async function deleteStoredSession(store: SessionStore, id: string): Prom
   const workspace = stored.workspace;
 
   if (workspace?.mode === "worktree" && workspace.session_id && workspace.main_root) {
-    const mainRoot = workspace.main_root;
-    const sessionId = workspace.session_id;
-    const lifecycle = workspace.lifecycle;
+    try {
+      const mainRoot = workspace.main_root;
+      const sessionId = workspace.session_id;
+      const lifecycle = workspace.lifecycle;
 
-    if (lifecycle === "active" || lifecycle === "retained") {
-      const session = {
-        mainRoot,
-        worktreePath: workspace.worktree_path,
-        branch: workspace.branch,
-        sessionId,
-        repoId: workspace.repo_id,
-        baseRef: workspace.base_ref,
-        baselineTree: workspace.baseline_tree ?? "",
-      };
-      for (const [key, value] of Object.entries(session)) {
-        if (key === "baselineTree") continue;
-        if (!value) {
-          throw new Error(`session delete refused: worktree identity incomplete (${key})`);
+      if (lifecycle === "active" || lifecycle === "retained") {
+        const session = {
+          mainRoot,
+          worktreePath: workspace.worktree_path,
+          branch: workspace.branch,
+          sessionId,
+          repoId: workspace.repo_id,
+          baseRef: workspace.base_ref,
+          baselineTree: workspace.baseline_tree ?? "",
+        };
+        for (const [key, value] of Object.entries(session)) {
+          if (key === "baselineTree") continue;
+          if (!value) {
+            throw new Error(`session delete refused: worktree identity incomplete (${key})`);
+          }
         }
+        // Attach validates repo id, path, branch, and registration — fail closed on mismatch.
+        const attached = await WorktreeSandbox.attach(
+          session as import("../../extensions/xio-sandbox/src/worktree-sandbox.ts").WorktreeSession,
+        );
+        await WorktreeSandbox.remove(attached, { force: true });
       }
-      // Attach validates repo id, path, branch, and registration — fail closed on mismatch.
-      const attached = await WorktreeSandbox.attach(
-        session as import("../../extensions/xio-sandbox/src/worktree-sandbox.ts").WorktreeSession,
-      );
-      await WorktreeSandbox.remove(attached, { force: true });
-    }
 
-    // All worktree sessions clear checkpoint refs before metadata deletion.
-    await WorktreeSandbox.releaseSessionCheckpoints({ mainRoot, sessionId });
+      // All worktree sessions clear checkpoint refs before metadata deletion.
+      await WorktreeSandbox.releaseSessionCheckpoints({ mainRoot, sessionId });
+    } finally {
+      // Those git commands ran outside any product session, through an ephemeral kernel
+      // domain; closing it here removes that domain instead of leaving it on disk.
+      const { closeEphemeralKernelSession } = await import("../runtime/process/kernel-process.ts");
+      const refusal = await closeEphemeralKernelSession();
+      if (refusal) process.stderr.write(`[warn] kernel session for cleanup did not close: ${refusal.message}\n`);
+    }
   }
 
   await disposeKernelDomain(stored, id);

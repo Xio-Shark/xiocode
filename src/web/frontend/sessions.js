@@ -17,6 +17,14 @@ function sessionTitle(sess) {
   return "会话 " + (sess.id || "").slice(0, 8);
 }
 
+/** "10-01 14:32": tells apart sessions that started with the same prompt. */
+function sessionStartLabel(sess) {
+  const started = new Date(sess.created_at || sess.updated_at);
+  if (Number.isNaN(started.getTime())) return "";
+  const pad = n => String(n).padStart(2, "0");
+  return pad(started.getMonth() + 1) + "-" + pad(started.getDate()) + " " + pad(started.getHours()) + ":" + pad(started.getMinutes());
+}
+
 function renderSessionList() {
   const list = $("session-list");
   const q = sessionSearch.value.trim().toLowerCase();
@@ -27,6 +35,8 @@ function renderSessionList() {
     list.replaceChildren(el("div", "empty-state-list", q ? "没有匹配的会话" : "还没有会话"));
     return;
   }
+  const titleCounts = new Map();
+  filtered.forEach(sess => titleCounts.set(sessionTitle(sess), (titleCounts.get(sessionTitle(sess)) || 0) + 1));
   const groups = new Map();
   filtered.forEach(sess => {
     const ws = lastPathSegment(sess.cwd || sess.main_root) || "未分组";
@@ -35,13 +45,15 @@ function renderSessionList() {
   });
   list.replaceChildren(...[...groups.entries()].map(([ws, sessions]) => el("div", "ws-group",
     el("div", "ws-group-header", xioIcon("folder"), el("span", "ws-group-name", ws), el("span", "ws-count", String(sessions.length))),
-    el("ul", "ws-group-items", ...sessions.map(sessionItem)))));
+    el("ul", "ws-group-items", ...sessions.map(sess => sessionItem(sess, titleCounts.get(sessionTitle(sess)) > 1))))));
 }
 
-function sessionItem(sess) {
+function sessionItem(sess, sharedTitle) {
   const active = sess.id === activeSessionId;
+  const started = sharedTitle ? sessionStartLabel(sess) : "";
   const open = el("button", "session-item-text",
     el("span", "session-title", sessionTitle(sess)),
+    started ? el("span", "session-started", started) : null,
     active && isRunning ? el("span", "session-live-dot") : el("span", "session-time", formatRelativeTime(sess.updated_at || sess.created_at)));
   open.type = "button";
   open.title = sess.firstPrompt || sess.first_prompt || "";

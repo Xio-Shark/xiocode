@@ -254,6 +254,12 @@ export class SessionStore {
     }
   }
 
+  /** Like load(), but undefined for a session that was never saved. */
+  async loadIfPresent(id: string): Promise<StoredSession | undefined> {
+    assertSessionId(id);
+    return this.#loadIfPresent(id);
+  }
+
   async list(): Promise<readonly SessionMetadata[]> {
     let entries;
     try {

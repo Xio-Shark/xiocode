@@ -354,6 +354,8 @@ main {
   white-space: nowrap;
 }
 .session-item.active .session-title { color: var(--text); font-weight: 550; }
+/* Only on titles shared by several sessions; never truncated with the title. */
+.session-started { flex-shrink: 0; font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .session-time { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .session-item:hover .session-time, .session-item:focus-within .session-time { visibility: hidden; }
 .session-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.6s var(--ease-out) infinite; }

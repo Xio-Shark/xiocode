@@ -8,6 +8,7 @@ import { ExecutionDomain } from "@xioflow/kernel";
 
 import {
   bindKernelSession,
+  closeEphemeralKernelSession,
   closeKernelSession,
   kernelDomainPath,
   notifyKernelFallback,
@@ -81,6 +82,21 @@ describe("runSupervisedProcessGated", () => {
     expect(domainDatabases(domainRoot).length).toBe(1);
     await closeKernelSession();
     expect(domainDatabases(domainRoot)).toEqual([]);
+  });
+
+  it.skipIf(!onPosix)("closes only an ephemeral binding when asked to, never a product session's", async () => {
+    const domainRoot = makeTempDir("xio-kernel-close-ephemeral-");
+    const workspace = makeTempDir("xio-kernel-close-ephemeral-ws-");
+    withEnv({ XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot });
+
+    await echo(process.cwd(), "outside a session");
+    expect(domainDatabases(domainRoot).length).toBe(1);
+    await closeEphemeralKernelSession();
+    expect(domainDatabases(domainRoot)).toEqual([]);
+
+    const session = await bindKernelSession({ sessionId: "product-1", workspaceRoot: workspace });
+    await closeEphemeralKernelSession();
+    await expect(echo(workspace, "still bound").then((r) => r.kernel?.domainPath)).resolves.toBe(session.domainPath);
   });
 
   it.skipIf(!onPosix)("keeps one domain per bound session regardless of each command's cwd", async () => {

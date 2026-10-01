@@ -80,7 +80,7 @@ export type BindKernelSessionInput = Readonly<{
   ephemeral?: boolean;
 }>;
 
-let bound: Readonly<{ key: string; session: Promise<KernelSession> }> | undefined;
+let bound: Readonly<{ key: string; session: Promise<KernelSession>; ephemeral: boolean }> | undefined;
 
 /**
  * Opens (once) the kernel session for this product session. A different
@@ -101,7 +101,7 @@ export async function bindKernelSession(input: BindKernelSessionInput): Promise<
     domainPath,
     ephemeral: input.ephemeral === true,
   });
-  bound = { key: domainPath, session };
+  bound = { key: domainPath, session, ephemeral: input.ephemeral === true };
   try {
     return await session;
   } catch (error) {
@@ -122,6 +122,14 @@ export async function closeKernelSession(): Promise<Error | undefined> {
     // Opening failed; the binder already reported it and there is nothing to close.
     return undefined;
   }
+}
+
+/**
+ * Closes the binding only when it is the ephemeral one that commands run outside a
+ * product session open (see resolveKernelSession); a product session stays bound.
+ */
+export async function closeEphemeralKernelSession(): Promise<Error | undefined> {
+  return bound?.ephemeral ? closeKernelSession() : undefined;
 }
 
 /**

@@ -195,6 +195,8 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               try {
                 const full = await store.load(s.id);
                 const firstUser = full.messages.find((m) => m.role === "user");
+                // Never prompted (a TUI opened and closed, or left by an older version): nothing to show.
+                if (!firstUser) return undefined;
                 return {
                   ...s,
                   firstPrompt: firstUser ? firstUser.content.slice(0, 120) : undefined,
@@ -206,7 +208,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
             })
           );
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(enhanced));
+          res.end(JSON.stringify(enhanced.filter((s) => s !== undefined)));
           return;
         }
         if (req.method === "POST") {

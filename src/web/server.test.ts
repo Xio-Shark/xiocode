@@ -179,7 +179,12 @@ describe("Web Console & Server", () => {
 
     // A stored session (what the agent writes on its first turn)
     const postData = { id: draft.id as string };
-    await store.save({ id: postData.id, model: { provider: "local", id: "stub" }, cwd: project, mainRoot: project, messages: [] });
+    await store.save({ id: postData.id, model: { provider: "local", id: "stub" }, cwd: project, mainRoot: project, messages: [{ role: "user", content: "first prompt" }] });
+    // …and one that was opened and closed without a prompt: it is not worth a list entry.
+    const unused = store.createId();
+    await store.save({ id: unused, model: { provider: "local", id: "stub" }, cwd: project, mainRoot: project, messages: [{ role: "system", content: "sys" }] });
+    const listed = await (await fetch(`${handle.url}/api/sessions`)).json();
+    expect(listed.map((s: { id: string; firstPrompt?: string }) => [s.id, s.firstPrompt])).toEqual([[postData.id, "first prompt"]]);
 
     // 4. Test GET /api/sessions/:id
     const detailRes = await fetch(`${handle.url}/api/sessions/${postData.id}`);

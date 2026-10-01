@@ -93,6 +93,13 @@ def check_mcp_status(browser, url):
     page.context.close()
 
 
+def check_session_list(page):
+    titles = page.eval_on_selector_all("#session-list .session-title", "els => els.map(e => e.textContent)")
+    check("a session that was never prompted is not listed", not any(t.startswith("会话 ") for t in titles), str(titles))
+    started = page.eval_on_selector_all("#session-list .session-started", "els => els.map(e => e.textContent)")
+    check("sessions that share a first prompt show when each started", len(started) == 2 and len(set(started)) == 2, str(started))
+
+
 def feed(page, events):
     page.evaluate("events => events.forEach(e => handleRuntimeEvent(e))", events)
     page.wait_for_timeout(120)
@@ -268,6 +275,7 @@ def main():
             page, errors = baseline.open_page(browser, url, viewport={"width": 1280, "height": 800})
             audit_typography(browser, url)
             check_mcp_status(browser, url)
+            check_session_list(page)
             check_timeline(page)
             run(page, proc)
             check_restart(page, project_root, fixture)
