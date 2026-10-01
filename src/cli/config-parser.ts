@@ -56,6 +56,8 @@ export type XioProviderConfig = Readonly<{
   thinkingDisplay?: XioThinkingDisplay;
   input?: readonly ("text" | "image")[];
   headers?: Readonly<Record<string, string>>;
+  /** Header carrying the session id on every request; "" turns the default off. */
+  sessionHeader?: string;
   thinkingLevelMap?: Readonly<Partial<Record<XioThinkingLevel, string>>>;
   compat?: Readonly<Record<string, unknown>>;
 }>;
@@ -632,6 +634,7 @@ function parseProviders(table: Record<string, unknown> | undefined): Readonly<Re
       thinkingDisplay: getThinkingDisplay(provider.thinking_display, `providers.${name}.thinking_display`),
       input: getInputTypes(provider.input, `providers.${name}.input`),
       headers: getStringRecord(provider.headers, `providers.${name}.headers`),
+      sessionHeader: getOptionalString(provider, "session_header"),
       thinkingLevelMap: getThinkingLevelMap(provider.thinking_level_map, `providers.${name}.thinking_level_map`),
       compat: getRecord(provider.compat, `providers.${name}.compat`),
     };

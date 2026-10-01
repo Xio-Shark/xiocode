@@ -20,12 +20,40 @@ import { resolveRequestControls } from "./request-controls.ts";
 import { withProviderGuidance } from "./error-guidance.ts";
 import { fetchWithRetry, type FetchRetryOptions } from "./fetch-retry.ts";
 
+/** Who is calling: sent on every request so gateways can tell clients and conversations apart. */
+export type ClientIdentity = Readonly<{
+  /** e.g. `xiocode/1.6.0`; gateways such as OpenCode Go ask for a client-specific agent string. */
+  userAgent?: string;
+  /** Stable id of the conversation; sent in the registration's `sessionHeader`. */
+  sessionId?: string;
+}>;
+
 export type ProviderClientOptions = Readonly<{
   registration: ProviderRegistration;
   apiKey: string;
   fetchImpl?: typeof fetch;
   fetchRetryOptions?: FetchRetryOptions;
+  identity?: ClientIdentity;
 }>;
+
+/**
+ * Request headers in increasing precedence: wire defaults, our user agent, the
+ * provider's configured static headers, then the conversation id — a static
+ * header with the session header's name must not pin every session to one id.
+ */
+export function providerRequestHeaders(
+  options: ProviderClientOptions,
+  wire: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const sessionHeader = options.registration.sessionHeader;
+  const sessionId = options.identity?.sessionId;
+  return {
+    ...wire,
+    ...(options.identity?.userAgent ? { "user-agent": options.identity.userAgent } : {}),
+    ...options.registration.models[0]?.headers,
+    ...(sessionHeader && sessionId ? { [sessionHeader]: sessionId } : {}),
+  };
+}
 
 export function createLlmClient(options: ProviderClientOptions): LlmClient {
   const api = options.registration.api;
@@ -38,11 +66,10 @@ export function createLlmClient(options: ProviderClientOptions): LlmClient {
 function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = (options.registration.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
-  const headers = {
+  const headers = providerRequestHeaders(options, {
     "content-type": "application/json",
     authorization: `Bearer ${options.apiKey}`,
-    ...options.registration.models[0]?.headers,
-  };
+  });
 
   async function complete(
     request: ChatCompletionRequest,
@@ -223,12 +250,11 @@ function openAiBody(
 function createAnthropicClient(options: ProviderClientOptions): LlmClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = (options.registration.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
-  const headers = {
+  const headers = providerRequestHeaders(options, {
     "content-type": "application/json",
     "x-api-key": options.apiKey,
     "anthropic-version": "2023-06-01",
-    ...options.registration.models[0]?.headers,
-  };
+  });
 
   async function complete(
     request: ChatCompletionRequest,

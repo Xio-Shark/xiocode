@@ -1,5 +1,5 @@
 import { defineTool } from "../define-tool.ts";
-import { resolveApiKey } from "../providers/client.ts";
+import { resolveApiKey, type ClientIdentity } from "../providers/client.ts";
 import { Type } from "../schema.ts";
 import type { ThinkingLevel } from "../types.ts";
 
@@ -200,6 +200,8 @@ export type CreateExploreToolOptions = Readonly<{
   fileShift?: FileShiftRegistry;
   /** Called when a worker's read is later overwritten by another context. */
   onFileShift?: (info: FileShiftInfo) => void;
+  /** Session's client identity; each worker is its own conversation (`<session>-explore-<n>`). */
+  clientIdentity?: ClientIdentity;
 }>;
 
 export function createExploreTool(options: CreateExploreToolOptions): ToolDefinition {
@@ -490,6 +492,10 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
           : undefined;
 
         const result = await runWorker({
+          identity: options.clientIdentity && {
+            ...options.clientIdentity,
+            ...(options.clientIdentity.sessionId ? { sessionId: `${options.clientIdentity.sessionId}-explore-${workerId}` } : {}),
+          },
           goal,
           focusPaths: workerFocus,
           cwd: options.cwd,

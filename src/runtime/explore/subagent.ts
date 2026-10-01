@@ -1,6 +1,6 @@
 import { ExtensionHost } from "../extension-host.ts";
 import { runAgentLoop } from "../agent-loop.ts";
-import { createLlmClient } from "../providers/client.ts";
+import { createLlmClient, type ClientIdentity } from "../providers/client.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 import { WorkspacePathPolicy } from "../workspace-path-policy.ts";
 import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
@@ -92,7 +92,10 @@ export type RunExploreSubagentOptions = Readonly<{
   createClient?: (input: Readonly<{
     registration: ProviderRegistration;
     apiKey: string;
+    identity?: ClientIdentity;
   }>) => LlmClient;
+  /** User agent and this worker's conversation id, sent on every provider request. */
+  identity?: ClientIdentity;
   /** Optional UI scope — nested loop streams here; never primary session history. */
   ui?: SubagentUiScope;
   /** Shared cross-context file-shift registry (worker reads register under `contextId`). */
@@ -171,6 +174,7 @@ export async function runExploreSubagent(
   const client = createClient({
     registration,
     apiKey: options.apiKey,
+    identity: options.identity,
   });
 
   const { getGlobalTracer, classifyUnknownError } = await import("../perf/index.ts");

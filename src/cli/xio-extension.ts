@@ -3,6 +3,7 @@ import os from "node:os";
 
 import type { XioMcpConfig, XioRuntimeConfig } from "./config-parser.ts";
 import type { XioExtensionAPI } from "../runtime/index.ts";
+import { providerRegistration } from "../runtime/provider-registry.ts";
 import type { CommandHandlerContext, ExtensionContext } from "../../extensions/xio-evolve/src/types.ts";
 import { parseServerSpec, type McpConfig, type McpServerSpec } from "../../extensions/xio-hygiene/src/mcp.ts";
 
@@ -240,54 +241,8 @@ function isStaleContextError(error: unknown): boolean {
 
 function registerProviders(api: XioExtensionAPI, config: XioRuntimeConfig): void {
   for (const provider of Object.values(config.providers)) {
-    if (!provider.model) {
-      continue;
-    }
-    api.registerProvider(provider.name, {
-      name: provider.name,
-      api: providerApi(provider.kind),
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
-      authHeader: true,
-      thinkingDisplay: provider.thinkingDisplay,
-      toolChoice: provider.toolChoice,
-      toolChoiceScope: provider.toolChoiceScope,
-      models: [
-        {
-          id: provider.model,
-          name: provider.model,
-          // Default true so effort UI works without per-provider flags; set reasoning = false to document non-reasoning models.
-          reasoning: provider.reasoning ?? true,
-          thinkingLevelMap: provider.thinkingLevelMap,
-          input: provider.input ? [...provider.input] : ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: provider.contextWindow ?? 128_000,
-          maxTokens: provider.maxTokens ?? 8192,
-          headers: provider.headers,
-          compat: provider.compat,
-        },
-      ],
-    });
+    if (provider.model) api.registerProvider(provider.name, providerRegistration(provider));
   }
-}
-
-function providerApi(kind: string): string {
-  if (kind === "anthropic") {
-    return "anthropic-messages";
-  }
-  if (kind === "mistral") {
-    return "mistral-conversations";
-  }
-  if (kind === "google") {
-    return "google-generative-ai";
-  }
-  if (kind === "google-vertex") {
-    return "google-vertex";
-  }
-  if (kind === "bedrock") {
-    return "bedrock-converse-stream";
-  }
-  return "openai-completions";
 }
 
 async function loadHygiene(): Promise<typeof import("../../extensions/xio-hygiene/src/index.ts")> {

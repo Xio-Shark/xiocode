@@ -14,7 +14,7 @@ import {
 } from "../cli/provider-catalog.ts";
 import { targetApiKeyEnv } from "../cli/env-setup.ts";
 import { discoverModels, probeApiKey } from "./providers/discover.ts";
-import { providerApi } from "./provider-registry.ts";
+import { providerApi, providerRegistration } from "./provider-registry.ts";
 
 import type { InteractiveIO } from "./interactive-io.ts";
 import type { ExtensionHost } from "./extension-host.ts";
@@ -247,7 +247,7 @@ async function persistConnect(input: Readonly<{
     model: input.modelId,
     apiKeyEnv: input.apiKeyEnv,
   };
-  options.host.registerProvider(input.providerName, toRegistration(providerConfig, input.models));
+  options.host.registerProvider(input.providerName, providerRegistration(providerConfig, input.models));
 }
 
 async function persistModelDefault(
@@ -363,31 +363,6 @@ async function collectModelsForProvider(
     if (discovered.models.length > 0) return discovered.models;
   }
   return catalog;
-}
-
-function toRegistration(provider: XioProviderConfig, models: readonly string[]): ProviderRegistration {
-  const modelIds = uniqueModels([...(provider.model ? [provider.model] : []), ...models]);
-  return {
-    name: provider.name,
-    api: providerApi(provider.kind),
-    baseUrl: provider.baseUrl,
-    apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
-    authHeader: true,
-    thinkingDisplay: provider.thinkingDisplay,
-    toolChoice: provider.toolChoice,
-    toolChoiceScope: provider.toolChoiceScope,
-    models: modelIds.map((id) => ({
-      id,
-      name: id,
-      reasoning: provider.reasoning ?? true,
-      thinkingLevelMap: provider.thinkingLevelMap,
-      input: ["text"] as ("text" | "image")[],
-      contextWindow: provider.contextWindow ?? 128_000,
-      maxTokens: provider.maxTokens ?? 8192,
-      headers: provider.headers,
-      compat: provider.compat,
-    })),
-  };
 }
 
 function uniqueModels(models: readonly string[]): string[] {

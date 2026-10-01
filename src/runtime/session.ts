@@ -4,7 +4,7 @@ import path from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 
 import { ExtensionHost } from "./extension-host.ts";
-import { createLlmClient } from "./providers/client.ts";
+import { createLlmClient, type ClientIdentity } from "./providers/client.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
 import { qualifyModelId, registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
@@ -51,6 +51,7 @@ import { noopSubagentUiBridge } from "./explore/subagent-ui.ts";
 import { registerPlanCapability } from "./plan/index.ts";
 import { MergeGate, DirectRollbackGate, WorktreeSandbox, defaultAsk } from "../../extensions/xio-sandbox/src/index.ts";
 import { expandHome } from "../cli/config-parser.ts";
+import { XIO_VERSION } from "../cli/version.ts";
 import { createRuntimeEventEmitter } from "./events/emitter.ts";
 import {
   createStreamJsonSessionUiSink,
@@ -236,6 +237,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const streamJson = options.outputFormat === "stream-json";
   const sessionEventId = options.sessionId ?? randomUUID().replaceAll("-", "").slice(0, 16);
   const runEventId = randomUUID().replaceAll("-", "").slice(0, 16);
+  // One id per conversation for gateways that route and cache by it (see provider sessionHeader).
+  const clientIdentity: ClientIdentity = { userAgent: `xiocode/${XIO_VERSION}`, sessionId: sessionEventId };
   // Always create a RuntimeEvent.v1 bus so product sinks share one stream.
   const sink = streamJson
     ? (options.uiSink ?? createStreamJsonSessionUiSink(options.streamJsonStderr))
@@ -313,6 +316,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot, cwd });
   const { host, mergeGate, directGate, rollbackGate, ensureExploreForUltra } = await createConfiguredHost({
     options,
+    clientIdentity,
     model,
     sink,
     ask,
@@ -359,7 +363,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   let client: LlmClient | undefined = options.llmClient;
   const getOrCreateClient = (): LlmClient => {
     if (client) return client;
-    const created = createSessionClient({ host, model: currentModel, secretEnvironment });
+    const created = createSessionClient({ host, model: currentModel, secretEnvironment, identity: clientIdentity });
     client = created.client;
     registration = created.registration;
     return client;
@@ -505,7 +509,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     onThinkingLevelChanged,
   };
   const setModel = async (next: ModelInfo) => {
-    const created = createSessionClient({ host, model: next, secretEnvironment });
+    const created = createSessionClient({ host, model: next, secretEnvironment, identity: clientIdentity });
     currentModel = next;
     client = created.client;
     registration = created.registration;
@@ -931,6 +935,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
 async function createConfiguredHost(input: Readonly<{
   options: SessionOptions;
+  clientIdentity: ClientIdentity;
   model: ModelInfo;
   sink: SessionUiSink;
   ask: AskFn;
@@ -1024,6 +1029,7 @@ async function createConfiguredHost(input: Readonly<{
     subagentUi: input.subagentUi,
     fileShift: input.fileShift,
     onFileShift: (info) => emitFileShift(info, input.runtimeEvents, input.sink),
+    clientIdentity: input.clientIdentity,
   });
   await registerPlanCapability(host, {
     workspaceRoot: input.workspaceRoot,
@@ -1100,11 +1106,13 @@ function createSessionClient(input: Readonly<{
   host: ExtensionHost;
   model: ModelInfo;
   secretEnvironment: SecretEnvironment;
+  identity: ClientIdentity;
 }>): { client: LlmClient; registration: ProviderRegistration } {
   const registration = requireSessionRegistration(input.host, input.model);
   const client = createLlmClient({
     registration,
     apiKey: input.secretEnvironment.resolveProvider(registration),
+    identity: input.identity,
   });
   return { client, registration };
 }

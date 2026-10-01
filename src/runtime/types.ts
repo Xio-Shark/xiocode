@@ -114,6 +114,11 @@ export type ProviderRegistration = Readonly<{
   toolChoice?: ProviderToolChoice;
   /** Gate for toolChoice attachment. Default treat as always when toolChoice is set. */
   toolChoiceScope?: ProviderToolChoiceScope;
+  /**
+   * Header that carries the conversation id on every request (OpenCode Go:
+   * `x-opencode-session`). Unset or empty: no session header is sent.
+   */
+  sessionHeader?: string;
   models: readonly ProviderModelConfig[];
 }>;
 

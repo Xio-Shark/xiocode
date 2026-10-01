@@ -1,4 +1,4 @@
-import type { XioRuntimeConfig } from "../cli/config-parser.ts";
+import type { XioProviderConfig, XioRuntimeConfig } from "../cli/config-parser.ts";
 import type { ExtensionHost } from "./extension-host.ts";
 import type { ModelInfo, ProviderRegistration } from "./types.ts";
 
@@ -38,29 +38,55 @@ export function resolveDefaultModel(config: XioRuntimeConfig): ModelInfo {
 export function registerConfiguredProviders(host: ExtensionHost, config: XioRuntimeConfig): void {
   for (const provider of Object.values(config.providers)) {
     if (!provider.model) continue;
-    const registration: ProviderRegistration = {
-      name: provider.name,
-      api: providerApi(provider.kind),
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
-      authHeader: true,
-      thinkingDisplay: provider.thinkingDisplay,
-      toolChoice: provider.toolChoice,
-      toolChoiceScope: provider.toolChoiceScope,
-      models: [{
-        id: provider.model,
-        name: provider.model,
-        reasoning: provider.reasoning ?? true,
-        thinkingLevelMap: provider.thinkingLevelMap,
-        input: provider.input ? [...provider.input] : ["text"],
-        contextWindow: provider.contextWindow ?? 128_000,
-        maxTokens: provider.maxTokens ?? 8192,
-        headers: provider.headers,
-        compat: provider.compat,
-      }],
-    };
-    host.registerProvider(provider.name, registration);
+    host.registerProvider(provider.name, providerRegistration(provider));
   }
+}
+
+/**
+ * The one mapping from a `[providers.*]` entry to a host registration — used by
+ * startup, the xio extension and /connect, so a new provider field is added once.
+ */
+export function providerRegistration(provider: XioProviderConfig, extraModels: readonly string[] = []): ProviderRegistration {
+  const modelIds = [...new Set([...(provider.model ? [provider.model] : []), ...extraModels].filter((id) => id.length > 0))];
+  return {
+    name: provider.name,
+    api: providerApi(provider.kind),
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKeyEnv ? `$${provider.apiKeyEnv}` : undefined,
+    authHeader: true,
+    thinkingDisplay: provider.thinkingDisplay,
+    toolChoice: provider.toolChoice,
+    toolChoiceScope: provider.toolChoiceScope,
+    sessionHeader: provider.sessionHeader ?? defaultSessionHeader(provider.baseUrl),
+    models: modelIds.map((id) => ({
+      id,
+      name: id,
+      // Default true so effort UI works without per-provider flags; set reasoning = false for non-reasoning models.
+      reasoning: provider.reasoning ?? true,
+      thinkingLevelMap: provider.thinkingLevelMap,
+      input: provider.input ? [...provider.input] : ["text"],
+      contextWindow: provider.contextWindow ?? 128_000,
+      maxTokens: provider.maxTokens ?? 8192,
+      headers: provider.headers,
+      compat: provider.compat,
+    })),
+  };
+}
+
+/**
+ * OpenCode Zen / Go route and cache by conversation and ask every client to send
+ * a stable id per conversation in `x-opencode-session`
+ * (https://opencode.ai/docs/go/). Other endpoints get none unless configured.
+ */
+export function defaultSessionHeader(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return undefined;
+  }
+  return host === "opencode.ai" || host.endsWith(".opencode.ai") ? "x-opencode-session" : undefined;
 }
 
 export function providerApi(kind: string): string {

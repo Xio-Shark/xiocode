@@ -20,6 +20,7 @@ import { withModelId } from "./subagent.ts";
 import type { SubagentUiBridge } from "./subagent-ui.ts";
 
 import type { ResolvedExploreConfig } from "./types.ts";
+import type { ClientIdentity } from "../providers/client.ts";
 
 /** Race scale probe against a tight budget so session start stays interactive. */
 async function estimateExploreScaleBounded(
@@ -56,6 +57,8 @@ export type RegisterExploreOptions = Readonly<{
   fileShift?: FileShiftRegistry;
   /** Called when an explore worker's read is later overwritten by another context. */
   onFileShift?: (info: FileShiftInfo) => void;
+  /** Session's client identity; each worker sends a derived session id. */
+  clientIdentity?: ClientIdentity;
 }>;
 
 export type ExploreCapabilityHandle = Readonly<{
@@ -165,6 +168,7 @@ export async function registerExploreCapability(
         subagentUi: options.subagentUi,
         fileShift: options.fileShift,
         onFileShift: options.onFileShift,
+        clientIdentity: options.clientIdentity,
       }));
 
       host.on("before_agent_start", (payload, ctx) => {

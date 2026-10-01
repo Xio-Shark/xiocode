@@ -20,13 +20,14 @@ afterEach(async () => {
 });
 
 /** OpenAI-compatible stub: first request asks for one bash call, later ones answer "done". */
-async function startFakeProvider(command: string): Promise<{ baseUrl: string; requests: number }> {
-  const state = { requests: 0 };
+async function startFakeProvider(command: string): Promise<{ baseUrl: string; requests: number; headers: http.IncomingHttpHeaders[] }> {
+  const state = { requests: 0, headers: [] as http.IncomingHttpHeaders[] };
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
       state.requests += 1;
+      state.headers.push(req.headers);
       const request = JSON.parse(body || "{}") as { stream?: boolean; messages?: { role: string }[] };
       const answered = (request.messages ?? []).some((m) => m.role === "tool");
       const call = { index: 0, id: "call_0", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } };
@@ -50,9 +51,10 @@ async function startFakeProvider(command: string): Promise<{ baseUrl: string; re
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const port = (server.address() as { port: number }).port;
-  return Object.defineProperty({ baseUrl: `http://127.0.0.1:${port}/v1` }, "requests", { get: () => state.requests }) as {
+  return Object.defineProperty({ baseUrl: `http://127.0.0.1:${port}/v1`, headers: state.headers }, "requests", { get: () => state.requests }) as {
     baseUrl: string;
     requests: number;
+    headers: http.IncomingHttpHeaders[];
   };
 }
 
@@ -65,7 +67,7 @@ function setup(baseUrl: string) {
   mkdirSync(workspace);
   writeFileSync(path.join(home, ".xiocode", "config.toml"), [
     "[general]", 'default_provider = "local"', 'default_model = "stub"', "",
-    "[providers.local]", 'kind = "openai"', `base_url = "${baseUrl}"`, 'model = "stub"', 'api_key_env = "XIO_TEST_KEY"', "",
+    "[providers.local]", 'kind = "openai"', `base_url = "${baseUrl}"`, 'model = "stub"', 'api_key_env = "XIO_TEST_KEY"', 'session_header = "x-conversation"', "",
     "[trust]", 'mode = "trust"', "",
   ].join("\n"));
   execFileSync("git", ["init", "-q"], { cwd: workspace });
@@ -124,6 +126,9 @@ describe.skipIf(process.platform === "win32")("WebAgentHost", () => {
     await waitFor(events, "web.idle");
 
     expect(provider.requests).toBeGreaterThan(0);
+    // Every provider call says who is calling and which conversation it belongs to.
+    expect(provider.headers.every((h) => /^xiocode\//.test(String(h["user-agent"])))).toBe(true);
+    expect(new Set(provider.headers.map((h) => h["x-conversation"]))).toEqual(new Set(["web-1"]));
     expect(existsSync(path.join(workspace, "web-made.txt"))).toBe(true);
     const names = events.map((event) => event.event);
     expect(names).toEqual(expect.arrayContaining(["turn.start", "tool.call", "tool.result", "text.delta", "run.end", "web.turn_end"]));
