@@ -14,7 +14,7 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
-Requires a `@xioflow/kernel` release newer than 0.5.1 (rollback results carry `ignoredFiles`; workspace transactions accept an observation log).
+Requires `@xioflow/kernel` 0.6.0 (rollback results carry `ignoredFiles`; workspace transactions accept an observation log).
 
 ### Changed
 - **Interactive keymap conflict resolution and cleanup.**
