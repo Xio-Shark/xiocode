@@ -13,11 +13,15 @@ import {
   formatToolExpandHint,
   formatToolOutputForDisplay,
   isExploreToolName,
+  toolCallDetail,
 } from "../runtime/session-ui.ts";
+import type { ChatToolCall } from "../runtime/types.ts";
 import { CONTEXT_SUMMARY_NAME } from "../runtime/context-compaction.ts";
 import { SESSION_RECOVERY_NAME } from "../runtime/session-recovery.ts";
-import { renderMarkdownLines } from "./markdown.ts";
+import wrapAnsi from "wrap-ansi";
+import { isRenderedTableRow, renderMarkdownLines, renderProgressiveMarkdown } from "./markdown.ts";
 import { STREAM_CURSOR } from "./motion.ts";
+import { displayWidth, stripAnsi } from "./text-selection.ts";
 import { theme, truncateToolDetail } from "./theme.ts";
 
 import type { TuiEvent } from "./session-bridge.ts";
@@ -244,47 +248,230 @@ export function isInternalNotice(text: string): boolean {
   return false;
 }
 
-/** Match known error patterns to structured title and actionable remedy hints. */
-export function resolveRemedyHint(message: string): { title: string; hint?: string } {
+/** Structured error classification codes. */
+export type ErrorCode =
+  | "auth"
+  | "model_not_found"
+  | "rate_limit"
+  | "context_overflow"
+  | "network"
+  | "permission_denied"
+  | "provider_error"
+  | "unknown";
+
+/** Classify error into structured ErrorCode based on HTTP status or text patterns. */
+export function classifyErrorCode(
+  message: string,
+  statusCode?: number,
+): ErrorCode {
+  if (statusCode === 401 || statusCode === 403) return "auth";
+  if (statusCode === 404) return "model_not_found";
+  if (statusCode === 429) return "rate_limit";
+  if (statusCode && statusCode >= 500 && statusCode < 600) return "network";
+
   const lower = message.toLowerCase();
-  if (lower.includes("404") || lower.includes("not found") || lower.includes("model") || lower.includes("provider unavailable")) {
-    return {
-      title: "Provider Error",
-      hint: "Check base_url or run /model to pick an available model",
-    };
+
+  // 1. Context window / token overflow (must check before generic token/model)
+  if (
+    lower.includes("max tokens")
+    || lower.includes("maximum context")
+    || lower.includes("context length")
+    || lower.includes("context window")
+    || lower.includes("context_length_exceeded")
+    || lower.includes("context overflow")
+    || lower.includes("compaction")
+  ) {
+    return "context_overflow";
   }
-  if (lower.includes("compact") || lower.includes("compaction") || lower.includes("context window")) {
-    return {
-      title: "Compaction Error",
-      hint: "Run /compact or inspect context window",
-    };
+
+  // 2. Auth / credentials
+  if (
+    lower.includes("401")
+    || lower.includes("403")
+    || lower.includes("unauthorized")
+    || lower.includes("forbidden")
+    || lower.includes("invalid api key")
+    || lower.includes("missing api key")
+    || lower.includes("no apikey")
+    || lower.includes("authentication")
+    || lower.includes("credential")
+  ) {
+    return "auth";
   }
-  if (lower.includes("permission") || lower.includes("denied") || lower.includes("unauthorized")) {
-    return {
-      title: "Permission Notice",
-      hint: "Run /bypass or adjust permission mode",
-    };
+
+  // 3. Rate limit / quota
+  if (
+    lower.includes("429")
+    || lower.includes("rate limit")
+    || lower.includes("too many requests")
+    || lower.includes("quota exceeded")
+    || lower.includes("insufficient_quota")
+  ) {
+    return "rate_limit";
   }
-  if (lower.includes("connect") || lower.includes("credential") || lower.includes("api key") || lower.includes("token")) {
-    return {
-      title: "Connection Error",
-      hint: "Run /connect to verify provider credentials",
-    };
+
+  // 4. Model not found
+  if (
+    lower.includes("404")
+    || lower.includes("model not found")
+    || lower.includes("unknown model")
+    || lower.includes("model does not exist")
+    || lower.includes("model_not_found")
+  ) {
+    return "model_not_found";
   }
-  return { title: "Error" };
+
+  // 5. Permission denied / security block
+  if (
+    lower.includes("permission denied")
+    || lower.includes("permission notice")
+    || lower.includes("command blocked")
+    || lower.includes("blocked (")
+    || lower.includes("eacces")
+    || lower.includes("eperm")
+  ) {
+    return "permission_denied";
+  }
+
+  // 6. Network connectivity
+  if (
+    lower.includes("enotfound")
+    || lower.includes("econnrefused")
+    || lower.includes("econnreset")
+    || lower.includes("fetch failed")
+    || lower.includes("etimedout")
+    || lower.includes("socket hang up")
+    || lower.includes("network error")
+    || lower.includes("502")
+    || lower.includes("503")
+    || lower.includes("504")
+  ) {
+    return "network";
+  }
+
+  // 7. Generic provider error
+  if (
+    lower.includes("500")
+    || lower.includes("internal server error")
+    || lower.includes("provider unavailable")
+  ) {
+    return "provider_error";
+  }
+
+  return "unknown";
 }
 
-/** Formats an error into a clean, boxed callout card. */
-export function buildCalloutLines(title: string, message: string, hint?: string, minWidth = 56): string[] {
+/** Match known error patterns to structured title and actionable remedy hints. */
+export function resolveRemedyHint(
+  message: string,
+  statusCode?: number,
+  explicitCode?: ErrorCode,
+): { title: string; hint?: string; code: ErrorCode } {
+  const code = explicitCode ?? classifyErrorCode(message, statusCode);
+  switch (code) {
+    case "auth":
+      return {
+        code,
+        title: "Connection Error",
+        hint: "Run /connect to verify provider credentials",
+      };
+    case "model_not_found":
+      return {
+        code,
+        title: "Provider Error",
+        hint: "Check base_url or run /model to pick an available model",
+      };
+    case "rate_limit":
+      return {
+        code,
+        title: "Rate Limit Exceeded",
+        hint: "Wait a moment and retry, or check provider quota/billing",
+      };
+    case "context_overflow":
+      return {
+        code,
+        title: "Compaction Error",
+        hint: "Run /compact or inspect context window",
+      };
+    case "permission_denied":
+      return {
+        code,
+        title: "Permission Notice",
+        hint: "Run /bypass or adjust permission mode",
+      };
+    case "network":
+      return {
+        code,
+        title: "Network Error",
+        hint: "Check your internet connection and proxy settings (HTTPS_PROXY)",
+      };
+    case "provider_error":
+      return {
+        code,
+        title: "Provider Error",
+        hint: "The provider returned an error; retry in a moment or switch models",
+      };
+    case "unknown":
+    default:
+      return { code: "unknown", title: "Error" };
+  }
+}
+
+/** Formats an error into a clean, boxed callout card with symmetric borders and display width awareness. */
+export function buildCalloutLines(
+  title: string,
+  message: string,
+  hint?: string,
+  columns = 76,
+): string[] {
   const cleanMsg = message.trim();
+  const maxInner = Math.max(24, Math.min(columns - 4, 72));
+
+  const msgChunks: string[] = [];
+  for (const rawLine of cleanMsg.split("\n")) {
+    if (displayWidth(stripAnsi(rawLine)) <= maxInner) {
+      msgChunks.push(rawLine);
+    } else {
+      msgChunks.push(...wrapAnsi(rawLine, maxInner, { hard: true, trim: false }).split("\n"));
+    }
+  }
+
+  const hintChunks: string[] = [];
+  if (hint && hint.trim().length > 0) {
+    const hintText = `${theme.sym.arrow} ${hint.trim()}`;
+    if (displayWidth(stripAnsi(hintText)) <= maxInner) {
+      hintChunks.push(hintText);
+    } else {
+      hintChunks.push(...wrapAnsi(hintText, maxInner, { hard: true, trim: false }).split("\n"));
+    }
+  }
+
   const titlePart = `─ ${title} `;
-  const width = Math.max(minWidth, titlePart.length + 6, cleanMsg.length + 4, (hint?.length ?? 0) + 6);
-  const top = `┌${titlePart}`.padEnd(width - 1, "─") + "┐";
-  const bottom = "└" + "─".repeat(width - 2) + "┘";
-  const rows = [
-    `│ ${cleanMsg}`,
-    ...(hint ? [`│ ${theme.sym.arrow} ${hint}`] : []),
-  ];
+  let innerWidth = Math.max(36, displayWidth(titlePart) + 4);
+  for (const line of msgChunks) {
+    innerWidth = Math.max(innerWidth, displayWidth(stripAnsi(line)));
+  }
+  for (const line of hintChunks) {
+    innerWidth = Math.max(innerWidth, displayWidth(stripAnsi(line)));
+  }
+  innerWidth = Math.min(innerWidth, maxInner);
+
+  const topDashCount = Math.max(1, innerWidth + 2 - displayWidth(titlePart));
+  const top = `┌${titlePart}${"─".repeat(topDashCount)}┐`;
+  const bottom = `└${"─".repeat(innerWidth + 2)}┘`;
+
+  const rows: string[] = [];
+  for (const line of msgChunks) {
+    const pad = Math.max(0, innerWidth - displayWidth(stripAnsi(line)));
+    rows.push(`│ ${line}${" ".repeat(pad)} │`);
+  }
+  if (hintChunks.length > 0) {
+    for (const line of hintChunks) {
+      const pad = Math.max(0, innerWidth - displayWidth(stripAnsi(line)));
+      rows.push(`│ ${line}${" ".repeat(pad)} │`);
+    }
+  }
+
   return [top, ...rows, bottom];
 }
 
@@ -418,15 +605,17 @@ export function reduceScrollback(state: ScrollbackState, event: TuiEvent): Scrol
           const { title, hint } = resolveRemedyHint(event.text);
           return buildCalloutLines(title, event.text, hint);
         })()
-      : [`${theme.sym.meta} ${event.text}`];
+      : event.text.split("\n").map((line) => `${theme.sym.meta} ${line}`);
+    const title = event.detail ? "Recovery Notice" : undefined;
     return {
       ...next,
       blocks: [...next.blocks, {
         id: next.nextId,
         kind: "notice",
         lines,
+        title,
         error: isError,
-        output: event.text,
+        output: event.detail ?? event.text,
       }],
       live: undefined,
       nextId: next.nextId + 1,
@@ -731,9 +920,19 @@ export function appendUserBlock(state: ScrollbackState, text: string): Scrollbac
 }
 
 export function blocksFromRestoredMessages(
-  messages: ReadonlyArray<Readonly<{ role: string; content?: string; name?: string }>>,
+  messages: ReadonlyArray<Readonly<{
+    role: string;
+    content?: string;
+    name?: string;
+    toolCallId?: string;
+    toolCalls?: readonly ChatToolCall[];
+    isError?: boolean;
+  }>>,
 ): ScrollbackState {
   let state = emptyScrollbackState();
+  const pendingCallsById = new Map<string, { id: string; name: string; detail: string }>();
+  const pendingCallsQueue: Array<{ id: string; name: string; detail: string }> = [];
+
   for (const message of messages) {
     if (message.role === "system") {
       if (message.name === CONTEXT_SUMMARY_NAME) {
@@ -753,21 +952,100 @@ export function blocksFromRestoredMessages(
       }
       continue;
     }
+
     if (message.role === "user" && typeof message.content === "string" && message.content.length > 0) {
       state = appendUserBlock(state, message.content);
-    } else if (message.role === "assistant" && typeof message.content === "string" && message.content.length > 0) {
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      // 1. If assistant message has non-empty prose content, create assistant block
+      if (typeof message.content === "string" && message.content.trim().length > 0) {
+        state = {
+          ...state,
+          blocks: [...state.blocks, {
+            id: state.nextId,
+            kind: "assistant",
+            lines: assistantBlockLines(message.content),
+          }],
+          live: undefined,
+          nextId: state.nextId + 1,
+        };
+      }
+      // 2. If assistant triggered toolCalls, record them for pairing with incoming tool messages
+      if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+        for (const call of message.toolCalls) {
+          const detail = toolCallDetail(call);
+          const item = { id: call.id, name: call.name, detail };
+          if (call.id) {
+            pendingCallsById.set(call.id, item);
+          }
+          pendingCallsQueue.push(item);
+        }
+      }
+      continue;
+    }
+
+    if (message.role === "tool") {
+      let matched: { id: string; name: string; detail: string } | undefined;
+      if (message.toolCallId && pendingCallsById.has(message.toolCallId)) {
+        matched = pendingCallsById.get(message.toolCallId);
+        pendingCallsById.delete(message.toolCallId);
+        const qIndex = pendingCallsQueue.findIndex((c) => c.id === message.toolCallId);
+        if (qIndex >= 0) pendingCallsQueue.splice(qIndex, 1);
+      } else if (pendingCallsQueue.length > 0) {
+        matched = pendingCallsQueue.shift();
+        if (matched?.id) pendingCallsById.delete(matched.id);
+      }
+
+      const name = matched?.name ?? message.name ?? "tool";
+      const detail = matched?.detail ?? "";
+      const callId = message.toolCallId ?? matched?.id;
+      const output = typeof message.content === "string" ? message.content : "";
+      const isError = message.isError === true
+        || output.startsWith("Error:")
+        || output.startsWith("error:")
+        || output.startsWith("Fail:")
+        || output.startsWith("fail:");
+
+      const toolBlock = buildToolHistoryBlock({
+        id: state.nextId,
+        name,
+        detail,
+        callId,
+        error: isError,
+        output,
+      });
+
       state = {
         ...state,
-        blocks: [...state.blocks, {
-          id: state.nextId,
-          kind: "assistant",
-          lines: assistantBlockLines(message.content),
-        }],
+        blocks: [...state.blocks, toolBlock],
         live: undefined,
         nextId: state.nextId + 1,
       };
+      continue;
     }
   }
+
+  // Any in-flight tool calls from an interrupted session
+  while (pendingCallsQueue.length > 0) {
+    const call = pendingCallsQueue.shift()!;
+    const incompleteBlock = buildToolHistoryBlock({
+      id: state.nextId,
+      name: call.name,
+      detail: call.detail,
+      callId: call.id,
+      error: true,
+      output: "[Interrupted or incomplete tool execution]",
+    });
+    state = {
+      ...state,
+      blocks: [...state.blocks, incompleteBlock],
+      live: undefined,
+      nextId: state.nextId + 1,
+    };
+  }
+
   return state;
 }
 
@@ -795,11 +1073,93 @@ export type RenderLine = Readonly<{
  * offset semantics match {@link sliceTranscriptWindow}: 0 = bottom (latest),
  * increasing offset scrolls upward, counted in lines.
  */
+// Cache key: `${block.id}:${block.lines.length}:${isFolded ? 1 : 0}:${columns}`
+const blockWrapCache = new Map<string, readonly string[]>();
+const MAX_WRAP_CACHE_ENTRIES = 2_000;
+
+/**
+ * Wrap a history block's lines into terminal display rows based on column width.
+ * Cached by blockId, content version, folded state, and columns for high frame rates.
+ */
+export function wrapBlockLines(
+  block: HistoryBlock,
+  columns?: number,
+  isFolded = false,
+): readonly string[] {
+  const rawSource = isFolded
+    ? [block.lines[0] ?? block.title ?? ""]
+    : block.lines.length > 0
+      ? block.lines
+      : [""];
+
+  if (!columns || columns <= 0) {
+    return rawSource;
+  }
+
+  const firstLineSample = rawSource[0]?.slice(0, 32) ?? "";
+  const cacheKey = `${block.id}:${block.kind}:${block.lines.length}:${firstLineSample}:${isFolded ? 1 : 0}:${columns}`;
+  const hit = blockWrapCache.get(cacheKey);
+  if (hit) return hit;
+
+  const compact = block.kind === "tool"
+    || block.kind === "thinking"
+    || block.kind === "subagent";
+
+  // Compact blocks are truncated rather than wrapped
+  if (compact) {
+    blockWrapCache.set(cacheKey, rawSource);
+    return rawSource;
+  }
+
+  const wrapped: string[] = [];
+  for (const line of rawSource) {
+    if (isRenderedTableRow(line)) {
+      // Table rows are formatted with fixed cell padding and truncated, never broken across rows
+      wrapped.push(line);
+      continue;
+    }
+    const plain = stripAnsi(line);
+    if (displayWidth(plain) <= columns) {
+      wrapped.push(line);
+      continue;
+    }
+    const chunks = wrapAnsi(line, columns, { hard: true, trim: false }).split("\n");
+    for (const chunk of chunks) {
+      wrapped.push(chunk);
+    }
+  }
+
+  if (blockWrapCache.size >= MAX_WRAP_CACHE_ENTRIES) {
+    const iter = blockWrapCache.keys();
+    for (let i = 0; i < 500; i += 1) {
+      const k = iter.next().value;
+      if (k) blockWrapCache.delete(k);
+    }
+  }
+
+  blockWrapCache.set(cacheKey, wrapped);
+  return wrapped;
+}
+
+/** Clear the block wrap cache (e.g. on window resize or reset). */
+export function clearBlockWrapCache(): void {
+  blockWrapCache.clear();
+}
+
+/**
+ * Flatten history blocks into styled render lines so the fullscreen window can
+ * scroll **by display line** (a block taller than the viewport is partially visible
+ * instead of jumping/overflowing atomically).
+ *
+ * offset semantics match {@link sliceTranscriptWindow}: 0 = bottom (latest),
+ * increasing offset scrolls upward, counted in visual display lines.
+ */
 export function sliceTranscriptLineWindow(
   blocks: readonly HistoryBlock[],
   viewport: number,
   offset: number,
   folded?: ReadonlySet<number>,
+  columns?: number,
 ): Readonly<{
   lines: readonly RenderLine[];
   offset: number;
@@ -810,6 +1170,8 @@ export function sliceTranscriptLineWindow(
 }> {
   const size = Math.max(1, Math.floor(viewport));
   const flat: RenderLine[] = [];
+  const effectiveCols = columns && columns > 0 ? columns : 0;
+
   for (const block of blocks) {
     const explore = isExploreHistoryBlock(block);
     const compact = block.kind === "tool"
@@ -819,12 +1181,8 @@ export function sliceTranscriptLineWindow(
     // Folded compact blocks keep only their title row (the rest stays in
     // `output` for the Ctrl+O viewer); user/assistant blocks never fold.
     const isFolded = compact && folded?.has(block.id) === true;
-    // Every block occupies at least one row so empty blocks stay addressable.
-    const source = isFolded
-      ? [block.lines[0] ?? block.title ?? ""]
-      : block.lines.length > 0
-        ? block.lines
-        : [""];
+    const source = wrapBlockLines(block, effectiveCols, isFolded);
+
     source.forEach((text, index) => {
       flat.push({
         blockId: block.id,
@@ -855,10 +1213,15 @@ export function sliceTranscriptLineWindow(
 
 /** Every folded block with retained full output, in transcript order. */
 export function expandableHistoryBlocks(state: ScrollbackState): readonly HistoryBlock[] {
-  return state.blocks.filter((block) =>
-    (block.kind === "thinking" || block.kind === "tool" || block.kind === "subagent")
-    && (block.output?.length ?? 0) > 0
-  );
+  return state.blocks.filter((block) => {
+    if (block.kind === "thinking" || block.kind === "tool" || block.kind === "subagent") {
+      return (block.output?.length ?? 0) > 0;
+    }
+    if (block.kind === "notice") {
+      return Boolean(block.output && block.output.includes("\n"));
+    }
+    return false;
+  });
 }
 
 /** Latest thinking/tool/subagent block with retained full output for Ctrl+O. */
@@ -939,8 +1302,12 @@ export function formatLiveLines(
     }
   } else if (live?.kind === "assistant") {
     const preview = boundLivePreviewFromBuffer(live.buffer, budget);
-    // Stream cursor marks "still generating" (motion-gated via spinnerFrame).
-    lines.push(`${theme.sym.answer} ${preview}${spin ? STREAM_CURSOR : ""}`);
+    const rendered = renderProgressiveMarkdown(preview, { spinnerFrame: spin });
+    if (rendered.length === 0) {
+      lines.push(`${theme.sym.answer} ${spin ? STREAM_CURSOR : ""}`);
+    } else {
+      lines.push(`${theme.sym.answer} ${rendered[0]!}`, ...rendered.slice(1));
+    }
   }
   for (const tool of inFlightTools) {
     const detail = tool.detail.trim().length > 0 ? ` ${truncateToolDetail(tool.detail)}` : "";

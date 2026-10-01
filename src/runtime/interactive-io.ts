@@ -15,7 +15,7 @@ export type PromptOptions = Readonly<{
  */
 export type InteractiveIO = Readonly<{
   ask: (question: string, detail?: string) => Promise<boolean>;
-  select: (question: string, choices: readonly SelectChoice[]) => Promise<string | undefined>;
+  select: (question: string, choices: readonly SelectChoice[], detail?: string) => Promise<string | undefined>;
   prompt: (question: string, options?: PromptOptions) => Promise<string | undefined>;
 }>;
 

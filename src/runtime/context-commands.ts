@@ -10,6 +10,8 @@ export function registerContextCommands(options: Readonly<{
 }>): void {
   options.host.registerCommand("compact", {
     description: "Compact older context into a continuation summary.",
+    group: "common",
+    weight: 70,
     handler: async (args) => {
       const focus = typeof args === "string" && args.trim().length > 0 ? args.trim() : undefined;
       await options.compact("manual", focus);

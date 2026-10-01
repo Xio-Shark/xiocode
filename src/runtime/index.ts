@@ -151,6 +151,7 @@ export type {
   ProviderRegistration,
   ProviderToolChoice,
   ProviderToolChoiceScope,
+  SlashCommandGroup,
   StreamEvent,
   ThinkingDisplay,
   ThinkingLevel,

@@ -54,7 +54,7 @@ export type ModelInfo = Readonly<{
 }>;
 
 export type CommandUi = Readonly<{
-  notify?: (message: string, level?: string) => unknown;
+  notify?: (message: string, level?: string, detail?: string) => unknown;
   setStatus?: (key: string, text: string | undefined) => unknown;
   setWidget?: (key: string, content: readonly string[] | undefined, options?: unknown) => unknown;
 }>;
@@ -72,8 +72,14 @@ export type CommandHandlerContext = Readonly<{
   hasUI?: boolean;
 }>;
 
+export type SlashCommandGroup = "common" | "session" | "diagnostics";
+
 export type CommandOptions = Readonly<{
   description?: string;
+  group?: SlashCommandGroup;
+  weight?: number;
+  aliases?: readonly string[];
+  aliasFor?: string;
   handler: (args?: unknown, ctx?: CommandHandlerContext) => unknown;
 }>;
 

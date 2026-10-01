@@ -106,3 +106,51 @@ describe("composerHint", () => {
       .toBe("esc again to clear the draft");
   });
 });
+
+describe("keymap conflict resolution (T09)", () => {
+  it("ensures no duplicate keys exist within the same group (zero ambiguity)", () => {
+    for (const fullscreen of [false, true]) {
+      const groups = shortcutGroups({ fullscreen });
+      for (const group of groups) {
+        const seenKeys = new Set<string>();
+        for (const item of group.items) {
+          expect(seenKeys.has(item.keys), `Duplicate key "${item.keys}" in group "${group.title}"`).toBe(false);
+          seenKeys.add(item.keys);
+        }
+      }
+    }
+  });
+
+  it("reserves ctrl+r for history search and alt+z for top block folding", () => {
+    const promptGroup = shortcutGroups().find((g) => g.title === "Prompt");
+    const findGroup = shortcutGroups().find((g) => g.title === "Find");
+
+    const ctrlR = promptGroup?.items.find((item) => item.keys === "ctrl+r");
+    expect(ctrlR).toBeDefined();
+    expect(ctrlR?.description.toLowerCase()).toContain("history");
+
+    const fold = findGroup?.items.find((item) => item.keys === "alt+z");
+    expect(fold).toBeDefined();
+    expect(fold?.description.toLowerCase()).toContain("fold");
+  });
+
+  it("reserves Tab for completion only, not thinking levels", () => {
+    const promptGroup = shortcutGroups().find((g) => g.title === "Prompt");
+    const tabItem = promptGroup?.items.find((item) => item.keys === "tab");
+    expect(tabItem).toBeDefined();
+    expect(tabItem?.description.toLowerCase()).toContain("completion");
+    expect(tabItem?.description.toLowerCase()).not.toContain("thinking");
+  });
+
+  it("does not bind Ctrl+C to clearing drafts (reserved exclusively for cancel and double-press exit)", () => {
+    const promptGroup = shortcutGroups().find((g) => g.title === "Prompt");
+    const ctrlCInPrompt = promptGroup?.items.find((item) => item.keys === "ctrl+c");
+    expect(ctrlCInPrompt).toBeUndefined();
+
+    const sessionGroup = shortcutGroups().find((g) => g.title === "Session");
+    const exitItem = sessionGroup?.items.find((item) => item.keys.includes("ctrl+c"));
+    expect(exitItem).toBeDefined();
+    expect(exitItem?.description.toLowerCase()).toContain("exit");
+  });
+});
+

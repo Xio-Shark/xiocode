@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 
 import { fuzzyFilter } from "./fuzzy.ts";
 import { sliceViewerWindow } from "./composer.ts";
+import { formatDiffDetail, type FormattedDiffLine } from "./diff-render.ts";
 import {
   type HistoryBlock,
   type InFlightSubagent,
@@ -18,27 +19,36 @@ import {
 
 const h = React.createElement;
 
-export type SlashCommand = Readonly<{ name: string; description: string }>;
+export type SlashCommandGroup = "common" | "session" | "diagnostics";
+
+export type SlashCommand = Readonly<{
+  name: string;
+  description: string;
+  group?: SlashCommandGroup;
+  weight?: number;
+  aliases?: readonly string[];
+  aliasFor?: string;
+}>;
 
 export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "help", description: "Show available commands." },
+  { name: "help", description: "Show available commands.", group: "common", weight: 60 },
+  { name: "exit", description: "End the session.", group: "session", weight: 100, aliases: ["quit"] },
+  { name: "quit", description: "Alias for /exit.", aliasFor: "exit" },
   {
     name: "bypass",
     description: "Alias for /permission full; unsafe shell and merge/rollback still confirm.",
+    aliasFor: "permission",
   },
-  { name: "exit", description: "End the session." },
-  { name: "quit", description: "Alias for /exit." },
 ];
 
 export const SLASH_MENU_VISIBLE = 8;
 
-/**
- * Rows consumed by chrome around the Ctrl+O overlay: brand header (4) +
- * overlay margins/border/title/hint/indicator (7) + composer (5) + footer (2).
- * The viewer viewport must leave this room or the frame exceeds the terminal
- * and Ink leaves residue on close.
- */
-export const VIEWER_CHROME_ROWS = 18;
+import {
+  VIEWER_CHROME_ROWS,
+  computeViewerViewport,
+} from "./chrome-metrics.ts";
+
+export { VIEWER_CHROME_ROWS };
 
 /**
  * Viewer viewport height and last valid scroll offset — one formula shared by
@@ -49,7 +59,7 @@ export function viewerScrollBounds(block: HistoryBlock, rows: number): Readonly<
   maxOffset: number;
 }> {
   const body = block.output ?? block.lines.join("\n");
-  const viewport = Math.max(4, rows - VIEWER_CHROME_ROWS);
+  const viewport = computeViewerViewport(rows);
   return { viewport, maxOffset: Math.max(0, body.split("\n").length - viewport) };
 }
 
@@ -68,9 +78,11 @@ export function TranscriptViewerOverlay(props: Readonly<{
   const window = sliceViewerWindow(lines, viewport, props.scrollOffset);
   const title = props.block.kind === "thinking"
     ? `Thinking${props.block.thoughtSeconds ? ` · ${props.block.thoughtSeconds}s` : ""}`
-    : props.block.title
-      ? `${props.block.title}${props.block.detail ? ` ${truncateToolDetail(props.block.detail, 64)}` : ""}`
-      : "transcript";
+    : props.block.kind === "notice"
+      ? (props.block.title ?? "Recovery Notice")
+      : props.block.title
+        ? `${props.block.title}${props.block.detail ? ` ${truncateToolDetail(props.block.detail, 64)}` : ""}`
+        : "transcript";
   const position = props.historyIndex && props.historyTotal > 1
     ? ` ${props.historyIndex}/${props.historyTotal}`
     : "";
@@ -319,6 +331,28 @@ export function FileMenu(props: Readonly<{
       `(${props.selected + 1}/${props.items.length}) ↑↓ · Tab/Enter insert · Esc`));
 }
 
+export function slashGroupPriority(group?: string): number {
+  if (group === "common") return 0;
+  if (group === "session") return 1;
+  if (group === "diagnostics") return 2;
+  return 1; // default to session
+}
+
+export function formatSlashDescription(description: string, aliases?: readonly string[]): string {
+  if (!aliases || aliases.length === 0) return description;
+  if (description.includes("别名") || description.includes("Alias for")) return description;
+  const aliasPart = `(别名 ${aliases.map((a) => `/${a}`).join(", ")})`;
+  if (!description) return aliasPart;
+  return `${description} ${aliasPart}`;
+}
+
+export function slashFuzzySelector(command: SlashCommand): string {
+  const aliasStr = command.aliases && command.aliases.length > 0
+    ? ` ${command.aliases.map((a) => `/${a}`).join(" ")}`
+    : "";
+  return `/${command.name}${aliasStr}`;
+}
+
 /**
  * Command palette (Ctrl+P): searchable slash commands + built-in actions.
  * Filtering is substring on the label; Enter runs the picked command through
@@ -329,7 +363,7 @@ export function CommandPalette(props: Readonly<{
   selected: number;
   entries: readonly SlashCommand[];
 }>): React.JSX.Element {
-  const filtered = fuzzyFilter(props.entries, props.query, (entry) => `/${entry.name}`);
+  const filtered = fuzzyFilter(props.entries, props.query, slashFuzzySelector);
   if (filtered.length === 0) {
     return h(Box, {
       flexDirection: "column",
@@ -376,14 +410,68 @@ export function slashQuery(input: string): string | undefined {
 /** Exported for unit tests. */
 export function collectSlashCommands(host: { listCommandEntries(): readonly SlashCommand[] }): readonly SlashCommand[] {
   const map = new Map<string, SlashCommand>();
-  for (const command of BUILTIN_SLASH_COMMANDS) map.set(command.name, command);
+  for (const command of BUILTIN_SLASH_COMMANDS) map.set(command.name, { ...command });
   for (const command of host.listCommandEntries()) {
+    const existing = map.get(command.name);
     map.set(command.name, {
       name: command.name,
-      description: command.description.trim() || map.get(command.name)?.description || "",
+      description: command.description.trim() || existing?.description || "",
+      group: command.group ?? existing?.group,
+      weight: command.weight ?? existing?.weight,
+      aliases: command.aliases ?? existing?.aliases,
+      aliasFor: command.aliasFor ?? existing?.aliasFor,
     });
   }
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  // Gather alias-to-primary mappings
+  const aliasToPrimary = new Map<string, string>();
+  for (const [name, command] of map.entries()) {
+    if (command.aliasFor && map.has(command.aliasFor)) {
+      aliasToPrimary.set(name, command.aliasFor);
+    }
+    if (command.aliases) {
+      for (const alias of command.aliases) {
+        if (map.has(alias)) {
+          aliasToPrimary.set(alias, name);
+        }
+      }
+    }
+  }
+
+  // Merge alias names into primary command's aliases array
+  for (const [aliasName, primaryName] of aliasToPrimary.entries()) {
+    const primary = map.get(primaryName);
+    if (primary) {
+      const currentAliases = new Set(primary.aliases ?? []);
+      currentAliases.add(aliasName);
+      map.set(primaryName, {
+        ...primary,
+        aliases: [...currentAliases],
+      });
+    }
+  }
+
+  // Build the list of primary commands (excluding absorbed aliases)
+  const primaryCommands: SlashCommand[] = [];
+  for (const [name, command] of map.entries()) {
+    if (aliasToPrimary.has(name) && aliasToPrimary.get(name) !== name) {
+      continue;
+    }
+    primaryCommands.push({
+      ...command,
+      description: formatSlashDescription(command.description, command.aliases),
+    });
+  }
+
+  // Sort by group priority, then weight descending, then alphabetical name
+  return primaryCommands.sort((a, b) => {
+    const groupDiff = slashGroupPriority(a.group) - slashGroupPriority(b.group);
+    if (groupDiff !== 0) return groupDiff;
+    const weightA = a.weight ?? 0;
+    const weightB = b.weight ?? 0;
+    if (weightA !== weightB) return weightB - weightA;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 /** Exported for unit tests. Returns undefined when slash menu should be hidden. */
@@ -392,42 +480,117 @@ export function filterSlashCommands(
   query: string | undefined,
 ): readonly SlashCommand[] | undefined {
   if (query === undefined) return undefined;
-  const needle = query.toLowerCase();
-  return commands.filter((command) => command.name.toLowerCase().startsWith(needle));
+  return fuzzyFilter(commands, query, slashFuzzySelector);
 }
 
-export function DiffLine({ line }: Readonly<{ line: string }>): React.JSX.Element {
-  const color = line.startsWith("+") && !line.startsWith("+++")
-    ? "green"
-    : line.startsWith("-") && !line.startsWith("---") ? theme.error : undefined;
-  return h(Text, { color, wrap: "truncate-end" }, line || " ");
+export type ConfirmationChoice = Readonly<{
+  label: string;
+  value: string;
+  scope?: string;
+}>;
+
+export function DiffLine({ line }: Readonly<{ line: FormattedDiffLine | string }>): React.JSX.Element {
+  if (typeof line === "string") {
+    const isAdd = line.startsWith("+") && !line.startsWith("+++");
+    const isDel = line.startsWith("-") && !line.startsWith("---");
+    const color = isAdd ? theme.diffAdd : isDel ? theme.diffDel : undefined;
+    return h(Text, { color, wrap: "truncate-end" }, line || " ");
+  }
+
+  let color: string | undefined;
+  let bold = false;
+  let dimColor = false;
+
+  switch (line.type) {
+    case "file-header":
+      color = theme.brand;
+      bold = true;
+      break;
+    case "hunk-header":
+      color = theme.accent;
+      dimColor = true;
+      break;
+    case "add":
+      color = theme.diffAdd;
+      break;
+    case "del":
+      color = theme.diffDel;
+      break;
+    case "context":
+      color = theme.muted;
+      break;
+    case "plain":
+    default:
+      break;
+  }
+
+  return h(Text, { color, bold, dimColor, wrap: "truncate-end" }, line.text || " ");
 }
 
 export function ConfirmView(props: Readonly<{
-  confirm: Readonly<{ question: string; detail: string; scroll: number }>;
+  confirm: Readonly<{
+    question: string;
+    detail: string;
+    scroll: number;
+    choiceIndex?: number;
+    choices?: readonly ConfirmationChoice[];
+    scope?: string;
+  }>;
   rows: number;
+  columns?: number;
 }>): React.JSX.Element {
-  const sourceLines = props.confirm.detail.split("\n");
-  const allLines = sourceLines.length > 4_000
-    ? [...sourceLines.slice(0, 3_999), "(diff truncated at 4000 lines)"]
-    : sourceLines;
-  // App chrome (~7) + question + border + Yes/No; +1 more when a scroll caption is needed.
-  const baseReserve = 11;
-  const provisional = Math.max(4, props.rows - baseReserve);
-  const needsScroll = allLines.length > provisional;
-  const visibleCount = Math.max(4, props.rows - baseReserve - (needsScroll ? 1 : 0));
-  const maxScroll = Math.max(0, allLines.length - visibleCount);
+  const formattedLines = formatDiffDetail(props.confirm.detail);
+  const choices: readonly ConfirmationChoice[] = props.confirm.choices && props.confirm.choices.length > 0
+    ? props.confirm.choices
+    : [
+        { label: "Allow this call (仅本次)", value: "once" },
+        { label: "Deny (拒绝)", value: "deny" },
+      ];
+
+  const safeChoiceIndex = Math.min(
+    Math.max(0, props.confirm.choiceIndex ?? 0),
+    choices.length - 1,
+  );
+
+  // Reserve space: question + border (2) + choices + hint line + scroll caption
+  const choiceReserve = choices.length;
+  const baseReserve = 7 + choiceReserve;
+  const provisional = Math.max(3, props.rows - baseReserve);
+  const needsScroll = formattedLines.length > provisional;
+  const visibleCount = Math.max(3, props.rows - baseReserve - (needsScroll ? 1 : 0));
+  const maxScroll = Math.max(0, formattedLines.length - visibleCount);
   const scroll = Math.min(props.confirm.scroll, maxScroll);
-  const visible = allLines.slice(scroll, scroll + visibleCount);
-  const endLine = Math.min(scroll + visibleCount, allLines.length);
+  const visible = formattedLines.slice(scroll, scroll + visibleCount);
+  const endLine = Math.min(scroll + visibleCount, formattedLines.length);
+
   return h(Box, { flexDirection: "column", flexGrow: 1 },
-    h(Text, { bold: true }, props.confirm.question.replace(/\s*\[y\/N\]\s*$/i, "")),
+    h(Text, { bold: true },
+      props.confirm.question.replace(/\s*\[y\/N\]\s*$/i, ""),
+      props.confirm.scope ? h(Text, { color: theme.muted }, `  [${props.confirm.scope}]`) : null,
+    ),
     h(Box, { flexDirection: "column", borderStyle: "single" },
-      ...visible.map((line, index) => h(DiffLine, { key: `${scroll + index}-${line}`, line }))),
+      ...visible.map((line, index) => h(DiffLine, { key: `${scroll + index}-${line.rawText}`, line })),
+    ),
     maxScroll > 0
-      ? h(Text, { dimColor: true }, `lines ${scroll + 1}–${endLine}/${allLines.length}`)
+      ? h(Text, { dimColor: true }, `lines ${scroll + 1}–${endLine}/${formattedLines.length}`)
       : null,
-    h(Text, null,
-      h(Text, { bold: true, color: theme.accent }, "y"), " allow  ·  ",
-      h(Text, { bold: true }, "n"), " / enter / esc deny"));
+    h(Box, { flexDirection: "column", marginTop: 0, marginBottom: 0 },
+      ...choices.map((choice, index) => {
+        const active = index === safeChoiceIndex;
+        const marker = active ? `${theme.sym.select} ` : "  ";
+        const scopeSuffix = choice.scope ? `  [${choice.scope}]` : "";
+        return h(Text, {
+          key: `${choice.value}-${index}`,
+          color: active ? theme.accent : undefined,
+          bold: active,
+          dimColor: !active,
+          wrap: "truncate-end",
+        }, `${marker}${choice.label}${scopeSuffix}`);
+      }),
+    ),
+    h(Text, { dimColor: true },
+      "↑/↓ select · Enter confirm · y allow · n / Esc deny · PgUp/PgDn scroll",
+    ),
+  );
 }
+

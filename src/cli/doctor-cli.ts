@@ -45,6 +45,7 @@ export async function runDoctorCli(options: DoctorCliOptions = {}): Promise<numb
   rows.push(checkNode(options.nodeVersion ?? process.versions.node));
   rows.push(checkPlatform(options.platform ?? process.platform));
   rows.push(await checkConfig(env));
+  rows.push(checkTheme(env));
 
   const keyed = await collectProviderKeys(env);
   rows.push(checkKeys(keyed, env));
@@ -282,4 +283,29 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function checkTheme(env: NodeJS.ProcessEnv): CheckRow {
+  const custom = env.XIO_THEME;
+  const isTmux = Boolean(env.TMUX);
+  const term = env.TERM ?? "";
+  if (isTmux) {
+    return {
+      status: "ok",
+      name: "theme",
+      detail: `tmux active${custom ? ` (override: ${custom})` : ""}`,
+    };
+  }
+  if (term === "dumb") {
+    return {
+      status: "warn",
+      name: "theme",
+      detail: "TERM=dumb lacks color support; theme styling is disabled",
+    };
+  }
+  return {
+    status: "ok",
+    name: "theme",
+    detail: custom ? `active: ${custom} (via XIO_THEME)` : "from config.toml [ui] theme, or groknight; switch with /theme (the terminal background is not detected)",
+  };
 }

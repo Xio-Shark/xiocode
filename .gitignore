@@ -74,3 +74,6 @@ xiocode-audit-*
 *-audit-*
 .xiotask/
 *.bundle
+
+# web screenshots from scripts/web-visual-baseline.mjs (regenerated, reviewed by hand)
+artifacts/

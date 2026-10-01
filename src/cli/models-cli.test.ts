@@ -18,12 +18,14 @@ describe("runModelsCli", () => {
     expect(text).toContain("deepseek/deepseek-chat");
     expect(text).toContain("anthropic/claude-sonnet-4-20250514");
     expect(text).toContain("openai/gpt-4.1");
+    expect(text).toContain("$0.27");
+    expect(text).toContain("(default)");
     for (const line of text.trim().split("\n")) {
-      expect(line).toMatch(/^[^/\s]+\/\S+$/);
+      expect(line).toMatch(/^[^/\s]+\/\S+\s+\S+/);
     }
   });
 
-  it("merges credential-discovered models when a key is present", async () => {
+  it("merges credential-discovered models when a key is present and labels unpriced models", async () => {
     const out: string[] = [];
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ data: [{ id: "gpt-test-1" }, { id: "gpt-test-2" }] }), {
@@ -38,7 +40,10 @@ describe("runModelsCli", () => {
       fetchImpl,
     });
     expect(code).toBe(0);
-    expect(out.join("")).toContain("openai/gpt-test-1");
+    const text = out.join("");
+    expect(text).toContain("openai/gpt-test-1");
+    expect(text).toContain("未计价");
+    expect(text).toContain("[configured]");
     expect(fetchImpl).toHaveBeenCalled();
   });
 });

@@ -88,10 +88,27 @@ async function main(): Promise<void> {
   }
 
   try {
-    const { parseXioArgs } = await import("./cli-args.ts");
+    const { parseXioArgs, CliUsageError } = await import("./cli-args.ts");
     const xioArgs = parseXioArgs(rawArgs);
     if (handleXioFlag(xioArgs.passthrough, writeStdout)) {
       return;
+    }
+
+    const isInteractive =
+      xioArgs.promptOnce === undefined &&
+      xioArgs.resume?.action !== "list" &&
+      xioArgs.resume?.action !== "delete";
+
+    if (
+      isInteractive &&
+      (!process.stdin.isTTY || !process.stdout.isTTY) &&
+      process.env.XIO_PERF_BOOT_EXIT !== "1" &&
+      process.env.XIO_FORCE_INK !== "1"
+    ) {
+      throw new CliUsageError(
+        'Interactive mode requires a TTY terminal.\nTo run a prompt non-interactively, use: xio -p "<prompt>"',
+        1,
+      );
     }
 
     // Early operable boot (no Ink) marks first_frame before heavy agent imports.
@@ -134,7 +151,10 @@ async function main(): Promise<void> {
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     const { exitCli } = await import("./process-exit.ts");
-    exitCli(1);
+    const exitCode = typeof (error as { exitCode?: unknown })?.exitCode === "number"
+      ? (error as { exitCode: number }).exitCode
+      : 1;
+    exitCli(exitCode);
   }
 }
 

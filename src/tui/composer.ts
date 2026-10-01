@@ -306,6 +306,28 @@ export function historyDown(state: ComposerState): ComposerState {
   };
 }
 
+/**
+ * Reverse search prompt history matching the current draft or query (Ctrl+R).
+ * Cycles backwards through matching history entries.
+ */
+export function historySearch(state: ComposerState, query?: string): ComposerState {
+  if (state.history.length === 0) return state;
+  const q = (query ?? state.draftBeforeHistory ?? state.text).toLowerCase().trim();
+  const startIdx = state.historyIndex === -1 ? state.history.length - 1 : state.historyIndex - 1;
+  for (let i = startIdx; i >= 0; i -= 1) {
+    if (q.length === 0 || state.history[i]!.toLowerCase().includes(q)) {
+      return {
+        ...state,
+        draftBeforeHistory: state.historyIndex === -1 ? state.text : state.draftBeforeHistory,
+        historyIndex: i,
+        text: state.history[i]!,
+        cursor: state.history[i]!.length,
+      };
+    }
+  }
+  return state;
+}
+
 export function queueWhileBusy(state: ComposerState, value: string): ComposerState {
   const trimmed = value.trim();
   if (trimmed.length === 0) return state;

@@ -162,6 +162,23 @@ export function createSessionCostMeter(overrides?: PricingOverrides): SessionCos
   };
 }
 
+function formatRate(rate: number): string {
+  if (rate >= 1) return `$${rate.toFixed(2)}`;
+  if (rate >= 0.01) return `$${rate.toFixed(2)}`;
+  return `$${rate.toFixed(3)}`;
+}
+
+/**
+ * Format model unit pricing per 1M tokens. Returns "未计价" when pricing is absent.
+ */
+export function formatModelPrice(price: ModelPrice | undefined): string {
+  if (!price) return "未计价";
+  const inRate = formatRate(price.inputPerMTok);
+  const outRate = formatRate(price.outputPerMTok);
+  const cacheRate = price.cachePerMTok !== undefined ? ` (cache ${formatRate(price.cachePerMTok)})` : "";
+  return `${inRate} / ${outRate}${cacheRate} / 1M`;
+}
+
 /**
  * Session cost for the status row / `-p` footer. A trailing `+` marks that some
  * responses were unpriced, so the figure is a floor rather than the full bill.

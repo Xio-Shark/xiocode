@@ -132,16 +132,21 @@ export function registerPermissionCommands(
 
   options.host.registerCommand("permission", {
     description: "Switch permission mode: auto | full | strict (Shift+Tab cycles).",
+    group: "common",
+    weight: 50,
+    aliases: ["agent", "bypass"],
     handler,
   });
   // Keep /agent as alias pointing at permission modes (no plan/build).
   options.host.registerCommand("agent", {
     description: "Alias for /permission (auto|full|strict).",
+    aliasFor: "permission",
     handler,
   });
   options.host.registerCommand("bypass", {
     description:
       "Alias for /permission full; unsafe shell and merge/rollback still confirm. /bypass off → auto.",
+    aliasFor: "permission",
     handler: async (args?: unknown) => {
       const raw = typeof args === "string" ? args.trim().toLowerCase() : "";
       if (raw === "off") {
@@ -167,6 +172,8 @@ export function registerPermissionCommands(
   if (existing) {
     options.host.registerCommand("status", {
       description: existing.description ?? "Show XioCode runtime and run status.",
+      group: "diagnostics",
+      weight: 100,
       handler: async (args, ctx) => {
         const result = await existing.handler(args, ctx);
         const enrichment = statusEnrichment(
@@ -183,6 +190,8 @@ export function registerPermissionCommands(
   } else {
     options.host.registerCommand("status", {
       description: "Show permission mode and allowed tool risk classes.",
+      group: "diagnostics",
+      weight: 100,
       handler: async () => statusEnrichment(
         mode,
         highRiskPolicyForMode(mode, interactiveSession),

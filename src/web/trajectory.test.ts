@@ -10,6 +10,9 @@ describe("Trajectory Module", () => {
     expect(isToolResultError("Error: cannot read file")).toBe(true);
     expect(isToolResultError("[tool_result error] failed")).toBe(true);
     expect(isToolResultError("backend=local status=degraded")).toBe(true);
+    expect(isToolResultError("command blocked (complex-shell): piping not permitted")).toBe(true);
+    expect(isToolResultError("permission denied: /etc/shadow")).toBe(true);
+    expect(isToolResultError("tool interrupted: timeout")).toBe(true);
     expect(isToolResultError("file created successfully")).toBe(false);
   });
 

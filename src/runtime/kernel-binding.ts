@@ -13,6 +13,8 @@ import {
   formatOrphanRecoveryNotice,
   formatSessionRecoveryNotice,
   kernelDomainRoot,
+  readAndClearExitReason,
+  recordSignalExit,
   resolveProcessBackend,
   sweepOrphanedDomains,
   type KernelAcceptance,
@@ -24,7 +26,27 @@ import type { AuthorizationFact } from "./tool-permission.ts";
 import type { ExtensionHost } from "./extension-host.ts";
 import type { ChatMessage } from "./types.ts";
 
-type Notify = (message: string, level: "info" | "warning") => void;
+type Notify = (message: string, level: "info" | "warning", detail?: string) => void;
+
+let activeKernelDomainPath: string | undefined;
+let signalHandlersInstalled = false;
+
+export function setActiveKernelDomain(domainPath: string | undefined): void {
+  activeKernelDomainPath = domainPath;
+}
+
+export function installKernelSignalHandlers(): void {
+  if (signalHandlersInstalled) return;
+  signalHandlersInstalled = true;
+  for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => {
+      if (activeKernelDomainPath) {
+        recordSignalExit(activeKernelDomainPath, signal);
+      }
+      process.exit(128 + (signal === "SIGTERM" ? 15 : 1));
+    });
+  }
+}
 
 export async function openSessionKernel(input: Readonly<{
   sessionId: string;
@@ -43,10 +65,14 @@ export async function openSessionKernel(input: Readonly<{
     );
     return undefined;
   }
+  installKernelSignalHandlers();
+  setActiveKernelDomain(session.domainPath);
+
   const recovered = session.recoveryReport?.recoveredOperations ?? [];
-  const notice = formatSessionRecoveryNotice(recovered, session.domainPath);
+  const exitMeta = readAndClearExitReason(session.domainPath);
+  const notice = formatSessionRecoveryNotice(recovered, session.domainPath, exitMeta);
   if (notice) {
-    input.notify(notice, recovered.every((op) => op.resourcesReleased) ? "info" : "warning");
+    input.notify(notice.summary, notice.hasIndeterminate ? "warning" : "info", notice.detail);
   }
   if (input.env.XIOCODE_KERNEL_CONFINE === "1") {
     try {
@@ -61,7 +87,7 @@ export async function openSessionKernel(input: Readonly<{
     exclude: session.domainPath,
   }).then((orphans) => {
     const text = formatOrphanRecoveryNotice(orphans);
-    if (text) input.notify(text, "warning");
+    if (text) input.notify(text.summary, text.hasIndeterminate ? "warning" : "info", text.detail);
   }, (error: unknown) => {
     input.notify(`Kernel recovery sweep failed: ${errorText(error)}`, "warning");
   });
@@ -197,6 +223,8 @@ export function createAuthorizationRecorder(
 export function registerKernelCommand(host: ExtensionHost, getSession: () => KernelSession | undefined): void {
   host.registerCommand("kernel", {
     description: "Kernel domain status; /kernel adjudicate <opId> resolves an indeterminate operation.",
+    group: "diagnostics",
+    weight: 90,
     handler: async (args) => {
       const session = getSession();
       if (!session) return "Kernel session is not available in this session.";
@@ -215,6 +243,8 @@ export function registerKernelCommand(host: ExtensionHost, getSession: () => Ker
   });
   host.registerCommand("confine", {
     description: "Write confinement for commands: /confine on|off (on lets /rollback be complete).",
+    group: "diagnostics",
+    weight: 80,
     handler: async (args) => {
       const session = getSession();
       if (!session) return "Kernel session is not available in this session.";

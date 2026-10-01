@@ -14,6 +14,7 @@ export type ConfirmationRequest = Readonly<{
   detail?: string;
   actionId?: string;
   scopes?: readonly ("once" | "session")[];
+  choices?: readonly SelectChoice[];
 }>;
 
 export type TuiEvent =
@@ -30,7 +31,7 @@ export type TuiEvent =
   | Readonly<{ kind: "subagent-tool-start"; workerId: number; name: string; detail: string; callId?: string }>
   | Readonly<{ kind: "subagent-tool-end"; workerId: number; name: string; error: boolean; output: string; callId?: string }>
   | Readonly<{ kind: "context-compaction"; event: ContextCompactionUiEvent }>
-  | Readonly<{ kind: "notice"; text: string; level?: string }>
+  | Readonly<{ kind: "notice"; text: string; level?: string; detail?: string }>
   | Readonly<{ kind: "status"; key: string; text?: string }>
   | Readonly<{ kind: "widget"; key: string; lines?: readonly string[] }>
   | Readonly<{
@@ -39,9 +40,11 @@ export type TuiEvent =
     detail?: string;
     /** Semantic confirmation class (tool/merge/rollback/generic). */
     confirmKind?: ConfirmationRequest["kind"];
+    choices?: readonly SelectChoice[];
+    scope?: string;
   }>
   | Readonly<{ kind: "confirm-close" }>
-  | Readonly<{ kind: "select-open"; question: string; choices: readonly SelectChoice[] }>
+  | Readonly<{ kind: "select-open"; question: string; choices: readonly SelectChoice[]; detail?: string }>
   | Readonly<{ kind: "select-close" }>
   | Readonly<{ kind: "prompt-open"; question: string; secret?: boolean; placeholder?: string }>
   | Readonly<{ kind: "prompt-close" }>;
@@ -61,8 +64,8 @@ export class TuiSessionBridge implements InteractiveIO {
   #pendingPrompt: ((value: string | undefined) => void) | undefined;
 
   readonly sink: SessionUiSink = {
-    notify: (message, level) => {
-      this.emit({ kind: "notice", text: message, level });
+    notify: (message, level, detail) => {
+      this.emit({ kind: "notice", text: message, level, detail });
     },
     setStatus: (key, text) => this.emit({ kind: "status", key, text }),
     setWidget: (key, content) => this.emit({ kind: "widget", key, lines: content }),
@@ -107,15 +110,21 @@ export class TuiSessionBridge implements InteractiveIO {
       question: request.question,
       detail: request.detail,
       confirmKind: request.kind,
+      choices: request.choices,
+      scope: request.actionId,
     });
     return new Promise<boolean>((resolve) => {
       this.#pendingAnswer = resolve;
     });
   };
 
-  readonly select = async (question: string, choices: readonly SelectChoice[]): Promise<string | undefined> => {
+  readonly select = async (
+    question: string,
+    choices: readonly SelectChoice[],
+    detail?: string,
+  ): Promise<string | undefined> => {
     this.assertIdle();
-    this.emit({ kind: "select-open", question, choices });
+    this.emit({ kind: "select-open", question, choices, detail });
     return new Promise<string | undefined>((resolve) => {
       this.#pendingSelect = resolve;
     });
@@ -301,5 +310,6 @@ export function normalizeConfirmationRequest(
     detail: question.detail ?? detail,
     actionId: question.actionId,
     scopes: question.scopes,
+    choices: question.choices,
   };
 }

@@ -330,6 +330,12 @@ export type XioConfig = Readonly<{
   improve: XioImproveConfig;
   regress: XioRegressConfig;
   explore: XioExploreConfig;
+  ui?: XioUiConfig;
+}>;
+
+export type XioUiConfig = Readonly<{
+  theme?: string;
+  autoThemeSwitching?: boolean;
 }>;
 
 export type XioRuntimeConfig = Readonly<{
@@ -360,6 +366,7 @@ export type XioRuntimeConfig = Readonly<{
   explore: XioExploreConfig;
   retrospective: XioRetrospectiveConfig;
   regress: XioRegressConfig;
+  ui?: XioUiConfig;
 }>;
 
 export type ParsedXioConfig = Readonly<{
@@ -492,6 +499,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
   const regress = parseRegress(getTable(data, "regress"));
   const explore = parseExplore(getTable(data, "explore"));
   const retrospective = parseRetrospective(getTable(data, "retrospective"));
+  const ui = parseUi(getTable(data, "ui"));
   const xio: XioConfig = {
     general,
     providers,
@@ -514,6 +522,7 @@ export function parseXioConfig(content: string, options: ParseConfigOptions = {}
     improve,
     regress,
     explore,
+    ...(ui !== undefined ? { ui } : {}),
   };
   return {
     xio,
@@ -543,6 +552,18 @@ export function toRuntimeConfig(config: XioConfig): XioRuntimeConfig {
     explore: config.explore,
     retrospective: config.retrospective,
     regress: config.regress,
+    ...(config.ui !== undefined ? { ui: config.ui } : {}),
+  };
+}
+
+function parseUi(table: Record<string, unknown> | undefined): XioUiConfig | undefined {
+  if (!table) return undefined;
+  const theme = getOptionalString(table, "theme");
+  const autoThemeSwitching = getOptionalBoolean(table, "auto_theme_switching");
+  if (theme === undefined && autoThemeSwitching === undefined) return undefined;
+  return {
+    ...(theme !== undefined ? { theme } : {}),
+    ...(autoThemeSwitching !== undefined ? { autoThemeSwitching } : {}),
   };
 }
 

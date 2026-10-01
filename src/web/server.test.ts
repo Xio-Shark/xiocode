@@ -65,6 +65,7 @@ describe("Web Console & Server", () => {
         isRunning: () => false,
         permissionMode: undefined,
         setPermissionMode: (mode: "auto" | "strict" | "full") => { calls.push(`mode:${mode}`); return mode; },
+        getCostSummary: () => undefined,
       },
     };
   }
@@ -182,6 +183,7 @@ describe("Web Console & Server", () => {
     expect(detailData.metadata.id).toBe(postData.id);
     expect(Array.isArray(detailData.trajectory)).toBe(true);
     expect(detailData.stats).toBeDefined();
+    expect(detailData.cost).toBe("未计价");
 
     // 4b. Test GET /api/sessions/:id/trajectory
     const trajRes = await fetch(`${handle.url}/api/sessions/${postData.id}/trajectory`);

@@ -12,7 +12,9 @@
  * code copied; this is an independent line-based implementation.
  */
 
+import { STREAM_CURSOR } from "./motion.ts";
 import { displayWidth, stripAnsi } from "./text-selection.ts";
+import { theme } from "./theme.ts";
 
 const ESC = "\u001B[";
 
@@ -20,16 +22,51 @@ function style(open: string, close: string): (text: string) => string {
   return (text) => `${ESC}${open}m${text}${ESC}${close}m`;
 }
 
+export function colorToAnsi(color: string): { open: string; close: string } {
+  if (color.startsWith("#")) {
+    const hex = color.slice(1);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b)) {
+      return { open: `\u001B[38;2;${r};${g};${b}m`, close: "\u001B[39m" };
+    }
+  }
+  const named: Record<string, string> = {
+    cyan: "36",
+    yellow: "33",
+    green: "32",
+    magenta: "35",
+    red: "31",
+    blue: "34",
+    gray: "90",
+    grey: "90",
+  };
+  const code = named[color.toLowerCase()];
+  if (code) {
+    return { open: `\u001B[${code}m`, close: "\u001B[39m" };
+  }
+  return { open: "", close: "" };
+}
+
+function colorStyle(getColor: () => string): (text: string) => string {
+  return (text) => {
+    const { open, close } = colorToAnsi(getColor());
+    if (!open) return text;
+    return `${open}${text}${close}`;
+  };
+}
+
 export const md = {
   bold: style("1", "22"),
   dim: style("2", "22"),
   italic: style("3", "23"),
-  // Slots follow theme semantics: accent=cyan, tool=yellow, brand=magenta.
-  accent: style("36", "39"),
-  string: style("32", "39"),
-  number: style("33", "39"),
-  keyword: style("35", "39"),
-  muted: style("90", "39"),
+  // Slots follow theme semantics:
+  accent: colorStyle(() => theme.accent),
+  string: colorStyle(() => theme.tool),
+  number: colorStyle(() => theme.warn),
+  keyword: colorStyle(() => theme.brand),
+  muted: colorStyle(() => theme.muted),
 } as const;
 
 /** Languages whose line comments start with `#` (not `//`). */
@@ -247,3 +284,247 @@ export function renderMarkdownLines(text: string): readonly string[] {
   }
   return out;
 }
+
+export type StreamingBlock =
+  | { readonly kind: "blank" }
+  | { readonly kind: "closed"; readonly text: string }
+  | {
+      readonly kind: "active";
+      readonly text: string;
+      readonly inCodeFence?: boolean;
+      readonly fenceLang?: string;
+      readonly isTable?: boolean;
+    };
+
+/**
+ * Split streaming text into closed blocks and active trailing block.
+ * Closed blocks are delimited by blank lines, closed fences, or ended tables.
+ */
+export function splitStreamingBlocks(text: string): readonly StreamingBlock[] {
+  if (text.length === 0) return [];
+  const rawLines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const result: StreamingBlock[] = [];
+
+  let currentLines: string[] = [];
+  let inCodeFence = false;
+  let fenceMarker = "";
+  let fenceLang = "";
+
+  let inTable = false;
+  let tableLines: string[] = [];
+
+  const flushCurrent = () => {
+    if (currentLines.length > 0) {
+      result.push({ kind: "closed", text: currentLines.join("\n") });
+      currentLines = [];
+    }
+  };
+
+  const flushTable = () => {
+    if (tableLines.length > 0) {
+      result.push({ kind: "closed", text: tableLines.join("\n") });
+      tableLines = [];
+      inTable = false;
+    }
+  };
+
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const line = rawLines[i]!;
+    const isLastLine = i === rawLines.length - 1;
+
+    // 1. Inside code fence
+    if (inCodeFence) {
+      currentLines.push(line);
+      const match = FENCE.exec(line);
+      if (match && match[1]!.startsWith(fenceMarker[0]!) && match[1]!.length >= fenceMarker.length) {
+        flushCurrent();
+        inCodeFence = false;
+        fenceMarker = "";
+        fenceLang = "";
+      } else if (isLastLine) {
+        result.push({
+          kind: "active",
+          text: currentLines.join("\n"),
+          inCodeFence: true,
+          fenceLang,
+        });
+        currentLines = [];
+      }
+      continue;
+    }
+
+    // 2. Inside table
+    if (inTable) {
+      if (isTableRow(line)) {
+        tableLines.push(line);
+        if (isLastLine) {
+          result.push({
+            kind: "active",
+            text: tableLines.join("\n"),
+            isTable: true,
+          });
+          tableLines = [];
+          inTable = false;
+        }
+        continue;
+      }
+      flushTable();
+    }
+
+    // 3. Start of code fence
+    const fenceMatch = FENCE.exec(line);
+    if (fenceMatch) {
+      flushCurrent();
+      inCodeFence = true;
+      fenceMarker = fenceMatch[1]!;
+      fenceLang = (fenceMatch[2] ?? "").toLowerCase();
+      currentLines.push(line);
+      if (isLastLine) {
+        result.push({
+          kind: "active",
+          text: currentLines.join("\n"),
+          inCodeFence: true,
+          fenceLang,
+        });
+        currentLines = [];
+      }
+      continue;
+    }
+
+    // 4. Start of table
+    const nextLine = rawLines[i + 1];
+    if (
+      isTableRow(line)
+      && nextLine !== undefined
+      && nextLine.includes("|")
+      && TABLE_DELIMITER.test(nextLine)
+    ) {
+      flushCurrent();
+      inTable = true;
+      tableLines.push(line);
+      continue;
+    }
+
+    // 5. Blank line (block boundary)
+    if (line.trim().length === 0) {
+      flushCurrent();
+      result.push({ kind: "blank" });
+      continue;
+    }
+
+    // 6. Normal text line
+    currentLines.push(line);
+    if (isLastLine) {
+      result.push({
+        kind: "active",
+        text: currentLines.join("\n"),
+      });
+      currentLines = [];
+    }
+  }
+
+  return result;
+}
+
+const closedBlockRenderCache = new Map<string, readonly string[]>();
+const MAX_CLOSED_BLOCK_CACHE_SIZE = 1_000;
+
+export function renderClosedBlock(blockText: string): readonly string[] {
+  const cached = closedBlockRenderCache.get(blockText);
+  if (cached) return cached;
+  const rendered = renderMarkdownLines(blockText);
+  if (closedBlockRenderCache.size >= MAX_CLOSED_BLOCK_CACHE_SIZE) {
+    const iter = closedBlockRenderCache.keys();
+    for (let i = 0; i < 200; i += 1) {
+      const k = iter.next().value;
+      if (k !== undefined) closedBlockRenderCache.delete(k);
+    }
+  }
+  closedBlockRenderCache.set(blockText, rendered);
+  return rendered;
+}
+
+export function clearClosedBlockRenderCache(): void {
+  closedBlockRenderCache.clear();
+}
+
+export function renderActiveBlock(
+  block: {
+    readonly text: string;
+    readonly inCodeFence?: boolean;
+    readonly fenceLang?: string;
+    readonly isTable?: boolean;
+  },
+  cursor: string,
+): readonly string[] {
+  const { text, inCodeFence, fenceLang, isTable } = block;
+  const lines = text.split("\n");
+
+  if (inCodeFence) {
+    const out: string[] = [];
+    const lang = fenceLang ?? "";
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]!;
+      const isLast = i === lines.length - 1;
+      if (i === 0) {
+        out.push(isLast ? `${md.muted(line)}${cursor}` : md.muted(line));
+      } else {
+        const highlighted = highlightCodeLine(line, lang);
+        out.push(isLast ? `${highlighted}${cursor}` : highlighted);
+      }
+    }
+    return out;
+  }
+
+  if (isTable && lines.length >= 2) {
+    const aligned = alignTableBlock(lines);
+    if (aligned && aligned.length > 0) {
+      const out = [...aligned];
+      out[out.length - 1] = `${out[out.length - 1]}${cursor}`;
+      return out;
+    }
+  }
+
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    const isLast = i === lines.length - 1;
+    out.push(isLast ? `${line}${cursor}` : line);
+  }
+  return out;
+}
+
+/**
+ * Progressively renders markdown during streaming:
+ * - Completed blocks are parsed once with full styles and cached
+ * - Unclosed code fences are styled immediately to avoid color flash on closing
+ * - Trailing active text stays normal weight/color with streaming cursor
+ */
+export function renderProgressiveMarkdown(
+  text: string,
+  options: Readonly<{ spinnerFrame?: string }> = {},
+): readonly string[] {
+  if (text.length === 0) return [];
+
+  const cursor = options.spinnerFrame ? STREAM_CURSOR : "";
+  const blocks = splitStreamingBlocks(text);
+  const out: string[] = [];
+
+  for (const block of blocks) {
+    if (block.kind === "blank") {
+      out.push("");
+    } else if (block.kind === "closed") {
+      out.push(...renderClosedBlock(block.text));
+    } else if (block.kind === "active") {
+      out.push(...renderActiveBlock(block, cursor));
+    }
+  }
+
+  const hasActive = blocks.some((b) => b.kind === "active");
+  if (!hasActive && cursor && out.length > 0) {
+    out[out.length - 1] = `${out[out.length - 1]}${cursor}`;
+  }
+
+  return out;
+}
+

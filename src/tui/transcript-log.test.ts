@@ -20,6 +20,7 @@ import {
   type HistoryBlock,
 } from "./transcript-log.ts";
 import { createDeltaCoalescer, mergeSoftDeltas } from "./delta-coalesce.ts";
+import { displayWidth, stripAnsi } from "./text-selection.ts";
 
 describe("reduceScrollback", () => {
   it("streams thinking then commits collapsed think on tool-start", () => {
@@ -259,6 +260,27 @@ describe("reduceScrollback", () => {
     });
   });
 
+  it("includes detailed notice blocks in expandableHistoryBlocks for Ctrl+O viewing", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, {
+      kind: "notice",
+      text: "上次会话未正常结束，已清理 2 个残留进程 · 详情 `xio kernel status`",
+      detail: "Recovered 2 operation(s) the previous launch of this session left unfinished:\n  svc-1: had already exited\n  svc-2: had already exited",
+    });
+
+    const expandable = expandableHistoryBlocks(state);
+    expect(expandable).toHaveLength(1);
+    expect(expandable[0]!.kind).toBe("notice");
+    expect(expandable[0]!.lines).toHaveLength(1);
+    expect(expandable[0]!.lines[0]).toContain("上次会话未正常结束");
+    expect(expandable[0]!.output).toContain("Recovered 2 operation(s)");
+    expect(expandable[0]!.output).toContain("svc-1: had already exited");
+
+    const latest = latestExpandableToolBlock(state);
+    expect(latest?.kind).toBe("notice");
+    expect(latest?.output).toContain("svc-2: had already exited");
+  });
+
   it("records an interrupted nested tool when a subagent ends early", () => {
     let state = emptyScrollbackState();
     state = reduceScrollback(state, {
@@ -324,6 +346,80 @@ describe("reduceScrollback", () => {
     expect(state.blocks).toHaveLength(2);
     expect(state.blocks[0]!.kind).toBe("user");
     expect(state.blocks[1]!.kind).toBe("assistant");
+  });
+
+  it("restores tool calls and results, skipping empty assistant placeholders", () => {
+    const state = blocksFromRestoredMessages([
+      { role: "user", content: "read file" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "call_1", name: "read", arguments: { path: "package.json" } },
+          { id: "call_2", name: "bash", arguments: { command: "ls -la" } },
+        ],
+      },
+      { role: "tool", toolCallId: "call_1", content: '{"name": "xiocode"}' },
+      { role: "tool", toolCallId: "call_2", content: "total 16\n-rw-r--r--" },
+      { role: "assistant", content: "done with both tools" },
+    ]);
+
+    expect(state.blocks).toHaveLength(4);
+    expect(state.blocks[0]!.kind).toBe("user");
+    expect(state.blocks[1]!.kind).toBe("tool");
+    expect(state.blocks[1]!.title).toBe("read");
+    expect(state.blocks[1]!.output).toContain("xiocode");
+    expect(state.blocks[2]!.kind).toBe("tool");
+    expect(state.blocks[2]!.title).toBe("bash");
+    expect(state.blocks[2]!.output).toContain("total 16");
+    expect(state.blocks[3]!.kind).toBe("assistant");
+    expect(state.blocks[3]!.lines[0]).toContain("done with both tools");
+
+    const latest = latestExpandableToolBlock(state);
+    expect(latest).toBeDefined();
+    expect(latest!.id).toBe(state.blocks[2]!.id);
+  });
+
+  it("handles legacy sessions lacking toolCallId and marks failed tool results", () => {
+    const state = blocksFromRestoredMessages([
+      { role: "user", content: "run command" },
+      {
+        role: "assistant",
+        content: " ",
+        toolCalls: [
+          // Legacy call without matching id
+          { id: "", name: "bash", arguments: { command: "exit 1" } },
+        ],
+      },
+      { role: "tool", content: "Error: command failed with code 1" },
+    ]);
+
+    expect(state.blocks).toHaveLength(2);
+    expect(state.blocks[0]!.kind).toBe("user");
+    expect(state.blocks[1]!.kind).toBe("tool");
+    expect(state.blocks[1]!.title).toBe("bash");
+    expect(state.blocks[1]!.error).toBe(true);
+  });
+
+  it("restores interrupted in-flight tool calls when session ends early", () => {
+    const state = blocksFromRestoredMessages([
+      { role: "user", content: "start task" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "call_hanging", name: "bash", arguments: { command: "sleep 100" } },
+        ],
+      },
+      // Session terminates abruptly without tool result
+    ]);
+
+    expect(state.blocks).toHaveLength(2);
+    expect(state.blocks[0]!.kind).toBe("user");
+    expect(state.blocks[1]!.kind).toBe("tool");
+    expect(state.blocks[1]!.title).toBe("bash");
+    expect(state.blocks[1]!.error).toBe(true);
+    expect(state.blocks[1]!.output).toContain("Interrupted or incomplete");
   });
 
   it("restores context-compaction and execution-recovery notices including completion unknown", () => {
@@ -423,6 +519,43 @@ describe("reduceScrollback", () => {
     state = reduceScrollback(state, { kind: "assistant-delta", text: "hello" });
     const lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
     expect(lines[0]).toBe("● hello▊");
+  });
+
+  it("progressively renders multi-block streaming assistant markdown", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "assistant-delta", text: "# Header\n\n```python\nval = 1\n```\n\nstill typing" });
+    const lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
+    expect(lines.length).toBeGreaterThan(3);
+    expect(lines[0]).toContain("Header");
+    expect(lines[0]!.startsWith("● ")).toBe(true);
+    // Continuation lines should not repeat the answer symbol
+    expect(lines[1]).not.toContain("● ");
+    expect(lines.at(-1)).toBe("still typing▊");
+  });
+
+  it("handles long streaming code block without crashing or leaking ANSI", () => {
+    let state = emptyScrollbackState();
+    const code = "```ts\n" + Array.from({ length: 100 }, (_, i) => `const var_${i} = ${i};`).join("\n");
+    state = reduceScrollback(state, { kind: "assistant-delta", text: code });
+    const lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
+    expect(lines.length).toBe(101);
+    expect(lines[0]!.startsWith("● ")).toBe(true);
+    expect(stripAnsi(lines[100]!)).toBe("const var_99 = 99;▊");
+    expect(lines[100]!.endsWith("▊")).toBe(true);
+  });
+
+  it("handles thinking and assistant alternation cleanly", () => {
+    let state = emptyScrollbackState();
+    state = reduceScrollback(state, { kind: "thinking-delta", text: "initial thoughts" });
+    let lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
+    expect(lines[0]).toContain("Thinking…");
+
+    // Switching to assistant commits thinking and streams assistant lines
+    state = reduceScrollback(state, { kind: "assistant-delta", text: "Here is answer" });
+    lines = formatLiveLines(state.live, [], [], { spinnerFrame: "⠋" });
+    expect(lines[0]).toBe("● Here is answer▊");
+    expect(state.blocks.length).toBe(1);
+    expect(state.blocks[0]!.kind).toBe("thinking");
   });
 
   it("formatLiveLines stays near-linear as stream grows (no full rejoin per paint)", () => {
@@ -592,6 +725,58 @@ describe("sliceTranscriptLineWindow", () => {
     expect(folded.lines).toHaveLength(1);
     expect(folded.lines[0]!.text).toBe("");
   });
+
+  it("wraps long lines into visual display rows when columns is provided", () => {
+    // 60-char text in a 20-col terminal wraps to 3 visual rows
+    const longText = "a".repeat(20) + "b".repeat(20) + "c".repeat(20);
+    const blocks = [
+      { id: 1, kind: "assistant" as const, lines: [longText] },
+    ];
+    // Without columns: counts as 1 raw line
+    const unwrapped = sliceTranscriptLineWindow(blocks, 10, 0);
+    expect(unwrapped.totalLines).toBe(1);
+
+    // With columns: 20: wraps to 3 visual rows
+    const wrapped = sliceTranscriptLineWindow(blocks, 10, 0, undefined, 20);
+    expect(wrapped.totalLines).toBe(3);
+    expect(wrapped.lines).toHaveLength(3);
+    expect(wrapped.lines[0]!.text).toBe("a".repeat(20));
+    expect(wrapped.lines[1]!.text).toBe("b".repeat(20));
+    expect(wrapped.lines[2]!.text).toBe("c".repeat(20));
+  });
+
+  it("handles Chinese characters and display width during visual row wrapping", () => {
+    // 10 Chinese characters = 20 columns width in terminal
+    const chineseText = "测试中文字符显示宽度折行逻辑"; // 14 characters = 28 cols
+    const blocks = [
+      { id: 1, kind: "assistant" as const, lines: [chineseText] },
+    ];
+    // In a 10-column terminal, 14 Chinese chars wrap into 3 visual rows (5 + 5 + 4 chars)
+    const wrapped = sliceTranscriptLineWindow(blocks, 10, 0, undefined, 10);
+    expect(wrapped.totalLines).toBe(3);
+    expect(wrapped.lines).toHaveLength(3);
+  });
+
+  it("preserves markdown tables without wrapping broken rows", () => {
+    const tableRow = "| col1 | col2 | very long table content |";
+    const blocks = [
+      { id: 1, kind: "assistant" as const, lines: [tableRow] },
+    ];
+    const wrapped = sliceTranscriptLineWindow(blocks, 10, 0, undefined, 15);
+    // Rendered table rows must not be split across multiple rows
+    expect(wrapped.totalLines).toBe(1);
+    expect(wrapped.lines[0]!.text).toBe(tableRow);
+  });
+
+  it("does not wrap compact tool or thinking blocks", () => {
+    const toolLine = "read(file: 'very/long/nested/path/to/some/deeply/nested/component.ts')";
+    const blocks = [
+      { id: 1, kind: "tool" as const, lines: [toolLine] },
+    ];
+    const wrapped = sliceTranscriptLineWindow(blocks, 10, 0, undefined, 20);
+    expect(wrapped.totalLines).toBe(1);
+    expect(wrapped.lines[0]!.text).toBe(toolLine);
+  });
 });
 
 describe("TUI noise filtering & callout cards (1.md optimization)", () => {
@@ -671,5 +856,62 @@ describe("TUI noise filtering & callout cards (1.md optimization)", () => {
     });
     expect(failBlock.lines[0]).toContain("✖");
     expect(failBlock.lines[0]).toContain("failed");
+  });
+
+  it("classifies error codes and provides precise remedy hints without token/model misclassification", () => {
+    // 401 auth
+    const auth = resolveRemedyHint("HTTP 401 Unauthorized: invalid api key");
+    expect(auth.code).toBe("auth");
+    expect(auth.hint).toContain("/connect");
+
+    // 404 model not found
+    const model = resolveRemedyHint("model not found: deepseek-chat", 404);
+    expect(model.code).toBe("model_not_found");
+    expect(model.hint).toContain("/model");
+
+    // max tokens / context overflow: MUST recommend /compact, never /connect!
+    const overflow = resolveRemedyHint("maximum context length exceeded: 32768 tokens");
+    expect(overflow.code).toBe("context_overflow");
+    expect(overflow.hint).toContain("/compact");
+    expect(overflow.hint).not.toContain("/connect");
+
+    // 429 rate limit
+    const rateLimit = resolveRemedyHint("429 Too Many Requests: quota exceeded");
+    expect(rateLimit.code).toBe("rate_limit");
+    expect(rateLimit.hint).toContain("Wait a moment");
+
+    // permission denied / command blocked
+    const perm = resolveRemedyHint("command blocked (complex-shell): piping not permitted");
+    expect(perm.code).toBe("permission_denied");
+    expect(perm.hint).toContain("/bypass");
+
+    // network
+    const net = resolveRemedyHint("fetch failed: ECONNREFUSED 127.0.0.1:11434");
+    expect(net.code).toBe("network");
+    expect(net.hint).toContain("internet connection");
+  });
+
+  it("builds callout cards with symmetric borders and correct display width for Chinese text in narrow terminals", () => {
+    const chineseError = "执行命令失败：目标目录不存在或无访问权限，请检查工作区路径并重试";
+    const hint = "检查目录路径并确认权限";
+    const lines = buildCalloutLines("执行错误", chineseError, hint, 60);
+
+    // Has top and bottom borders
+    expect(lines[0]).toMatch(/^┌─ 执行错误 ─+┐$/);
+    expect(lines.at(-1)).toMatch(/^└─+┘$/);
+
+    // Each content line has both left and right borders: │ ... │
+    const contentLines = lines.slice(1, -1);
+    expect(contentLines.length).toBeGreaterThan(1);
+    for (const line of contentLines) {
+      expect(line.startsWith("│ ")).toBe(true);
+      expect(line.endsWith(" │")).toBe(true);
+    }
+
+    // Every line in the callout box must have EXACTLY the same terminal display width
+    const firstLineWidth = displayWidth(stripAnsi(lines[0]!));
+    for (let i = 1; i < lines.length; i++) {
+      expect(displayWidth(stripAnsi(lines[i]!))).toBe(firstLineWidth);
+    }
   });
 });

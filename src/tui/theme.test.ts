@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  checkThemeBackgroundMismatch,
   collapseNoticesForDisplay,
+  contrastRatio,
   formatShortCwd,
+  getActiveThemeName,
+  isLuminanceLight,
   padSlashName,
+  parseOsc11Color,
   resolveTheme,
+  setTheme,
   theme,
 } from "./theme.ts";
+
 
 describe("theme helpers", () => {
   it("exposes semantic slots used by App", () => {
@@ -75,4 +82,71 @@ describe("theme helpers", () => {
     ];
     expect(collapseNoticesForDisplay(entries)).toHaveLength(2);
   });
+
+  describe("WCAG contrast and Light theme", () => {
+    it("ensures light theme text colors have contrast ratio >= 4.5:1 against pure white", () => {
+      const light = resolveTheme("light");
+      const white = "#ffffff";
+      const slotsToCheck: (keyof typeof light)[] = [
+        "brand",
+        "accent",
+        "tool",
+        "think",
+        "explore",
+        "error",
+        "success",
+        "warn",
+        "diffAdd",
+        "diffDel",
+        "muted",
+      ];
+
+      for (const slot of slotsToCheck) {
+        const color = light[slot] as string;
+        const ratio = contrastRatio(color, white);
+        expect(
+          ratio,
+          `Slot ${slot} (${color}) failed WCAG AA normal text contrast (ratio: ${ratio.toFixed(2)}:1)`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it("supports switching themes via setTheme and reflects active theme name", () => {
+      setTheme("light");
+      expect(getActiveThemeName()).toBe("light");
+      expect(theme.accent).toBe("#2563eb");
+
+      setTheme("groknight");
+      expect(getActiveThemeName()).toBe("groknight");
+      expect(theme.accent).toBe("#7aa2f7");
+    });
+
+    it("parses OSC 11 response for 4-digit and 2-digit hex RGB values", () => {
+      const whiteOsc = "\x1b]11;rgb:ffff/ffff/ffff\x07";
+      const parsedWhite = parseOsc11Color(whiteOsc);
+      expect(parsedWhite).toBeDefined();
+      expect(parsedWhite?.r).toBe(255);
+      expect(parsedWhite?.g).toBe(255);
+      expect(parsedWhite?.b).toBe(255);
+      expect(parsedWhite?.luminance).toBeGreaterThan(0.9);
+      expect(isLuminanceLight(parsedWhite!.luminance)).toBe(true);
+
+      const blackOsc = "\x1b]11;rgb:0000/0000/0000\x07";
+      const parsedBlack = parseOsc11Color(blackOsc);
+      expect(parsedBlack).toBeDefined();
+      expect(parsedBlack?.r).toBe(0);
+      expect(parsedBlack?.b).toBe(0);
+      expect(isLuminanceLight(parsedBlack!.luminance)).toBe(false);
+
+      expect(parseOsc11Color("invalid")).toBeUndefined();
+    });
+
+    it("warns about theme background mismatches", () => {
+      expect(checkThemeBackgroundMismatch("groknight", true)).toContain("Tip: /theme light");
+      expect(checkThemeBackgroundMismatch("light", false)).toContain("Tip: /theme groknight");
+      expect(checkThemeBackgroundMismatch("light", true)).toBeUndefined();
+      expect(checkThemeBackgroundMismatch("groknight", false)).toBeUndefined();
+    });
+  });
 });
+

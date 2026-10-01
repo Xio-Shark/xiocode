@@ -21,7 +21,7 @@
 - **Speculative Worktree Racing (experimental)**: Runs candidate solutions in isolated Git worktrees and arbitrates between them by minimal diff, fastest pass, or highest score. The engine is exported as a library and is not yet reachable from the default agent loop.
 - **Crash-Resilient State Persistence**: Conversations, task graphs, and execution states are incrementally journaled locally. Resume any interrupted session seamlessly via `xio resume`.
 - **Native Multi-Model Integration**: Connects directly to official provider APIs including DeepSeek, Qwen (Aliyun DashScope), SiliconFlow, Zhipu AI (GLM), Anthropic Claude, OpenAI, and Google Gemini. No proxy servers required.
-- **Real-Time Token & Cost Metering**: Precise turn-by-turn expenditure calculation based on actual token usage and provider pricing, displayed continuously in the status bar.
+- **Real-Time Token & Cost Metering**: Turn-by-turn expenditure calculation based on actual token usage and versioned pricing tables (with config.toml override support), displayed in the status bar and web console.
 - **Dual Interface Modes**: Full-featured terminal TUI with syntax highlighting, fuzzy search, and command palette, alongside a zero-dependency local Web console (`xio web`) for visual timeline inspections.
 - **Built-in Execution Guardrails**: Intercepts destructive shell commands and unsafe file mutations, requiring explicit user authorization before execution.
 - **Ordered Browser Actions over MCP**: MCP browser tools from one driver (e.g. Playwright) share a serial queue, so a whole `navigate → click → type` sequence runs in one model round trip instead of racing in parallel. Setup, measured costs, and the extension-bridge login path: [docs/browser-mcp.md](./docs/browser-mcp.md).
@@ -98,7 +98,7 @@ xio resume        # Restores the session with full context, task lists, and hist
 
 ### Local Web Console
 ```bash
-xio web           # Launches the lightweight visual console at http://localhost:3000
+xio web           # Launches the lightweight visual console at http://localhost:3080
 ```
 Inspect model interactions, tool call arguments, execution output, and timeline progression.
 
@@ -112,9 +112,9 @@ Inspect model interactions, tool call arguments, execution output, and timeline 
 | `xio` | Launch the interactive terminal coding environment |
 | `xio "task description"` | Execute a one-shot task and exit upon completion |
 | `xio resume` | Resume the most recent active or interrupted session |
-| `xio web` | Launch the local web timeline console (`http://localhost:3000`) |
+| `xio web` | Launch the local web timeline console (`http://localhost:3080`) |
 | `xio doctor` | Diagnose environment, configuration, and API connectivity |
-| `xio models` | Display supported providers, models, and real-time pricing |
+| `xio models` | Display supported provider/model ids, unit pricing, and configuration status |
 
 ### In-Session Slash Commands
 | Command | Description |

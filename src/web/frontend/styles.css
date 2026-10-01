@@ -1655,8 +1655,15 @@
       background: var(--bg-muted);
       color: var(--text-secondary);
     }
+    .tool-box.error {
+      border-color: var(--accent-error);
+    }
+    .tool-box.error .tool-box-header {
+      border-bottom-color: rgba(239, 68, 68, 0.2);
+    }
     .tool-status-pill.done { color: var(--accent-status); background: var(--success-bg); }
     .tool-status-pill.error { color: var(--accent-error); background: var(--error-bg); }
+    .tool-status-pill.unknown { color: var(--text-secondary); background: var(--bg-muted); }
 
     .tool-box-body {
       padding: 10px 12px;

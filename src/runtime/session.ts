@@ -40,6 +40,7 @@ import { WorkspacePathPolicy } from "./workspace-path-policy.ts";
 import { DEFAULT_CACHE_COLD_SECS, ProviderCacheColdTracker } from "./providers/cache-cold.ts";
 import { createStdoutSessionUiSink, createStdoutSubagentUiBridge, formatContextStatus } from "./session-ui.ts";
 import { decodeProviderUsageEvent } from "./usage.ts";
+import { createSessionCostMeter, formatSessionCost, type SessionCostSummary } from "./pricing.ts";
 import {
   exploreFallbackModelRef,
   registerExploreCapability,
@@ -67,6 +68,7 @@ import {
   createKernelTurnHooks,
   openSessionKernel,
   registerKernelCommand,
+  setActiveKernelDomain,
 } from "./kernel-binding.ts";
 import { closeKernelSession, type KernelSession } from "./process/index.ts";
 import { createParallelEditTool, createWorkerRunner } from "./parallel-edit.ts";
@@ -166,6 +168,7 @@ export type PreparedSession = Readonly<{
   model: ModelInfo;
   getModel: () => ModelInfo;
   setModel: (model: ModelInfo) => Promise<void>;
+  getCostSummary: () => SessionCostSummary;
   getThinkingLevel: () => ThinkingLevel;
   cycleThinkingLevel: () => Promise<ThinkingLevel>;
   getPermissionMode: () => PermissionMode;
@@ -225,6 +228,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     extraNames: options.runtimeConfig.tools?.childEnv ?? [],
   });
   const model = options.model ?? resolveDefaultModel(options.runtimeConfig);
+  const costMeter = createSessionCostMeter(options.runtimeConfig.pricing);
   const verify = options.runtimeConfig.verify ?? { enabled: false, requireAllPass: true, repairTurns: 3, commands: [] };
   const ask = options.ask ?? defaultAsk;
   const streamJson = options.outputFormat === "stream-json";
@@ -276,8 +280,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   process.env.XIO_INCLUDE_PROJECT = allowsProjectResources(projectTrust.decision) ? "1" : "0";
   sink.setStatus?.("trust", `trust:${projectTrust.decision}`);
 
-  const kernelNotify = (message: string, level: "info" | "warning"): void => {
-    sink.notify?.(message, level);
+  const kernelNotify = (message: string, level: "info" | "warning", detail?: string): void => {
+    sink.notify?.(message, level, detail);
   };
   const kernel = await openSessionKernel({
     sessionId: sessionEventId,
@@ -286,7 +290,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     notify: kernelNotify,
   });
   const initialMessages = kernel && options.initialMessages
-    ? annotateInterruptedTools(options.initialMessages, kernel)
+    ? annotateInterruptedTools(options.initialMessages, kernel, env)
     : options.initialMessages;
 
   const steerMailbox = new SteerMailbox();
@@ -401,17 +405,24 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       );
     }
   });
-  // Latest request usage → context occupancy for the status row. Tokens are
-  // provider-reported per provider_response (prompt already includes cache
-  // reads after normalization); shown as % of the model context window, no
-  // cost estimate. Decode failures surface as a warn notice, never silently.
+  // Latest request usage → context occupancy and running session cost for the status row.
+  // Tokens are provider-reported per provider_response (prompt already includes cache
+  // reads after normalization); shown as % of the model context window and real cost.
+  // Decode failures surface as a warn notice, never silently.
   host.on("provider_response", async (payload) => {
     try {
       const usage = decodeProviderUsageEvent(payload);
+      costMeter.add(usage, currentModel.id, currentModel.provider);
       const used = Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
       const modelCfg = registration.models.find((entry) => entry.id === currentModel.id)
         ?? registration.models[0];
-      sink.setStatus?.("usage", formatContextStatus(used, modelCfg?.contextWindow));
+      const ctxText = formatContextStatus(used, modelCfg?.contextWindow);
+      const costSummary = costMeter.summary();
+      const costText = costSummary.costUsd !== null ? formatSessionCost(costSummary) : "";
+      const statusText = ctxText && costText
+        ? `${ctxText} | ${costText}`
+        : ctxText || costText;
+      sink.setStatus?.("usage", statusText);
     } catch (error) {
       sink.notify?.(
         `usage status update failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -550,6 +561,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   };
   host.registerCommand("regress", {
     description: "Regression capture tool (deprecated in favor of automatic /immunity).",
+    group: "diagnostics",
+    weight: 50,
     handler: async () => "/regress has been superseded by the zero-friction /immunity system, which automatically distills failure rules upon /rollback and ! hard steer. Use /immunity to inspect.",
   });
 
@@ -558,6 +571,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
   host.registerCommand("immunity", {
     description: "Inspect or reset project negative immunity constraints (/immunity [clear]).",
+    group: "diagnostics",
+    weight: 70,
     handler: async (args) => {
       const trimmed = String(args ?? "").trim().toLowerCase();
       if (trimmed === "clear" || trimmed === "reset") {
@@ -581,6 +596,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
   host.registerCommand("race", {
     description: "Speculative worktree racing engine status (/race).",
+    group: "diagnostics",
+    weight: 60,
     handler: async () => [
       "Speculative Worktree Racing Engine (experimental):",
       "Runs candidate solutions in isolated Git worktrees and arbitrates by minimal diff, fastest pass, or highest score.",
@@ -685,6 +702,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
     },
     getModel,
     setModel,
+    getCostSummary: () => costMeter.summary(),
     getThinkingLevel: () => host.getThinkingLevel(),
     cycleThinkingLevel: () => cycleSessionThinkingLevel(thinkingOpts),
     getPermissionMode: () => permission.getMode(),
@@ -830,6 +848,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
         secretEnvironment.dispose();
       },
       afterClosed: async () => {
+        setActiveKernelDomain(undefined);
         const refusal = await closeKernelSession();
         if (refusal) {
           sink.notify?.(
@@ -1210,6 +1229,8 @@ const REWIND_MODES: readonly RewindMode[] = ["both", "code", "conversation"];
 function registerRewindCommand(host: ExtensionHost, ledger: RewindLedger): void {
   host.registerCommand("rewind", {
     description: "Go back to the start of an earlier turn: files, conversation or both (Esc Esc in the TUI).",
+    group: "common",
+    weight: 30,
     handler: async (args) => {
       const [indexArg, modeArg] = String(args ?? "").trim().split(/\s+/).filter(Boolean);
       if (!indexArg) return formatRewindPoints(ledger.list());

@@ -56,6 +56,8 @@ export function registerMergeCommand(
 ): void {
   host.registerCommand("merge", {
     description: "Show worktree diff and merge into the main tree after confirmation (worktree mode).",
+    group: "session",
+    weight: 80,
     handler: async () => {
       if (!mergeGate) {
         return directModeHint(
@@ -78,6 +80,8 @@ export function registerMergeCommand(
 export function registerSandboxFallbackCommand(host: ExtensionHost): void {
   host.registerCommand("sandbox", {
     description: "Show XioCode worktree sandbox status (worktree mode).",
+    group: "session",
+    weight: 70,
     handler: async () =>
       directModeHint(
         "sandbox",
@@ -101,6 +105,8 @@ export function registerRollbackCommand(
 ): void {
   host.registerCommand("rollback", {
     description: "Discard session or turn file changes (worktree or direct git mode).",
+    group: "common",
+    weight: 80,
     handler: async (args) => {
       if (!rollbackGate) {
         return directModeHint(

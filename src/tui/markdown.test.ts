@@ -7,7 +7,10 @@ import {
   md,
   renderInline,
   renderMarkdownLines,
+  renderProgressiveMarkdown,
+  splitStreamingBlocks,
 } from "./markdown.ts";
+import { STREAM_CURSOR } from "./motion.ts";
 
 const ANSI = /\u001B\[[0-9;]*m/g;
 const strip = (line: string): string => line.replace(ANSI, "");
@@ -163,3 +166,88 @@ describe("highlightCodeLine", () => {
     expect(line).toContain(md.string('"const 42"'));
   });
 });
+
+describe("splitStreamingBlocks", () => {
+  it("splits text into closed blocks and trailing active block", () => {
+    const text = "First paragraph\n\nSecond paragraph";
+    const blocks = splitStreamingBlocks(text);
+    expect(blocks).toEqual([
+      { kind: "closed", text: "First paragraph" },
+      { kind: "blank" },
+      { kind: "active", text: "Second paragraph" },
+    ]);
+  });
+
+  it("handles unclosed code fences as active blocks with fence metadata", () => {
+    const text = "```typescript\nconst x = 1;\nconst y = 2;";
+    const blocks = splitStreamingBlocks(text);
+    expect(blocks).toEqual([
+      {
+        kind: "active",
+        text: "```typescript\nconst x = 1;\nconst y = 2;",
+        inCodeFence: true,
+        fenceLang: "typescript",
+      },
+    ]);
+  });
+
+  it("marks closed code fences as closed blocks", () => {
+    const text = "```python\nprint(42)\n```\n\nactive tail";
+    const blocks = splitStreamingBlocks(text);
+    expect(blocks).toEqual([
+      { kind: "closed", text: "```python\nprint(42)\n```" },
+      { kind: "blank" },
+      { kind: "active", text: "active tail" },
+    ]);
+  });
+
+  it("handles tables ended by empty lines as closed blocks", () => {
+    const text = "| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter table";
+    const blocks = splitStreamingBlocks(text);
+    expect(blocks).toEqual([
+      { kind: "closed", text: "| A | B |\n|---|---|\n| 1 | 2 |" },
+      { kind: "blank" },
+      { kind: "active", text: "After table" },
+    ]);
+  });
+});
+
+describe("renderProgressiveMarkdown", () => {
+  it("styles unclosed code block immediately during streaming", () => {
+    const text = "```ts\nconst num = 100;";
+    const lines = renderProgressiveMarkdown(text, { spinnerFrame: "⠋" });
+    expect(lines[0]).toBe(md.muted("```ts"));
+    expect(lines[1]).toContain(md.keyword("const"));
+    expect(lines[1]).toContain(md.number("100"));
+    expect(lines[1]!.endsWith(STREAM_CURSOR)).toBe(true);
+  });
+
+  it("preserves exact frame snapshot before and after completion except for active tail", () => {
+    const closedPart = "# Title\n\n- item 1\n- item 2\n\n```python\nx = 1\n```";
+    const streamingText = `${closedPart}\n\ntyping here`;
+    const finalizedText = `${closedPart}\n\ntyping here completed`;
+
+    const streamLines = renderProgressiveMarkdown(streamingText, { spinnerFrame: "⠋" });
+    const finalLines = renderMarkdownLines(finalizedText);
+
+    // Number of lines in the closed part
+    const closedFinalLines = renderMarkdownLines(closedPart);
+    expect(closedFinalLines.length).toBeGreaterThan(0);
+
+    // Every line prior to the active block must match byte-for-byte with the finalized render
+    for (let i = 0; i < closedFinalLines.length; i += 1) {
+      expect(streamLines[i]).toBe(closedFinalLines[i]);
+      expect(streamLines[i]).toBe(finalLines[i]);
+    }
+  });
+
+  it("renders streaming table with alignment and cursor at last row", () => {
+    const text = "| command | desc |\n|---|---|\n| /help | list commands |";
+    const lines = renderProgressiveMarkdown(text, { spinnerFrame: "⠋" });
+    expect(lines.length).toBe(3);
+    expect(lines[0]).toContain("command");
+    expect(lines[2]).toContain("/help");
+    expect(lines[2]!.endsWith(STREAM_CURSOR)).toBe(true);
+  });
+});
+

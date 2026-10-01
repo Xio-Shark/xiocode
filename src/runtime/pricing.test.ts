@@ -4,6 +4,7 @@ import {
   createSessionCostMeter,
   estimateUsageCostUsd,
   formatCostUsd,
+  formatModelPrice,
   formatSessionCost,
   formatUsageCostLabel,
   resolveModelPrice,
@@ -139,5 +140,17 @@ describe("createSessionCostMeter", () => {
     const meter = createSessionCostMeter({ "private-model": { inputPerMTok: 3, outputPerMTok: 6 } });
     meter.add(usage(1_000_000, 1_000_000), "private-model");
     expect(meter.summary()).toEqual({ totalTokens: 2_000_000, costUsd: 9, hasUnpriced: false });
+  });
+});
+
+describe("formatModelPrice", () => {
+  it("formats model prices with input, output and optional cache", () => {
+    expect(formatModelPrice({ inputPerMTok: 0.27, outputPerMTok: 1.1, cachePerMTok: 0.07 })).toBe(
+      "$0.27 / $1.10 (cache $0.07) / 1M",
+    );
+    expect(formatModelPrice({ inputPerMTok: 3, outputPerMTok: 15 })).toBe(
+      "$3.00 / $15.00 / 1M",
+    );
+    expect(formatModelPrice(undefined)).toBe("未计价");
   });
 });

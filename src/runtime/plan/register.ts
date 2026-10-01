@@ -53,6 +53,8 @@ export async function registerPlanCapability(
 
   host.registerCommand("plan", {
     description: "Show workspace plan board (.claude/plan) and refresh the todo widget.",
+    group: "session",
+    weight: 90,
     handler: async () => {
       const board = await loadPlanBoard(options.workspaceRoot);
       if (!board) {

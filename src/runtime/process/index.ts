@@ -40,6 +40,10 @@ export {
 export {
   formatOrphanRecoveryNotice,
   formatSessionRecoveryNotice,
+  readAndClearExitReason,
+  recordSignalExit,
+  type ExitReason,
+  type SessionRecoveryNotice,
 } from "./kernel-notice.ts";
 
 export type {

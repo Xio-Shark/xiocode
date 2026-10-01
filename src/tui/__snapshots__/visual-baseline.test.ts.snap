@@ -1,0 +1,152 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TUI Visual Regression Baseline [T00] > renders 60x24 narrow terminal edge-case without horizontal overflow 1`] = `
+"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+● 超长的一行文本用于测试窄屏下终端文本截断和折行表现是否符合
+预期，绝对不能导致外部边框变形或组件错位。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────
+ ❯   Ask a question, / for commands, or paste code…
+────────────────────────────────────────────────────────────
+
+? for shortcuts · /short/path"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] > renders 80x24 standard terminal with Chinese long text and emoji stably 1`] = `
+"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+● 在本次架构演进中，我们通过 ExecutionDomain 严格隔离执行域资源 🚀。
+即使在多进程并发争抢场景下，事务持久化与意图注册机制也能确保不会产生悬挂进程与脏
+数据。
+所有关键调用链路均提供显式类型保障与状态机收敛。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+ ❯   Ask a question, / for commands, or paste code…
+────────────────────────────────────────────────────────────────────────────────
+
+? for shortcuts · /srv/work/xiocode"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] > renders 80x24 standard terminal with GFM table format 1`] = `
+"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+● | 模块   | 状态   | 覆盖率 |
+| ------ | ------ | ------ |
+| kernel | 正常   | 98.5%  |
+| tui    | 校验中 | 95.2%  |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+ ❯   Ask a question, / for commands, or paste code…
+────────────────────────────────────────────────────────────────────────────────
+
+? for shortcuts · /srv/work/xiocode"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] > renders 120x40 wide terminal with restored session history 1`] = `
+"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+❯ 查看当前的 Git 状态与改动统计
+● 已检查工作区状态，当前共有 17 个文件变更，主要集中在 runtime 与 sandbox 扩展层。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ❯   Ask a question, / for commands, or paste code…
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+? for shortcuts · /srv/work/xiocode · turn 1"
+`;
+
+exports[`TUI Visual Regression Baseline [T00] > renders multi-tool execution with success and warning notices in 80x24 1`] = `
+"XioCode v1.6.0 · anthropic/claude-3-7-sonnet · think:off
+· 发现 2 处待处理的架构契约冲突，建议立即检查
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+ ❯   Ask a question, / for commands, or paste code…
+────────────────────────────────────────────────────────────────────────────────
+
+? for shortcuts · /srv/work/xiocode · ctx:38% | $0.042"
+`;

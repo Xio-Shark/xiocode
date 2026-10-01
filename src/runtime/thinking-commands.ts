@@ -33,10 +33,14 @@ export function registerThinkingCommands(options: ThinkingCommandOptions): void 
   const handler = async (args?: unknown) => runThinking(options, typeof args === "string" ? args : "");
   options.host.registerCommand("thinking", {
     description: "Set thinking / reasoning effort for this session.",
+    group: "common",
+    weight: 40,
+    aliases: ["effort"],
     handler,
   });
   options.host.registerCommand("effort", {
     description: "Alias for /thinking.",
+    aliasFor: "thinking",
     handler,
   });
 }

@@ -72,7 +72,7 @@ describe("session usage status path (scripted provider, no network)", () => {
     });
 
     expect(status.length).toBeGreaterThan(0);
-    expect(status.at(-1)).toBe("ctx:0.0%");
+    expect(status.at(-1)).toBe("ctx:0.0% | <$0.0001");
   }, 30_000);
 
   it("still reports a status row when the model has no price", async () => {

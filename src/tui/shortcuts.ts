@@ -1,9 +1,28 @@
 /**
  * Interactive key map — the single source of truth behind `?` and `/help`.
  *
- * Every binding listed here must exist in `handleInput` (app.ts). This sheet is
- * the only place a user can discover the steer prefixes and the transcript
- * viewer, so a stale row here is a broken promise, not a cosmetic bug.
+ * Every binding listed here must exist in `handleInput` (app.ts).
+ *
+ * Keymap Conflict Resolution Matrix (T09):
+ * ┌──────────────┬──────────────────┬─────────────────────────────┬──────────────────────────────────────────┐
+ * │ Key          │ State            │ Action                      │ Semantic / Rule                          │
+ * ├──────────────┼──────────────────┼─────────────────────────────┼──────────────────────────────────────────┤
+ * │ Ctrl+C       │ busy             │ Cancel running task         │ abort turn immediately                   │
+ * │ Ctrl+C       │ idle (any text)  │ Arm exit / exit             │ double press to exit; NEVER clears draft │
+ * │ Esc          │ overlay open     │ Close current overlay       │ dismiss innermost overlay first          │
+ * │ Esc          │ menu open        │ Dismiss menu                │ keeps typed draft intact                 │
+ * │ Esc          │ busy             │ Cancel running task         │ keeps typed draft intact                 │
+ * │ Esc Esc      │ idle (has draft) │ Clear draft                 │ double press clears draft into history   │
+ * │ Esc Esc      │ idle (empty)     │ Rewind picker               │ double press opens turn rewind picker    │
+ * │ Tab          │ menu open        │ Accept completion           │ tab inserts completion candidate         │
+ * │ Tab          │ idle (no menu)   │ No-op                       │ thinking level moved to /think           │
+ * │ Shift+Tab    │ idle             │ Cycle permission mode       │ auto → full → strict                     │
+ * │ Ctrl+R       │ idle             │ Reverse history search      │ shell-standard reverse prompt search     │
+ * │ Alt+Z        │ idle / review    │ Fold/unfold top block       │ replacement for previous Ctrl+R binding  │
+ * │ Ctrl+U       │ idle             │ Kill draft to cursor        │ standard readline; NEVER scrolls page    │
+ * │ Ctrl+D       │ idle / review    │ Scroll half page down       │ unambiguous half-page scroll             │
+ * │ Ctrl+P / /   │ idle             │ Command palette / slash menu│ unified fuzzy search for slash commands  │
+ * └──────────────┴──────────────────┴─────────────────────────────┴──────────────────────────────────────────┘
  */
 
 import React from "react";
@@ -35,11 +54,10 @@ export function shortcutGroups(
     { keys: "alt+←→ alt+b/f", description: "Move one word" },
     { keys: "alt+backspace alt+d", description: "Delete a word" },
     { keys: "ctrl+u", description: "Kill the draft to the cursor" },
-    { keys: "ctrl+c", description: "Clear the draft" },
-    { keys: "esc esc", description: "Clear the draft, keeping it in history" },
-    { keys: "esc esc", description: "On an empty prompt: rewind files and chat to an earlier turn" },
-    { keys: "tab", description: "Cycle thinking level" },
+    { keys: "esc esc", description: "Clear draft (or rewind on empty prompt)" },
+    { keys: "tab", description: "Accept completion in slash / @ menu" },
     { keys: "shift+tab", description: "Cycle permission mode" },
+    { keys: "ctrl+r", description: "Search prompt history" },
   ];
 
   const running: Shortcut[] = [
@@ -53,8 +71,8 @@ export function shortcutGroups(
 
   const find: Shortcut[] = [
     { keys: "ctrl+f", description: "Search the transcript — type to filter, enter/↓ next, ↑ prev" },
-    { keys: "ctrl+r", description: "Fold / unfold the block at the top of the view" },
-    { keys: "ctrl+p", description: "Command palette — type to filter slash commands" },
+    { keys: "alt+z", description: "Fold / unfold the block at the top of the view" },
+    { keys: "ctrl+p", description: "Command palette — fuzzy filter slash commands" },
     { keys: "ctrl+t", description: "Switch model (runs /model)" },
     { keys: "esc", description: "Close the search / palette" },
   ];
@@ -63,22 +81,21 @@ export function shortcutGroups(
     { keys: "ctrl+o", description: "Open the last tool output in full" },
     { keys: "↑ ↓ pgup pgdn", description: "Scroll inside that overlay" },
     { keys: "ctrl+g ctrl+e", description: "Jump to its top / bottom" },
-    { keys: "y", description: "Copy the open block to the clipboard" },
+    { keys: "y", description: "Copy the open block (or review top) to clipboard" },
     { keys: "esc", description: "Close the overlay" },
   ];
   if (options.fullscreen) {
     output.push(
       { keys: "pgup pgdn", description: "Page through the transcript" },
       { keys: "ctrl+j k", description: "Scroll the transcript by line" },
-      { keys: "ctrl+u d", description: "Scroll half a page (ctrl+u needs an empty draft)" },
+      { keys: "ctrl+d", description: "Scroll half a page down" },
       { keys: "drag", description: "Select with the mouse — copies on release" },
     );
   } else {
     output.push(
       { keys: "pgup pgdn", description: "Open the transcript review (keyboard scroll)" },
       { keys: "ctrl+j k", description: "Scroll the review by line" },
-      { keys: "ctrl+u d", description: "Scroll the review half a page (ctrl+u needs an empty draft)" },
-      { keys: "y", description: "Copy the block at the top of the review" },
+      { keys: "ctrl+d", description: "Scroll the review half a page down" },
     );
   }
 
@@ -90,10 +107,10 @@ export function shortcutGroups(
     {
       title: "Session",
       items: [
-        { keys: "/", description: "Slash menu — ↑↓ move, tab complete, enter run" },
+        { keys: "/", description: "Slash menu — fuzzy search, ↑↓ move, tab complete, enter run" },
         { keys: "@", description: "Mention a file — tab/enter insert, esc dismiss" },
         { keys: "?", description: "This help" },
-        { keys: "ctrl+c ctrl+c", description: "Exit from an empty prompt (so does /exit)" },
+        { keys: "ctrl+c ctrl+c", description: "Exit (double press)" },
       ],
     },
   ];
@@ -161,13 +178,15 @@ export function composerHint(state: Readonly<{
   return undefined;
 }
 
+import { computeShortcutViewport } from "./chrome-metrics.ts";
+
 /**
  * Rows the sheet can show at this terminal height. Fullscreen pins the root box
  * to `rows`, so overflowing here makes Ink collapse lines on top of each other —
- * the reserve covers header (4), this box's own chrome (8), composer (5), footer (2).
+ * the reserve covers header (5), this box's own chrome (8), composer (4), footer (2).
  */
 export function shortcutViewport(rows: number): number {
-  return Math.max(4, rows - 19);
+  return computeShortcutViewport(rows);
 }
 
 /** Scrollable overlay for `?` and `/help`. */

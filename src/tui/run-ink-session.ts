@@ -7,6 +7,7 @@ import { App } from "./app.ts";
 import { startInteractiveBoot } from "./interactive-boot.ts";
 import type { EarlyBootHandle } from "./early-boot.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
+import { applyConfiguredTheme, registerThemeCommands } from "./theme-commands.ts";
 import { getGlobalTracer, isPerfEnabled } from "../runtime/perf/index.ts";
 
 import type { SessionOptions } from "../runtime/session.ts";
@@ -35,6 +36,8 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
   const fullscreen = env.XIO_TUI_FULLSCREEN !== "0";
   const tracer = getGlobalTracer(env);
   const bridge = new TuiSessionBridge();
+  const themeWarning = applyConfiguredTheme(options.runtimeConfig.ui?.theme, env);
+  if (themeWarning) bridge.sink.notify?.(themeWarning, "warning");
   const bootExit = env.XIO_PERF_BOOT_EXIT === "1";
   let bootInterrupted = false;
 
@@ -76,6 +79,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       uiSink: bridge.sink,
       subagentUi: bridge.createSubagentUiBridge(),
     });
+    registerThemeCommands({ host: session.host, sink: bridge.sink, env });
 
     if (bootInterrupted) {
       inkBoot.unmount();

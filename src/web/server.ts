@@ -13,13 +13,14 @@ import { upsertSectionValue, upsertProviderBlock } from "../cli/config-mutate.ts
 import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { renderWebUiHtml } from "./ui-template.ts";
-import { buildSessionTrajectory } from "./trajectory.ts";
+import { buildSessionTrajectory, isToolResultError } from "./trajectory.ts";
 import { AgentHostBusyError, WebAgentHost, type WebEvent } from "./agent-host.ts";
 import { DEFAULT_MCP_CONFIG, loadMcpConfigs } from "../../extensions/xio-hygiene/src/mcp.ts";
 import { toHygieneMcp } from "../cli/xio-extension.ts";
 import { parsePermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore } from "../runtime/session-store.ts";
 import type { RuntimeEventV1 } from "../runtime/events/types.ts";
+import { formatSessionCost } from "../runtime/pricing.ts";
 
 const execAsync = promisify(exec);
 
@@ -35,7 +36,9 @@ export type WebServerOptions = Readonly<{
   agentHost?: Pick<
     WebAgentHost,
     "prompt" | "abort" | "answerApproval" | "close" | "isRunning" | "activeSessionId" | "permissionMode" | "setPermissionMode"
-  >;
+  > & {
+    getCostSummary?: (sessionId: string) => import("../runtime/pricing.ts").SessionCostSummary | undefined;
+  };
 }>;
 
 export type WebServerHandle = Readonly<{
@@ -260,11 +263,35 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           try {
             const session = await store.load(id);
             const traj = buildSessionTrajectory(session);
+            const messages = (session.messages || []).map((msg) => {
+              if (msg.role === "tool") {
+                let isError: boolean | "unknown";
+                if ((msg as { isError?: boolean }).isError !== undefined) {
+                  isError = Boolean((msg as { isError?: boolean }).isError);
+                } else if (typeof msg.content === "string") {
+                  if (isToolResultError(msg.content)) {
+                    isError = true;
+                  } else if (msg.content.trim().length > 0) {
+                    isError = false;
+                  } else {
+                    isError = "unknown";
+                  }
+                } else {
+                  isError = "unknown";
+                }
+                return { ...msg, isError };
+              }
+              return msg;
+            });
+            const liveCost = agentHost.getCostSummary?.(id);
+            const cost = liveCost && liveCost.costUsd !== null ? formatSessionCost(liveCost) : "未计价";
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({
               ...session,
+              messages,
               trajectory: traj.steps,
               stats: traj.stats,
+              cost,
             }));
           } catch {
             res.writeHead(404, { "Content-Type": "application/json" });

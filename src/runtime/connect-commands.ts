@@ -38,10 +38,14 @@ export type ConnectCommandOptions = Readonly<{
 export function registerConnectCommands(options: ConnectCommandOptions): void {
   options.host.registerCommand("connect", {
     description: "Connect a model provider with an API key.",
+    group: "common",
+    weight: 100,
     handler: async () => runConnect(options),
   });
   options.host.registerCommand("model", {
     description: "Switch the current session model among connected providers.",
+    group: "common",
+    weight: 90,
     handler: async () => runModel(options),
   });
 }

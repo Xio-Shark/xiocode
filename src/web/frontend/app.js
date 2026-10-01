@@ -9,8 +9,7 @@ const DEFAULT_SESSION_ID = "";
     let currentTrajectorySteps = [];
     let currentStats = {};
     let defaultModel = null;
-    let workspaceName = "";
-    const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0 };
+    const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0, costLabel: "未计价" };
     const pendingApprovals = [];
 
     const chatFlowContainer = document.getElementById("chat-flow-container");
@@ -302,6 +301,13 @@ const DEFAULT_SESSION_ID = "";
       setHeader("新会话", modelLabel(defaultModel));
       currentTrajectorySteps = [];
       currentStats = {};
+      usageTotals.input = 0;
+      usageTotals.output = 0;
+      usageTotals.cacheRead = 0;
+      usageTotals.cacheKnown = false;
+      usageTotals.toolCalls = 0;
+      usageTotals.costLabel = "未计价";
+      renderMetrics();
       renderMessages([]);
       updateComposerMeta();
       renderSessionList(sessionSearch.value.trim().toLowerCase());
@@ -340,6 +346,8 @@ const DEFAULT_SESSION_ID = "";
       currentTrajectorySteps = detail.trajectory || [];
       currentStats = detail.stats || {};
       usageTotals.toolCalls = currentStats.totalToolCalls || 0;
+      usageTotals.costLabel = detail.cost || "未计价";
+      renderMetrics();
       renderTrajectory(currentTrajectorySteps, currentStats);
       updateComposerMeta();
     }
@@ -409,11 +417,33 @@ const DEFAULT_SESSION_ID = "";
         if (msg.role === "user") {
           appendUserMessage(msg.content);
         } else if (msg.role === "assistant") {
-          if (msg.content) appendAssistantText(msg.content);
-          (msg.toolCalls || []).forEach(call => appendToolCall(call.id, call.name, call.arguments));
-          currentAssistantBox = null;
+          const hasProse = Boolean(msg.content && msg.content.trim().length > 0);
+          const toolCalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+          if (hasProse) appendAssistantText(msg.content);
+          toolCalls.forEach(call => appendToolCall(call.id, call.name, call.arguments));
+          if (hasProse || toolCalls.length > 0) {
+            currentAssistantBox = null;
+          }
         } else if (msg.role === "tool") {
-          updateToolResult(msg.toolCallId, msg.content, false);
+          let errorState;
+          if (msg.isError === true || msg.isError === false || msg.isError === "unknown") {
+            errorState = msg.isError;
+          } else if (typeof msg.content === "string") {
+            if (/^(Error|error|Fail|fail|Fatal|fatal):/.test(msg.content.trim())
+              || msg.content.includes("command blocked")
+              || msg.content.includes("blocked (")
+              || msg.content.includes("permission denied")
+              || /exit_code=(?:[1-9][0-9]*|-1)/i.test(msg.content)) {
+              errorState = true;
+            } else if (msg.content.trim().length > 0) {
+              errorState = false;
+            } else {
+              errorState = "unknown";
+            }
+          } else {
+            errorState = "unknown";
+          }
+          updateToolResult(msg.toolCallId, msg.content, errorState);
         }
       }
       scrollToBottom();
@@ -453,6 +483,7 @@ const DEFAULT_SESSION_ID = "";
     }
 
     function appendAssistantText(text) {
+      if (!text || !text.trim()) return;
       const prose = document.createElement("div");
       prose.className = "prose";
       prose.textContent = text;
@@ -522,15 +553,42 @@ const DEFAULT_SESSION_ID = "";
       bodyEl.append(argsPre, outPre);
       card.append(header, bodyEl);
       box.appendChild(card);
-      if (id) toolCards.set(id, { status, outPre });
+      if (id) toolCards.set(id, { card, status, outPre });
       scrollToBottom();
     }
 
-    function updateToolResult(id, content, isError) {
-      const card = toolCards.get(id);
+    function updateToolResult(id, content, errorState) {
+      let card = id ? toolCards.get(id) : null;
+      if (!card) {
+        for (const [, c] of toolCards.entries()) {
+          if (c.status.classList.contains("running")) {
+            card = c;
+            break;
+          }
+        }
+      }
+      if (!card) {
+        appendToolCall(id || "orphan", "tool", {});
+        card = toolCards.get(id || "orphan");
+      }
       if (!card) return;
-      card.status.className = "tool-status-pill " + (isError ? "error" : "done");
-      card.status.textContent = isError ? "失败" : "完成";
+
+      const isError = errorState === true;
+      const isUnknown = errorState === "unknown" || (errorState === undefined && !content);
+
+      if (isError) {
+        card.status.className = "tool-status-pill error";
+        card.status.textContent = "失败";
+        card.card?.classList.add("error");
+      } else if (isUnknown) {
+        card.status.className = "tool-status-pill unknown";
+        card.status.textContent = "状态未知";
+        card.card?.classList.remove("error");
+      } else {
+        card.status.className = "tool-status-pill done";
+        card.status.textContent = "完成";
+        card.card?.classList.remove("error");
+      }
       card.outPre.textContent = typeof content === "string" ? content.slice(0, 20000) : JSON.stringify(content ?? "");
     }
 
@@ -644,6 +702,9 @@ const DEFAULT_SESSION_ID = "";
           appendSystemNote("运行出错：" + (payload.message || "未知错误"), "error");
           break;
         case "web.turn_end":
+          if (payload.cost) {
+            usageTotals.costLabel = payload.cost;
+          }
           addUsage(payload.usage);
           if (payload.cancelled) appendSystemNote("已停止。", "info");
           break;
@@ -694,6 +755,18 @@ const DEFAULT_SESSION_ID = "";
         ? Math.round((usageTotals.cacheRead / usageTotals.input) * 100) + "%"
         : "—";
       document.getElementById("val-turns").textContent = String(usageTotals.toolCalls);
+
+      const costEl = document.getElementById("val-cost");
+      const costFootEl = document.getElementById("val-cost-foot");
+      if (costEl) {
+        costEl.textContent = usageTotals.costLabel || "未计价";
+      }
+      if (costFootEl) {
+        const isPriced = usageTotals.costLabel && usageTotals.costLabel !== "未计价" && usageTotals.costLabel !== "~unknown";
+        costFootEl.textContent = isPriced
+          ? "基于内置定价表统一折算"
+          : "尚未发起请求或当前模型未计价";
+      }
     }
 
     // ---------- Permission questions ----------

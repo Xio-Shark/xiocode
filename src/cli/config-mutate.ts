@@ -42,6 +42,10 @@ export function upsertDefaultThinkingLevel(content: string, level: string): stri
   return next;
 }
 
+export function upsertUiTheme(content: string, theme: string): string {
+  return upsertSectionValue(content, "ui", "theme", theme);
+}
+
 export function mutateConnectConfig(
   content: string,
   provider: ProviderUpsert,

@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { handleXioFlag, isDirectRunEntry, parseXioArgs, prepareLaunch, shouldUseInk } from "./index.ts";
+import { handleXioFlag, isDirectRunEntry, parseXioArgs, prepareLaunch, shouldUseInk, CliUsageError } from "./index.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 const execFileAsync = promisify(execFile);
@@ -326,6 +326,22 @@ describe("parseXioArgs", () => {
     expect(() => parseXioArgs(["explain", "--help"])).toThrow(/unexpected flag/);
     expect(() => parseXioArgs(["--model", "deepseek"])).toThrow(/unexpected flag/);
   });
+
+  it("suggests closest flags for unknown options with exitCode 2", () => {
+    try {
+      parseXioArgs(["--bogus"]);
+      expect.unreachable("should have thrown CliUsageError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CliUsageError);
+      expect((err as CliUsageError).exitCode).toBe(2);
+      expect((err as Error).message).toContain("Unknown option / unexpected flag '--bogus'");
+      expect((err as Error).message).toContain('Did you mean "--help"?');
+    }
+
+    expect(() => parseXioArgs(["--promt", "hi"])).toThrow(/Did you mean "--prompt"\?/);
+    expect(() => parseXioArgs(["--fast"])).toThrow(/Did you mean "--xio-fast"\?/);
+    expect(() => parseXioArgs(["--cont"])).toThrow(/Did you mean "--continue"\?/);
+  });
 });
 
 describe("shouldUseInk", () => {
@@ -341,14 +357,55 @@ describe("shouldUseInk", () => {
   });
 });
 
-describe("handleXioFlag", () => {
-  it("prints version and help", () => {
+describe("handleXioFlag and xioHelp", () => {
+  it("prints version and grouped help with examples first, no deprecated commands", () => {
     const chunks: string[] = [];
     expect(handleXioFlag(["--version"], (c) => chunks.push(c))).toBe(true);
     expect(chunks.join("")).toContain(readPackageVersionForTest());
     chunks.length = 0;
     expect(handleXioFlag(["--help"], (c) => chunks.push(c))).toBe(true);
-    expect(chunks.join("")).toMatch(/any directory|launch from/i);
+    const helpText = chunks.join("");
+    expect(helpText).toContain("Examples:");
+    expect(helpText).toContain("Getting Started:");
+    expect(helpText).toContain("Sessions:");
+    expect(helpText).toContain("Web Console:");
+    expect(helpText).toContain("Diagnostics & System:");
+    expect(helpText).toContain("Options:");
+    expect(helpText).toContain("xio kernel");
+    expect(helpText).toContain("3080");
+    expect(helpText).not.toContain("modern");
+    expect(helpText).not.toContain("xio improve");
+    expect(helpText).not.toContain("xio eval");
+    expect(helpText).not.toContain("xio regress");
+    expect(helpText).not.toContain("xio bench");
+  });
+});
+
+describe("web-cli options and openBrowser", () => {
+  it("validates valid and invalid port options", async () => {
+    const { parseWebCliArgs } = await import("./web-cli.ts");
+    expect(parseWebCliArgs(["--port", "3080"]).port).toBe(3080);
+    expect(parseWebCliArgs(["--port=8080"]).port).toBe(8080);
+    expect(() => parseWebCliArgs(["--port=abc"])).toThrow(/Invalid --port: "abc"/);
+    expect(() => parseWebCliArgs(["--port", "70000"])).toThrow(/between 1 and 65535/);
+    expect(() => parseWebCliArgs(["--port", "-1"])).toThrow(/between 1 and 65535/);
+  });
+
+  it("builds correct cross-platform openBrowser command", async () => {
+    const { getOpenBrowserCommand } = await import("./web-cli.ts");
+    const testUrl = "http://127.0.0.1:3080";
+    expect(getOpenBrowserCommand(testUrl, "darwin")).toEqual({
+      file: "open",
+      args: [testUrl],
+    });
+    expect(getOpenBrowserCommand(testUrl, "win32")).toEqual({
+      file: "cmd.exe",
+      args: ["/c", "start", "", testUrl],
+    });
+    expect(getOpenBrowserCommand(testUrl, "linux")).toEqual({
+      file: "xdg-open",
+      args: [testUrl],
+    });
   });
 });
 

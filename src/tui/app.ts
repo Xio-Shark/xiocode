@@ -51,6 +51,7 @@ import {
   deleteWordForward,
   emptyComposer,
   historyDown,
+  historySearch,
   historyUp,
   killToCursor,
   loadQueueIntoDraft,
@@ -93,6 +94,7 @@ import {
   truncateToolDetail,
 } from "./theme.ts";
 import { composerHint, shortcutGroups, ShortcutsOverlay } from "./shortcuts.ts";
+import { BASE_CHROME_ROWS, computeViewportHeight } from "./chrome-metrics.ts";
 import {
   backRewindPicker,
   enterRewindPicker,
@@ -184,7 +186,10 @@ export type { SlashCommand };
 
 
 /** Process-wide reduced-motion preference (TERM=dumb / XIO_ANIMATION=off). */
-const MOTION_ENABLED = motionEnabled();
+export function isMotionActive(): boolean {
+  return motionEnabled();
+}
+
 
 /** What lives on one visible terminal row of the fullscreen content band (double-click hit-test). */
 export type LineTarget = Readonly<
@@ -343,14 +348,15 @@ export function App(props: AppProps): React.JSX.Element {
 
   // One animation clock drives all motion: spinner chrome at ~8fps while busy,
   // 1s ticks under reduced motion (subagent elapsed labels still advance).
+  const motionActive = isMotionActive();
   useEffect(() => {
     if (!busy && scrollback.inFlightSubagents.length === 0) return;
-    const tickMs = MOTION_ENABLED ? SPINNER_INTERVAL_MS : REDUCED_TICK_MS;
+    const tickMs = motionActive ? SPINNER_INTERVAL_MS : REDUCED_TICK_MS;
     setSubagentClock(Date.now());
     const timer = setInterval(() => setSubagentClock(Date.now()), tickMs);
     return () => clearInterval(timer);
-  }, [busy, scrollback.inFlightSubagents.length]);
-  const spinnerFrame = MOTION_ENABLED && busy ? spinnerFrameAt(subagentClock) : undefined;
+  }, [busy, scrollback.inFlightSubagents.length, motionActive]);
+  const spinnerFrame = motionActive && busy ? spinnerFrameAt(subagentClock) : undefined;
 
   const slashItems = useMemo(
     () => slashDismissed === input
@@ -403,13 +409,13 @@ export function App(props: AppProps): React.JSX.Element {
         ? wrappedLineCount(line, Math.max(20, columns))
         : 1), 0);
     // Brand header (5 incl. margin) + composer/candidate border (4) + footer (2) = 11
-    // chrome rows. The ↑ above / ↓ to latest hints render inside the content
+    // chrome rows (BASE_CHROME_ROWS). The ↑ above / ↓ to latest hints render inside the content
     // band, so reserve their rows when scrolled: without this the window + hints
     // overflow the band and ink drops children (a visible line disappears).
     const hintRows = scrollOffset > 0 ? 2 : 0;
-    const baseChrome = 11 + menuRows + tasklistRows + liveExtra + hintRows;
-    const viewportLines = Math.max(4, rows - baseChrome);
-    return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset, foldedBlockIds);
+    const extraChrome = menuRows + tasklistRows + liveExtra + hintRows;
+    const viewportLines = computeViewportHeight(rows, extraChrome);
+    return sliceTranscriptLineWindow(scrollback.blocks, viewportLines, scrollOffset, foldedBlockIds, columns);
   }, [
     appendScrollback,
     scrollback.blocks,
@@ -521,6 +527,7 @@ export function App(props: AppProps): React.JSX.Element {
       ? h(ReviewOverlay, {
         blocks: scrollback.blocks,
         offset: review.offset,
+        columns,
         search,
         folded: foldedBlockIds,
         onOffset: (delta) => setReview((current) => ({
@@ -645,19 +652,24 @@ export const LiveStreamRegion = memo(function LiveStreamRegion(props: Readonly<{
     spinnerFrame,
   });
   if (lines.length === 0) return null;
+
+  const isAssistantStream = live?.kind === "assistant";
+  const nonAssistantTailCount = inFlightTools.length + inFlightSubagents.length;
+  const assistantCount = isAssistantStream ? Math.max(0, lines.length - nonAssistantTailCount) : 0;
+
   return h(Box, { flexDirection: "column", flexShrink: 0, marginTop: 1 },
-    ...lines.map((line, index) =>
-      h(Text, {
+    ...lines.map((line, index) => {
+      const isAssistantLine = isAssistantStream && index < assistantCount;
+      return h(Text, {
         key: `live-${index}`,
         wrap: "truncate-end",
-        dimColor: !line.startsWith(`${theme.sym.answer} `),
-        bold: line.startsWith(`${theme.sym.answer} `),
-        color: line.startsWith(`${theme.sym.answer} `)
-          ? theme.accent
-          : line.startsWith(`  ${theme.sym.tool} `)
-            ? theme.tool
-            : undefined,
-      }, line)));
+        dimColor: !isAssistantLine,
+        bold: false,
+        color: !isAssistantLine && line.startsWith(`  ${theme.sym.tool} `)
+          ? theme.tool
+          : undefined,
+      }, line);
+    }));
 });
 
 /**
@@ -850,15 +862,17 @@ function SearchBar(props: Readonly<{
 function ReviewOverlay(props: Readonly<{
   blocks: readonly HistoryBlock[];
   offset: number;
+  columns?: number;
   search?: SearchState;
   folded?: ReadonlySet<number>;
   onOffset: (delta: number) => void;
 }>): React.JSX.Element {
   const ref = useRef<React.ElementRef<typeof Box> | null>(null);
-  const { height, hasMeasured } = useBoxMetrics(ref);
+  const { height, width, hasMeasured } = useBoxMetrics(ref);
   // Border (2) + title row + hint row + optional search row.
   const viewport = hasMeasured ? Math.max(4, Math.floor(height) - 4) : 4;
-  const window = sliceTranscriptLineWindow(props.blocks, viewport, props.offset, props.folded);
+  const contentWidth = Math.max(20, (hasMeasured && width ? Math.floor(width) - 4 : (props.columns ? props.columns - 4 : 76)));
+  const window = sliceTranscriptLineWindow(props.blocks, viewport, props.offset, props.folded, contentWidth);
   const total = window.totalLines;
   const firstVisibleIndex = Math.max(0, total - window.offset - window.lines.length);
   const matchIndexes = new Set(props.search?.results ?? []);
@@ -1265,20 +1279,14 @@ function useSessionInteraction(
     return true;
   };
   /**
-   * Ctrl+C layering (same as the `?` sheet documents): a running turn is
-   * cancelled; a draft is cleared; an empty prompt arms exit, and a second
-   * press within 1.5s exits. One stray Ctrl+C never loses a draft or quits.
+   * Ctrl+C layering: a running turn is cancelled; while idle, a double-press
+   * within 1.5s exits. Ctrl+C never clears draft (draft clearing is exclusive to Esc Esc).
    */
   const pressCtrlC = (): "cancelled" | "cleared" | "armed" | "exit" => {
     if (busyRef.current) {
       lastCancelAtRef.current = Date.now();
       props.session.abortTurn();
       return "cancelled";
-    }
-    if (composerRef.current.text.length > 0) {
-      setComposerState(setComposerText(composerRef.current, "", 0));
-      setEscArmed(undefined);
-      return "cleared";
     }
     if (escArmedRef.current === "exit") return "exit";
     setEscArmed("exit");
@@ -1690,7 +1698,11 @@ function useSessionInteraction(
       }
       const current = scrollbackRef.current;
       const block = latestExpandableToolBlock(current);
-      if (block?.output) setTranscriptViewer(block);
+      if (block?.output) {
+        setTranscriptViewer(block);
+      } else {
+        props.bridge.sink.notify?.("No expandable tool or thinking block to view (Ctrl+O)", "info");
+      }
     },
     closeSubagentOverlay: () => {
       if (focusedSubagentIdRef.current === undefined) return false;
@@ -2121,11 +2133,15 @@ function handleInput(options: Readonly<{
     options.openSearch?.();
     return;
   }
-  // Ctrl+P command palette, Ctrl+T model switch (Ctrl+M is Return on most
-  // terminals without the Kitty keyboard protocol, so grok's binding is not
-  // reachable here).
+  // Ctrl+P opens/dismisses unified slash commands menu; Ctrl+T model switch
   if (options.key.ctrl && options.character === "p") {
-    options.paletteOpen?.() ? options.paletteClose?.() : options.paletteInput?.("");
+    if (!options.busy) {
+      if (options.slashItems !== undefined) {
+        options.dismissSlash();
+      } else {
+        options.setInputValue("/");
+      }
+    }
     return;
   }
   // `?` opens the sheet only from an empty prompt; inside a draft it is text ("why?").
@@ -2137,9 +2153,13 @@ function handleInput(options: Readonly<{
     void options.submit("/model");
     return;
   }
-  // Fold / unfold the block at the top of the current view (Ctrl+R — grok's
-  // h/l need a scrollback focus that this TUI does not have).
-  if (options.key.ctrl && options.character === "r") {
+  // Ctrl+R: Reverse prompt history search (standard shell/readline convention)
+  if (options.key.ctrl && options.character === "r" && !options.busy) {
+    options.setComposerState(historySearch(options.composer));
+    return;
+  }
+  // Alt+Z: Fold / unfold the block at the top of the current view
+  if (options.key.meta && options.character === "z") {
     options.toggleTopFold?.();
     return;
   }
@@ -2271,7 +2291,7 @@ function handleInput(options: Readonly<{
   }
 
   // Route B: the terminal owns the Static scrollback, so PgUp/PgDn and the
-  // Grok line/half-page chords open the in-app review overlay (first press
+  // line/half-page chords open the in-app review overlay (first press
   // scrolls it too). Fullscreen already binds the same keys to its window.
   if (options.appendScrollback) {
     const halfPage = Math.max(4, Math.floor(options.rows / 2));
@@ -2280,7 +2300,6 @@ function handleInput(options: Readonly<{
     else if (options.key.pageDown) step = -20;
     else if (options.key.ctrl && options.character === "j") step = 1;
     else if (options.key.ctrl && options.character === "k") step = -1;
-    else if (options.key.ctrl && options.character === "u" && options.composer.text.length === 0) step = halfPage;
     else if (options.key.ctrl && options.character === "d") step = -halfPage;
     if (step !== 0) {
       options.reviewScroll?.(step);
@@ -2315,18 +2334,13 @@ function handleInput(options: Readonly<{
       options.scrollTranscript(-100_000);
       return;
     }
-    // Grok parity: Ctrl+J/K line scroll, Ctrl+U/D half-page (Ctrl+U only when
-    // the draft is empty — with text it is the readline kill-to-cursor below).
+    // Ctrl+J/K line scroll, Ctrl+D half-page. (Ctrl+U is exclusively readline killToCursor).
     if (options.key.ctrl && options.character === "j") {
       options.scrollTranscript(1);
       return;
     }
     if (options.key.ctrl && options.character === "k") {
       options.scrollTranscript(-1);
-      return;
-    }
-    if (options.key.ctrl && options.character === "u" && options.composer.text.length === 0) {
-      options.scrollTranscript(halfPage);
       return;
     }
     if (options.key.ctrl && options.character === "d") {
@@ -2397,11 +2411,6 @@ function handleInput(options: Readonly<{
     options.setComposerState(deleteWordBackward(options.composer));
     return;
   }
-
-  if (options.key.tab && !options.busy) {
-    void options.session.cycleThinkingLevel();
-    return;
-  }
   // Multi-char chunks (paste / whole-line entry) and embedded newlines.
   if (options.character.length > 1 || (options.character.search(/[\r\n]/) >= 0 && !options.key.return)) {
     if (isMouseLeakChunk(options.character)) return;
@@ -2452,7 +2461,7 @@ async function runInput(session: PreparedSession, value: string, bridge: TuiSess
     if (value === "/help") {
       const names = collectSlashCommands(session.host).map((command) => `/${command.name}`).join(" ");
       bridge.sink.notify?.(
-        `Commands: ${names} · Shift+Tab permissions · Tab thinking · Ctrl+O transcript · ? /help`,
+        `Commands: ${names} · Shift+Tab permissions · /think thinking · Ctrl+O transcript · ? /help`,
         "info",
       );
       return;

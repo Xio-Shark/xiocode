@@ -5,6 +5,7 @@ import type {
   ExtensionHandler,
   ModelInfo,
   ProviderRegistration,
+  SlashCommandGroup,
   ThinkingLevel,
   ToolDefinition,
   ToolInfo,
@@ -150,13 +151,23 @@ export class ExtensionHost implements XioExtensionAPI {
     return [...this.#commands.keys()];
   }
 
-  listCommandEntries(): readonly Readonly<{ name: string; description: string }>[] {
+  listCommandEntries(): readonly Readonly<{
+    name: string;
+    description: string;
+    group?: SlashCommandGroup;
+    weight?: number;
+    aliases?: readonly string[];
+    aliasFor?: string;
+  }>[] {
     return [...this.#commands.entries()]
       .map(([name, options]) => ({
         name,
         description: options.description?.trim() || "",
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+        group: options.group,
+        weight: options.weight,
+        aliases: options.aliases,
+        aliasFor: options.aliasFor,
+      }));
   }
 
   setSystemPrompt(prompt: string): void {

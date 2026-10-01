@@ -13,7 +13,12 @@ import {
   createKernelTurnHooks,
   registerKernelCommand,
 } from "./kernel-binding.ts";
-import { formatOrphanRecoveryNotice, formatSessionRecoveryNotice } from "./process/kernel-notice.ts";
+import {
+  formatOrphanRecoveryNotice,
+  formatSessionRecoveryNotice,
+  readAndClearExitReason,
+  recordSignalExit,
+} from "./process/kernel-notice.ts";
 import { KernelSession } from "./process/kernel-session.ts";
 import { INTERRUPTED_TOOL_PREFIX } from "./session-recovery.ts";
 import type { ChatMessage } from "./types.ts";
@@ -187,22 +192,68 @@ describe("authorization recorder and /kernel", () => {
 });
 
 describe("recovery notices", () => {
-  it("tells the user what recovery did and how to resolve what it could not", () => {
+  it("tells the user what recovery did with a concise summary and complete detail for Ctrl+O", () => {
     const text = formatSessionRecoveryNotice([
       { opId: "op-a", action: "stopped_alive_process", resourcesReleased: true },
       { opId: "op-b", action: "isolated_indeterminate", resourcesReleased: false },
     ], "/tmp/domain");
-    expect(text).toContain("Recovered 2 operation(s)");
-    expect(text).toContain("op-a: was still running — stopped");
-    expect(text).toContain("/kernel adjudicate op-b");
+    expect(text).toBeDefined();
+    // Summary is <= 2 lines when there are indeterminate operations
+    expect(text?.summary.split("\n").length).toBeLessThanOrEqual(2);
+    expect(text?.summary).toContain("已清理 1 个残留进程");
+    expect(text?.summary).toContain("发现 1 个残留进程无法确认状态");
+    expect(text?.summary).toContain("xio kernel status");
+    expect(text?.summary).not.toContain("crashed");
+    expect(text?.hasIndeterminate).toBe(true);
+
+    // Detail contains full unabridged information
+    expect(text?.detail).toContain("Recovered 2 operation(s)");
+    expect(text?.detail).toContain("op-a: was still running — stopped");
+    expect(text?.detail).toContain("/kernel adjudicate op-b");
+    expect(text?.detail).not.toContain("crashed");
+
+    // All-released operations produce <= 1 line summary
+    const clean = formatSessionRecoveryNotice([
+      { opId: "op-1", action: "marked_dead", resourcesReleased: true },
+      { opId: "op-2", action: "stopped_alive_process", resourcesReleased: true },
+    ], "/tmp/domain");
+    expect(clean?.summary.split("\n").length).toBe(1);
+    expect(clean?.summary).toContain("已清理 2 个残留进程");
+    expect(clean?.hasIndeterminate).toBe(false);
+
+    // Differentiates signal termination without using crashed
+    const sigterm = formatSessionRecoveryNotice([
+      { opId: "svc-mcp-1", action: "marked_dead", resourcesReleased: true },
+    ], "/tmp/domain", { exitReason: "signal", signal: "SIGTERM" });
+    expect(sigterm?.summary.split("\n").length).toBe(1);
+    expect(sigterm?.summary).toContain("终止信号（SIGTERM）");
+    expect(sigterm?.summary).not.toContain("crashed");
+    expect(sigterm?.detail).not.toContain("crashed");
+
     expect(formatSessionRecoveryNotice([], "/tmp/domain")).toBeUndefined();
 
     const orphan = formatOrphanRecoveryNotice([
       { domainPath: "/k/ws-1-s2", sameWorkspace: true, recovered: [{ opId: "op-c", action: "isolated_indeterminate", resourcesReleased: false }] },
       { domainPath: "/k/other", sameWorkspace: false, recovered: [], error: "disk full" },
     ]);
-    expect(orphan).toContain("a crashed session in this workspace");
-    expect(orphan).toContain("xio kernel adjudicate op-c --domain /k/ws-1-s2");
-    expect(orphan).toContain("Could not recover a crashed session (/k/other): disk full");
+    expect(orphan).toBeDefined();
+    expect(orphan?.summary.split("\n").length).toBeLessThanOrEqual(2);
+    expect(orphan?.summary).not.toContain("crashed");
+    expect(orphan?.detail).not.toContain("crashed");
+    expect(orphan?.detail).toContain("a prior session in this workspace");
+    expect(orphan?.detail).toContain("xio kernel adjudicate op-c --domain /k/ws-1-s2");
+    expect(orphan?.detail).toContain("Could not recover a prior session (/k/other): disk full");
+  });
+
+  it("records and reads signal exit state from the domain directory", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xio-exit-test-"));
+    cleanups.push(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+    expect(readAndClearExitReason(tempDir)).toEqual({ reason: "unknown" });
+
+    recordSignalExit(tempDir, "SIGTERM");
+    expect(readAndClearExitReason(tempDir)).toEqual({ reason: "signal", signal: "SIGTERM" });
+    // After reading, the marker file is cleared
+    expect(readAndClearExitReason(tempDir)).toEqual({ reason: "unknown" });
   });
 });

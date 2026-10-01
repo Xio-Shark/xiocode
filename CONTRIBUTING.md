@@ -206,7 +206,21 @@ npm run test:unit
 
 # Watch mode
 npx vitest watch extensions/xio-evolve/test
+
+# Visual checks (TUI snapshots; WebUI screenshots)
+npm run test:visual
+npm run test:visual:web       # Capture WebUI screenshots (Desktop & Mobile) for review
+npm run test:visual:update    # Update TUI terminal frame snapshots
 ```
+
+### Visual Checks (TUI & WebUI)
+
+The TUI has snapshot tests that fail when a rendered frame changes; the WebUI only has a screenshot script, reviewed by hand:
+
+- **TUI Frame Snapshots**: Located in `src/tui/visual-baseline.test.ts`, covering 60×24, 80×24, and 120×40 viewports across long Chinese text, GFM tables, tools, and session recovery.
+- **WebUI Baseline Screenshots**: Executed via `npm run test:visual:web` (`scripts/web-visual-baseline.mjs`), generating baseline captures in `artifacts/visual-baseline/` across Desktop (Light/Dark, 1440×900) and Mobile (390×844).
+- **Updating Snapshots**: When intentionally changing UI layout or chrome dimensions, run `npm run test:visual:update` to update snapshots.
+
 
 ### Test Structure
 

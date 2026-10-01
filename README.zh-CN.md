@@ -21,7 +21,7 @@
 - **推测性赛马 (Speculative Worktree Racing，实验性)**：在隔离的 Git Worktree 中运行多个候选方案，按最小 Diff、最快通过或最高分裁决。引擎以库形式导出，尚未接入默认 agent 流程。
 - **状态持久化与断点恢复**：对话上下文、任务目标与执行状态均增量落盘持久化。在终端关闭、系统休眠或进程中断后，通过 `xio resume` 即可原位继续工作。
 - **主流模型原生对接**：原生集成 DeepSeek、通义千问 (DashScope)、硅基流动 (SiliconFlow)、智谱 AI (GLM) 以及 Anthropic Claude、OpenAI、Google Gemini 官方端点，无需自建转发代理。
-- **实时 Token 成本度量**：终端状态栏按实际 Token 消耗与提供商定价实时计算费用（精确到美分），使用成本清晰透明。
+- **实时 Token 成本度量**：终端状态栏与 Web 控制台统一按内置定价表（支持在 config.toml 中自定义覆盖）实时计算 Token 费用，未计价模型显式标注，使用成本清晰透明。
 - **双模操作界面**：全屏高密度终端 TUI（语法高亮、模糊搜索、命令面板、鼠标滚动支持），同时内置零依赖本地 Web 控制台（`xio web`），可视化审查工具调用链路与执行时间线。
 - **主动安全防护**：对破坏性 Shell 命令与敏感文件修改执行严格拦截与人工授权校验，保障工作区安全。
 - **内核化进程执行层**：受监督命令运行在可嵌入内核 [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) 上——启动前登记进程意图、停止必须由驱动确认后才释放租约、逐流截断并落盘转储、崩溃后对遗留操作做残留判定。每个 prompt 对应一个内核 Run，direct 模式的 `/rollback` 基于内核快照，权限决策写入内核 journal（见 [ARCHITECTURE.md](./ARCHITECTURE.md)）。`XIOCODE_PROCESS_KERNEL=0` 可让命令改用内置 supervisor 执行。
@@ -97,7 +97,7 @@ xio resume        # 恢复上一次意外退出或中断的会话，任务与上
 
 ### 本地 Web 控制台 (Web Console)
 ```bash
-xio web           # 启动本地可视化控制台并在浏览器打开 http://localhost:3000
+xio web           # 启动本地可视化控制台并在浏览器打开 http://localhost:3080
 ```
 提供时间线流水线视图，清晰排查上下文演变、工具入参与执行结果。
 
@@ -111,9 +111,9 @@ xio web           # 启动本地可视化控制台并在浏览器打开 http://l
 | `xio` | 启动交互式终端编程环境 |
 | `xio "任务描述"` | 单次执行指定任务，完成后退出 |
 | `xio resume` | 恢复上一次中断或退出的会话 |
-| `xio web` | 启动本地 Web 控制台 (`http://localhost:3000`) |
+| `xio web` | 启动本地 Web 控制台 (`http://localhost:3080`) |
 | `xio doctor` | 一键诊断系统环境、Node 版本、配置及 API 连通性 |
-| `xio models` | 查看支持的模型目录与实时定价表 |
+| `xio models` | 查看支持的模型目录、内置单价与当前配置状态 |
 
 ### 会话内指令 (Slash Commands)
 | 命令 | 说明 |

@@ -104,6 +104,7 @@ describe("App", () => {
       model: { provider: "test", id: "model-a" },
       getModel: () => ({ provider: "test", id: "model-a" }),
       setModel: async () => {},
+      getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
       getThinkingLevel: () => "off",
       cycleThinkingLevel: async () => "off",
       getPermissionMode: () => "auto",
@@ -1091,6 +1092,7 @@ function createSession(host: ExtensionHost, messages: readonly ChatMessage[] = [
     model,
     getModel: () => model,
     setModel: async () => {},
+    getCostSummary: () => ({ totalTokens: 0, costUsd: null, hasUnpriced: false }),
     getThinkingLevel: () => host.getThinkingLevel(),
     cycleThinkingLevel: async () => {
       const next = host.getThinkingLevel() === "off" ? "high" : "off";

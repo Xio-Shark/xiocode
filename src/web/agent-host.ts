@@ -21,6 +21,7 @@ import type { InteractiveIO } from "../runtime/interactive-io.ts";
 import type { PermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
 import type { SessionUiSink } from "../runtime/session-ui.ts";
+import { formatSessionCost, type SessionCostSummary } from "../runtime/pricing.ts";
 
 export type WebEvent = Readonly<{ event: string; payload: Readonly<Record<string, unknown>> }>;
 
@@ -88,6 +89,7 @@ export class WebAgentHost {
     active.running = true;
     void active.prepared.runPrompt(text).then(
       (result) => {
+        const costSummary = active.prepared.getCostSummary();
         this.#emit(sessionId, "web.turn_end", {
           success: result.success,
           cancelled: result.cancelled === true,
@@ -95,6 +97,8 @@ export class WebAgentHost {
           toolCalls: result.toolCalls,
           toolErrors: result.toolErrors,
           usage: result.usage,
+          cost: costSummary.costUsd !== null ? formatSessionCost(costSummary) : "未计价",
+          costUsd: costSummary.costUsd,
         });
       },
       (error: unknown) => {
@@ -119,6 +123,13 @@ export class WebAgentHost {
     this.#approvals.delete(approvalId);
     pending.resolve(answer);
     return true;
+  }
+
+  getCostSummary(sessionId: string): SessionCostSummary | undefined {
+    if (this.#active?.sessionId === sessionId) {
+      return this.#active.prepared.getCostSummary();
+    }
+    return undefined;
   }
 
   async close(): Promise<void> {

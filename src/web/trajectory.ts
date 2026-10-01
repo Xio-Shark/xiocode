@@ -52,6 +52,8 @@ export function isToolResultError(output?: string): boolean {
   if (lower.includes("[tool_result error]")) return true;
   if (lower.includes("status=failed") || lower.includes("status: failed") || lower.includes("status=degraded") || lower.includes("status=error") || lower.includes("failed with code")) return true;
   if (lower.includes("command failed:") || lower.includes("fatal: ")) return true;
+  if (lower.includes("command blocked") || lower.includes("blocked (") || lower.includes("permission denied")) return true;
+  if (lower.includes("tool interrupted")) return true;
   return false;
 }
 
@@ -184,7 +186,9 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
           }
 
           const output = matchedResult?.content ?? "";
-          const isError = isToolResultError(output);
+          const isError = (matchedResult as { isError?: boolean })?.isError !== undefined
+            ? Boolean((matchedResult as { isError?: boolean }).isError)
+            : isToolResultError(output);
 
           steps.push({
             id: `step-${stepNumber}-tool-${tc.id || tc.name}`,
@@ -210,7 +214,9 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
       const alreadyPaired = steps.some(s => s.type === "tool" && s.callId === msg.toolCallId);
       if (!alreadyPaired && msg.content) {
         stepNumber++;
-        const isError = isToolResultError(msg.content);
+        const isError = (msg as { isError?: boolean })?.isError !== undefined
+          ? Boolean((msg as { isError?: boolean }).isError)
+          : isToolResultError(msg.content);
         steps.push({
           id: `step-${stepNumber}-tool-${msg.toolCallId || msg.name || "call"}`,
           stepNumber,

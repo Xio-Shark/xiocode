@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { startWebServer } from "../web/server.ts";
 
 export type WebCliOptions = Readonly<{
@@ -6,6 +6,14 @@ export type WebCliOptions = Readonly<{
   host?: string;
   open?: boolean;
 }>;
+
+function parsePort(value: string, flag: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0 || parsed > 65535 || String(parsed) !== value.trim()) {
+    throw new Error(`Invalid ${flag}: "${value}". Port must be an integer between 1 and 65535.`);
+  }
+  return parsed;
+}
 
 export function parseWebCliArgs(args: readonly string[]): WebCliOptions {
   let port: number | undefined;
@@ -20,12 +28,12 @@ export function parseWebCliArgs(args: readonly string[]): WebCliOptions {
       continue;
     }
     if (arg === "--port" && args[i + 1]) {
-      port = Number.parseInt(args[i + 1]!, 10);
+      port = parsePort(args[i + 1]!, "--port");
       i += 1;
       continue;
     }
     if (arg.startsWith("--port=")) {
-      port = Number.parseInt(arg.slice("--port=".length), 10);
+      port = parsePort(arg.slice("--port=".length), "--port");
       continue;
     }
     if (arg === "--host" && args[i + 1]) {
@@ -83,13 +91,22 @@ export async function runWebCli(rawArgs: readonly string[]): Promise<number> {
   }
 }
 
-function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin"
-    ? `open "${url}"`
-    : process.platform === "win32"
-      ? `start "${url}"`
-      : `xdg-open "${url}"`;
-  exec(cmd, () => {
+export function getOpenBrowserCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[] } {
+  if (platform === "darwin") {
+    return { file: "open", args: [url] };
+  }
+  if (platform === "win32") {
+    return { file: "cmd.exe", args: ["/c", "start", "", url] };
+  }
+  return { file: "xdg-open", args: [url] };
+}
+
+export function openBrowser(url: string): void {
+  const { file, args } = getOpenBrowserCommand(url);
+  execFile(file, args, () => {
     // ignore open errors in headless / CI environments
   });
 }
