@@ -1,13 +1,16 @@
 import { describe, it, expect, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import http from "node:http";
 
-import { startWebServer, type WebServerHandle } from "./server.ts";
+import { displayPath, startWebServer, type WebServerHandle } from "./server.ts";
 import { parseWebCliArgs } from "../cli/web-cli.ts";
 import { SessionStore } from "../runtime/session-store.ts";
+import { THINKING_LEVELS } from "../runtime/thinking.ts";
+import { PROVIDER_PRESETS } from "../cli/provider-catalog.ts";
 
 describe("Web Console & Server", () => {
   const tempDirs: string[] = [];
@@ -147,6 +150,8 @@ describe("Web Console & Server", () => {
     expect(html).toContain("<title>XioCode 控制台</title>");
     expect(html).not.toContain("fonts.googleapis.com");
     expect(html).toContain("chat-messages");
+    // Self-contained page: every stylesheet and script is inlined.
+    expect(html).not.toMatch(/<script src=|<link rel="stylesheet"/);
 
     // 2. Test GET /api/status
     const statusRes = await fetch(`${handle.url}/api/status`);
@@ -184,6 +189,7 @@ describe("Web Console & Server", () => {
     expect(Array.isArray(detailData.trajectory)).toBe(true);
     expect(detailData.stats).toBeDefined();
     expect(detailData.cost).toBe("未计价");
+    expect(detailData.running).toBe(false);
 
     // 4b. Test GET /api/sessions/:id/trajectory
     const trajRes = await fetch(`${handle.url}/api/sessions/${postData.id}/trajectory`);
@@ -289,6 +295,58 @@ describe("Web Console & Server", () => {
     expect(extData.extensions.map((e: { id: string }) => e.id).sort()).toEqual(["xio-evolve", "xio-hygiene", "xio-sandbox", "xio-setup"]);
     expect(JSON.stringify(extData)).not.toContain("deepseek-harness");
     expect(Array.isArray(extData.mcpServers)).toBe(true);
+  });
+
+  it("serves the provider catalog and thinking levels, and saves a preset provider with its own kind", async () => {
+    const { store, project } = await createTempStore();
+    const handle = await startWebServer({ port: 0, store, cwd: project, agentHost: fakeAgentHost().host });
+    openServers.push(handle);
+    const headers = { authorization: `Bearer ${handle.token}`, "content-type": "application/json" };
+    const settings = await (await globalThis.fetch(`${handle.url}/api/settings`, { headers })).json();
+    expect(settings.thinkingLevels).toEqual([...THINKING_LEVELS]);
+    expect(settings.catalog.map((p: { id: string }) => p.id)).toEqual(
+      PROVIDER_PRESETS.filter((p) => !p.custom).map((p) => p.id),
+    );
+
+    const save = await globalThis.fetch(`${handle.url}/api/settings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ provider: { name: "anthropic", model: "claude-sonnet-4-20250514" } }),
+    });
+    expect(save.status).toBe(200);
+    const config = await readFile(process.env.XIO_CONFIG ?? path.join(os.homedir(), ".xiocode", "config.toml"), "utf8");
+    const block = /\[providers\.anthropic\][\s\S]*?(?=\n\[|$)/.exec(config)?.[0] ?? "";
+    expect(block).toContain('kind = "anthropic"');
+    expect(block).toContain('api_key_env = "ANTHROPIC_API_KEY"');
+  });
+
+  it("reports a failing git diff as an error, not as an empty diff", async () => {
+    const { store, project } = await createTempStore();
+    const handle = await startWebServer({ port: 0, store, cwd: project, agentHost: fakeAgentHost().host });
+    openServers.push(handle);
+    const res = await globalThis.fetch(`${handle.url}/api/workspace/diff`, { headers: { authorization: `Bearer ${handle.token}` } });
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/git diff failed/);
+  });
+
+  it("lists untracked files next to the diff", async () => {
+    const { store, project } = await createTempStore();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: project, stdio: "ignore" });
+    git("init", "-q");
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init");
+    await writeFile(path.join(project, "new.txt"), "hello\n");
+    const handle = await startWebServer({ port: 0, store, cwd: project, agentHost: fakeAgentHost().host });
+    openServers.push(handle);
+    const res = await globalThis.fetch(`${handle.url}/api/workspace/diff`, { headers: { authorization: `Bearer ${handle.token}` } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ diff: "", untracked: ["new.txt"] });
+  });
+
+  it("shows home-directory paths from ~", () => {
+    expect(displayPath("/home/me/.xiocode/config.toml", "/home/me")).toBe("~/.xiocode/config.toml");
+    expect(displayPath("/home/me", "/home/me")).toBe("~");
+    expect(displayPath("/home/meadow/x", "/home/me")).toBe("/home/meadow/x");
+    expect(displayPath("/etc/xio.toml", "/home/me")).toBe("/etc/xio.toml");
   });
 
   it("renders valid client-side javascript without syntax errors", async () => {

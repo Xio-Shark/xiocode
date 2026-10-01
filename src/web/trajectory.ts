@@ -1,9 +1,11 @@
 /**
- * Trajectory extraction and analysis for XioCode Web Console.
- * Deeply aligned with DeepSeek Harness trajectory data models.
+ * Trajectory extraction for the web console: the stored transcript as ordered
+ * steps, placed on the session timeline where an anchor exists.
  */
 
 import type { StoredSession } from "../runtime/session-store.ts";
+import type { TimelineRecord } from "../runtime/session-timeline.ts";
+import { alignMessageTimes, type Span, type TimelineUsage } from "./trajectory-timing.ts";
 import type { ChatMessage, ChatToolCall } from "../runtime/types.ts";
 
 export type TrajectoryStep = Readonly<{
@@ -21,6 +23,10 @@ export type TrajectoryStep = Readonly<{
   thought?: string;
   isError?: boolean;
   callId?: string;
+  /** From timeline.jsonl; absent when the step could not be anchored (or predates the timeline). */
+  startedAt?: string;
+  /** Absent while running, or when the call never returned. */
+  endedAt?: string;
 }>;
 
 export type TrajectoryStats = Readonly<{
@@ -32,6 +38,12 @@ export type TrajectoryStats = Readonly<{
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  /** Time spent inside turns, summed; null without a timeline. */
+  activeMs: number | null;
+  /** Steps that have a startedAt. */
+  timedSteps: number;
+  /** Provider usage summed from the timeline; null without one. */
+  usage: TimelineUsage | null;
 }>;
 
 export type SessionTrajectory = Readonly<{
@@ -87,9 +99,11 @@ export function formatOutputPreview(output?: string): string {
 /**
  * Parse a StoredSession and reconstruct a clean, ordered list of TrajectorySteps.
  */
-export function buildSessionTrajectory(session: StoredSession): SessionTrajectory {
+export function buildSessionTrajectory(session: StoredSession, timeline: readonly TimelineRecord[] = []): SessionTrajectory {
   const steps: TrajectoryStep[] = [];
   const messages = session.messages || [];
+  const times = alignMessageTimes(messages, timeline);
+  const at = (span: Span | undefined) => (span ? { startedAt: span.start, ...(span.end ? { endedAt: span.end } : {}) } : {});
 
   let turnNumber = 0;
   let stepNumber = 0;
@@ -128,6 +142,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
         type: "input",
         role: "user",
         content: msg.content,
+        ...at(times.messages.get(i)),
       });
       continue;
     }
@@ -145,6 +160,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
           role: "assistant",
           thought: thought.trim(),
           content: thought.trim(),
+          ...at(times.messages.get(i)),
         });
       }
 
@@ -162,6 +178,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
           type: "assistant",
           role: "assistant",
           content: hasContent ? msg.content.trim() : "(tool call only)",
+          ...at(times.messages.get(i)),
         });
       } else if (!hasContent && hasTools) {
         // Explicitly record (tool call only) step to match DeepSeek Harness UI
@@ -173,6 +190,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
           type: "assistant",
           role: "assistant",
           content: "(tool call only)",
+          ...at(times.messages.get(i)),
         });
       }
 
@@ -203,6 +221,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
             outputPreview: formatOutputPreview(output),
             isError,
             callId: tc.id,
+            ...at(tc.id ? times.tools.get(tc.id) : undefined),
           });
         }
       }
@@ -228,6 +247,7 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
           outputPreview: formatOutputPreview(msg.content),
           isError,
           callId: msg.toolCallId,
+          ...at(msg.toolCallId ? times.tools.get(msg.toolCallId) : undefined),
         });
       }
       continue;
@@ -247,6 +267,9 @@ export function buildSessionTrajectory(session: StoredSession): SessionTrajector
     cwd: session.metadata.cwd,
     createdAt: session.metadata.created_at,
     updatedAt: session.metadata.updated_at,
+    activeMs: times.activeMs,
+    timedSteps: steps.filter((s) => s.startedAt).length,
+    usage: times.usage,
   };
 
   return {

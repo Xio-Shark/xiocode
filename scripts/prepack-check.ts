@@ -13,7 +13,6 @@ const required = [
   "bin/xio-setup",
   "dist/xio.js",
   "dist/xio-setup.js",
-  "dist/web/index.html",
   "package.json",
   "LICENSE",
 ];

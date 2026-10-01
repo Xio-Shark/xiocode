@@ -8,7 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionStore } from "../runtime/session-store.ts";
 import { closeKernelSession } from "../runtime/process/index.ts";
+import { TIMELINE_FILE } from "../runtime/session-timeline.ts";
 import { AgentHostBusyError, WebAgentHost, type WebEvent } from "./agent-host.ts";
+import { buildSessionTrajectory } from "./trajectory.ts";
+import { parseTimelineRecords } from "./trajectory-timing.ts";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -133,6 +136,18 @@ describe.skipIf(process.platform === "win32")("WebAgentHost", () => {
     const saved = await store.load("web-1");
     expect(saved.messages.some((m) => m.role === "user" && m.content === "make a file")).toBe(true);
     expect(saved.messages.some((m) => m.role === "assistant" && m.content === "done")).toBe(true);
+
+    // The run left a timeline, and every step of the transcript lands on it.
+    const timeline = parseTimelineRecords(await store.readSideRecords("web-1", TIMELINE_FILE));
+    expect(timeline.map((r) => r.event)).toEqual(expect.arrayContaining(
+      ["turn.start", "provider.request", "provider.done", "tool.call", "tool.result", "turn.end"],
+    ));
+    const trajectory = buildSessionTrajectory(saved, timeline);
+    expect(trajectory.steps.filter((step) => !step.startedAt)).toEqual([]);
+    expect(trajectory.stats.timedSteps).toBe(trajectory.steps.length);
+    expect(trajectory.stats.activeMs).toBeGreaterThan(0);
+    const tool = trajectory.steps.find((step) => step.type === "tool")!;
+    expect(Date.parse(tool.endedAt!)).toBeGreaterThanOrEqual(Date.parse(tool.startedAt!));
   }, 40_000);
 
   it("denies permission questions nobody can see instead of hanging", async () => {

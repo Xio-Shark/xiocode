@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { exec } from "node:child_process";
@@ -14,15 +15,21 @@ import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { renderWebUiHtml } from "./ui-template.ts";
 import { buildSessionTrajectory, isToolResultError } from "./trajectory.ts";
+import { parseTimelineRecords } from "./trajectory-timing.ts";
+import { TIMELINE_FILE } from "../runtime/session-timeline.ts";
 import { AgentHostBusyError, WebAgentHost, type WebEvent } from "./agent-host.ts";
 import { DEFAULT_MCP_CONFIG, loadMcpConfigs } from "../../extensions/xio-hygiene/src/mcp.ts";
 import { toHygieneMcp } from "../cli/xio-extension.ts";
 import { parsePermissionMode } from "../runtime/permission-mode.ts";
-import type { SessionStore } from "../runtime/session-store.ts";
+import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
 import type { RuntimeEventV1 } from "../runtime/events/types.ts";
 import { formatSessionCost } from "../runtime/pricing.ts";
+import { THINKING_LEVELS } from "../runtime/thinking.ts";
+import { PROVIDER_PRESETS, findProviderPreset } from "../cli/provider-catalog.ts";
 
 const execAsync = promisify(exec);
+/** git diff output above this is refused with an error instead of being cut short. */
+const DIFF_MAX_BUFFER = 32 * 1024 * 1024;
 
 export type WebServerOptions = Readonly<{
   port?: number;
@@ -216,7 +223,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         const id = trajectoryMatch[1]!;
         try {
           const session = await store.load(id);
-          const traj = buildSessionTrajectory(session);
+          const traj = await loadTrajectory(store, session);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(traj));
         } catch {
@@ -231,7 +238,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         const id = logMatch[1]!;
         try {
           const session = await store.load(id);
-          const traj = buildSessionTrajectory(session);
+          const traj = await loadTrajectory(store, session);
           const exportPayload = {
             schema_version: "xio-session-log.v1",
             id: session.metadata.id,
@@ -262,7 +269,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
         if (req.method === "GET") {
           try {
             const session = await store.load(id);
-            const traj = buildSessionTrajectory(session);
+            const traj = await loadTrajectory(store, session);
             const messages = (session.messages || []).map((msg) => {
               if (msg.role === "tool") {
                 let isError: boolean | "unknown";
@@ -291,7 +298,9 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               messages,
               trajectory: traj.steps,
               stats: traj.stats,
+              ...("timelineError" in traj ? { timelineError: traj.timelineError } : {}),
               cost,
+              running: agentHost.isRunning(id),
             }));
           } catch {
             res.writeHead(404, { "Content-Type": "application/json" });
@@ -407,13 +416,17 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
 
       // 8. Workspace Diff (/api/workspace/diff)
       if (pathname === "/api/workspace/diff" && req.method === "GET") {
+        // A failed git call is an error the page shows, not an empty diff ("no changes").
         try {
-          const { stdout } = await execAsync("git diff", { cwd });
+          const [{ stdout: diff }, { stdout: others }] = await Promise.all([
+            execAsync("git diff", { cwd, maxBuffer: DIFF_MAX_BUFFER }),
+            execAsync("git ls-files --others --exclude-standard", { cwd, maxBuffer: DIFF_MAX_BUFFER }),
+          ]);
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ diff: stdout }));
+          res.end(JSON.stringify({ diff, untracked: others.split("\n").filter(Boolean) }));
         } catch (err) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ diff: "", error: String(err) }));
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `git diff failed: ${err instanceof Error ? err.message : String(err)}` }));
         }
         return;
       }
@@ -452,7 +465,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
-            configPath: configRes.path,
+            configPath: displayPath(configRes.path),
             general: {
               defaultProvider: parsed.xio.general.defaultProvider ?? "deepseek",
               defaultModel: parsed.xio.general.defaultModel ?? "deepseek-chat",
@@ -462,6 +475,16 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               repeatToolLimit: parsed.xio.general.repeatToolLimit ?? 3,
             },
             providers: providersList,
+            // The page renders these; it keeps no provider or level list of its own.
+            catalog: PROVIDER_PRESETS.filter((preset) => !preset.custom).map((preset) => ({
+              id: preset.id,
+              label: preset.label,
+              apiKeyEnv: preset.apiKeyEnv,
+              defaultModel: preset.defaultModel,
+              sampleModels: preset.sampleModels,
+              hasKey: Boolean(env[preset.apiKeyEnv] || creds.providers[preset.id]?.apiKey),
+            })),
+            thinkingLevels: THINKING_LEVELS,
             permissions: {
               allowHighRisk: parsed.xio.permissions.allowHighRisk ?? false,
             },
@@ -517,12 +540,16 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           }
 
           if (body.provider && body.provider.name) {
+            // The block is rewritten whole, so keep what the config already says, then fall back to the
+            // provider's preset (Anthropic's wire kind is not "openai"), then to generic defaults.
+            const existing = parseXioConfig(content, { cwd }).xio.providers[body.provider.name];
+            const preset = findProviderPreset(body.provider.name);
             content = upsertProviderBlock(content, {
               name: body.provider.name,
-              kind: body.provider.kind ?? "openai",
-              baseUrl: body.provider.baseUrl,
-              model: body.provider.model ?? "deepseek-chat",
-              apiKeyEnv: body.provider.apiKeyEnv ?? `${body.provider.name.toUpperCase()}_API_KEY`,
+              kind: body.provider.kind ?? existing?.kind ?? preset?.kind ?? "openai",
+              baseUrl: body.provider.baseUrl ?? existing?.baseUrl ?? preset?.baseUrl,
+              model: body.provider.model ?? existing?.model ?? preset?.defaultModel ?? "deepseek-chat",
+              apiKeyEnv: body.provider.apiKeyEnv ?? existing?.apiKeyEnv ?? preset?.apiKeyEnv ?? `${body.provider.name.toUpperCase()}_API_KEY`,
             });
             if (body.provider.apiKey && body.provider.apiKey.trim()) {
               await saveProviderCredential(
@@ -668,6 +695,26 @@ function readCookie(header: string | undefined, name: string): string | undefine
     if (key === name) return rest.join("=");
   }
   return undefined;
+}
+
+/**
+ * The trajectory with timeline times. An unreadable timeline still shows the session —
+ * untimed, with the reason in `timelineError` for the page to display.
+ */
+async function loadTrajectory(store: SessionStore, session: StoredSession) {
+  try {
+    const records = parseTimelineRecords(await store.readSideRecords(session.metadata.id, TIMELINE_FILE));
+    return buildSessionTrajectory(session, records);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ...buildSessionTrajectory(session), timelineError: `timeline unreadable: ${reason}` };
+  }
+}
+
+/** Paths shown in the page start at ~ so screenshots and shares do not carry the account name. */
+export function displayPath(absolute: string, home: string = os.homedir()): string {
+  if (absolute === home) return "~";
+  return absolute.startsWith(home + path.sep) ? "~" + absolute.slice(home.length) : absolute;
 }
 
 function sameSecret(presented: string, expected: string): boolean {

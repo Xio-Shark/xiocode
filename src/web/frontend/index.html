@@ -5,163 +5,222 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>XioCode 控制台</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b5bdb'/%3E%3Cpath d='M4 22.7c5.3-2 11.3-9.3 16-17.3-.5 7.3.8 14.1 5.3 17.3z' fill='%23fff'/%3E%3Cpath d='M3.5 27.3c2 0 2-1.3 4-1.3s2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' opacity='.75'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Icon set: 24px grid, 1.75 stroke, round caps. Shapes follow Lucide (ISC). -->
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-fin" viewBox="0 0 24 24"><path d="M3 17c4-1.5 8.5-7 12-13-.4 5.5.6 10.6 4 13z" fill="currentColor" stroke="none"/><path d="M2.5 20.5c1.6 0 1.6-1 3.2-1s1.6 1 3.2 1 1.6-1 3.2-1 1.6 1 3.2 1 1.6-1 3.2-1 1.6 1 3 1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.6-2.4 2.2-2.4 3.8M12 17h.01"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
+    <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14h6"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+    <symbol id="i-text-search" viewBox="0 0 24 24"><path d="M3 5h18M3 11h6M3 17h6"/><circle cx="15.5" cy="14.5" r="3.5"/><path d="m21 20-2.5-2.5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16v4M17 18h4"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5a3 3 0 0 0-5.6-1.5A3 3 0 0 0 4 8.2a3.5 3.5 0 0 0 .6 6.3A3 3 0 0 0 8 19a3 3 0 0 0 4 1zM12 5a3 3 0 0 1 5.6-1.5A3 3 0 0 1 20 8.2a3.5 3.5 0 0 1-.6 6.3A3 3 0 0 1 16 19a3 3 0 0 1-4 1z"/><path d="M12 5v15"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3.5 17.3a1.8 1.8 0 0 0 2.6 2.6l5.8-5.8a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.3-.6-.6-2.3z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2.5"/><path d="M16 8V5.5A2.5 2.5 0 0 0 13.5 3h-8A2.5 2.5 0 0 0 3 5.5v8A2.5 2.5 0 0 0 5.5 16H8"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-3.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14.8 3.5L20 15M20 20v-5h-5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 15a2 2 0 0 1-2 2H8l-4 4V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8.5 19H17a3.5 3.5 0 0 0 0-7H7a3.5 3.5 0 0 1 0-7h8.5"/></symbol>
+    <symbol id="i-diff" viewBox="0 0 24 24"><path d="M12 3v8M8 7h8M8 17h8"/><rect x="3" y="3" width="18" height="18" rx="2.5"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a9 9 0 1 1 16 0"/><path d="m12 13 4-4"/><circle cx="12" cy="13" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21s7-3.5 7-9.5V5.5L12 3 5 5.5v6c0 6 7 9.5 7 9.5z"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 10h4v4h-4zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M8 21h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8"/><path d="M8 3a2 2 0 0 0-2 2v14a2 2 0 1 1-4 0v-2h4M12 8h4M12 12h4"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+    <symbol id="i-wifi-off" viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 5.2-2.8M19 12.9a10 10 0 0 0-2.3-1.7M2 8.8a15 15 0 0 1 4.2-2.6M22 8.8A15 15 0 0 0 11 4.5M12 20h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5a6 6 0 0 1-6 6H6"/></symbol>
+    <symbol id="i-test" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3M7.5 14h9"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+  </svg>
+
   <div class="app-layout">
     <aside id="sidebar" aria-label="会话">
       <div class="sidebar-brand-row">
-        <div class="brand-link">
-          <div class="brand-logo-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-          </div>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#i-fin"/></svg></span>
           <span class="brand-name">XioCode</span>
+          <span class="brand-version">__VERSION__</span>
         </div>
-        <button id="btn-toggle-sidebar" class="btn-toggle-sidebar" type="button" aria-label="收起边栏" title="收起边栏">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        <button id="btn-toggle-sidebar" class="icon-btn" type="button" aria-label="收起边栏" title="收起边栏">
+          <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
         </button>
       </div>
 
       <div class="sidebar-action-box">
         <button id="btn-new-session" class="btn-new-session" type="button">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
           <span>新会话</span>
         </button>
-        <div class="search-input-wrap">
-          <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
-          <input type="search" id="session-search" class="search-input" placeholder="搜索会话…" aria-label="搜索会话">
+        <div class="search-field">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input type="search" id="session-search" placeholder="搜索会话" aria-label="搜索会话" autocomplete="off">
         </div>
       </div>
 
-      <nav id="session-list" class="session-list-container" aria-label="会话列表">
-        <!-- Sessions dynamic -->
-      </nav>
+      <nav id="session-list" class="session-list" aria-label="会话列表"></nav>
 
       <div class="sidebar-footer">
         <button id="btn-open-settings" class="sidebar-footer-btn" type="button">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
           <span>设置</span>
         </button>
-        <span id="session-count-badge" class="sidebar-count-text">0 个会话</span>
+        <div class="theme-switch" role="radiogroup" aria-label="外观">
+          <button type="button" role="radio" data-theme-choice="light" title="浅色" aria-label="浅色"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="system" title="跟随系统" aria-label="跟随系统"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+          <button type="button" role="radio" data-theme-choice="dark" title="深色" aria-label="深色"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg></button>
+        </div>
       </div>
     </aside>
     <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
 
-    <main>
-      <div class="main-subhead">
-        <div class="subhead-top-row">
-          <div class="subhead-left">
-            <button id="btn-expand-sidebar" class="btn-expand-sidebar" type="button" aria-label="展开会话列表" title="展开会话列表">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+    <main data-view="chat">
+      <header class="main-header">
+        <div class="header-row">
+          <div class="header-left">
+            <button id="btn-expand-sidebar" class="icon-btn btn-expand-sidebar" type="button" aria-label="展开会话列表" title="展开会话列表">
+              <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
             </button>
-            <h1 id="current-session-title" class="subhead-title">新会话</h1>
-            <span id="current-mode-badge" class="mode-badge" title="模型">—</span>
+            <h1 id="current-session-title" class="header-title">新会话</h1>
+            <span id="current-mode-badge" class="model-chip" title="模型"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg><span id="current-model-text">—</span></span>
           </div>
 
-          <div class="subhead-right">
-            <button id="btn-export-log" class="btn-session-log" type="button" title="下载完整会话记录 (JSON)">导出记录</button>
-            <label class="visually-hidden" for="permission-select">权限模式</label>
-            <select id="permission-select" class="permission-select" title="新会话使用的权限模式（写入配置）">
-              <option value="auto">权限：自动</option>
-              <option value="strict">权限：只读</option>
-              <option value="full">权限：完全</option>
-            </select>
-            <div id="status-pill" class="status-badge" role="status" aria-live="polite">
+          <div class="header-right">
+            <div id="status-pill" class="status-pill" role="status" aria-live="polite">
               <span class="status-dot" aria-hidden="true"></span>
               <span id="status-text">就绪</span>
             </div>
+            <label class="perm-select-wrap" title="新会话使用的权限模式（写入配置）">
+              <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+              <span class="visually-hidden">权限模式</span>
+              <select id="permission-select" class="perm-select">
+                <option value="auto">自动</option>
+                <option value="strict">只读</option>
+                <option value="full">完全</option>
+              </select>
+            </label>
+            <button id="btn-export-log" class="icon-btn" type="button" title="下载完整会话记录 (JSON)" aria-label="导出会话记录">
+              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            </button>
           </div>
         </div>
 
         <nav class="nav-tabs" role="tablist" aria-label="视图">
-          <button class="nav-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat">对话</button>
-          <button class="nav-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory">轨迹</button>
-          <button class="nav-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff">代码差异</button>
-          <button class="nav-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics">用量</button>
+          <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>对话</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>轨迹</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>代码差异</button>
+          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>用量</button>
+          <span class="nav-tab-indicator" aria-hidden="true"></span>
         </nav>
+      </header>
+
+      <div id="connection-banner" class="connection-banner" role="alert" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-wifi-off"/></svg>
+        <span id="connection-text">与本地服务的连接已断开，正在重连…</span>
+        <button id="btn-reconnect" class="link-btn" type="button" hidden>立即重试</button>
       </div>
 
-      <div class="view-content-wrapper">
+      <div class="views">
         <section id="view-chat" class="view-panel active" role="tabpanel" aria-label="对话">
-          <div id="chat-messages" class="chat-messages">
-            <div class="chat-inner-wrap" id="chat-flow-container" role="log" aria-live="polite" aria-relevant="additions">
-            </div>
+          <div id="chat-messages" class="chat-scroll">
+            <div class="chat-column" id="chat-flow-container" role="log" aria-live="polite" aria-relevant="additions"></div>
           </div>
+          <button id="btn-jump-bottom" class="jump-bottom" type="button" aria-label="回到底部" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow-down"/></svg>
+            <span>回到底部</span>
+          </button>
         </section>
 
         <section id="view-trajectory" class="view-panel" role="tabpanel" aria-label="轨迹">
           <div class="trajectory-container">
-            <div class="trajectory-ribbon">
-              <div class="ribbon-stats">
-                <span class="ribbon-stat-item" id="traj-stat-duration">0s</span>
-                <span class="ribbon-stat-item" id="traj-stat-turns">0 轮 · 0 步</span>
-                <span class="ribbon-stat-item" id="traj-stat-calls">0 次工具调用</span>
+            <div class="view-toolbar">
+              <div class="stat-row">
+                <span class="stat" id="traj-stat-duration">—</span>
+                <span class="stat" id="traj-stat-turns">0 轮 · 0 步</span>
+                <span class="stat" id="traj-stat-calls">0 次工具调用</span>
               </div>
-              <div class="trajectory-search-wrap">
-                <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 14z"/></svg>
-                <input type="search" id="trajectory-search-input" class="trajectory-search-input" placeholder="搜索工具、参数或输出…" aria-label="搜索轨迹">
-              </div>
-            </div>
-
-            <div class="timeline-waterfall" id="timeline-waterfall" aria-hidden="true">
-              <div class="track-labels">
-                <span class="track-label">输入</span>
-                <span class="track-label">模型</span>
-                <span class="track-label">工具</span>
-              </div>
-              <div class="track-bars-container" id="track-bars-container">
-                <div class="track-row" id="track-row-input"></div>
-                <div class="track-row" id="track-row-model"></div>
-                <div class="track-row" id="track-row-tools"></div>
+              <div class="search-field">
+                <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                <input type="search" id="trajectory-search-input" placeholder="搜索工具、参数或输出" aria-label="搜索轨迹" autocomplete="off">
               </div>
             </div>
 
-            <div class="trajectory-stream-wrapper">
-              <div class="trajectory-stream" id="trajectory-stream">
-                <div class="trajectory-empty" id="trajectory-empty">
-                  <span>暂无轨迹。选择一个会话，或在对话里发起任务。</span>
-                </div>
+            <div class="step-strip-wrap" id="timeline-waterfall">
+              <div class="step-strip-head">
+                <span><span id="timeline-title" class="tl-title">时间线</span><span id="timeline-note" class="tl-note"></span></span>
+                <span class="legend"><i class="lg-input"></i>输入<i class="lg-model"></i>模型<i class="lg-tool"></i>工具<i class="lg-error"></i>失败</span>
               </div>
+              <div class="tl-chart" id="tl-chart" aria-label="时间线，点击跳到对应步骤"></div>
+              <div class="step-strip" id="step-strip" role="list" aria-label="步骤顺序，点击跳到对应步骤"></div>
+            </div>
+
+            <div class="trajectory-stream" id="trajectory-stream"></div>
+          </div>
+        </section>
+
+        <section id="view-diff" class="view-panel" role="tabpanel" aria-label="代码差异">
+          <div class="diff-view">
+            <div class="view-toolbar">
+              <div class="stat-row">
+                <span class="stat-title">工作区未提交的改动</span>
+                <span class="stat" id="diff-summary"></span>
+              </div>
+              <button class="btn-ghost" type="button" data-action="refresh-diff"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+            </div>
+            <div class="diff-body">
+              <nav class="diff-files" id="diff-files" aria-label="改动的文件"></nav>
+              <div class="diff-content" id="diff-output-body"></div>
             </div>
           </div>
         </section>
 
         <section id="view-metrics" class="view-panel" role="tabpanel" aria-label="用量">
-          <div class="clean-deck">
-            <div class="metrics-row">
-              <div class="metric-box">
-                <span class="metric-heading">Token（本页会话期间）</span>
-                <span class="metric-digit" id="val-tokens">—</span>
-                <span class="metric-foot" id="val-tokens-foot">输入 + 输出，发起一轮后统计</span>
+          <div class="metrics-view">
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <span class="metric-label">Token</span>
+                <span class="metric-value" id="val-tokens">—</span>
+                <span class="metric-foot" id="val-tokens-foot">发起一轮后统计输入与输出</span>
               </div>
-              <div class="metric-box">
-                <span class="metric-heading">缓存命中</span>
-                <span class="metric-digit" id="val-cache">—</span>
-                <span class="metric-foot">缓存读取 / 输入 Token；供应商未报告时为 —</span>
+              <div class="metric-card">
+                <span class="metric-label">缓存命中</span>
+                <span class="metric-value" id="val-cache">—</span>
+                <span class="metric-foot" id="val-cache-foot">缓存读取占输入 Token 的比例</span>
               </div>
-              <div class="metric-box">
-                <span class="metric-heading">费用</span>
-                <span class="metric-digit" id="val-cost">未计价</span>
+              <div class="metric-card">
+                <span class="metric-label">费用</span>
+                <span class="metric-value" id="val-cost">—</span>
                 <span class="metric-foot" id="val-cost-foot">尚未发起请求或当前模型未计价</span>
               </div>
-              <div class="metric-box">
-                <span class="metric-heading">工具调用</span>
-                <span class="metric-digit" id="val-turns">0</span>
-                <span class="metric-foot">当前会话累计</span>
+              <div class="metric-card">
+                <span class="metric-label">工具调用</span>
+                <span class="metric-value" id="val-turns">0</span>
+                <span class="metric-foot" id="val-turns-foot">当前会话累计</span>
               </div>
             </div>
-          </div>
-        </section>
-
-        <section id="view-diff" class="view-panel" role="tabpanel" aria-label="代码差异">
-          <div class="clean-deck">
-            <div class="diff-panel">
-              <div class="diff-panel-header">
-                <span>工作区未提交的改动</span>
-                <button class="filter-chip" type="button" data-action="refresh-diff">刷新</button>
-              </div>
-              <pre class="diff-panel-body" id="diff-output-body">正在读取 git diff…</pre>
-            </div>
+            <p class="metrics-note"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span id="metrics-note-text"></span></p>
           </div>
         </section>
       </div>
@@ -169,197 +228,200 @@
       <div class="composer-section">
         <div class="composer-card">
           <label class="visually-hidden" for="composer-input">给智能体发消息</label>
-          <textarea id="composer-input" class="composer-input" placeholder="给智能体发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <textarea id="composer-input" class="composer-input" rows="1" placeholder="描述你要做的事…"></textarea>
           <div class="composer-bar">
-            <div class="composer-bar-left">
-              <div class="chip-list">
-                <button type="button" class="filter-chip" data-prompt="运行测试套件并报告失败的用例">运行测试</button>
-                <button type="button" class="filter-chip" data-prompt="检查 git diff 并分析未暂存的改动">查看改动</button>
-              </div>
+            <div class="chip-list">
+              <button type="button" class="chip" data-prompt="运行测试套件并报告失败的用例"><svg class="icon" aria-hidden="true"><use href="#i-test"/></svg>运行测试</button>
+              <button type="button" class="chip" data-prompt="检查 git diff 并分析未暂存的改动"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>查看改动</button>
             </div>
-            <div class="action-group">
-              <span class="key-tip" aria-hidden="true">↵ 发送 · ⇧↵ 换行</span>
-              <button id="btn-abort" class="btn-abort" type="button">停止</button>
-              <button id="btn-send" class="btn-send" type="button" aria-label="发送">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+            <div class="composer-actions">
+              <span class="key-tip" aria-hidden="true"><kbd>↵</kbd> 发送 <kbd>⇧↵</kbd> 换行</span>
+              <button id="btn-abort" class="btn-stop" type="button" aria-label="停止运行" title="停止 (Esc)">
+                <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
+              </button>
+              <button id="btn-send" class="btn-send" type="button" aria-label="发送" disabled>
+                <svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg>
               </button>
             </div>
           </div>
         </div>
         <div class="composer-statusbar" id="composer-statusbar">
-          <span id="meta-turns-info">0 轮 · 0 步</span>
-          <span class="meta-sep" aria-hidden="true">·</span>
-          <span id="meta-tools-info">工具调用 0 次</span>
-          <span class="meta-sep" aria-hidden="true">·</span>
-          <span id="meta-session-cwd">工作区</span>
+          <span class="meta-item"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span id="meta-session-cwd">—</span></span>
+          <span class="meta-item" id="meta-turns-info">0 轮 · 0 步</span>
+          <span class="meta-item" id="meta-tools-info">工具调用 0 次</span>
         </div>
       </div>
     </main>
   </div>
 
-  <!-- Permission question from the running agent -->
-  <div id="approval-modal" class="settings-modal-overlay" hidden>
-    <div class="approval-dialog" role="alertdialog" aria-modal="true" aria-labelledby="approval-question" aria-describedby="approval-detail">
-      <h2 id="approval-question" class="approval-question"></h2>
-      <pre id="approval-detail" class="approval-detail"></pre>
-      <div class="approval-actions" id="approval-actions"></div>
+  <!-- Permission question from the running agent. Esc declines (cancel event). -->
+  <dialog id="approval-modal" class="dialog approval-dialog" aria-labelledby="approval-question" aria-describedby="approval-detail">
+    <div class="approval-head">
+      <span class="approval-icon" aria-hidden="true"><svg class="icon"><use href="#i-shield"/></svg></span>
+      <div>
+        <h2 id="approval-question" class="approval-question"></h2>
+        <p class="approval-sub" id="approval-sub">智能体在等你确认，确认前不会继续。</p>
+      </div>
     </div>
-  </div>
+    <pre id="approval-detail" class="approval-detail"></pre>
+    <div class="dialog-actions" id="approval-actions"></div>
+  </dialog>
 
-  <div id="settings-modal" class="settings-modal-overlay">
-    <div class="settings-modal-container" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div class="settings-modal-header">
-        <div class="settings-header-title-group">
-          <h2 class="settings-modal-title" id="settings-title">设置</h2>
-          <span class="settings-modal-desc">模型、工作区规则、扩展与权限。保存后写入配置文件，新会话生效。</span>
-        </div>
-        <button id="btn-close-settings" class="btn-modal-close" type="button" aria-label="关闭设置">✕</button>
+  <dialog id="confirm-modal" class="dialog confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+    <h2 id="confirm-title" class="dialog-title"></h2>
+    <p id="confirm-desc" class="dialog-desc"></p>
+    <form method="dialog" class="dialog-actions">
+      <button class="btn-secondary" value="cancel" type="submit" autofocus>取消</button>
+      <button class="btn-danger" value="confirm" type="submit" id="confirm-ok">删除</button>
+    </form>
+  </dialog>
+
+  <dialog id="settings-modal" class="dialog settings-dialog" aria-labelledby="settings-title">
+    <div class="settings-header">
+      <div>
+        <h2 class="dialog-title" id="settings-title">设置</h2>
+        <p class="dialog-desc">保存后写入配置文件，新会话生效。</p>
+      </div>
+      <button id="btn-close-settings" class="icon-btn" type="button" aria-label="关闭设置"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+
+    <div class="settings-body">
+      <div class="settings-nav" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+        <button class="settings-tab active" type="button" role="tab" aria-selected="true" data-settings-tab="models"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>模型</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="rules" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-scroll"/></svg>规则</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="plugins" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>扩展与 MCP</button>
+        <button class="settings-tab" type="button" role="tab" aria-selected="false" data-settings-tab="safety" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>权限</button>
       </div>
 
-      <div class="settings-modal-body">
-        <div class="settings-sidebar" role="tablist" aria-label="设置分类">
-          <button class="settings-tab-link active" type="button" role="tab" data-settings-tab="models">模型</button>
-          <button class="settings-tab-link" type="button" role="tab" data-settings-tab="rules">规则</button>
-          <button class="settings-tab-link" type="button" role="tab" data-settings-tab="plugins">扩展与 MCP</button>
-          <button class="settings-tab-link" type="button" role="tab" data-settings-tab="safety">权限</button>
+      <div class="settings-main">
+        <div id="settings-pane-models" class="settings-pane active" role="tabpanel">
+          <div class="pane-head">
+            <h3 class="pane-title">模型与推理</h3>
+            <p class="pane-desc">默认供应商、模型、思考深度与上下文压缩预算。</p>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="setting-provider-select">默认供应商</label>
+              <select id="setting-provider-select"></select>
+            </div>
+            <div class="form-field">
+              <label for="setting-model-input">默认模型</label>
+              <input type="text" id="setting-model-input" placeholder="deepseek-chat" list="setting-model-options" autocomplete="off">
+              <datalist id="setting-model-options"></datalist>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <span class="form-label" id="thinking-label">思考深度</span>
+            <div class="segmented" id="setting-thinking-picker" role="radiogroup" aria-labelledby="thinking-label"></div>
+            <span class="form-hint">模型不支持的档位会在运行时自动降到它能用的最近一档。</span>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="setting-max-turns">每次请求的最大轮数（1–40）</label>
+              <input type="number" id="setting-max-turns" min="1" max="40" value="24">
+            </div>
+            <div class="form-field">
+              <label for="setting-max-tokens">自动压缩阈值（Token）</label>
+              <input type="number" id="setting-max-tokens" min="1024" step="1024" value="48000">
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label for="setting-api-key-input">API Key</label>
+            <div class="key-status-row">
+              <span id="provider-key-status" class="key-badge">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span id="provider-key-status-text">检测中…</span>
+              </span>
+              <code class="key-env-name" id="provider-key-env-name"></code>
+            </div>
+            <input type="password" id="setting-api-key-input" autocomplete="off" placeholder="留空则保持现有凭据">
+            <span class="form-hint">保存到本机 ~/.xiocode/credentials.json（仅当前用户可读，未加密）。也可以只设置上面的环境变量。</span>
+          </div>
         </div>
 
-        <div class="settings-main-pane">
-          <div id="settings-pane-models" class="settings-tab-content active" role="tabpanel">
-            <div>
-              <h3 class="setting-group-title">模型与推理</h3>
-              <p class="setting-group-desc">默认供应商、模型、思考深度与上下文压缩预算。</p>
-            </div>
-
-            <div class="form-grid-2">
-              <div class="form-field">
-                <label for="setting-provider-select">默认供应商</label>
-                <select id="setting-provider-select">
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="ollama">Ollama（本地）</option>
-                </select>
-              </div>
-
-              <div class="form-field">
-                <label for="setting-model-input">默认模型</label>
-                <input type="text" id="setting-model-input" placeholder="deepseek-chat">
-              </div>
-            </div>
-
-            <div class="form-field">
-              <span class="form-label" id="thinking-label">思考深度</span>
-              <div class="segmented-picker" id="setting-thinking-picker" role="radiogroup" aria-labelledby="thinking-label">
-                <button type="button" class="segmented-btn" role="radio" data-level="off">Off</button>
-                <button type="button" class="segmented-btn" role="radio" data-level="minimal">Minimal</button>
-                <button type="button" class="segmented-btn" role="radio" data-level="low">Low</button>
-                <button type="button" class="segmented-btn" role="radio" data-level="medium">Medium</button>
-                <button type="button" class="segmented-btn active" role="radio" data-level="high">High</button>
-                <button type="button" class="segmented-btn" role="radio" data-level="max">Max</button>
-                <button type="button" class="segmented-btn" role="radio" data-level="ultra">Ultra</button>
-              </div>
-            </div>
-
-            <div class="form-grid-2">
-              <div class="form-field">
-                <label for="setting-max-turns">每次请求的最大轮数（1–40）</label>
-                <input type="number" id="setting-max-turns" min="1" max="40" value="24">
-              </div>
-
-              <div class="form-field">
-                <label for="setting-max-tokens">自动压缩阈值（Token）</label>
-                <input type="number" id="setting-max-tokens" min="1024" step="1024" value="48000">
-              </div>
-            </div>
-
-            <div class="form-field">
-              <label for="setting-api-key-input">API Key</label>
-              <div class="key-status-row">
-                <span id="provider-key-status" class="provider-status-badge">
-                  <span class="status-dot" aria-hidden="true"></span>
-                  <span id="provider-key-status-text">检测中…</span>
-                </span>
-                <span class="key-env-name" id="provider-key-env-name">DEEPSEEK_API_KEY</span>
-              </div>
-              <input type="password" id="setting-api-key-input" autocomplete="off" placeholder="留空则保持现有凭据">
-              <span class="form-hint">保存到本机 ~/.xiocode/credentials.json（仅当前用户可读，未加密）。也可以只设置上面的环境变量。</span>
-            </div>
+        <div id="settings-pane-rules" class="settings-pane" role="tabpanel">
+          <div class="pane-head">
+            <h3 class="pane-title">工作区规则</h3>
+            <p class="pane-desc">编辑当前工作区的 <code>AGENTS.md</code>，每次会话开始时注入给智能体。</p>
           </div>
-
-          <div id="settings-pane-rules" class="settings-tab-content" role="tabpanel">
-            <div>
-              <h3 class="setting-group-title">工作区规则</h3>
-              <p class="setting-group-desc">编辑当前工作区的 <code>AGENTS.md</code>，每次会话开始时注入给智能体。</p>
-            </div>
-
-            <div class="chip-list">
-              <button type="button" class="filter-chip" data-rule-preset="Surgical">+ 最小改动</button>
-              <button type="button" class="filter-chip" data-rule-preset="TestFirst">+ 交付前跑测试</button>
-              <button type="button" class="filter-chip" data-rule-preset="Security">+ 不硬编码凭据</button>
-            </div>
-
-            <div class="rules-box-wrap">
-              <div class="rules-box-header">
-                <span class="rules-file-indicator" id="rules-file-indicator">AGENTS.md</span>
-                <button type="button" class="filter-chip" data-action="reload-rules">重新读取</button>
-              </div>
-              <label class="visually-hidden" for="setting-rules-editor">AGENTS.md 内容</label>
-              <textarea id="setting-rules-editor" class="rules-editor-textarea" placeholder="# 工作区规则…"></textarea>
-            </div>
+          <div class="chip-list">
+            <button type="button" class="chip" data-rule-preset="Surgical"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>最小改动</button>
+            <button type="button" class="chip" data-rule-preset="TestFirst"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>交付前跑测试</button>
+            <button type="button" class="chip" data-rule-preset="Security"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>不硬编码凭据</button>
           </div>
-
-          <div id="settings-pane-plugins" class="settings-tab-content" role="tabpanel">
-            <div>
-              <h3 class="setting-group-title">扩展与 MCP</h3>
-              <p class="setting-group-desc">随 XioCode 提供的扩展，以及从配置、<code>.mcp.json</code>、Claude / Cursor 配置中发现的 MCP 服务器。</p>
+          <div class="rules-box">
+            <div class="rules-box-header">
+              <span class="rules-file" id="rules-file-indicator">AGENTS.md</span>
+              <button type="button" class="btn-ghost" data-action="reload-rules"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>重新读取</button>
             </div>
-            <div class="plugin-grid" id="plugins-container"></div>
-            <h4 class="setting-subtitle">MCP 服务器</h4>
-            <div class="plugin-grid" id="mcp-container"></div>
-          </div>
-
-          <div id="settings-pane-safety" class="settings-tab-content" role="tabpanel">
-            <div>
-              <h3 class="setting-group-title">权限模式</h3>
-              <p class="setting-group-desc">决定智能体改文件、跑命令、调用 MCP 之前要不要问你。会话中也可以用 Shift+Tab 切换。</p>
-            </div>
-
-            <div class="perm-cards-grid" role="radiogroup" aria-label="权限模式">
-              <button type="button" class="perm-card active" role="radio" data-perm-mode="auto">
-                <span class="perm-card-title"><span class="perm-dot ok" aria-hidden="true"></span>自动（推荐）</span>
-                <span class="perm-card-desc">所有工具可用。每种高风险工具（bash、MCP 等）首次使用时问一次；只读白名单内的命令直接运行，其他命令每条单独确认。</span>
-              </button>
-              <button type="button" class="perm-card" role="radio" data-perm-mode="strict">
-                <span class="perm-card-title"><span class="perm-dot warn" aria-hidden="true"></span>只读</span>
-                <span class="perm-card-desc">只能读文件、搜索和加载 skill。写文件、执行命令和 MCP 调用一律拒绝，不会询问。</span>
-              </button>
-              <button type="button" class="perm-card" role="radio" data-perm-mode="full">
-                <span class="perm-card-title"><span class="perm-dot danger" aria-hidden="true"></span>完全</span>
-                <span class="perm-card-desc">高风险工具不再询问。白名单之外的命令、合并与回滚仍然逐条确认。建议配合 worktree 沙盒使用。</span>
-              </button>
-            </div>
-
-            <div class="form-field">
-              <label for="setting-repeat-tool-limit">同一工具连续相同调用的上限（0 为不限）</label>
-              <input type="number" id="setting-repeat-tool-limit" min="0" max="20" value="3">
-            </div>
-            <p class="form-hint">命令风险由内置规则判定（例如 <code>rm -rf</code>、<code>git reset --hard</code>、<code>git push --force</code> 归为高风险），在任何模式下都不会被自动放行。</p>
+            <label class="visually-hidden" for="setting-rules-editor">AGENTS.md 内容</label>
+            <textarea id="setting-rules-editor" class="rules-editor" placeholder="# 工作区规则…" spellcheck="false"></textarea>
           </div>
         </div>
-      </div>
 
-      <div class="settings-modal-footer">
-        <span class="config-path-hint" id="setting-config-path">~/.xiocode/config.toml</span>
-        <div class="footer-actions">
-          <button type="button" class="btn-cancel-settings" id="btn-cancel-settings">取消</button>
-          <button type="button" class="btn-save-settings" id="btn-save-settings">保存</button>
+        <div id="settings-pane-plugins" class="settings-pane" role="tabpanel">
+          <div class="pane-head">
+            <h3 class="pane-title">扩展</h3>
+            <p class="pane-desc">随 XioCode 提供的扩展，启动会话时自动装配。</p>
+          </div>
+          <ul class="item-list" id="plugins-container"></ul>
+          <div class="pane-head">
+            <h3 class="pane-title">MCP 服务器</h3>
+            <p class="pane-desc">从配置、<code>.mcp.json</code>、Claude / Cursor 配置中发现。连接在会话启动时建立。</p>
+          </div>
+          <ul class="item-list" id="mcp-container"></ul>
+        </div>
+
+        <div id="settings-pane-safety" class="settings-pane" role="tabpanel">
+          <div class="pane-head">
+            <h3 class="pane-title">权限模式</h3>
+            <p class="pane-desc">决定智能体改文件、跑命令、调用 MCP 之前要不要问你。会话中也可以用 Shift+Tab 切换。</p>
+          </div>
+          <div class="perm-cards" role="radiogroup" aria-label="权限模式">
+            <button type="button" class="perm-card" role="radio" data-perm-mode="auto">
+              <span class="perm-card-title"><span class="perm-dot ok" aria-hidden="true"></span>自动<span class="tag">推荐</span></span>
+              <span class="perm-card-desc">所有工具可用。每种高风险工具（bash、MCP 等）首次使用时问一次；只读白名单内的命令直接运行，其他命令每条单独确认。</span>
+            </button>
+            <button type="button" class="perm-card" role="radio" data-perm-mode="strict">
+              <span class="perm-card-title"><span class="perm-dot warn" aria-hidden="true"></span>只读</span>
+              <span class="perm-card-desc">只能读文件、搜索和加载 skill。写文件、执行命令和 MCP 调用一律拒绝，不会询问。</span>
+            </button>
+            <button type="button" class="perm-card" role="radio" data-perm-mode="full">
+              <span class="perm-card-title"><span class="perm-dot danger" aria-hidden="true"></span>完全</span>
+              <span class="perm-card-desc">高风险工具不再询问。白名单之外的命令、合并与回滚仍然逐条确认。建议配合 worktree 沙盒使用。</span>
+            </button>
+          </div>
+          <div class="form-field">
+            <label for="setting-repeat-tool-limit">同一工具连续相同调用的上限（0 为不限）</label>
+            <input type="number" id="setting-repeat-tool-limit" min="0" max="20" value="3">
+          </div>
+          <p class="form-hint">命令风险由内置规则判定（例如 <code>rm -rf</code>、<code>git reset --hard</code>、<code>git push --force</code> 归为高风险），在任何模式下都不会被自动放行。</p>
         </div>
       </div>
     </div>
-  </div>
+
+    <div class="settings-footer">
+      <code class="config-path" id="setting-config-path">~/.xiocode/config.toml</code>
+      <div class="dialog-actions">
+        <button type="button" class="btn-secondary" id="btn-cancel-settings">取消</button>
+        <button type="button" class="btn-primary" id="btn-save-settings">保存</button>
+      </div>
+    </div>
+  </dialog>
 
   <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
+  <script src="ui.js"></script>
+  <script src="markdown.js"></script>
+  <script src="chat.js"></script>
+  <script src="timeline.js"></script>
+  <script src="views.js"></script>
+  <script src="settings.js"></script>
+  <script src="sessions.js"></script>
+  <script src="stream.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

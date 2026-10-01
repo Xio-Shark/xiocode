@@ -30,7 +30,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "node ./scripts/build-cli.mjs && node ./scripts/build-web.mjs",
+    "build": "node --experimental-strip-types ./scripts/build-web.mjs && node ./scripts/build-cli.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run check && npm run build && node --experimental-strip-types ./scripts/prepack-check.ts",
     "test": "vitest run",
@@ -40,6 +40,7 @@
     "test:visual": "vitest run src/tui/visual-baseline.test.ts && node ./scripts/web-visual-baseline.mjs",
     "test:visual:update": "vitest run src/tui/visual-baseline.test.ts -u",
     "test:visual:web": "node ./scripts/web-visual-baseline.mjs",
+    "test:web": "python3 ./scripts/web-behaviour-check.py",
     "version": "node ./scripts/sync-version.mjs && git add README.md README.zh-CN.md",
     "release:patch": "npm version patch -m \"chore: bump version to %s\"",
     "release:minor": "npm version minor -m \"chore: bump version to %s\"",

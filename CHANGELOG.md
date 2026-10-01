@@ -17,6 +17,17 @@ Release cadence: **every 1–2 weeks** while the project is young.
 Requires `@xioflow/kernel` 0.6.0 (rollback results carry `ignoredFiles`; workspace transactions accept an observation log).
 
 ### Changed
+- **The web console (`xio web`) was redesigned.**
+  - Replies render as markdown: headings, lists, tables, code blocks with a language label, highlighting and a copy button. Model output is never treated as HTML, so a reply that contains `<script>` or a `javascript:` link shows it as text.
+  - Tool calls are compact rows — an icon, what the tool did (读取 / 编辑 / 运行 …), its target, how long it took and whether it worked. Details open on click; a failed call opens by itself. Thinking collapses to “思考了 N 秒” once the answer starts, and a line at the bottom says what the agent is doing right now and for how long.
+  - Scrolling up while a reply streams keeps your place; a “回到底部” button takes you back.
+  - A dropped connection is shown within a second and retried with backoff. If `xio web` was restarted (its link token changes), the page says to open the new link instead of retrying forever. Reopening a session asks the server whether it is still running instead of guessing.
+  - 代码差异 lists the changed files with +/− counts and shows coloured, collapsible hunks; untracked files are listed too. A failing `git diff` is reported as an error — it used to look like “no changes”.
+  - Settings show every built-in provider with its credential status and suggested models, and all eight thinking levels (the page used to offer seven). Saving Anthropic as the provider writes `kind = "anthropic"` — it used to write `"openai"` — and keeps a custom `base_url` already in the config. The config path is shown from `~`.
+  - Light, dark or follow-the-system theme, a shark-fin mark and favicon, keyboard navigation for tabs, native dialogs for permission questions, settings and deleting a session (Esc on a permission question still declines it), and no animation when the system asks for reduced motion.
+- **The 轨迹 view has a real time axis, and token usage survives a reload.** Sessions now keep a small `timeline.jsonl` next to their state: when each turn, model call and tool call started and ended, and the tokens each model call used (the prompt itself is not copied, only a hash). The waterfall draws every step at its real start and duration, puts parallel tool calls on separate rows, and folds idle time between turns into a labelled break (“空闲 2 小时 13 分”) so a session that spans a day stays readable. The header shows active time next to the session's span. 用量 now reads token and cache totals from the timeline, so they are still there after a refresh. Sessions from before this change have no timeline: they show steps in order and say so. A step that cannot be matched to the timeline is left untimed rather than placed by guess.
+- **The installed package always serves the current console.** `npm run build` bundled the CLI before regenerating the embedded page, so a release could ship the previous version of the page.
+
 - **Interactive keymap conflict resolution and cleanup.**
   - `Ctrl+C`: Semantics unified. While busy, cancels running task. While idle, double-press exits without clearing draft text. Draft clearing is reserved exclusively for `Esc Esc`.
   - `Esc Esc`: Context-clean. Double-pressing with a draft clears it into history; double-pressing on an empty prompt opens the rewind picker.
