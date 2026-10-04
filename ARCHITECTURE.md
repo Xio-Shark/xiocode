@@ -40,7 +40,8 @@ xiocode 让每次执行的 opId 唯一，用 journal 事实记录 `toolCallId �
   只影响命令与 MCP stdio 的执行方式。这个逃生开关计划在 2.0 删除，前提是 0.4.0 接入后的观察期通过。
 - **平台驱动**：`XIOCODE_KERNEL_DRIVER=auto`（默认）在内核包带有本平台 native reaper 时用 `ReaperPlatformDriver`
   （持有整棵进程树，`setsid` 逃逸者也能停掉），否则用 `NodePlatformDriver`；`node` / `reaper` 强制指定，
-  `reaper` 在缺 helper 的平台直接报错。实际选择与原因显示在 `/kernel`。恢复与孤儿域清扫用同一选择。
+  `reaper` 在缺 helper 的平台直接报错。`cgroup`（Linux）把每条命令放进独立的 cgroup v2，需要委派给 xiocode 的 cgroup，`auto` 从不选它。实际选择与原因显示在 `/kernel`。恢复与孤儿域清扫用同一选择。
+- **后台命令**：内核 0.7.0 会在命令结束时回收它留下的进程，结果里 `leftoversStopped` 会注明。需要常驻的进程走 `bash` 的 `background: true`：作为内核 service 运行在 launch Run 下（`src/runtime/process/background-jobs.ts`），输出合并写入域目录 `background/<job>.log`，不占工作区写租约，由 `jobs` 工具查看与停止，`closeKernelSession` 先停掉全部后台任务再关闭域。写入限制打开时拒绝启动（service 不支持 confinement）。
 
 ## 3. 资源仲裁
 

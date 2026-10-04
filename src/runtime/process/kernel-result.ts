@@ -100,6 +100,7 @@ export function toProcessRunResult(
     bytesSeen: { stdout: stdoutBytes, stderr: stderrBytes },
     peakRetainedBytes: retainedBytes(kernelResult, context.budget),
     ...(Object.keys(spillPaths).length > 0 ? { spillPaths } : {}),
+    ...(kernelResult.residualProcessesReaped ? { leftoversStopped: true as const } : {}),
     kernel,
   };
 }

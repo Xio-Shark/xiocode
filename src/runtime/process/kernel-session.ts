@@ -46,6 +46,7 @@ import {
 import { OUTPUT_BUDGET_PRESETS } from "./output-collector.ts";
 import type { KernelOperationRef, ProcessRunOptions, ProcessRunResult } from "./process-supervisor.ts";
 import { resolveKernelDriver } from "./kernel-driver.ts";
+import { BackgroundJobs } from "./background-jobs.ts";
 import { adjudicationHint } from "./kernel-hint.ts";
 import {
   abortedBeforeStart,
@@ -114,6 +115,8 @@ export class KernelSession {
   readonly recoveryReport: RecoveryReport | undefined;
   /** The platform driver supervising processes, and why it was chosen. */
   readonly driver: Readonly<{ name: string; reason: string }>;
+  /** Background commands (`bash` with `background: true`), stopped when the session ends. */
+  readonly jobs: BackgroundJobs;
 
   readonly #domain: ExecutionDomain;
   readonly #supervisor: ProcessSupervisor;
@@ -144,6 +147,11 @@ export class KernelSession {
     this.#ephemeral = options.ephemeral === true;
     this.#launchToken = crypto.randomBytes(4).toString("hex");
     this.#launchRunId = `${this.taskId}-launch-${this.#launchToken}`;
+    this.jobs = new BackgroundJobs({
+      startService: (name, spec) => this.startService(name, spec),
+      operationOutcome: (opId) => this.operationOutcome(opId),
+      logDir: path.join(this.domainPath, "background"),
+    });
   }
 
   /** Acquires the domain, adjudicates leftovers, then registers Task + launch Run. */
@@ -507,6 +515,12 @@ export class KernelSession {
 
   describeOperation(opId: string): string {
     return this.#describeOperation(opId);
+  }
+
+  /** Final result status the kernel recorded for an operation (`succeeded`, `indeterminate`, …); undefined while it has none. */
+  operationOutcome(opId: string): string | undefined {
+    const op = this.#domain.getStore().getOperation(opId);
+    return op?.status === "done" ? (op.result as { status?: string } | undefined)?.status : undefined;
   }
 
   async adjudicate(

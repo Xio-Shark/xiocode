@@ -15,6 +15,8 @@ const BUILTIN_RISK: Readonly<Record<string, ToolRiskClass>> = {
   /** Worker agents edit forks; changes reach the workspace through kernel transactions. */
   parallel_edit: "write",
   bash: "exec",
+  /** Lists, reads and stops background jobs the user already approved starting through bash. */
+  jobs: "read",
   merge: "merge",
   rollback: "merge",
 };

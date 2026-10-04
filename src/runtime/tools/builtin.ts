@@ -8,7 +8,8 @@ import { defineTool } from "../define-tool.ts";
 import { FileReadSet } from "../file-read-set.ts";
 import { FileShiftRegistry, type FileShiftInfo } from "../file-shift.ts";
 import { FileWriteQueue } from "../file-write-queue.ts";
-import { OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
+import { kernelSessionIfAvailable, OUTPUT_BUDGET_PRESETS, runSupervisedProcessGated } from "../process/index.ts";
+import type { BackgroundJobInfo } from "../process/background-jobs.ts";
 import { WorkspacePathPolicy, type CheckedWorkspacePath } from "../workspace-path-policy.ts";
 import { GrepSeenState, annotateGrepOutput } from "./grep-outline.ts";
 import { Type } from "../schema.ts";
@@ -124,6 +125,7 @@ export function createBuiltinTools(options: BuiltinToolsOptions = {}): readonly 
     createWriteTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift),
     createEditTool(cwd, pathPolicy, writeBackVerify, writeQueue, readSet, requireReadBeforeEdit, fileShift, contextId, onFileShift, searchOverride),
     createBashTool(cwd, childEnv),
+    createJobsTool(cwd),
     createGrepTool(cwd, pathPolicy, searchOverride, grepOutline ? grepSeen : undefined),
     createGlobTool(cwd, pathPolicy, searchOverride),
   ];
@@ -485,23 +487,104 @@ function applyUnifiedPatch(content: string, patchText: string): PatchApplyResult
 function createBashTool(cwd: string, childEnv: NodeJS.ProcessEnv): ToolDefinition {
   return defineTool({
     name: "bash",
-    description: "Run a shell command in the workspace.",
+    description:
+      "Run a shell command in the workspace. Processes the command leaves running are stopped when it ends; "
+      + "for a server or watcher that must keep running, pass background: true and use the jobs tool to read its "
+      + "output or stop it.",
     parameters: Type.Object({
       command: Type.String({ description: "Shell command to execute." }),
-    }),
+      background: Type.Boolean({
+        description: "Keep the command running after this call (dev server, watcher). Returns a job id and its first output.",
+      }),
+    }, { required: ["command"] }),
     async execute(toolCallId, params, ctx) {
       const command = String(params.command ?? "");
+      if (params.background === true) {
+        return startBackgroundJob(command, cwd, childEnv);
+      }
       const result = await runCommand(command, cwd, ctx?.signal, childEnv, toolCallId);
       // The stop note rides on the first line: a later length cap on tool results keeps the head, and an
       // exit code alone would read as the command's own failure.
       const status = `exit_code=${result.exitCode}${result.stoppedBy ? ` (${result.stoppedBy})` : ""}`;
-      const body = `${status}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
+      const leftovers = result.leftoversStopped
+        ? "\nnote: processes this command left running were stopped when it ended; "
+          + "to keep a server or watcher running, call bash with background: true."
+        : "";
+      const body = `${status}${leftovers}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
       if (result.exitCode !== 0) {
         return errorResult("bash", body);
       }
       return textResult(body);
     },
   });
+}
+
+async function startBackgroundJob(command: string, cwd: string, childEnv: NodeJS.ProcessEnv) {
+  const session = await kernelSessionIfAvailable(cwd);
+  if (!session) {
+    return errorResult(
+      "bash",
+      "background commands need the kernel process layer, which is off for this session (see /kernel); nothing was started",
+    );
+  }
+  if (session.confinement.enabled) {
+    return errorResult(
+      "bash",
+      "background commands cannot run under write confinement (/confine off lifts it); nothing was started",
+    );
+  }
+  const env = Object.fromEntries(
+    Object.entries(childEnv).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  try {
+    const { job, output } = await session.jobs.start({ command, cwd, env });
+    const body = `${describeJob(job)}\nlog: ${job.logPath}\n\noutput so far:\n${output}`;
+    return job.state === "exited" && job.exit?.code !== 0 ? errorResult("bash", body) : textResult(body);
+  } catch (error) {
+    return errorResult("bash", `background command could not be started: ${errorMessage(error)}`);
+  }
+}
+
+function createJobsTool(cwd: string): ToolDefinition {
+  return defineTool({
+    name: "jobs",
+    description:
+      "Manage background commands started with bash background: true. action list shows them; "
+      + "output returns the end of a job's log; stop stops a job (confirmed by the kernel).",
+    parameters: Type.Object({
+      action: { ...Type.String({ description: "list, output or stop." }), enum: ["list", "output", "stop"] },
+      id: Type.String({ description: "Job id (job-N), required for output and stop." }),
+    }, { required: ["action"] }),
+    async execute(_toolCallId, params) {
+      const session = await kernelSessionIfAvailable(cwd);
+      if (!session) {
+        return errorResult("jobs", "background jobs need the kernel process layer, which is off for this session");
+      }
+      try {
+        if (params.action === "list") {
+          const jobs = session.jobs.list();
+          return textResult(jobs.length > 0 ? jobs.map(describeJob).join("\n") : "no background jobs");
+        }
+        const id = String(params.id ?? "");
+        if (params.action === "output") {
+          // output() throws for an unknown id, naming the known ones
+          const text = session.jobs.output(id);
+          return textResult(`${describeJob(session.jobs.get(id)!)}\n\n${text}`);
+        }
+        const stopped = await session.jobs.stop(id);
+        return stopped.state === "stop_unconfirmed"
+          ? errorResult("jobs", `${describeJob(stopped)}: the kernel could not confirm the stop; see /kernel`)
+          : textResult(describeJob(stopped));
+      } catch (error) {
+        return errorResult("jobs", errorMessage(error));
+      }
+    },
+  });
+}
+
+function describeJob(job: BackgroundJobInfo): string {
+  const exit = job.exit ? ` exit_code=${job.exit.code ?? "none"}${job.exit.signal ? ` signal=${job.exit.signal}` : ""}` : "";
+  return `${job.id} ${job.state}${exit}: ${job.command}`;
 }
 
 function createGrepTool(
@@ -731,6 +814,8 @@ type CommandResult = {
   spawnError?: boolean;
   /** Set when XioCode ended the command itself; the exit code is then not the command's. */
   stoppedBy?: string;
+  /** The kernel stopped processes the command left running when it ended. */
+  leftoversStopped?: boolean;
 };
 
 async function runCommand(
@@ -796,6 +881,7 @@ async function runArgv(
     ...(result.outputLimited
       ? { stoppedBy: "stopped by XioCode: its output exceeded the hard cap, so the command did not run to completion" }
       : {}),
+    ...(result.leftoversStopped ? { leftoversStopped: true } : {}),
   };
 }
 

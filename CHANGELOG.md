@@ -14,9 +14,14 @@ Release cadence: **every 1–2 weeks** while the project is young.
 
 ## [Unreleased]
 
-Requires `@xioflow/kernel` 0.6.0 (rollback results carry `ignoredFiles`; workspace transactions accept an observation log).
+Requires `@xioflow/kernel` 0.7.0 (processes a command leaves running are reaped when it ends; rollback results carry `ignoredFiles`; workspace transactions accept an observation log).
+
+### Added
+- **Background commands.** `bash` with `background: true` keeps a dev server or watcher running after the call. The kernel supervises it as a service: its output (stderr merged) goes to a log file, it takes no workspace write lease, and it is stopped when the session ends. The new `jobs` tool lists background jobs, returns the end of a job's log and stops a job; a stop the kernel cannot confirm is reported as such. Not available under `/confine` or with `XIOCODE_PROCESS_KERNEL=0`.
+- `XIOCODE_KERNEL_DRIVER=cgroup` (Linux): every command runs in its own cgroup v2, so nothing it forks escapes, and crash recovery reaps what is left. It needs a cgroup delegated to xiocode (`systemd-run --user --scope -p Delegate=yes xio`); `auto` never picks it.
 
 ### Changed
+- **Processes a command leaves running are stopped when the command ends**, including `nohup server >log 2>&1 &` (kernel 0.7.0). The bash result says so on its second line; start servers with `background: true` instead.
 - **The web console (`xio web`) was redesigned.**
   - Replies render as markdown: headings, lists, tables, code blocks with a language label, highlighting and a copy button. Model output is never treated as HTML, so a reply that contains `<script>` or a `javascript:` link shows it as text.
   - Tool calls are compact rows — an icon, what the tool did (读取 / 编辑 / 运行 …), its target, how long it took and whether it worked. Details open on click; a failed call opens by itself. Thinking collapses to “思考了 N 秒” once the answer starts, and a line at the bottom says what the agent is doing right now and for how long.

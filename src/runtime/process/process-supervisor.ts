@@ -87,6 +87,11 @@ export type ProcessRunResult = Readonly<{
   bytesSeen: Readonly<{ stdout: number; stderr: number }>;
   peakRetainedBytes: number;
   spillPaths?: Readonly<{ stdout?: string; stderr?: string }>;
+  /**
+   * Kernel path only: processes the command left running after it exited (backgrounded, daemonized)
+   * were stopped by the kernel when it ended.
+   */
+  leftoversStopped?: true;
   /** Kernel path only: where the facts of this run live. */
   kernel?: KernelOperationRef;
 }>;

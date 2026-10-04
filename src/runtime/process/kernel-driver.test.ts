@@ -15,9 +15,12 @@ describe("resolveKernelDriver", () => {
   it("honors an explicit node choice", () => {
     const choice = resolveKernelDriver({ XIOCODE_KERNEL_DRIVER: "node" });
     expect(choice).toMatchObject({ name: "node", reason: "XIOCODE_KERNEL_DRIVER=node" });
+    // cgroup is only ever explicit; constructing it outside a delegated Linux cgroup throws with the reason
+    expect(resolveKernelDriver({ XIOCODE_KERNEL_DRIVER: "cgroup" })).toMatchObject({ name: "cgroup", reason: "XIOCODE_KERNEL_DRIVER=cgroup" });
+    expect(resolveKernelDriver({}).name).not.toBe("cgroup");
   });
 
   it("rejects an unknown value instead of guessing", () => {
-    expect(() => resolveKernelDriver({ XIOCODE_KERNEL_DRIVER: "fast" })).toThrow(/auto, node or reaper/);
+    expect(() => resolveKernelDriver({ XIOCODE_KERNEL_DRIVER: "fast" })).toThrow(/auto, node, reaper or cgroup/);
   });
 });

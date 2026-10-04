@@ -115,13 +115,22 @@ export async function closeKernelSession(): Promise<Error | undefined> {
   const previous = bound;
   bound = undefined;
   if (!previous) return undefined;
+  let session: KernelSession;
   try {
-    const session = await previous.session;
-    return session.close();
+    session = await previous.session;
   } catch {
     // Opening failed; the binder already reported it and there is nothing to close.
     return undefined;
   }
+  // Background jobs end with the session; a stop the kernel cannot confirm stays indeterminate for the next launch.
+  const unconfirmed = await session.jobs.stopAll();
+  const refusal = session.close();
+  if (unconfirmed.length === 0) return refusal;
+  const jobs = unconfirmed.map((job) => `${job.id} (${job.opId})`).join(", ");
+  return new Error(
+    `background job(s) ${jobs} could not be confirmed stopped; the next launch's recovery adjudicates them`
+      + (refusal ? `; ${refusal.message}` : ""),
+  );
 }
 
 /**

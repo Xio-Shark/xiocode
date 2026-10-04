@@ -24,7 +24,7 @@
 - **实时 Token 成本度量**：终端状态栏与 Web 控制台统一按内置定价表（支持在 config.toml 中自定义覆盖）实时计算 Token 费用，未计价模型显式标注，使用成本清晰透明。
 - **双模操作界面**：全屏高密度终端 TUI（语法高亮、模糊搜索、命令面板、鼠标滚动支持），同时内置零依赖本地 Web 控制台（`xio web`），可视化审查工具调用链路与执行时间线。
 - **主动安全防护**：对破坏性 Shell 命令与敏感文件修改执行严格拦截与人工授权校验，保障工作区安全。
-- **内核化进程执行层**：受监督命令运行在可嵌入内核 [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) 上——启动前登记进程意图、停止必须由驱动确认后才释放租约、逐流截断并落盘转储、崩溃后对遗留操作做残留判定。每个 prompt 对应一个内核 Run，direct 模式的 `/rollback` 基于内核快照，权限决策写入内核 journal（见 [ARCHITECTURE.md](./ARCHITECTURE.md)）。`XIOCODE_PROCESS_KERNEL=0` 可让命令改用内置 supervisor 执行。
+- **内核化进程执行层**：受监督命令运行在可嵌入内核 [`@xioflow/kernel`](https://github.com/Xio-Shark/xioflow) 上——启动前登记进程意图、停止必须由驱动确认后才释放租约、逐流截断并落盘转储、崩溃后对遗留操作做残留判定。每个 prompt 对应一个内核 Run，direct 模式的 `/rollback` 基于内核快照，权限决策写入内核 journal（见 [ARCHITECTURE.md](./ARCHITECTURE.md)）。`XIOCODE_PROCESS_KERNEL=0` 可让命令改用内置 supervisor 执行。命令结束时会停掉它留下的进程；开发服务器和 watcher 作为内核监督的后台任务运行（`bash` 加 `background: true`，用 `jobs` 工具管理）。
 
 ---
 

@@ -28,9 +28,9 @@ describe("ExtensionHost", () => {
 });
 
 describe("createBuiltinTools", () => {
-  it("exposes the six core tools", () => {
+  it("exposes the seven core tools", () => {
     const names = createBuiltinTools().map((tool) => tool.name);
-    expect(names).toEqual(["read", "write", "edit", "bash", "grep", "glob"]);
+    expect(names).toEqual(["read", "write", "edit", "bash", "jobs", "grep", "glob"]);
   });
 });
 
