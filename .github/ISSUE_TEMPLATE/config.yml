@@ -4,8 +4,8 @@ contact_links:
     url: https://github.com/Xio-Shark/xiocode/discussions
     about: Not sure it's a bug? Ask here. `xio feedback` opens this from the terminal.
   - name: Security issue
-    url: mailto:xioshark.0127@gmail.com
-    about: Please email instead of opening a public issue.
+    url: https://github.com/Xio-Shark/xiocode/security/advisories/new
+    about: Report privately via GitHub Security Advisories instead of opening a public issue.
   - name: Commercial license
-    url: mailto:xioshark.0127@gmail.com
-    about: Using XioCode in a proprietary product or SaaS.
+    url: https://github.com/Xio-Shark/xiocode/discussions
+    about: Using XioCode in a proprietary product or SaaS? Start a discussion.
