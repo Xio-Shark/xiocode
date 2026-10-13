@@ -1,6 +1,7 @@
 import { ExtensionHost } from "../extension-host.ts";
 import { runAgentLoop } from "../agent-loop.ts";
 import { createLlmClient, type ClientIdentity } from "../providers/client.ts";
+import { resolveModelApi } from "../providers/wire-api.ts";
 import { createBuiltinTools } from "../tools/builtin.ts";
 import { WorkspacePathPolicy } from "../workspace-path-policy.ts";
 import type { FileShiftInfo, FileShiftRegistry } from "../file-shift.ts";
@@ -140,7 +141,7 @@ export async function runExploreSubagent(
       provider: registration.name,
       id: options.modelId,
       name: options.modelId,
-      api: registration.api,
+      api: resolveModelApi(registration, options.modelId),
     },
   });
   const allowed = options.allowBash ? EXPLORE_TOOLS_WITH_BASH : READ_ONLY_TOOLS;
@@ -213,7 +214,7 @@ export async function runExploreSubagent(
         host,
         client,
         model: options.modelId,
-        providerApi: registration.api,
+        providerApi: resolveModelApi(registration, options.modelId),
         providerName: registration.name,
         systemPrompt,
         maxTurns: options.maxTurns,

@@ -53,8 +53,9 @@ export function decodeProviderUsageEvent(value: unknown): TokenUsage {
 }
 
 function normalizeOpenAiUsage(usage: Record<string, unknown>): TokenUsage {
-  const promptDetails = asRecord(usage.prompt_tokens_details);
-  const completionDetails = asRecord(usage.completion_tokens_details);
+  // Chat completions name them prompt/completion; the Responses API input/output.
+  const promptDetails = asRecord(usage.prompt_tokens_details ?? usage.input_tokens_details);
+  const completionDetails = asRecord(usage.completion_tokens_details ?? usage.output_tokens_details);
   return {
     inputTokens: numberOrNull(usage.prompt_tokens ?? usage.input_tokens),
     outputTokens: numberOrNull(usage.completion_tokens ?? usage.output_tokens),

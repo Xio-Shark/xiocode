@@ -6,6 +6,7 @@ import { stdin as input, stdout as output } from "node:process";
 
 import { ExtensionHost } from "./extension-host.ts";
 import { createLlmClient, type ClientIdentity } from "./providers/client.ts";
+import { resolveModelApi } from "./providers/wire-api.ts";
 import { registerConfiguredProviders, resolveDefaultModel } from "./provider-registry.ts";
 import { qualifyModelId, registerConnectCommands } from "./connect-commands.ts";
 import { registerThinkingCommands } from "./thinking-commands.ts";
@@ -481,7 +482,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       runWorker: createWorkerRunner({
         getClient: getOrCreateClient,
         getModel: () => currentModel,
-        getProviderApi: () => registration.api,
+        getProviderApi: () => resolveModelApi(registration, currentModel.id),
         maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
         onEvent: (name, event, detail) => sink.notify?.(
           event === "start" ? `parallel worker "${name}" started` : `parallel worker "${name}" ${detail}`,
@@ -726,7 +727,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
       repoId,
       getClient: getOrCreateClient,
       getModel,
-      getProviderApi: () => registration.api,
+      getProviderApi: () => resolveModelApi(registration, currentModel.id),
       maxTurns: options.maxTurns ?? options.runtimeConfig.general.maxTurns,
       repeatToolLimit: options.runtimeConfig.general.repeatToolLimit,
       doneContract: toDoneContract(verify),

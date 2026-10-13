@@ -65,6 +65,50 @@ export async function saveProviderCredential(
   return filePath;
 }
 
+export type CredentialMigration = Readonly<{ from: string; to: string }>;
+
+const sameBaseUrl = (a: string | undefined, b: string | undefined): boolean =>
+  Boolean(a && b && a.replace(/\/+$/, "") === b.replace(/\/+$/, ""));
+
+/**
+ * Keys are looked up by provider name, so a key saved under a name no provider
+ * uses (an older `/connect` with a hand-typed id, e.g. `opencodego`, while the
+ * config calls the provider `opencode`) is invisible. Such an entry is renamed to
+ * the one configured provider without a key of its own that has the same base
+ * URL. A key saved for another configured provider is never moved: two providers
+ * on one gateway can hold different accounts. Returns what moved, to report.
+ */
+export async function migrateCredentialNames(
+  providers: Readonly<Record<string, XioProviderConfig>>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<readonly CredentialMigration[]> {
+  const current = await loadCredentials(env);
+  const next: Record<string, CredentialProviderEntry> = { ...current.providers };
+  const migrations: CredentialMigration[] = [];
+  for (const [from, entry] of Object.entries(current.providers)) {
+    if (providers[from]) continue;
+    const targets = Object.values(providers).filter((provider) =>
+      !next[provider.name] && sameBaseUrl(entry.baseUrl, provider.baseUrl));
+    if (targets.length !== 1) continue;
+    const to = targets[0]!.name;
+    next[to] = entry;
+    delete next[from];
+    migrations.push({ from, to });
+  }
+  if (migrations.length > 0) {
+    await writePrivateFileAtomic(
+      resolveCredentialsPath(env),
+      `${JSON.stringify({ version: 1, providers: next } satisfies CredentialsFile, null, 2)}\n`,
+    );
+  }
+  return migrations;
+}
+
+export function formatCredentialMigration(migration: CredentialMigration): string {
+  return `credentials: the key saved as "${migration.from}" now belongs to provider "${migration.to}" `
+    + `(no provider is named "${migration.from}"; same base_url)`;
+}
+
 /** Fill missing provider API key env vars from credentials.json (env wins).
  * @deprecated Prefer SecretEnvironment.create — production paths must not mutate shared process.env.
  */

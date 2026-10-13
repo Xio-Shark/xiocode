@@ -447,6 +447,7 @@ export const en: Messages = {
   "web.ruleTestsText": "\n## Run tests before handing over\n- Run the tests of the affected modules and make sure they pass.\n- Include the test command and its result in the reply.\n",
   "web.ruleSecretsText": "\n## No hard-coded secrets\n- Never put API keys or secrets in source or logs; use environment variables.\n- Parameterise every database query and command call.\n",
   "web.fromConfig": "{name} (config file)",
+  "web.modelEndpoint": "Endpoint: {endpoint}",
   "web.noKey": " · no key",
   "web.keyFound": "Key found",
   "web.keyMissing": "No key found",

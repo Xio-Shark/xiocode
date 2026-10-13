@@ -122,9 +122,10 @@ theme = "light"   # groknight | light | claude | minimal | nord；/theme 会写�
 | `xio` | 启动交互式终端编程环境 |
 | `xio "任务描述"` | 单次执行指定任务，完成后退出 |
 | `xio resume` | 恢复上一次中断或退出的会话 |
+| `xio resume --prune` | 预览从未提问的旧会话；加 `--yes` 确认删除，跳过有 worktree 或正在使用的会话 |
 | `xio web` | 启动本地 Web 控制台 (`http://localhost:3080`) |
 | `xio doctor` | 一键诊断系统环境、Node 版本、配置及 API 连通性 |
-| `xio models` | 查看支持的模型目录、内置单价与当前配置状态 |
+| `xio models` | 查看模型目录、内置单价、每个模型走的接口、配置状态，以及网关已下线的模型（`[offline]`；`--refresh` 更新已保存的列表） |
 
 ### 会话内指令 (Slash Commands)
 | 命令 | 说明 |

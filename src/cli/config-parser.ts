@@ -4,6 +4,7 @@ import path from "node:path";
 import { parse } from "smol-toml";
 
 import { assertMaxSessionMessages } from "../runtime/context-compaction.ts";
+import { isWireApi, WIRE_APIS, type WireApi } from "../runtime/providers/wire-api.ts";
 import { DEFAULT_WORKTREE_CONFIG } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 import type { ModelPrice, PricingOverrides } from "../runtime/pricing.ts";
@@ -58,6 +59,8 @@ export type XioProviderConfig = Readonly<{
   headers?: Readonly<Record<string, string>>;
   /** Header carrying the session id on every request; "" turns the default off. */
   sessionHeader?: string;
+  /** Model id → request format, for gateways that serve models on different APIs. */
+  modelApis?: Readonly<Record<string, WireApi>>;
   thinkingLevelMap?: Readonly<Partial<Record<XioThinkingLevel, string>>>;
   compat?: Readonly<Record<string, unknown>>;
 }>;
@@ -639,6 +642,7 @@ function parseProviders(table: Record<string, unknown> | undefined): Readonly<Re
       input: getInputTypes(provider.input, `providers.${name}.input`),
       headers: getStringRecord(provider.headers, `providers.${name}.headers`),
       sessionHeader: getOptionalString(provider, "session_header"),
+      modelApis: getModelApis(provider.model_apis, `providers.${name}.model_apis`),
       thinkingLevelMap: getThinkingLevelMap(provider.thinking_level_map, `providers.${name}.thinking_level_map`),
       compat: getRecord(provider.compat, `providers.${name}.compat`),
     };
@@ -1104,6 +1108,15 @@ function getStringRecord(value: unknown, context: string): Readonly<Record<strin
     }
   }
   return record as Record<string, string>;
+}
+
+function getModelApis(value: unknown, context: string): Readonly<Record<string, WireApi>> | undefined {
+  const record = getStringRecord(value, context);
+  if (record === undefined) return undefined;
+  for (const [model, api] of Object.entries(record)) {
+    if (!isWireApi(api)) throw new Error(`${context}.${model} must be one of ${WIRE_APIS.join(", ")}`);
+  }
+  return record as Readonly<Record<string, WireApi>>;
 }
 
 function getThinkingLevelMap(value: unknown, context: string): Readonly<Partial<Record<XioThinkingLevel, string>>> | undefined {

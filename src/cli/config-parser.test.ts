@@ -181,6 +181,23 @@ thinking_display = "hidden"
     ).toThrow("providers.bad.thinking_display must be summarized or omitted");
   });
 
+  it("parses per-model request formats and rejects unknown ones", () => {
+    const parsed = parseXioConfig(`
+[providers.gw]
+kind = "openai"
+model = "m"
+model_apis = { "gpt-x" = "openai-responses", "mini" = "anthropic-messages" }
+`);
+    expect(parsed.xio.providers.gw?.modelApis).toEqual({ "gpt-x": "openai-responses", mini: "anthropic-messages" });
+    expect(() =>
+      parseXioConfig(`
+[providers.gw]
+kind = "openai"
+model_apis = { "gpt-x" = "responses" }
+`),
+    ).toThrow("providers.gw.model_apis.gpt-x must be one of openai-completions, openai-responses, anthropic-messages");
+  });
+
   it("maps worktree config fields", () => {
     const parsed = parseXioConfig(SAMPLE_CONFIG, { cwd: "/repo" });
 

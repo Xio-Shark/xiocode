@@ -8,7 +8,7 @@ import { gitOk } from "../../extensions/xio-sandbox/src/git.ts";
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { SessionStore } from "../runtime/session-store.ts";
 import type { ChatMessage } from "../runtime/types.ts";
-import { deleteStoredSession, discardUnusedSession } from "./run-agent-cli.ts";
+import { deleteStoredSession, discardUnusedSession, pruneUnusedSessions } from "./run-agent-cli.ts";
 
 const tempDirs: string[] = [];
 
@@ -154,6 +154,55 @@ describe("discardUnusedSession", () => {
     const store = await storeWith("unused1", [{ role: "system", content: "sys" }]);
     expect(await discardUnusedSession(store, "unused1")).toBe(true);
     expect(await store.list()).toEqual([]);
+  });
+
+  it("prunes only after confirmation and skips leased sessions", async () => {
+    const store = await storeWith("unused1", []);
+    const out: string[] = [];
+    const write = (chunk: string) => { out.push(chunk); };
+    expect(await pruneUnusedSessions(store, { apply: false, write })).toBe(0);
+    expect(out.join("")).toContain("Nothing was deleted");
+    expect(await store.loadIfPresent("unused1")).toBeDefined();
+    const release = await store.acquireLease("unused1");
+    try {
+      expect(await pruneUnusedSessions(store, { apply: true, write })).toBe(0);
+      expect(out.join("")).toContain("already active");
+      expect(await store.loadIfPresent("unused1")).toBeDefined();
+    } finally {
+      await release();
+    }
+    expect(await pruneUnusedSessions(store, { apply: true, write })).toBe(0);
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("rechecks messages after acquiring the lease", async () => {
+    const store = await storeWith("changed1", []);
+    const acquire = store.acquireLease.bind(store);
+    vi.spyOn(store, "acquireLease").mockImplementationOnce(async (id) => {
+      const saved = await store.load(id);
+      await store.save({ id, model: saved.metadata.model, cwd: saved.metadata.cwd,
+        mainRoot: saved.metadata.main_root, messages: [{ role: "user", content: "new prompt" }] });
+      return acquire(id);
+    });
+    await pruneUnusedSessions(store, { apply: true, write: () => undefined });
+    expect((await store.load("changed1")).messages[0]?.content).toBe("new prompt");
+  });
+
+  it("does not hide lease IO errors as occupied sessions", async () => {
+    const store = await storeWith("io1", []);
+    vi.spyOn(store, "acquireLease").mockRejectedValueOnce(new Error("disk error"));
+    await expect(pruneUnusedSessions(store, { apply: true, write: () => undefined })).rejects.toThrow("disk error");
+  });
+
+  it("keeps active worktrees and worktree paths left behind despite removed metadata", async () => {
+    const active = await storeWith("active1", [], { lifecycle: "active" });
+    await pruneUnusedSessions(active, { apply: true, write: () => undefined });
+    expect(await active.loadIfPresent("active1")).toBeDefined();
+    const removed = await storeWith("gone1", [], { lifecycle: "clean_removed" });
+    const saved = await removed.load("gone1");
+    await writeFile(saved.workspace!.worktree_path!, "left behind");
+    await pruneUnusedSessions(removed, { apply: true, write: () => undefined });
+    expect(await removed.loadIfPresent("gone1")).toBeDefined();
   });
 
   it("keeps a session that received a prompt", async () => {

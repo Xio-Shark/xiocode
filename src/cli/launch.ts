@@ -6,6 +6,7 @@ import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandb
 import { ensurePrivateDir, writePrivateFileAtomic } from "../runtime/private-fs.ts";
 import { expandHome, parseXioConfig } from "./config-parser.ts";
 import { ensureConfigFile } from "./ensure-config.ts";
+import { formatCredentialMigration, migrateCredentialNames } from "./credentials.ts";
 import { XIO_VERSION } from "./version.ts";
 import { SecretEnvironment } from "../runtime/secret-environment.ts";
 
@@ -95,6 +96,9 @@ export async function prepareLaunch(
   await ensurePrivateDir(configRoot);
   await ensurePrivateDir(expandHome(parsed.xio.general.runRoot));
   await writeJson(runtimeConfigPath, workspace.runtimeConfig);
+  for (const migration of await migrateCredentialNames(parsed.xio.providers, env)) {
+    process.stderr.write(`[info] ${formatCredentialMigration(migration)}\n`);
+  }
   // Credentials load into a session store — do not mutate the shared process.env.
   const secretEnvironment = await SecretEnvironment.create({
     env,

@@ -49,6 +49,13 @@ export type AgentLoopOptions = Readonly<{
   parallelToolCalls?: boolean;
   /** Prior session messages for multi-turn continuity. */
   priorMessages?: readonly ChatMessage[];
+  /**
+   * Continue the same prompt from an awaiting_provider checkpoint without adding
+   * a user message. The host must restore tool/workspace state first. Only the
+   * conversation is restored; maxTurns and usage apply to this invocation.
+   * Cannot be combined with priorMessages.
+   */
+  resumeFrom?: AgentLoopCheckpoint;
   /** Hard cap on retained session messages; trim inserts an explicit notice. */
   maxSessionMessages?: number;
   /** Optional override for max_tokens (else model registration). */

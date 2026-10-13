@@ -5,6 +5,7 @@ import type {
   ProviderToolChoice,
   ProviderToolChoiceScope,
 } from "../types.ts";
+import { resolveModelApi } from "./wire-api.ts";
 
 export type ToolChoiceWire =
   | Readonly<{ kind: "openai"; value: "auto" | "required" | "none" }>
@@ -33,7 +34,7 @@ export function resolveRequestControls(input: Readonly<{
   const model = input.registration?.models.find((entry) => entry.id === input.modelId)
     ?? input.registration?.models[0];
   const maxTokens = input.request.maxTokens ?? model?.maxTokens;
-  const api = input.registration?.api ?? "openai-completions";
+  const api = input.registration ? resolveModelApi(input.registration, input.modelId) : "openai-completions";
   const configuredChoice = input.request.toolChoice ?? input.registration?.toolChoice;
   const scope: ProviderToolChoiceScope = input.request.toolChoiceScope
     ?? input.registration?.toolChoiceScope
@@ -88,7 +89,7 @@ export function shouldApplyToolChoice(
 }
 
 export function mapToolChoiceToWire(api: string, choice: ProviderToolChoice): ToolChoiceWire {
-  if (api === "openai-completions" || api === "mistral-conversations") {
+  if (api === "openai-completions" || api === "openai-responses" || api === "mistral-conversations") {
     if (choice === "auto") return { kind: "openai", value: "auto" };
     // OpenAI has no "any"; map required/any → required
     return { kind: "openai", value: "required" };

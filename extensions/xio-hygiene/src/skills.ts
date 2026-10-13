@@ -83,6 +83,7 @@ export async function discoverSkills(options: DiscoverSkillsOptions): Promise<Sk
     cwd,
     home,
     includeUserClaude: config.readClaude,
+    includeUserSkills: config.readClaude,
     includeUserCursor: config.readCursor,
   });
   // Parallelize independent skill roots (user/project trees do not depend on each other).

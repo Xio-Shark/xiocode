@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { connectMcpServer } from "../src/mcp.ts";
+import { connectMcpServer, registerMcpBridge } from "../src/mcp.ts";
+import { ExtensionHost } from "../../../src/runtime/extension-host.ts";
 import { bindKernelSession, closeKernelSession } from "../../../src/runtime/process/index.ts";
 
 const STDIO_FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mcp-stdio-echo.mjs");
@@ -32,6 +33,40 @@ function isAlive(pid: number): boolean {
 }
 
 describe.skipIf(process.platform === "win32")("MCP stdio on a kernel service", () => {
+  it("does not start a service when the session ended before the handshake", async () => {
+    const workspace = await tempDir("xio-mcp-ended-ws-");
+    const domainRoot = await tempDir("xio-mcp-ended-domain-");
+    const session = await bindKernelSession({ sessionId: "mcp-ended", workspaceRoot: workspace,
+      env: { XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot } });
+    await expect(connectMcpServer({ name: "never", source: "config",
+      spec: { transport: "stdio", command: process.execPath, args: [STDIO_FIXTURE] } },
+    { cwd: workspace, timeoutMs: 30_000, signal: AbortSignal.abort(new Error("session ended")) }))
+      .rejects.toThrow("session ended");
+    expect(session.status().operations.filter((op) => op.kind === "service")).toEqual([]);
+  });
+  it("session_end stops a real server that never finishes its handshake before kernel shutdown", async () => {
+    const workspace = await tempDir("xio-mcp-handshake-ws-");
+    const domainRoot = await tempDir("xio-mcp-handshake-domain-");
+    const session = await bindKernelSession({ sessionId: "mcp-handshake", workspaceRoot: workspace,
+      env: { XIOCODE_KERNEL_DOMAIN_ROOT: domainRoot } });
+    const host = new ExtensionHost();
+    const warnings: string[] = [];
+    registerMcpBridge({ on: (event, handler) => host.on(event, handler) }, {
+      cwd: workspace, home: workspace,
+      config: { enabled: true, readClaude: false, readCursor: false, failClosed: false, unknownSourceFailClosed: false, timeoutMs: 30_000,
+        servers: { slow: { transport: "stdio", command: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] } } },
+      registerTool: (tool) => host.registerTool(tool), warn: (message) => warnings.push(message),
+    });
+    await host.emit("session_start", {});
+    await vi.waitFor(() => expect(session.status().operations.find((op) => op.kind === "service")?.status).toBe("active"));
+    const operation = session.status().operations.find((op) => op.kind === "service")!;
+    const pid = operation.processIdentity!.pid;
+    await host.emit("session_end", {});
+    expect(session.status().operations.find((op) => op.id === operation.id)?.status).toBe("done");
+    expect(isAlive(pid)).toBe(false);
+    expect(warnings).toEqual([]);
+    await closeKernelSession();
+  });
   it("runs the server as a supervised service, stops it confirmed, and keeps env values out of the journal", async () => {
     const workspace = await tempDir("xio-mcp-kernel-ws-");
     const domainRoot = await tempDir("xio-mcp-kernel-domain-");

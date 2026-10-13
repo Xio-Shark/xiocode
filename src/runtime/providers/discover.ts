@@ -52,16 +52,10 @@ export async function discoverModels(options: DiscoverModelsOptions): Promise<Di
         ? { models: [...catalog], source: "catalog", error }
         : { models: [], source: "empty", error };
     }
-    const json = await response.json() as { data?: Array<{ id?: string }> };
-    const models = (json.data ?? [])
+    const json = modelListSchema.parse(await response.json());
+    const models = json.data
       .map((item) => item.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0)
       .sort((a, b) => a.localeCompare(b));
-    if (models.length === 0) {
-      return catalog.length > 0
-        ? { models: [...catalog], source: "catalog" }
-        : { models: [], source: "empty" };
-    }
     return { models, source: "api" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -137,3 +131,6 @@ async function probeAnthropic(options: DiscoverModelsOptions): Promise<ProbeApiK
     source: catalog.length > 0 ? "catalog" : "empty",
   };
 }
+import { z } from "zod";
+
+const modelListSchema = z.object({ data: z.array(z.object({ id: z.string().min(1) })) });

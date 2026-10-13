@@ -12,6 +12,7 @@ import type { ExtensionContext } from "../../xio-evolve/src/types.ts";
 import type { JsonSchema, ToolDefinition, ToolExecuteResult } from "../../../src/runtime/types.ts";
 import {
   createHygieneResourcePolicy,
+  readUserResourceText,
   isMissingResource,
   readAuthorizedResourceText,
 } from "./project-resource-read.ts";
@@ -230,7 +231,9 @@ export async function loadMcpConfigs(options: LoadMcpConfigsOptions): Promise<Lo
     source: McpServerSource,
     extract: (data: unknown) => Record<string, unknown> | undefined,
   ): Promise<void> => {
-    const loaded = await readAuthorizedResourceText(policy, filePath);
+    const loaded = source === "claude-user" || source === "cursor-user"
+      ? await readUserResourceText(filePath)
+      : await readAuthorizedResourceText(policy, filePath);
     if (!loaded.ok) {
       if (isMissingResource(loaded)) {
         return;
@@ -341,6 +344,8 @@ export function registerMcpBridge(
   const live: LiveConnection[] = [];
   let closed = false;
   let settlePromise: Promise<void> = Promise.resolve();
+  /** Aborts connects still in their handshake when the session ends. */
+  let connecting = new AbortController();
 
   const forceKillAll = (entries: readonly LiveConnection[]): void => {
     for (const entry of entries) {
@@ -392,6 +397,7 @@ export function registerMcpBridge(
 
   ctx.on?.("session_start", async (_payload, eventCtx) => {
     closed = false;
+    connecting = new AbortController();
     loaded = await loadMcpConfigs({
       cwd: options.cwd,
       home: options.home,
@@ -414,6 +420,7 @@ export function registerMcpBridge(
       config,
       cwd: options.cwd,
       connect,
+      signal: connecting.signal,
       warn,
       registerTool: options.registerTool,
       onToolsChanged: options.onToolsChanged,
@@ -442,11 +449,13 @@ export function registerMcpBridge(
 
   ctx.on?.("session_end", async () => {
     closed = true;
-    // Stop in-flight connects quickly so they hit isClosed and tear down.
+    // A server still in its handshake is not in `live` yet: abort it and wait for its
+    // teardown, or its process (a kernel service) outlives the session.
+    connecting.abort(new Error("session ended"));
     try {
-      await withTimeout(settlePromise, 500, "mcp settle before close");
-    } catch {
-      // ignore — closeAll force-kills whatever is live
+      await withTimeout(settlePromise, MCP_CLOSE_TIMEOUT_MS + 800, "mcp settle before close");
+    } catch (error) {
+      warn(`mcp: servers still connecting did not stop in time: ${errorMessage(error)}`);
     }
     try {
       await withTimeout(closeAll(), MCP_CLOSE_TIMEOUT_MS + 800, "mcp closeAll");
@@ -465,6 +474,7 @@ async function connectServersInBackground(options: Readonly<{
   config: McpConfig;
   cwd: string;
   connect: typeof connectMcpServer;
+  signal: AbortSignal;
   warn: (message: string) => void;
   registerTool: (tool: ToolDefinition) => void;
   onToolsChanged?: () => void;
@@ -504,6 +514,7 @@ async function connectServersInBackground(options: Readonly<{
       connection = await options.connect(server, {
         cwd: options.cwd,
         timeoutMs: options.config.timeoutMs,
+        signal: options.signal,
       });
       if (options.isClosed() || aborted) {
         await connection.close().catch(() => undefined);
@@ -579,6 +590,8 @@ async function connectServersInBackground(options: Readonly<{
         removeLive(connection);
         await connection.close().catch(() => undefined);
       }
+      // Torn down because the session ended, not a connection failure.
+      if (options.isClosed()) return;
       const message = `mcp: failed to connect server "${server.name}": ${errorMessage(error)}`;
       options.warn(message);
       nextStatuses[index] = {
@@ -632,14 +645,18 @@ async function connectServersInBackground(options: Readonly<{
   }
 }
 
+type ConnectOptions = Readonly<{
+  cwd: string;
+  timeoutMs: number;
+  /** Aborting stops the handshake and tears the server down (session end). */
+  signal?: AbortSignal;
+  resolveEnvReference?: (name: string) => string | undefined;
+  registerSecretValue?: (value: string) => void;
+}>;
+
 export async function connectMcpServer(
   server: ResolvedMcpServer,
-  options: Readonly<{
-    cwd: string;
-    timeoutMs: number;
-    resolveEnvReference?: (name: string) => string | undefined;
-    registerSecretValue?: (value: string) => void;
-  }>,
+  options: ConnectOptions,
 ): Promise<LiveConnection> {
   if (server.spec.transport === "stdio") {
     await assertStdioCommandExists(server.spec.command);
@@ -704,7 +721,7 @@ export async function connectMcpServer(
 
   try {
     await withTimeout(
-      client.connect(transport),
+      untilAborted(() => client.connect(transport), options.signal),
       options.timeoutMs,
       `connect(${server.name})`,
     );
@@ -736,12 +753,7 @@ type StdioSpec = McpStdioServerSpec;
 async function connectStdioViaKernel(
   server: ResolvedMcpServer,
   spec: StdioSpec,
-  options: Readonly<{
-    cwd: string;
-    timeoutMs: number;
-    resolveEnvReference?: (name: string) => string | undefined;
-    registerSecretValue?: (value: string) => void;
-  }>,
+  options: ConnectOptions,
 ): Promise<LiveConnection | undefined> {
   if (resolveProcessBackend().backend !== "kernel") return undefined;
   let session;
@@ -777,7 +789,7 @@ async function connectStdioViaKernel(
     }
   };
   try {
-    await withTimeout(client.connect(transport), options.timeoutMs, `connect(${server.name})`);
+    await withTimeout(untilAborted(() => client.connect(transport), options.signal), options.timeoutMs, `connect(${server.name})`);
   } catch (error) {
     await close();
     throw error;
@@ -1115,6 +1127,18 @@ function asStringRecord(value: unknown): Readonly<Record<string, string>> | unde
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Rejects with the abort reason as soon as `signal` aborts; the caller tears down. */
+function untilAborted<T>(start: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  signal?.throwIfAborted();
+  const promise = start();
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

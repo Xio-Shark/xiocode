@@ -123,9 +123,10 @@ Approvals list their choices (allow once, allow for the session where it is safe
 | `xio` | Launch the interactive terminal coding environment |
 | `xio "task description"` | Execute a one-shot task and exit upon completion |
 | `xio resume` | Resume the most recent active or interrupted session |
+| `xio resume --prune` | Preview old sessions without a prompt; add `--yes` to delete, skipping worktrees and active sessions |
 | `xio web` | Launch the local web timeline console (`http://localhost:3080`) |
 | `xio doctor` | Diagnose environment, configuration, and API connectivity |
-| `xio models` | Display supported provider/model ids, unit pricing, and configuration status |
+| `xio models` | Display provider/model ids, unit pricing, the endpoint each model is called on, configuration status, and models the provider no longer lists (`[offline]`; `--refresh` updates the saved lists) |
 
 ### In-Session Slash Commands
 | Command | Description |

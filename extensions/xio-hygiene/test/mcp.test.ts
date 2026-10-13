@@ -242,6 +242,26 @@ describe("loadMcpConfigs", () => {
     expect(loaded.servers).toEqual([]);
   });
 
+  it("loads intentionally linked user MCP files without weakening project path checks", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-user-mcp-link-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    await mkdir(path.join(home, ".cursor"), { recursive: true });
+    await mkdir(cwd);
+    const target = path.join(root, "shared-mcp.json");
+    await writeFile(target, JSON.stringify({ mcpServers: { shared: { command: "shared" } } }));
+    await symlink(target, path.join(home, ".cursor", "mcp.json"));
+    await symlink(target, path.join(home, ".claude.json"));
+    const loaded = await loadMcpConfigs({ cwd, home, config: config() });
+    expect(loaded.servers.map((s) => s.name)).toEqual(["shared"]);
+    expect(loaded.warnings).toEqual([]);
+    expect(loaded.sources).toContain(await (await import("node:fs/promises")).realpath(target));
+    await writeFile(target, "not JSON");
+    const invalid = await loadMcpConfigs({ cwd, home, config: config() });
+    expect(invalid.warnings.join("\n")).toContain("invalid JSON");
+  });
+
   it("rejects a symlinked project .mcp.json while still loading user configs", async () => {
     const { symlink } = await import("node:fs/promises");
     const root = await tempRoot("xio-mcp-symlink-");
@@ -749,6 +769,46 @@ describe("registerMcpBridge transports", () => {
     await host.emit("session_end", {});
     expect(Date.now() - started).toBeLessThan(3_000);
     void forceKilled;
+  });
+
+  it("session_end aborts a server still in its handshake and waits for its teardown", async () => {
+    const root = await tempRoot("xio-mcp-abort-");
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+    const warnings: string[] = [];
+    let tornDown = false;
+    const host = new ExtensionHost();
+    registerMcpBridge(
+      { on: (event, handler) => host.on(event, handler) },
+      {
+        cwd,
+        home: path.join(root, "home"),
+        config: config({
+          readClaude: false,
+          readCursor: false,
+          timeoutMs: 30_000,
+          servers: { slow: { transport: "stdio", command: "slow" } },
+        }),
+        registerTool: (tool) => host.registerTool(tool),
+        warn: (message) => warnings.push(message),
+        connectServer: (_server, options) => new Promise((_, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            // Like connectMcpServer: tear the server down, then reject.
+            setTimeout(() => {
+              tornDown = true;
+              reject(options.signal!.reason);
+            }, 100);
+          });
+        }),
+      },
+    );
+
+    await host.emit("session_start", {});
+    const started = Date.now();
+    await host.emit("session_end", {});
+    expect(tornDown).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(warnings).toEqual([]);
   });
 
   it("connect timeout mock path closes connection within bound", async () => {

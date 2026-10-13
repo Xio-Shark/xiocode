@@ -246,6 +246,8 @@ export function createPromptRunner(options: Readonly<{
       await options.onTurnStart?.({ messageCount: history.length, prompt });
       const turnId = `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       options.kernelTurn?.begin(turnId);
+      /** The loop's latest save point: the only copy of the prompt if the loop throws. */
+      let lastCheckpointMessages: readonly ChatMessage[] | undefined;
       try {
         let nextPrompt = prompt;
         let totalTurns = 0;
@@ -271,21 +273,19 @@ export function createPromptRunner(options: Readonly<{
           };
         };
 
-        const onCheckpoint: typeof options.onCheckpoint = options.onCheckpoint
-          || options.harness
-          ? async (checkpoint) => {
-            // Persist messages first (save-point ordering).
-            await options.onCheckpoint?.(checkpoint);
-            options.harness?.noteSavePoint({
-              phase: checkpoint.phase,
-              message_count: checkpoint.messages.length,
-            });
-            // Track event-bus async listeners so settle cannot return early.
-            if (options.runtimeEvents) {
-              options.harness?.trackSettle(options.runtimeEvents.flushPending());
-            }
+        const onCheckpoint = async (checkpoint: AgentLoopCheckpoint): Promise<void> => {
+          lastCheckpointMessages = checkpoint.messages;
+          // Persist messages first (save-point ordering).
+          await options.onCheckpoint?.(checkpoint);
+          options.harness?.noteSavePoint({
+            phase: checkpoint.phase,
+            message_count: checkpoint.messages.length,
+          });
+          // Track event-bus async listeners so settle cannot return early.
+          if (options.runtimeEvents) {
+            options.harness?.trackSettle(options.runtimeEvents.flushPending());
           }
-          : undefined;
+        };
 
         // Hard-steer continuation: abort → synthetic tool results in loop → inject → new loop.
         // Does not insert into the same in-flight provider stream body.
@@ -391,6 +391,20 @@ export function createPromptRunner(options: Readonly<{
         };
       } catch (error) {
         options.kernelTurn?.end({ status: "failed" });
+        if (lastCheckpointMessages) {
+          // Without this the history keeps the pre-turn conversation, and the next
+          // persist (next turn, or worktree finalize) overwrites the saved prompt.
+          try {
+            await history.replace(keepFailedTurn(lastCheckpointMessages, error));
+          } catch (persistError) {
+            sink.notify?.(
+              `The failed turn's prompt could not be saved: ${
+                persistError instanceof Error ? persistError.message : String(persistError)
+              }`,
+              "warning",
+            );
+          }
+        }
         if (!isContextCompactionError(error)) {
           const runId = await options.getRunId?.();
           if (options.failureCapture) {
@@ -405,6 +419,28 @@ export function createPromptRunner(options: Readonly<{
       await options.harness?.end();
     }
   };
+}
+
+const FAILED_TURN_DETAIL_MAX = 500;
+
+/**
+ * History to keep for a turn that threw: the conversation as of its last save point,
+ * minus a tool batch whose results never all arrived (no provider accepts that),
+ * plus an assistant note saying the turn failed, so resuming shows the prompt and why
+ * it has no answer.
+ */
+export function keepFailedTurn(messages: readonly ChatMessage[], error: unknown): ChatMessage[] {
+  const kept = [...messages];
+  for (let index = kept.length - 1; index >= 0; index -= 1) {
+    const calls = kept[index]!.toolCalls;
+    if (kept[index]!.role !== "assistant" || !calls?.length) continue;
+    const answered = new Set(kept.slice(index + 1).map((message) => message.toolCallId));
+    if (!calls.every((call) => answered.has(call.id))) kept.length = index;
+    break;
+  }
+  const detail = (error instanceof Error ? error.message : String(error)).slice(0, FAILED_TURN_DETAIL_MAX);
+  kept.push({ role: "assistant", content: `(turn failed before a reply: ${detail})` });
+  return kept;
 }
 
 /** Single-line post-failure nudge toward private regression capture (no auto-prompt). */

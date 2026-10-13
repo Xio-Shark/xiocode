@@ -17,6 +17,7 @@ import {
 import {
   createPromptRunner,
   formatRegressCaptureHint,
+  keepFailedTurn,
   registerMergeCommand,
   registerRollbackCommand,
   registerSandboxFallbackCommand,
@@ -377,6 +378,82 @@ describe("createPromptRunner failure nudge", () => {
     expect(calls).toBeGreaterThan(0);
     expect(notices.some((n) => n.includes("/regress") && n.includes("run=run-42"))).toBe(true);
     expect(notices.filter((n) => n.startsWith("hint: capture private regression")).length).toBe(1);
+  });
+});
+
+describe("createPromptRunner failed turn", () => {
+  it.each(["failure", "cancel"] as const)("preserves the first prompt after %s and final history persistence", async (outcome) => {
+    const snapshots: ChatMessage[][] = [];
+    const history = new SessionHistory({ persist: (messages) => { snapshots.push([...messages]); } });
+    const controller = new AbortController();
+    const client: LlmClient = { async complete() {
+      if (outcome === "cancel") {
+        controller.abort();
+        throw new DOMException("cancelled", "AbortError");
+      }
+      throw new Error("network failure");
+    } };
+    const runPrompt = createPromptRunner({ host: new ExtensionHost(), client, history,
+      getSignal: () => controller.signal,
+      model: { provider: "test", id: "stub" }, providerApi: "openai-completions",
+      verify: { enabled: false, requireAllPass: true, repairTurns: 0, commands: [] } });
+    if (outcome === "failure") await expect(runPrompt("first question")).rejects.toThrow("network failure");
+    else expect((await runPrompt("first question")).cancelled).toBe(true);
+    await history.persist();
+    expect(snapshots.at(-1)).toEqual(history.getMessages());
+    expect(snapshots.at(-1)?.some((m) => m.role === "user" && m.content === "first question")).toBe(true);
+    if (outcome === "failure") expect(snapshots.at(-1)?.at(-1)?.content).toContain("turn failed");
+  });
+  it("keeps the prompt of a turn the provider failed, marked as failed, so a later persist cannot drop it", async () => {
+    const snapshots: ChatMessage[][] = [];
+    const history = new SessionHistory({
+      initialMessages: [{ role: "system", content: "sys" }],
+      persist: (messages) => {
+        snapshots.push([...messages]);
+      },
+    });
+    let calls = 0;
+    const client: LlmClient = {
+      async complete(request) {
+        calls += 1;
+        if (calls === 1) return { content: "", toolCalls: [{ id: "c1", name: "missing_tool", arguments: {} }] };
+        if (calls === 2) throw new Error("fetch failed: ECONNRESET");
+        expect(request.messages.map((message) => message.content)).toContain("first question");
+        return { content: "second answer", toolCalls: [] };
+      },
+    };
+    const runPrompt = createPromptRunner({
+      host: new ExtensionHost(),
+      client,
+      model: { provider: "test", id: "stub" },
+      providerApi: "openai-completions",
+      verify: { enabled: false, requireAllPass: true, repairTurns: 0, commands: [] },
+      history,
+    });
+
+    await expect(runPrompt("first question")).rejects.toThrow("ECONNRESET");
+    const kept = history.getMessages();
+    expect(kept.map((message) => message.role)).toEqual(["system", "user", "assistant", "tool", "assistant"]);
+    expect(kept[1]!.content).toBe("first question");
+    expect(kept.at(-1)!.content).toMatch(/turn failed.*ECONNRESET/);
+    expect(snapshots.at(-1)).toEqual(kept);
+
+    await runPrompt("second question");
+    expect(history.getMessages().map((message) => message.content)).toEqual(
+      expect.arrayContaining(["first question", "second question", "second answer"]),
+    );
+  });
+
+  it("drops a tool batch whose results never all arrived", () => {
+    const kept = keepFailedTurn([
+      { role: "system", content: "sys" },
+      { role: "user", content: "q" },
+      { role: "assistant", content: "", toolCalls: [{ id: "a", name: "read", arguments: {} }, { id: "b", name: "read", arguments: {} }] },
+      { role: "tool", toolCallId: "a", content: "x" },
+    ], new Error("boom"));
+    expect(kept.map((message) => message.role)).toEqual(["system", "user", "assistant"]);
+    expect(kept.at(-1)!.toolCalls).toBeUndefined();
+    expect(kept.at(-1)!.content).toMatch(/turn failed.*boom/);
   });
 });
 

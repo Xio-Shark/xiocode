@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyCredentialsToEnv,
   loadCredentials,
+  migrateCredentialNames,
   resolveCredentialsPath,
   saveProviderCredential,
 } from "./credentials.ts";
@@ -131,5 +132,41 @@ default_provider = "deepseek"
     expect(next).toContain("# [providers.openai]");
     expect(next.match(/^\[providers\.openai\]/gm)).toHaveLength(1);
     expect(next).toContain('api_key_env = "OPENAI_API_KEY"');
+  });
+});
+
+describe("migrateCredentialNames", () => {
+  const GO = "https://opencode.ai/zen/go/v1";
+
+  it("renames a key saved under a name no provider uses to the configured provider with the same base URL", async () => {
+    const { env } = await tempHome();
+    await saveProviderCredential("opencodego", { apiKey: "k-go", models: ["kimi-k3"], baseUrl: `${GO}/` }, env);
+    const providers = { opencode: { name: "opencode", kind: "openai", baseUrl: GO } };
+    expect(await migrateCredentialNames(providers, env)).toEqual([{ from: "opencodego", to: "opencode" }]);
+    const after = await loadCredentials(env);
+    expect(Object.keys(after.providers)).toEqual(["opencode"]);
+    expect(after.providers.opencode).toMatchObject({ apiKey: "k-go", models: ["kimi-k3"] });
+    expect(await migrateCredentialNames(providers, env)).toEqual([]);
+  });
+
+  it("never moves the key of a provider that is still configured", async () => {
+    const { env } = await tempHome();
+    await saveProviderCredential("opencodego", { apiKey: "k-go", baseUrl: GO }, env);
+    expect(await migrateCredentialNames({
+      opencode: { name: "opencode", kind: "openai", baseUrl: GO },
+      opencodego: { name: "opencodego", kind: "openai", baseUrl: GO },
+    }, env)).toEqual([]);
+    expect(Object.keys((await loadCredentials(env)).providers)).toEqual(["opencodego"]);
+  });
+
+  it("leaves a key alone when no provider, or more than one, could own it", async () => {
+    const { env } = await tempHome();
+    await saveProviderCredential("legacy", { apiKey: "k1", baseUrl: GO }, env);
+    expect(await migrateCredentialNames({ other: { name: "other", kind: "openai", baseUrl: "https://example.test/v1" } }, env)).toEqual([]);
+    expect(await migrateCredentialNames({
+      a: { name: "a", kind: "openai", baseUrl: GO },
+      b: { name: "b", kind: "openai", baseUrl: GO },
+    }, env)).toEqual([]);
+    expect(Object.keys((await loadCredentials(env)).providers)).toEqual(["legacy"]);
   });
 });

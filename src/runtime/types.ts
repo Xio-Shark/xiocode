@@ -119,6 +119,8 @@ export type ProviderRegistration = Readonly<{
    * `x-opencode-session`). Unset or empty: no session header is sent.
    */
   sessionHeader?: string;
+  /** Per-model request format overriding `api` (model id → wire API, see providers/wire-api.ts). */
+  modelApis?: Readonly<Record<string, string>>;
   models: readonly ProviderModelConfig[];
 }>;
 

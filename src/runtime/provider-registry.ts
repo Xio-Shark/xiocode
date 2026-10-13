@@ -1,6 +1,7 @@
 import type { XioProviderConfig, XioRuntimeConfig } from "../cli/config-parser.ts";
 import type { ExtensionHost } from "./extension-host.ts";
 import type { ModelInfo, ProviderRegistration } from "./types.ts";
+import { isOpenCodeHost } from "./providers/wire-api.ts";
 
 export function resolveDefaultModel(config: XioRuntimeConfig): ModelInfo {
   const provider = config.general.defaultProvider;
@@ -58,6 +59,7 @@ export function providerRegistration(provider: XioProviderConfig, extraModels: r
     toolChoice: provider.toolChoice,
     toolChoiceScope: provider.toolChoiceScope,
     sessionHeader: provider.sessionHeader ?? defaultSessionHeader(provider.baseUrl),
+    ...(provider.modelApis ? { modelApis: provider.modelApis } : {}),
     models: modelIds.map((id) => ({
       id,
       name: id,
@@ -79,14 +81,7 @@ export function providerRegistration(provider: XioProviderConfig, extraModels: r
  * (https://opencode.ai/docs/go/). Other endpoints get none unless configured.
  */
 export function defaultSessionHeader(baseUrl: string | undefined): string | undefined {
-  if (!baseUrl) return undefined;
-  let host: string;
-  try {
-    host = new URL(baseUrl).hostname;
-  } catch {
-    return undefined;
-  }
-  return host === "opencode.ai" || host.endsWith(".opencode.ai") ? "x-opencode-session" : undefined;
+  return isOpenCodeHost(baseUrl) ? "x-opencode-session" : undefined;
 }
 
 export function providerApi(kind: string): string {

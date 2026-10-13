@@ -19,6 +19,8 @@ import {
 import { resolveRequestControls } from "./request-controls.ts";
 import { withProviderGuidance } from "./error-guidance.ts";
 import { fetchWithRetry, type FetchRetryOptions } from "./fetch-retry.ts";
+import { createOpenAiResponsesClient } from "./openai-responses.ts";
+import { resolveModelApi } from "./wire-api.ts";
 
 /** Who is calling: sent on every request so gateways can tell clients and conversations apart. */
 export type ClientIdentity = Readonly<{
@@ -55,12 +57,37 @@ export function providerRequestHeaders(
   };
 }
 
+/**
+ * One client per provider that picks the request format per model
+ * (`resolveModelApi`), so a gateway serving models on different APIs works
+ * through a single `[providers.*]` entry.
+ */
 export function createLlmClient(options: ProviderClientOptions): LlmClient {
-  const api = options.registration.api;
-  if (api === "anthropic-messages") {
-    return createAnthropicClient(options);
-  }
+  const byApi = new Map<string, LlmClient>();
+  const forModel = (modelId: string): LlmClient => {
+    const api = resolveModelApi(options.registration, modelId);
+    let client = byApi.get(api);
+    if (!client) {
+      client = createWireClient(api, options);
+      byApi.set(api, client);
+    }
+    return client;
+  };
+  return {
+    complete: (request, completeOptions) => forModel(request.model).complete(request, completeOptions),
+    completeStream: (request, completeOptions) => forModel(request.model).completeStream!(request, completeOptions),
+  };
+}
+
+function createWireClient(api: string, options: ProviderClientOptions): LlmClient {
+  if (api === "anthropic-messages") return createAnthropicClient(options);
+  if (api === "openai-responses") return createOpenAiResponsesClient(options);
   return createOpenAiCompatibleClient(options);
+}
+
+/** `{base}/v1/messages`, unless the base already ends in `/v1` (OpenCode, other gateways). */
+function anthropicMessagesUrl(baseUrl: string): string {
+  return /\/v1$/.test(baseUrl) ? `${baseUrl}/messages` : `${baseUrl}/v1/messages`;
 }
 
 function createOpenAiCompatibleClient(options: ProviderClientOptions): LlmClient {
@@ -277,7 +304,7 @@ function createAnthropicClient(options: ProviderClientOptions): LlmClient {
     request: ChatCompletionRequest,
     completeOptions?: LlmCompleteOptions,
   ): AsyncIterable<StreamEvent> {
-    const response = await fetchWithRetry(`${baseUrl}/v1/messages`, {
+    const response = await fetchWithRetry(anthropicMessagesUrl(baseUrl), {
       method: "POST",
       headers,
       body: JSON.stringify(anthropicBody(
@@ -391,7 +418,7 @@ async function completeAnthropic(
     fetchRetryOptions?: FetchRetryOptions;
   }>,
 ): Promise<ChatCompletionResponse> {
-  const response = await fetchWithRetry(`${options.baseUrl}/v1/messages`, {
+  const response = await fetchWithRetry(anthropicMessagesUrl(options.baseUrl), {
     method: "POST",
     headers: options.headers,
     body: JSON.stringify(anthropicBody(
@@ -507,7 +534,7 @@ function buildAnthropicSystem(
   return blocks.length > 0 ? blocks : undefined;
 }
 
-function modelConfig(
+export function modelConfig(
   registration: ProviderRegistration,
   modelId: string,
 ): ProviderModelConfig | undefined {
@@ -721,7 +748,7 @@ function toOpenAiMessage(message: ChatMessage): Record<string, unknown> {
   };
 }
 
-function toolCallArguments(value: string | undefined): Pick<ChatToolCall, "arguments" | "argumentError"> {
+export function toolCallArguments(value: string | undefined): Pick<ChatToolCall, "arguments" | "argumentError"> {
   const parsed = parseArguments(value);
   if (parsed.ok) {
     return { arguments: parsed.value };
@@ -763,7 +790,7 @@ async function* readSseDataLines(
   }
 }
 
-async function* readSseEvents(
+export async function* readSseEvents(
   body: ReadableStream<Uint8Array>,
   signal?: AbortSignal,
 ): AsyncGenerator<{ event?: string; data: string }> {
@@ -818,7 +845,7 @@ function parseSseBlock(block: string): { event?: string; data: string } | undefi
 }
 
 /** Status-only failure — response bodies can echo API keys. */
-async function httpStatusError(response: Response): Promise<Error> {
+export async function httpStatusError(response: Response): Promise<Error> {
   await response.text().catch(() => undefined);
   return new Error(withProviderGuidance(
     `LLM request failed (${response.status})`,

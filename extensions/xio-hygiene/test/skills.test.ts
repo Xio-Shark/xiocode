@@ -60,6 +60,26 @@ async function writeSkill(
 }
 
 describe("discoverSkills", () => {
+  it("accepts an intentional user skill root link but not nested links escaping that root", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-user-skills-link-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const shared = path.join(root, "shared");
+    await mkdir(cwd);
+    await mkdir(path.join(home, ".claude"), { recursive: true });
+    await writeSkill(shared, "allowed", { name: "allowed" });
+    await symlink(shared, path.join(home, ".claude", "skills"));
+    const loaded = await discoverSkills({ cwd, home, config: config() });
+    expect(loaded.skills.map((s) => s.name)).toEqual(["allowed"]);
+    expect(loaded.warnings).toEqual([]);
+    const outside = await writeSkill(root, "outside", { name: "escape" });
+    await mkdir(path.join(shared, "escape"));
+    await symlink(outside, path.join(shared, "escape", "SKILL.md"));
+    const checked = await discoverSkills({ cwd, home, config: config() });
+    expect(checked.skills.map((s) => s.name)).toEqual(["allowed"]);
+    expect(checked.warnings.join("\n")).toContain("SYMLINK_COMPONENT");
+  });
   it("discovers skills from .claude/skills and .cursor/skills", async () => {
     const root = await tempRoot("xio-skills-discover-");
     const home = path.join(root, "home");

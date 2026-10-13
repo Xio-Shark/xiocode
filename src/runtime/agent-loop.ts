@@ -75,12 +75,16 @@ export type {
 };
 
 export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions): Promise<AgentLoopResult> {
+  const resumedMessages = options.resumeFrom ? restoreProviderCheckpoint(options) : undefined;
   const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
   const verifyRepairTurns = options.verifyRepairTurns ?? 3;
   const repeatToolLimit = options.repeatToolLimit ?? DEFAULT_REPEAT_TOOL_LIMIT;
-  let systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  let systemPrompt = resumedMessages?.find((message) => message.role === "system")?.content
+    ?? options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
   options.host.setSystemPrompt(systemPrompt);
-  const turnIndex = options.turnIndex ?? deriveTurnIndex(options.priorMessages);
+  const turnIndex = options.turnIndex ?? (resumedMessages
+    ? Math.max(1, deriveTurnIndex(resumedMessages) - 1)
+    : deriveTurnIndex(options.priorMessages));
   const toolCollector: TurnToolCollector = { results: [] };
   const bus = options.runtimeEvents;
   const turnId = `turn-${turnIndex}`;
@@ -107,13 +111,14 @@ export async function runAgentLoop(userPrompt: string, options: AgentLoopOptions
   const turnStart = await options.host.emit("turn_start", { prompt: userPrompt });
   const injectedContext = collectTurnStartContext(turnStart);
 
-  const messages = buildMessages({
+  const messages = resumedMessages ?? buildMessages({
     userPrompt,
     systemPrompt,
     injectedContext,
     priorMessages: options.priorMessages,
     maxSessionMessages: Math.max(4, options.maxSessionMessages ?? DEFAULT_MAX_SESSION_MESSAGES),
   });
+  if (resumedMessages) assertMessageBudget(messages, Math.max(4, options.maxSessionMessages ?? DEFAULT_MAX_SESSION_MESSAGES));
   await publishCheckpoint(options, { phase: "turn_started", messages });
 
   if (options.signal?.aborted) {
@@ -240,6 +245,30 @@ function resolveTurnOutcome(input: Readonly<{ cancelled: boolean; success: boole
 async function emitTurnEnd(options: AgentLoopOptions, payload: TurnEndPayload): Promise<void> {
   options.runtimeEvents?.emit("turn.end", { ...payload });
   await options.host.emit("turn_end", payload);
+}
+
+function restoreProviderCheckpoint(options: AgentLoopOptions): ChatMessage[] {
+  const checkpoint = options.resumeFrom!;
+  if (options.priorMessages !== undefined) throw new Error("resumeFrom cannot be combined with priorMessages");
+  if (checkpoint.phase !== "awaiting_provider" || checkpoint.pendingTools?.length) {
+    throw new Error("resumeFrom requires an awaiting_provider checkpoint with no pending tools");
+  }
+  const pending: string[] = [];
+  for (const message of checkpoint.messages) {
+    if (pending.length > 0) {
+      if (message.role !== "tool" || message.toolCallId !== pending.shift()) {
+        throw new Error("resumeFrom contains an incomplete or misordered tool batch");
+      }
+    } else if (message.role === "tool") {
+      throw new Error("resumeFrom contains an unmatched tool result");
+    } else if (message.role === "assistant" && message.toolCalls) {
+      pending.push(...message.toolCalls.map((call) => call.id));
+    }
+  }
+  if (pending.length > 0 || !checkpoint.messages.some((message) => message.role === "user")) {
+    throw new Error("resumeFrom requires a user prompt and complete tool batches");
+  }
+  return structuredClone(checkpoint.messages) as ChatMessage[];
 }
 
 function buildMessages(input: Readonly<{
@@ -1067,4 +1096,3 @@ export {
   createRepeatToolGuard,
   type RepeatToolGuard,
 } from "./tool-executor.ts";
-

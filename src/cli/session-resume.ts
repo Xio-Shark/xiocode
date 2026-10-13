@@ -9,7 +9,9 @@ export type ResumeRequest =
   | Readonly<{ action: "latest" }>
   | Readonly<{ action: "load"; id: string }>
   | Readonly<{ action: "list" }>
-  | Readonly<{ action: "delete"; id: string }>;
+  | Readonly<{ action: "delete"; id: string }>
+  /** Delete sessions that were never prompted; without `apply`, only list them. */
+  | Readonly<{ action: "prune"; apply: boolean }>;
 
 export function parseResumeRequest(args: readonly string[]): Readonly<{
   request?: ResumeRequest;
@@ -47,7 +49,9 @@ export async function resolveResume(input: Readonly<{
     if (!latest) throw new Error(`no saved session found for ${input.mainRoot}`);
     return latest;
   }
-  if (request.action === "delete") throw new Error("delete requests must be handled before launch");
+  if (request.action === "delete" || request.action === "prune") {
+    throw new Error(`${request.action} requests must be handled before launch`);
+  }
   const sessions = (await input.store.list()).filter((session) => path.resolve(session.main_root) === path.resolve(input.mainRoot));
   if (sessions.length === 0) throw new Error(`no saved session found for ${input.mainRoot}`);
   const selected = await input.select(sessions);
@@ -58,8 +62,10 @@ function parseResumeSubcommand(args: readonly string[]): ResumeRequest {
   if (args.length === 0) return { action: "latest" };
   if (args[0] === "--list" && args.length === 1) return { action: "list" };
   if (args[0] === "--delete" && args.length === 2 && args[1]) return { action: "delete", id: args[1] };
+  if (args[0] === "--prune" && args.length === 1) return { action: "prune", apply: false };
+  if (args[0] === "--prune" && args.length === 2 && args[1] === "--yes") return { action: "prune", apply: true };
   if (args.length === 1 && args[0] && !args[0].startsWith("-")) return { action: "load", id: args[0] };
-  throw new Error("usage: xio resume [session-id | --list | --delete session-id]");
+  throw new Error("usage: xio resume [session-id | --list | --delete session-id | --prune [--yes]]");
 }
 
 function expandHome(value: string): string {

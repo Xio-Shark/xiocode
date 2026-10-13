@@ -445,6 +445,7 @@ export const zh = {
   "web.ruleTestsText": "\n## 交付前跑测试\n- 交付前运行受影响模块的测试并确认通过。\n- 回复里附上测试命令与结果。\n",
   "web.ruleSecretsText": "\n## 不硬编码凭据\n- 源码与日志里不写任何 API Key 或密钥，使用环境变量。\n- 数据库与命令调用一律参数化。\n",
   "web.fromConfig": "{name}（配置文件）",
+  "web.modelEndpoint": "接口：{endpoint}",
   "web.noKey": " · 未配置凭据",
   "web.keyFound": "已找到凭据",
   "web.keyMissing": "未找到凭据",

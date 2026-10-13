@@ -27,8 +27,22 @@ import type { RuntimeEventV1 } from "../runtime/events/types.ts";
 import { formatSessionCost } from "../runtime/pricing.ts";
 import { THINKING_LEVELS } from "../runtime/thinking.ts";
 import { PROVIDER_PRESETS, findProviderPreset } from "../cli/provider-catalog.ts";
+import { providerRegistration } from "../runtime/provider-registry.ts";
+import { resolveModelApi, wireApiEndpoint } from "../runtime/providers/wire-api.ts";
+import type { ProviderRegistration } from "../runtime/types.ts";
 
 const execAsync = promisify(exec);
+
+/** The endpoint each listed model is called on, and the provider's own for any other id. */
+function modelEndpoints(registration: ProviderRegistration, models: readonly string[]): Readonly<{
+  endpoint: string;
+  modelEndpoints: Record<string, string>;
+}> {
+  return {
+    endpoint: wireApiEndpoint(registration.api),
+    modelEndpoints: Object.fromEntries(models.map((id) => [id, wireApiEndpoint(resolveModelApi(registration, id))])),
+  };
+}
 /** git diff output above this is refused with an error instead of being cut short. */
 const DIFF_MAX_BUFFER = 32 * 1024 * 1024;
 
@@ -449,6 +463,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
             const envKey = p.apiKeyEnv ? env[p.apiKeyEnv] : undefined;
             const credKey = creds.providers[name]?.apiKey;
             const hasKey = Boolean(envKey || credKey);
+            const models = [...new Set([...(p.model ? [p.model] : []), ...(creds.providers[name]?.models ?? [])])];
             return {
               name,
               kind: p.kind,
@@ -456,6 +471,8 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               model: p.model ?? (name === "deepseek" ? "deepseek-chat" : "gpt-4.1"),
               apiKeyEnv: p.apiKeyEnv ?? (name === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY"),
               hasKey,
+              models,
+              ...modelEndpoints(providerRegistration(p), models),
             };
           });
 
@@ -467,6 +484,9 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               model: "deepseek-chat",
               apiKeyEnv: "DEEPSEEK_API_KEY",
               hasKey: Boolean(env.DEEPSEEK_API_KEY || creds.providers["deepseek"]?.apiKey),
+              models: ["deepseek-chat"],
+              endpoint: wireApiEndpoint("openai-completions"),
+              modelEndpoints: { "deepseek-chat": wireApiEndpoint("openai-completions") },
             });
           }
 
@@ -490,6 +510,10 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
               defaultModel: preset.defaultModel,
               sampleModels: preset.sampleModels,
               hasKey: Boolean(env[preset.apiKeyEnv] || creds.providers[preset.id]?.apiKey),
+              ...modelEndpoints(
+                providerRegistration({ name: preset.id, kind: preset.kind, baseUrl: preset.baseUrl }),
+                preset.sampleModels,
+              ),
             })),
             thinkingLevels: THINKING_LEVELS,
             permissions: {

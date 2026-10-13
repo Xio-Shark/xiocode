@@ -52,6 +52,17 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     sampleModels: ["openrouter/auto", "anthropic/claude-sonnet-4", "openai/gpt-4.1"],
   },
   {
+    // One entry for every Go model: requests go to /chat/completions, /responses or
+    // /messages per model family (runtime/providers/wire-api.ts).
+    id: "opencode",
+    label: "OpenCode Go",
+    kind: "openai",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    apiKeyEnv: "OPENCODE_API_KEY",
+    defaultModel: "deepseek-v4-flash",
+    sampleModels: ["deepseek-v4-flash", "kimi-k3", "glm-5.3", "gpt-6-luna", "grok-4.7", "minimax-m3", "qwen3.8-max"],
+  },
+  {
     id: "google",
     label: "Google / Gemini",
     // OpenAI-compat surface — runtime LLM client is OpenAI/Anthropic only.

@@ -73,6 +73,7 @@ async function main(): Promise<void> {
     const { runModelsCli } = await import("./models-cli.ts");
     process.exitCode = await runModelsCli({
       catalogOnly: rawArgs.includes("--catalog-only"),
+      refresh: rawArgs.includes("--refresh"),
     });
     return;
   }

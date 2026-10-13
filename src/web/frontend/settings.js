@@ -30,6 +30,7 @@ function initSettingsModal() {
   initRovingTabs(tabs, selectSettingsTab, "vertical");
 
   $("setting-provider-select").addEventListener("change", () => reflectProvider($("setting-provider-select").value));
+  $("setting-model-input").addEventListener("input", reflectModelEndpoint);
 }
 
 function selectSettingsTab(btn) {
@@ -45,14 +46,17 @@ function selectSettingsTab(btn) {
 
 /** Catalog presets first, then providers that only exist in the user's config. */
 function providerChoices(data) {
-  const catalog = (data.catalog || []).map(p => ({ id: p.id, label: p.label, apiKeyEnv: p.apiKeyEnv, defaultModel: p.defaultModel, models: p.sampleModels || [], hasKey: p.hasKey }));
+  const catalog = (data.catalog || []).map(p => ({ id: p.id, label: p.label, apiKeyEnv: p.apiKeyEnv, defaultModel: p.defaultModel, models: p.sampleModels || [], hasKey: p.hasKey, endpoint: p.endpoint, modelEndpoints: { ...p.modelEndpoints } }));
   for (const p of data.providers || []) {
     const known = catalog.find(c => c.id === p.name);
+    const models = p.models || (p.model ? [p.model] : []);
     if (known) {
       known.hasKey = known.hasKey || p.hasKey;
-      if (p.model && !known.models.includes(p.model)) known.models.unshift(p.model);
+      known.models = [...new Set([...models, ...known.models])];
+      known.endpoint = p.endpoint || known.endpoint;
+      Object.assign(known.modelEndpoints, p.modelEndpoints);
     } else {
-      catalog.push({ id: p.name, label: t("web.fromConfig", { name: p.name }), apiKeyEnv: p.apiKeyEnv, defaultModel: p.model, models: p.model ? [p.model] : [], hasKey: p.hasKey });
+      catalog.push({ id: p.name, label: t("web.fromConfig", { name: p.name }), apiKeyEnv: p.apiKeyEnv, defaultModel: p.model, models, hasKey: p.hasKey, endpoint: p.endpoint, modelEndpoints: { ...p.modelEndpoints } });
     }
   }
   return catalog;
@@ -79,9 +83,18 @@ function reflectProvider(providerId) {
   const provider = providerChoices(currentSettingsData || {}).find(p => p.id === providerId);
   $("setting-model-input").placeholder = provider?.defaultModel || "";
   $("setting-model-options").replaceChildren(...(provider?.models || []).map(m => { const o = el("option"); o.value = m; return o; }));
+  reflectModelEndpoint();
   $("provider-key-env-name").textContent = provider?.apiKeyEnv || "";
   $("provider-key-status").className = "key-badge" + (provider?.hasKey ? "" : " missing");
   $("provider-key-status-text").textContent = provider?.hasKey ? t("web.keyFound") : t("web.keyMissing");
+}
+
+/** Which endpoint the typed model is called on (gateways such as OpenCode Go use several). */
+function reflectModelEndpoint() {
+  const provider = providerChoices(currentSettingsData || {}).find(p => p.id === $("setting-provider-select").value);
+  const model = $("setting-model-input").value.trim() || provider?.defaultModel || "";
+  const endpoint = provider?.modelEndpoints?.[model] || provider?.endpoint || "";
+  $("setting-model-endpoint").textContent = endpoint ? t("web.modelEndpoint", { endpoint }) : "";
 }
 
 function selectThinkingLevel(level) {

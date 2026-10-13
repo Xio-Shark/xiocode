@@ -25,6 +25,8 @@ const STATE_FILE = "state.json";
 /** Side files next to state.json: append-only JSON lines owned by other modules (e.g. the timeline). */
 const SIDE_FILE = /^[a-z][a-z-]*\.jsonl$/;
 
+export class SessionLeaseConflictError extends Error {}
+
 const toolCallSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -229,7 +231,7 @@ export class SessionStore {
         if (errorCode(error) !== "EEXIST") throw error;
         const holder = await readLease(leasePath);
         if (holder && isProcessAlive(holder.pid)) {
-          throw new Error(`session ${id} is already active in process ${holder.pid}`);
+          throw new SessionLeaseConflictError(`session ${id} is already active in process ${holder.pid}`);
         }
         await rm(leasePath, { force: true });
       }

@@ -20,6 +20,10 @@ describe("parseResumeRequest", () => {
     expect(parseResumeRequest(["resume", "abc"]).request).toEqual({ action: "load", id: "abc" });
     expect(parseResumeRequest(["resume", "--list"]).request).toEqual({ action: "list" });
     expect(parseResumeRequest(["resume", "--delete", "abc"]).request).toEqual({ action: "delete", id: "abc" });
+    expect(parseResumeRequest(["resume", "--prune"]).request).toEqual({ action: "prune", apply: false });
+    expect(parseResumeRequest(["resume", "--prune", "--yes"]).request).toEqual({ action: "prune", apply: true });
+    expect(() => parseResumeRequest(["resume", "--yes"])).toThrow("usage:");
+    expect(() => parseResumeRequest(["resume", "--prune", "abc"])).toThrow("usage:");
     expect(parseResumeRequest(["--continue", "--xio-fast"])).toEqual({
       request: { action: "latest" },
       remaining: ["--xio-fast"],

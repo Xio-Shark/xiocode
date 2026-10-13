@@ -313,6 +313,13 @@ describe("Web Console & Server", () => {
     expect(settings.catalog.map((p: { id: string }) => p.id)).toEqual(
       PROVIDER_PRESETS.filter((p) => !p.custom).map((p) => p.id),
     );
+    const opencode = settings.catalog.find((p: { id: string }) => p.id === "opencode");
+    expect(opencode.endpoint).toBe("/chat/completions");
+    expect(opencode.modelEndpoints).toMatchObject({
+      "kimi-k3": "/chat/completions",
+      "gpt-6-luna": "/responses",
+      "minimax-m3": "/messages",
+    });
 
     const save = await globalThis.fetch(`${handle.url}/api/settings`, {
       method: "POST",

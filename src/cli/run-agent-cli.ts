@@ -1,4 +1,5 @@
 import path from "node:path";
+import { lstat } from "node:fs/promises";
 
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 import { runSession } from "../runtime/session.ts";
@@ -13,7 +14,8 @@ import { recoverStoredSession } from "../runtime/session-recovery.ts";
 import { createTimelineRecorder } from "../runtime/session-timeline.ts";
 
 import type { SessionOptions } from "../runtime/session.ts";
-import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
+import type { SessionMetadata, SessionStore, StoredSession } from "../runtime/session-store.ts";
+import { SessionLeaseConflictError } from "../runtime/session-store.ts";
 import type { XioArgs } from "./cli-args.ts";
 import type { LaunchPlan } from "./launch.ts";
 
@@ -44,6 +46,10 @@ export async function runAgentCli(
     }
     write(`Deleted session ${xioArgs.resume.id}\n`);
     return 0;
+  }
+  if (xioArgs.resume?.action === "prune") {
+    options.earlyBoot?.unmount();
+    return pruneUnusedSessions(store, { apply: xioArgs.resume.apply, write });
   }
 
   const cwd = process.cwd();
@@ -289,11 +295,84 @@ const WORKTREE_GONE: ReadonlySet<string> = new Set(["merged", "discarded", "clea
  */
 export async function discardUnusedSession(store: SessionStore, id: string): Promise<boolean> {
   const saved = await store.loadIfPresent(id);
-  if (!saved || saved.messages.some((message) => message.role === "user")) return false;
-  const workspace = saved.workspace;
-  if (workspace?.mode === "worktree" && !WORKTREE_GONE.has(workspace.lifecycle)) return false;
+  if (!saved || !isUnusedSession(saved)) return false;
   await deleteStoredSession(store, id);
   return true;
+}
+
+/** Never prompted, and no worktree left that could hold work. */
+function isUnusedSession(saved: StoredSession): boolean {
+  if (saved.messages.some((message) => message.role === "user")) return false;
+  const workspace = saved.workspace;
+  return !(workspace?.mode === "worktree" && !WORKTREE_GONE.has(workspace.lifecycle));
+}
+
+/**
+ * `xio resume --prune`: the sessions older versions left behind without a prompt
+ * (new ones are discarded on exit). Lists them; with `apply`, deletes each one
+ * through deleteStoredSession under its lease. A session open in another process
+ * is skipped, and so is any session with a worktree that still exists.
+ */
+export async function pruneUnusedSessions(
+  store: SessionStore,
+  options: Readonly<{ apply: boolean; write: (chunk: string) => void }>,
+): Promise<number> {
+  const candidates: SessionMetadata[] = [];
+  for (const metadata of await store.list()) {
+    const saved = await store.loadIfPresent(metadata.id);
+    if (saved && isUnusedSession(saved)) candidates.push(metadata);
+  }
+  if (candidates.length === 0) {
+    options.write("No sessions without a prompt.\n");
+    return 0;
+  }
+  options.write(`${candidates.length} session(s) were never prompted:\n`);
+  let deleted = 0;
+  let failed = 0;
+  for (const session of candidates) {
+    const line = `  ${session.id}  ${session.created_at}  ${session.main_root}`;
+    let releaseLease: () => Promise<void>;
+    try {
+      releaseLease = await store.acquireLease(session.id);
+    } catch (error) {
+      if (!(error instanceof SessionLeaseConflictError)) throw error;
+      options.write(`${line}  skipped: ${error instanceof Error ? error.message : String(error)}\n`);
+      continue;
+    }
+    try {
+      // Eligibility is checked under the lease: another turn may have finished
+      // after the listing, and legacy metadata may still point to a worktree.
+      const saved = await store.loadIfPresent(session.id);
+      if (!saved || !isUnusedSession(saved)) {
+        options.write(`${line}  skipped: session changed\n`);
+        continue;
+      }
+      const worktreePath = saved.workspace?.worktree_path ?? saved.metadata.worktree_path;
+      if (worktreePath) {
+        try {
+          await lstat(worktreePath);
+          options.write(`${line}  skipped: worktree exists\n`);
+          continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+      if (options.apply) {
+        await deleteStoredSession(store, session.id);
+        deleted += 1;
+      }
+      options.write(`${line}${options.apply ? "  deleted" : ""}\n`);
+    } catch (error) {
+      failed += 1;
+      options.write(`${line}  not deleted: ${error instanceof Error ? error.message : String(error)}\n`);
+    } finally {
+      await releaseLease();
+    }
+  }
+  options.write(options.apply
+    ? `Deleted ${deleted} session(s)${failed > 0 ? `; ${failed} could not be deleted` : ""}.\n`
+    : "Nothing was deleted. Run `xio resume --prune --yes` to delete them.\n");
+  return failed > 0 ? 1 : 0;
 }
 
 /**

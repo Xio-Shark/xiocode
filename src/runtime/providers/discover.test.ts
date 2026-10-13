@@ -3,6 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { discoverModels, probeApiKey } from "./discover.ts";
 
 describe("discoverModels", () => {
+  it("distinguishes an empty live catalog from malformed gateway data", async () => {
+    const empty = await discoverModels({ kind: "openai", apiKey: "test", catalogModels: ["old"],
+      fetchImpl: async () => new Response(JSON.stringify({ data: [] })) });
+    expect(empty).toEqual({ source: "api", models: [] });
+    const invalid = await discoverModels({ kind: "openai", apiKey: "test",
+      fetchImpl: async () => new Response(JSON.stringify({ data: [{ name: "bad" }] })) });
+    expect(invalid.source).toBe("empty");
+    expect(invalid.error).toBeDefined();
+  });
   it("lists OpenAI-compatible models from /models", async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       data: [{ id: "b-model" }, { id: "a-model" }],

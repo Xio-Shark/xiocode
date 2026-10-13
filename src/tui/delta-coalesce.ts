@@ -38,7 +38,7 @@ export function createDeltaCoalescer(
   pendingCount: () => number;
 }> {
   const frameMs = options.frameMs ?? DEFAULT_FRAME_MS;
-  const schedule = options.schedule ?? setTimeout;
+  const schedule: NonNullable<typeof options.schedule> = options.schedule ?? setTimeout;
   const clearSchedule = options.clearSchedule ?? clearTimeout;
   let pending: TuiEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
