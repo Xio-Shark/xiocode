@@ -22,8 +22,26 @@ export type ObservationEntry = Readonly<{
   args: Record<string, unknown>;
   /** Hash of the normalised result text: everything the worker was shown for this call. */
   resultHash: string;
+  /** Semantic cutoff hash (comments/line-numbers stripped for read; blast-radius line numbers stripped for edit/write). */
+  cutoffHash?: string;
+  /** Portable file paths discovered by `glob` or referenced in `edit`/`write` blast-radius alerts. */
+  discoveryItems?: readonly string[];
   resultBytes: number;
   isError: boolean;
+}>;
+
+export type ObservationValidationOptions = Readonly<{
+  /**
+   * Enable Early Cutoff:
+   * - `read`: cut off when comment-free, line-number-free code slice is unchanged
+   * - `glob` / `grep`: cut off when current discovery set is a pure additive superset of recorded items
+   * - `edit` / `write`: cut off when target edit succeeded and only blast-radius line numbers or additive files changed
+   */
+  earlyCutoff?: boolean;
+  /** Optional symbols of interest for `read` slice projection. */
+  symbols?: readonly string[];
+  /** Invoked when a discovery (`glob`) or blast-radius step cuts off on newly added files. */
+  onDiscoveryDelta?: (addedPaths: readonly string[]) => void;
 }>;
 
 const OBSERVE = new Set(["read", "grep", "glob"]);
@@ -74,16 +92,111 @@ export function hashObservation(tool: string, text: string, root: string): strin
   return createHash("sha256").update(normalizeObservation(tool, text, root)).digest("hex").slice(0, 16);
 }
 
+function stripCommentsPreservingStrings(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < source.length) {
+        const c = source[i];
+        out += c;
+        i++;
+        if (c === "\\" && i < source.length) {
+          out += source[i];
+          i++;
+        } else if (c === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      i += 2;
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Compute semantic cutoff hash for `read` (strips `1|` line-number prefixes, comments, and blank lines)
+ * or `edit`/`write` (keeps the primary edit confirmation line + blast-radius references without `:lineNum`).
+ */
+export function computeCutoffHash(tool: string, text: string, root: string, symbols?: readonly string[]): string | undefined {
+  const portable = withoutRoot(text, root);
+  if (tool === "read") {
+    const unnumbered = portable
+      .split("\n")
+      .filter((line) => !line.startsWith("[file has "))
+      .map((line) => line.replace(/^\s*\d+\|/, ""))
+      .join("\n");
+    const uncommented = stripCommentsPreservingStrings(unnumbered)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (!symbols || symbols.length === 0) {
+      return createHash("sha256").update(uncommented.join("\n")).digest("hex").slice(0, 16);
+    }
+    const patterns = symbols.map((sym) => new RegExp(`\\b${sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
+    const slice = uncommented.filter((line) => patterns.some((re) => re.test(line)));
+    return createHash("sha256").update(slice.join("\n")).digest("hex").slice(0, 16);
+  }
+  if (MUTATE.has(tool)) {
+    // Primary confirmation line (before [Blast Radius Alert]) must match on target path & fuzzy status.
+    const primaryLine = portable.split("\n")[0]?.replace(/;\s*write-back ok sha256=[0-9a-f]+/, "; write-back ok") ?? "";
+    return createHash("sha256").update(primaryLine).digest("hex").slice(0, 16);
+  }
+  return undefined;
+}
+
+export function extractDiscoveryItems(tool: string, text: string, root: string): readonly string[] | undefined {
+  const portable = withoutRoot(text, root);
+  if (tool === "glob") {
+    return portable
+      .split("\n")
+      .map((line) => line.replace(/^<root>\/?/, "").replace(/^\.\//, "").trim())
+      .filter((line) => line.length > 0 && !line.startsWith("[") && line !== "(no matches)")
+      .sort();
+  }
+  if (MUTATE.has(tool)) {
+    const refs: string[] = [];
+    for (const line of portable.split("\n")) {
+      const match = /^\s*-\s+([^:]+):\d+\s+\(/.exec(line);
+      if (match?.[1]) refs.push(match[1].replace(/^<root>\/?/, "").trim());
+    }
+    return [...new Set(refs)].sort();
+  }
+  return undefined;
+}
+
 /** One log entry for a finished tool call; undefined for tools that are neither an observation nor an edit. */
 export function toObservationEntry(call: ChatToolCall, result: ToolExecuteResult, root: string): ObservationEntry | undefined {
   const kind = OBSERVE.has(call.name) ? "observe" : MUTATE.has(call.name) ? "mutate" : undefined;
   if (!kind) return undefined;
   const text = resultText(result);
+  const cutoffHash = computeCutoffHash(call.name, text, root);
+  const discoveryItems = extractDiscoveryItems(call.name, text, root);
   return {
     kind,
     tool: call.name,
     args: normaliseArgs(call.arguments, root) as Record<string, unknown>,
     resultHash: hashObservation(call.name, text, root),
+    ...(cutoffHash ? { cutoffHash } : {}),
+    ...(discoveryItems ? { discoveryItems } : {}),
     resultBytes: Buffer.byteLength(text),
     isError: result.isError === true,
   };
@@ -92,22 +205,24 @@ export function toObservationEntry(call: ChatToolCall, result: ToolExecuteResult
 /**
  * Hands a worker's log to the kernel together with the way to re-run one step in another directory.
  *
- * Each directory gets one set of tools, used for the whole log, so that "read before edit" holds during
- * the replay as it did for the worker. An edit is replayed as it ran: the kernel only gets this far when
- * nobody else touched the files this worker wrote, so the edit meets the same content.
- *
- * What an edit returns is an observation too: it can list references to the changed symbol in other files,
- * and a worker that saw a different list might have edited differently. So every step carries its result
- * hash, edits included. An edit that fails where it had succeeded is reported as not applicable.
+ * When `options.earlyCutoff` is false/omitted, every observation and edit blast-radius note must match
+ * byte-for-byte on its normalized hash. When `options.earlyCutoff` is true, comment/line-number shifts
+ * on `read` and pure additive file discovery on `glob` / `edit` blast-radius alerts are cut off and
+ * reported via `options.onDiscoveryDelta`.
  */
-export function observationValidation(log: readonly ObservationEntry[]): ObservationValidation {
+export function observationValidation(
+  log: readonly ObservationEntry[],
+  options?: ObservationValidationOptions,
+): ObservationValidation {
   const recorded = new Map<KernelObservationEntry, ObservationEntry>();
   for (const entry of log) {
-    recorded.set({
+    const kernelEntry: KernelObservationEntry & { cutoffHash?: string } = {
       kind: entry.kind,
       call: { tool: entry.tool, args: entry.args },
       resultHash: entry.resultHash,
-    }, entry);
+      ...(options?.earlyCutoff && entry.cutoffHash ? { cutoffHash: entry.cutoffHash } : {}),
+    };
+    recorded.set(kernelEntry, entry);
   }
   const toolsByRoot = new Map<string, Promise<readonly ToolDefinition[]>>();
   const toolsFor = (root: string) => {
@@ -119,8 +234,15 @@ export function observationValidation(log: readonly ObservationEntry[]): Observa
     }
     return tools;
   };
+  const lastReplayText = new Map<KernelObservationEntry, string>();
   let step = 0;
-  return {
+  const validation: ObservationValidation & {
+    canCutoff?: (
+      entry: KernelObservationEntry,
+      replayed: { resultHash?: string; cutoffHash?: string; index: number },
+      root: string,
+    ) => boolean;
+  } = {
     log: [...recorded.keys()],
     closedWorld: true,
     async replay(entry, root) {
@@ -128,10 +250,53 @@ export function observationValidation(log: readonly ObservationEntry[]): Observa
       const tool = (await toolsFor(root)).find((candidate) => candidate.name === entry.call.tool);
       if (!original || !tool) throw new Error(`replay: no recorded ${entry.call.tool} call to re-run`);
       const result = await tool.execute(`replay-${++step}`, withRoot(entry.call.args, root) as Record<string, unknown>);
+      const text = resultText(result);
       if (entry.kind === "mutate" && result.isError === true && !original.isError) {
-        throw new Error(`replay: ${entry.call.tool} no longer applies: ${resultText(result)}`);
+        throw new Error(`replay: ${entry.call.tool} no longer applies: ${text}`);
       }
-      return hashObservation(entry.call.tool, resultText(result), root);
+      lastReplayText.set(entry, text);
+      return hashObservation(entry.call.tool, text, root);
     },
+    ...(options?.earlyCutoff
+      ? {
+          canCutoff(entry: KernelObservationEntry, _replayed: { resultHash?: string; cutoffHash?: string; index: number }, root: string): boolean {
+            const original = recorded.get(entry);
+            const text = lastReplayText.get(entry);
+            if (!original || text === undefined) return false;
+
+            if (entry.call.tool === "read") {
+              const currentCutoff = computeCutoffHash("read", text, root, options.symbols);
+              const expectedCutoff = options.symbols?.length ? undefined : original.cutoffHash;
+              return expectedCutoff !== undefined && currentCutoff === expectedCutoff;
+            }
+
+            if (entry.call.tool === "glob" && original.discoveryItems) {
+              const currentItems = extractDiscoveryItems("glob", text, root) ?? [];
+              const currentSet = new Set(currentItems);
+              const isSuperset = original.discoveryItems.every((item) => currentSet.has(item));
+              if (isSuperset) {
+                const recordedSet = new Set(original.discoveryItems);
+                const added = currentItems.filter((item) => !recordedSet.has(item));
+                if (added.length > 0) options.onDiscoveryDelta?.(added);
+                return true;
+              }
+              return false;
+            }
+
+            if (MUTATE.has(entry.call.tool)) {
+              const currentCutoff = computeCutoffHash(entry.call.tool, text, root);
+              if (!original.cutoffHash || currentCutoff !== original.cutoffHash) return false;
+              const currentRefs = extractDiscoveryItems(entry.call.tool, text, root) ?? [];
+              const recordedRefs = new Set(original.discoveryItems ?? []);
+              const added = currentRefs.filter((item) => !recordedRefs.has(item));
+              if (added.length > 0) options.onDiscoveryDelta?.(added);
+              return true;
+            }
+
+            return false;
+          },
+        }
+      : {}),
   };
+  return validation;
 }

@@ -4,7 +4,15 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { hashObservation, normalizeObservation, resultText, toObservationEntry } from "./parallel-observations.ts";
+import {
+  computeCutoffHash,
+  extractDiscoveryItems,
+  hashObservation,
+  normalizeObservation,
+  observationValidation,
+  resultText,
+  toObservationEntry,
+} from "./parallel-observations.ts";
 import { createBuiltinTools } from "./tools/builtin.ts";
 import { WorkspacePathPolicy } from "./workspace-path-policy.ts";
 
@@ -64,5 +72,40 @@ describe("normalizeObservation", () => {
     );
     expect(entry).toMatchObject({ kind: "observe", tool: "read", args: { path: "<root>/src/a.ts" }, resultBytes: 4, isError: false });
     expect(toObservationEntry({ id: "c", name: "skill", arguments: {} }, { content: [] }, "/fork")).toBeUndefined();
+  });
+
+  it("supports Early Cutoff on numbered read comments, additive glob supersets, and edit blast-radius shifts", async () => {
+    const first = await tree();
+    const readBefore = await first.run("read", { path: "src/m3.ts" });
+    fs.writeFileSync(path.join(first.root, "src", "m3.ts"), "// concurrent header comment\nexport const value3 = 3;\n// marker\n");
+    const readAfter = await first.run("read", { path: "src/m3.ts" });
+    expect(hashObservation("read", readAfter, first.root)).not.toBe(hashObservation("read", readBefore, first.root));
+    expect(computeCutoffHash("read", readAfter, first.root)).toBe(computeCutoffHash("read", readBefore, first.root));
+
+    const second = await tree();
+    const globBefore = await second.run("glob", { pattern: "**/*.ts" });
+    const globEntry = toObservationEntry({ id: "g", name: "glob", arguments: { pattern: "**/*.ts" } }, { content: [{ type: "text", text: globBefore }] }, second.root)!;
+    const readEntry = toObservationEntry({ id: "r", name: "read", arguments: { path: "src/m3.ts" } }, { content: [{ type: "text", text: readBefore }] }, second.root)!;
+    fs.writeFileSync(path.join(second.root, "src", "m99.ts"), "export const value99 = 99;\n");
+    fs.writeFileSync(path.join(second.root, "src", "m3.ts"), "// added comment\nexport const value3 = 3;\n// marker\n");
+
+    const deltas: string[][] = [];
+    const validation = observationValidation([globEntry, readEntry], {
+      earlyCutoff: true,
+      onDiscoveryDelta: (added) => deltas.push([...added]),
+    }) as ReturnType<typeof observationValidation> & {
+      canCutoff?: (entry: unknown, replayed: { resultHash?: string; index: number }, root: string) => boolean;
+    };
+
+    const gHash = (await validation.replay(validation.log[0]!, second.root)) as string;
+    expect(gHash).not.toBe(globEntry.resultHash);
+    expect(validation.canCutoff?.(validation.log[0]!, { resultHash: gHash, index: 0 }, second.root)).toBe(true);
+    expect(deltas).toEqual([["src/m99.ts"]]);
+
+    const rHash = (await validation.replay(validation.log[1]!, second.root)) as string;
+    expect(rHash).not.toBe(readEntry.resultHash);
+    expect(validation.canCutoff?.(validation.log[1]!, { resultHash: rHash, index: 1 }, second.root)).toBe(true);
+
+    expect(extractDiscoveryItems("edit", "edited /fork/src/u.ts; write-back ok sha256=abc\n  - src/c.ts:12 (foo())", "/fork")).toEqual(["src/c.ts"]);
   });
 });
