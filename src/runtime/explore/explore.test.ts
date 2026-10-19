@@ -13,7 +13,7 @@ import {
   DEFAULT_EXPLORE_ACTIVE_MAX,
   detectUserExploreFanoutRequest,
   resolveExploreConcurrencyBudget,
-  ULTRA_EXPLORE_ACTIVE_MIN,
+  MAX_EXPLORE_ACTIVE_MIN,
 } from "./policy.ts";
 import { registerExploreCapability } from "./register.ts";
 import { parseProviderModelRef, resolveExploreConfig } from "./resolve.ts";
@@ -211,7 +211,7 @@ describe("formatExploreResult / prompts", () => {
       mode: "default",
       scaleNote: "small (~80 source-like files)",
       partitionHint: "按接口划分",
-      thinkingLevel: "medium",
+      thinkingLevel: "high",
     });
     expect(text).toContain("Prefer about **2**");
     expect(text).toMatch(/Mechanical concurrent cap: \*\*4\*\*/i);
@@ -225,17 +225,17 @@ describe("formatExploreResult / prompts", () => {
     expect(PRIMARY_EXPLORE_PROMPT_ADDENDUM).toContain("## Multi-explore");
   });
 
-  it("ultra addendum describes deep lane ceiling without forced single-file spawn", () => {
+  it("max-effort addendum describes deep lane ceiling without forced single-file spawn", () => {
     const text = formatPrimaryExploreAddendum({
       maxConcurrency: 16,
       suggestedConcurrency: 8,
       effectiveMax: 16,
-      mode: "ultra",
+      mode: "max",
       lane: "deep",
-      thinkingLevel: "ultra",
+      thinkingLevel: "max",
     });
     expect(text).toMatch(/Deep lane/i);
-    expect(text).toContain(String(ULTRA_EXPLORE_ACTIVE_MIN));
+    expect(text).toContain(String(MAX_EXPLORE_ACTIVE_MIN));
     expect(text).toMatch(/does \*\*not\*\* force workers on trivial single-file/i);
   });
 
@@ -266,7 +266,7 @@ describe("explore concurrency policy", () => {
     expect(detectUserExploreFanoutRequest("run 3 explores")).toEqual({ highFanout: false });
   });
 
-  it("default ≤4, ultra deep ceiling, user high up to 16", () => {
+  it("default ≤4, max deep ceiling, user high up to 16", () => {
     expect(resolveExploreConcurrencyBudget({
       thinkingLevel: "high",
       configMax: 16,
@@ -280,23 +280,23 @@ describe("explore concurrency policy", () => {
     });
 
     expect(resolveExploreConcurrencyBudget({
-      thinkingLevel: "ultra",
+      thinkingLevel: "max",
       configMax: 16,
       userRequest: { highFanout: false },
       scale: { tier: "medium", fileCount: 200, capped: false },
     })).toMatchObject({
-      mode: "ultra",
+      mode: "max",
       effectiveMax: 16,
       lane: "deep",
     });
-    const ultra = resolveExploreConcurrencyBudget({
-      thinkingLevel: "ultra",
+    const maxEffort = resolveExploreConcurrencyBudget({
+      thinkingLevel: "max",
       configMax: 16,
       userRequest: { highFanout: false },
       scale: { tier: "medium", fileCount: 200, capped: false },
     });
-    expect(ultra.suggested).toBeGreaterThanOrEqual(DEFAULT_EXPLORE_ACTIVE_MAX);
-    expect(ultra.suggested).toBeLessThanOrEqual(ULTRA_EXPLORE_ACTIVE_MIN);
+    expect(maxEffort.suggested).toBeGreaterThanOrEqual(DEFAULT_EXPLORE_ACTIVE_MAX);
+    expect(maxEffort.suggested).toBeLessThanOrEqual(MAX_EXPLORE_ACTIVE_MIN);
 
     expect(resolveExploreConcurrencyBudget({
       thinkingLevel: "off",
@@ -312,7 +312,7 @@ describe("explore concurrency policy", () => {
 
   it("fast lane suggests zero workers for simple single-file tasks", () => {
     const budget = resolveExploreConcurrencyBudget({
-      thinkingLevel: "medium",
+      thinkingLevel: "high",
       configMax: 16,
       userRequest: { highFanout: false },
       signal: {
@@ -442,7 +442,7 @@ describe("deep vs fast frozen workspace-awareness (AC)", () => {
 
     // Fast-lane cases: zero workers and negligible decision cost (no deep fan-out pressure).
     const fastBudget = resolveExploreConcurrencyBudget({
-      thinkingLevel: "medium",
+      thinkingLevel: "high",
       configMax: 16,
       userRequest: { highFanout: false },
       signal: {
@@ -456,7 +456,7 @@ describe("deep vs fast frozen workspace-awareness (AC)", () => {
 
     const fastCost = sampleLaneSelectionCostUs(() => {
       selectExploreLane({
-        thinkingLevel: "medium",
+        thinkingLevel: "high",
         userRequest: { highFanout: false },
         userText: "fix typo in src/cli/version.ts",
         singleFile: true,
@@ -465,7 +465,7 @@ describe("deep vs fast frozen workspace-awareness (AC)", () => {
     }, 400);
     const deepCost = sampleLaneSelectionCostUs(() => {
       selectExploreLane({
-        thinkingLevel: "ultra",
+        thinkingLevel: "max",
         userRequest: { highFanout: false },
         userText: "map auth session impact across packages",
         singleFile: false,
@@ -570,20 +570,20 @@ describe("registerExploreCapability", () => {
     expect(last?.systemPrompt).toMatch(/Prefer about \*\*\d+\*\*/);
     expect(last?.systemPrompt).toContain("You are XioCode.");
 
-    host.setThinkingLevel("ultra");
-    const ultra = await host.emit("before_agent_start", {
+    host.setThinkingLevel("max");
+    const maxEffort = await host.emit("before_agent_start", {
       prompt: "deep survey",
       systemPrompt: last?.systemPrompt ?? "You are XioCode.",
     });
-    const ultraPrompt = (ultra.at(-1) as { systemPrompt?: string } | undefined)?.systemPrompt ?? "";
-    expect(ultraPrompt).toMatch(/thinking effort: \*\*ultra\*\*/i);
-    expect(ultraPrompt).toMatch(/Deep lane/i);
-    expect(ultraPrompt).toContain(String(ULTRA_EXPLORE_ACTIVE_MIN));
-    expect(ultraPrompt).toMatch(/does \*\*not\*\* force workers on trivial single-file/i);
-    expect(ultraPrompt.match(/## Multi-explore/g)?.length).toBe(1);
+    const maxPrompt = (maxEffort.at(-1) as { systemPrompt?: string } | undefined)?.systemPrompt ?? "";
+    expect(maxPrompt).toMatch(/thinking effort: \*\*max\*\*/i);
+    expect(maxPrompt).toMatch(/Deep lane/i);
+    expect(maxPrompt).toContain(String(MAX_EXPLORE_ACTIVE_MIN));
+    expect(maxPrompt).toMatch(/does \*\*not\*\* force workers on trivial single-file/i);
+    expect(maxPrompt.match(/## Multi-explore/g)?.length).toBe(1);
   });
 
-  it("does not register when explore is disabled and thinking is not ultra", async () => {
+  it("does not register when explore is disabled and thinking is not max", async () => {
     const host = new ExtensionHost({
       initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
     });
@@ -596,10 +596,10 @@ describe("registerExploreCapability", () => {
     expect(host.getTool("explore")).toBeUndefined();
   });
 
-  it("auto-enables explore when session starts on ultra even if config disabled", async () => {
+  it("auto-enables explore when session starts on max even if config disabled", async () => {
     const host = new ExtensionHost({
       initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
-      initialThinkingLevel: "ultra",
+      initialThinkingLevel: "max",
     });
     host.registerProvider("opencode-go", {
       name: "opencode-go",
@@ -619,7 +619,7 @@ describe("registerExploreCapability", () => {
     expect(host.getTool("explore")).toBeDefined();
   });
 
-  it("ensure(ultra) installs explore when switching mid-session", async () => {
+  it("ensure(max) installs explore when switching mid-session", async () => {
     const host = new ExtensionHost({
       initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
     });
@@ -636,13 +636,13 @@ describe("registerExploreCapability", () => {
       workspaceRoot: process.cwd(),
     });
     expect(handle.isRegistered()).toBe(false);
-    host.setThinkingLevel("ultra");
-    const resolved = await handle.ensure("ultra");
+    host.setThinkingLevel("max");
+    const resolved = await handle.ensure("max");
     expect(resolved?.model).toBe("deepseek-v4-flash");
     expect(host.getTool("explore")).toBeDefined();
   });
 
-  it("ensure(ultra) falls back to session primary when explore.model is unset", async () => {
+  it("ensure(max) falls back to session primary when explore.model is unset", async () => {
     const host = new ExtensionHost({
       initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
     });
@@ -658,7 +658,7 @@ describe("registerExploreCapability", () => {
       ...cfg,
       explore: { ...cfg.explore, model: undefined },
     };
-    host.setThinkingLevel("ultra");
+    host.setThinkingLevel("max");
     const handle = await registerExploreCapability(host, {
       runtimeConfig: noModel,
       cwd: process.cwd(),
@@ -668,7 +668,7 @@ describe("registerExploreCapability", () => {
     expect(host.getTool("explore")).toBeDefined();
   });
 
-  it("enabled=false + model + ultra force-enables dedicated scout; non-ultra does not install", async () => {
+  it("enabled=false + model + max force-enables dedicated scout; non-max does not install", async () => {
     const cfg = runtimeWithExplore(false);
     expect(cfg.explore.enabled).toBe(false);
     expect(cfg.explore.model).toBe("deepseek-v4-flash");
@@ -691,11 +691,11 @@ describe("registerExploreCapability", () => {
     expect(coldHandle.isRegistered()).toBe(false);
     expect(cold.getTool("explore")).toBeUndefined();
 
-    const ultra = new ExtensionHost({
+    const maxHost = new ExtensionHost({
       initialModel: { provider: "opencode-go", id: "deepseek-v4-pro" },
-      initialThinkingLevel: "ultra",
+      initialThinkingLevel: "max",
     });
-    ultra.registerProvider("opencode-go", {
+    maxHost.registerProvider("opencode-go", {
       name: "opencode-go",
       api: "openai-completions",
       baseUrl: "https://opencode.ai/zen/go/v1",
@@ -705,17 +705,17 @@ describe("registerExploreCapability", () => {
         { id: "deepseek-v4-flash", name: "deepseek-v4-flash", input: ["text"] },
       ],
     });
-    const ultraHandle = await registerExploreCapability(ultra, {
+    const maxHandle = await registerExploreCapability(maxHost, {
       runtimeConfig: cfg,
       cwd: process.cwd(),
       workspaceRoot: process.cwd(),
     });
-    expect(ultraHandle.isRegistered()).toBe(true);
-    expect(ultraHandle.getResolved()).toMatchObject({
+    expect(maxHandle.isRegistered()).toBe(true);
+    expect(maxHandle.getResolved()).toMatchObject({
       provider: "opencode-go",
       model: "deepseek-v4-flash",
     });
-    expect(ultra.getTool("explore")).toBeDefined();
+    expect(maxHost.getTool("explore")).toBeDefined();
   });
 });
 
@@ -856,7 +856,7 @@ describe("Phase 0 characterization (ADR 0003 gate — no behavior change)", () =
       }),
       env: { STUB_KEY: "sk-test" },
       getUserPrompt: () => "map auth across packages",
-      getThinkingLevel: () => "ultra",
+      getThinkingLevel: () => "max",
       orchestrator,
       runWorker: async () => ({
         provider: "stub",
@@ -1188,7 +1188,7 @@ describe("real adaptive dispatch path (not simulate-only)", () => {
       getProvider: () => registration,
       env: { STUB_KEY: "sk-test" },
       getUserPrompt: () => "fix typo in src/cli/version.ts",
-      getThinkingLevel: () => "medium",
+      getThinkingLevel: () => "high",
       runWorker: async () => {
         workerCalls += 1;
         return {
@@ -1248,7 +1248,7 @@ describe("real adaptive dispatch path (not simulate-only)", () => {
       getProvider: () => registration,
       env: { STUB_KEY: "sk-test" },
       getUserPrompt: () => "map auth session impact across packages",
-      getThinkingLevel: () => "ultra",
+      getThinkingLevel: () => "max",
       orchestrator,
       runWorker: async (opts) => {
         const scripted = reports[i++] ?? reports[0]!;
@@ -1320,7 +1320,7 @@ describe("real adaptive dispatch path (not simulate-only)", () => {
       getProvider: () => registration,
       env: { STUB_KEY: "sk-test" },
       getUserPrompt: () => "deep multi-file survey of auth",
-      getThinkingLevel: () => "ultra",
+      getThinkingLevel: () => "max",
       orchestrator,
       runWorker: async (opts) => {
         started += 1;
@@ -1539,7 +1539,7 @@ describe("real adaptive dispatch path (not simulate-only)", () => {
       getProvider: () => registration,
       env: { STUB_KEY: "sk-test" },
       getUserPrompt: () => "deep survey of packages",
-      getThinkingLevel: () => "ultra",
+      getThinkingLevel: () => "max",
       orchestrator,
       runWorker: async () => {
         workerCalls += 1;

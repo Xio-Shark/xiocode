@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG_TOML = `# XioCode local config — edit providers to
 [general]
 default_provider = "deepseek"
 default_model = "deepseek-chat"
-# default_thinking_level = "medium"  # off|minimal|low|medium|high|xhigh|max|ultra — UI ladder
+# default_thinking_level = "high"  # off|low|high|max — UI ladder
 # max_session_messages = 80  # auto-compact before the next prompt would exceed this message budget
 # max_session_tokens = 48000 # optional token-aware compact budget; else ~75% of model context_window
 # max_turns = 24             # per-prompt agent↔model turns (1–40; default 24)
@@ -28,11 +28,10 @@ kind = "openai"
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
-# Optional explicit wire map (defaults already map max/ultra → "max" for deepseek* ids):
+# Optional explicit wire map (defaults already map product levels to DeepSeek's low/high/max):
 # [providers.deepseek.thinking_level_map]
 # high = "high"
 # max = "max"
-# ultra = "max"
 
 # More providers: run /connect inside a session, or uncomment:
 # [providers.openai]

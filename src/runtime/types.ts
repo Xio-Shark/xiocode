@@ -1,4 +1,4 @@
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type ThinkingLevel = "off" | "low" | "high" | "max";
 
 /** Provider thinking transcript visibility (orthogonal to ThinkingLevel effort). */
 export type ThinkingDisplay = "summarized" | "omitted";

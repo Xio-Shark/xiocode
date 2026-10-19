@@ -37,7 +37,7 @@ export const PLAN_PROMPT_ADDENDUM = [
   "4. Status updates: mark `in_progress` when starting a slice, `done` when that slice finishes.",
   "   Batch when possible (finish several items, then a few updates). Do **not** call plan after every read/grep/edit.",
   "5. Optional `export_csv`. Skip plan for trivial one-shot questions. Only this board.",
-  "6. Ultra + multi-deliverable + Trellis: `parallel_draft` → `.claude/plan/parallel-plan.json`, then `parallel_dispatch` (it confirms with the user itself; never run task.py via bash).",
+  "6. Max effort + multi-deliverable + Trellis: `parallel_draft` → `.claude/plan/parallel-plan.json`, then `parallel_dispatch` (it confirms with the user itself; never run task.py via bash).",
   "Tool replies are short acks; the TUI todo widget is the live board — avoid action=list unless you need ids.",
 ].join("\n");
 

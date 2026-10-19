@@ -25,7 +25,7 @@ export type ThinkingCommandOptions = Readonly<{
   getModel: () => ModelInfo;
   env: NodeJS.ProcessEnv;
   persist?: boolean;
-  /** Fired after the session thinking level changes (e.g. ultra → auto-enable explore). */
+  /** Fired after the session thinking level changes (e.g. max → auto-enable explore). */
   onThinkingLevelChanged?: (level: ThinkingLevel) => Promise<void> | void;
 }>;
 

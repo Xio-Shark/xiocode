@@ -5,13 +5,15 @@ import { parse } from "smol-toml";
 
 import { assertMaxSessionMessages } from "../runtime/context-compaction.ts";
 import { isWireApi, WIRE_APIS, type WireApi } from "../runtime/providers/wire-api.ts";
+import { parseThinkingLevel } from "../runtime/thinking.ts";
 import { DEFAULT_WORKTREE_CONFIG } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 import type { ModelPrice, PricingOverrides } from "../runtime/pricing.ts";
+import type { ThinkingLevel } from "../runtime/types.ts";
 import type { WorktreeConfig, WorktreeSession } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
 
 export type ProviderKind = "openai" | "anthropic" | "mistral" | "google" | "google-vertex" | "bedrock" | string;
-export type XioThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type XioThinkingLevel = ThinkingLevel;
 export type XioProviderToolChoice = "auto" | "required" | "any";
 export type XioProviderToolChoiceScope = "always" | "non_simple" | "never";
 export type XioThinkingDisplay = "summarized" | "omitted";
@@ -28,7 +30,7 @@ export type XioGeneralConfig = Readonly<{
    * Integer >= 1024 when set.
    */
   maxSessionTokens?: number;
-  /** Default session thinking effort (off|minimal|low|medium|high|xhigh|max|ultra). */
+  /** Default session thinking effort (off|low|high|max). */
   defaultThinkingLevel?: XioThinkingLevel;
   /**
    * Per user-prompt agent loop cap (provider requests). Default 24 when unset (agent-loop).
@@ -279,7 +281,7 @@ export type XioExploreConfig = Readonly<{
   timeoutMs: number;
   /**
    * Absolute parallel ceiling (1–16). Default 16.
-   * Runtime policy still caps default sessions at 4, ultra at 8+, user-requested high fan-out up to this value.
+   * Runtime policy still caps default sessions at 4, max effort at 8+, user-requested high fan-out up to this value.
    */
   maxConcurrency: number;
   maxOutputChars: number;
@@ -470,7 +472,7 @@ const DEFAULT_EXPLORE: XioExploreConfig = {
   enabled: false,
   maxTurns: 12,
   timeoutMs: 180_000,
-  /** Hard ceiling only; live policy: default ≤4, ultra ≥8, user-high ≤16. */
+  /** Hard ceiling only; live policy: default ≤4, max ≥8, user-high ≤16. */
   maxConcurrency: 16,
   /** Large enough for multi-file verbatim excerpts; truncation is always marked, never silent. */
   maxOutputChars: 64_000,
@@ -1124,12 +1126,15 @@ function getThinkingLevelMap(value: unknown, context: string): Readonly<Partial<
   if (record === undefined) {
     return undefined;
   }
-  for (const key of Object.keys(record)) {
-    if (!isThinkingLevel(key)) {
-      throw new Error(`${context} keys must be off, minimal, low, medium, high, xhigh, max, or ultra`);
+  const mapped: Record<string, string> = {};
+  for (const [key, wire] of Object.entries(record)) {
+    const level = parseThinkingLevel(key);
+    if (!level) {
+      throw new Error(`${context} keys must be off, low, high, or max`);
     }
+    mapped[level] = wire;
   }
-  return record as Partial<Record<XioThinkingLevel, string>>;
+  return mapped as Partial<Record<XioThinkingLevel, string>>;
 }
 
 function getProviderToolChoice(value: unknown, context: string): XioProviderToolChoice | undefined {
@@ -1166,18 +1171,15 @@ function getRecord(value: unknown, context: string): Readonly<Record<string, unk
   return value === undefined ? undefined : asTable(value, context);
 }
 
-function isThinkingLevel(value: string): value is XioThinkingLevel {
-  return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra";
-}
-
 function getOptionalThinkingLevel(
   table: Record<string, unknown> | undefined,
   key: string,
 ): XioThinkingLevel | undefined {
   if (!table || !(key in table)) return undefined;
   const value = table[key];
-  if (typeof value !== "string" || !isThinkingLevel(value)) {
-    throw new Error(`general.${key} must be off, minimal, low, medium, high, xhigh, max, or ultra`);
+  const level = typeof value === "string" ? parseThinkingLevel(value) : undefined;
+  if (!level) {
+    throw new Error(`general.${key} must be off, low, high, or max`);
   }
-  return value;
+  return level;
 }

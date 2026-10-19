@@ -40,11 +40,11 @@ describe("thinking commands", () => {
       env,
     });
 
-    await expect(host.runCommand("thinking", "ultra")).resolves.toContain("ultra");
-    expect(host.getThinkingLevel()).toBe("ultra");
-    expect(statuses.thinking).toBe("think:ultra");
+    await expect(host.runCommand("thinking", "max")).resolves.toContain("max");
+    expect(host.getThinkingLevel()).toBe("max");
+    expect(statuses.thinking).toBe("think:max");
     const saved = await readFile(configPath, "utf8");
-    expect(saved).toMatch(/default_thinking_level\s*=\s*"ultra"/);
+    expect(saved).toMatch(/default_thinking_level\s*=\s*"max"/);
 
     await applyThinkingLevel({
       host,

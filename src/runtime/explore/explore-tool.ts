@@ -23,7 +23,7 @@ import {
   DEFAULT_EXPLORE_ACTIVE_MAX,
   detectUserExploreFanoutRequest,
   resolveExploreConcurrencyBudget,
-  ULTRA_EXPLORE_ACTIVE_MIN,
+  MAX_EXPLORE_ACTIVE_MIN,
   type ExploreConcurrencyBudget,
 } from "./policy.ts";
 import type { ExploreRoleId } from "./roles.ts";
@@ -95,7 +95,7 @@ export function formatPrimaryExploreAddendum(
     ?? Math.min(DEFAULT_EXPLORE_ACTIVE_MAX, Math.max(1, effectiveMax));
   const suggested = Math.min(Math.max(effectiveMax, 0), Math.max(0, suggestedRaw));
   const mode = options.mode ?? "default";
-  const lane = options.lane ?? (mode === "ultra" ? "deep" : mode === "user" ? "explicit_high" : mode === "fast" ? "fast" : "standard");
+  const lane = options.lane ?? (mode === "max" ? "deep" : mode === "user" ? "explicit_high" : mode === "fast" ? "fast" : "standard");
   const think = options.thinkingLevel ?? "off";
 
   const lines = [
@@ -118,11 +118,11 @@ export function formatPrimaryExploreAddendum(
     lines.push(
       `- **Fast lane**: do **not** spawn subagents for this turn unless the user requests explore or uncertainty remains.`,
     );
-  } else if (mode === "ultra" || lane === "deep") {
+  } else if (mode === "max" || lane === "deep") {
     lines.push(
-      `- **Deep lane** (ultra thinking or high multi-file uncertainty): raise the ceiling toward **${ULTRA_EXPLORE_ACTIVE_MIN}** `
+      `- **Deep lane** (max thinking or high multi-file uncertainty): raise the ceiling toward **${MAX_EXPLORE_ACTIVE_MIN}** `
         + `(target ~${Math.max(suggested, 1)}, up to ${Math.max(effectiveMax, 1)}). Prefer role slices: locator / flow / impact / adversarial.`,
-      `- Ultra elevates the deep ceiling; it does **not** force workers on trivial single-file tasks.`,
+      `- Max effort elevates the deep ceiling; it does **not** force workers on trivial single-file tasks.`,
     );
   } else if (mode === "user") {
     lines.push(
@@ -134,7 +134,7 @@ export function formatPrimaryExploreAddendum(
       `- **Standard lane**: about **2–${DEFAULT_EXPLORE_ACTIVE_MAX}** concurrent explores with non-overlapping ownership.`,
       `- Do **not** issue 8–16 explores unless the user clearly asks for that many workers `
         + `(e.g. "16 subagents" / "开16个explore") — then the cap rises for that turn only.`,
-      `- Deep ceiling without a user count: set thinking effort to **ultra** (\`/effort ultra\` or Tab) when multi-file uncertainty is high.`,
+      `- Deep ceiling without a user count: set thinking effort to **max** (\`/effort max\` or Tab) when multi-file uncertainty is high.`,
     );
   }
 
@@ -173,7 +173,7 @@ export type CreateExploreToolOptions = Readonly<{
   onNotify?: (message: string) => void;
   /** Header status: active subagent count (e.g. setStatus("explore", "subs:2")). */
   onStatus?: (key: string, text: string | undefined) => void;
-  /** Session thinking level (drives ultra fan-out). */
+  /** Session thinking level (drives max-effort fan-out). */
   getThinkingLevel?: () => ThinkingLevel;
   /** Latest user prompt for high-fan-out detection. */
   getUserPrompt?: () => string;
@@ -253,7 +253,7 @@ export function createExploreTool(options: CreateExploreToolOptions): ToolDefini
     description:
       "Spawn one read-only subagent for a **small** research slice (not a whole feature/module). "
       + "Prefer this for multi-file locate/survey; skip for simple single-file work unless asked. "
-      + `Adaptive lanes: fast(0) / standard(≤${DEFAULT_EXPLORE_ACTIVE_MAX}) / deep(≤${ULTRA_EXPLORE_ACTIVE_MIN}) / `
+      + `Adaptive lanes: fast(0) / standard(≤${DEFAULT_EXPLORE_ACTIVE_MAX}) / deep(≤${MAX_EXPLORE_ACTIVE_MIN}) / `
       + `user high fan-out up to ${hardCap} (absolute max ${MAX_EXPLORE_CONCURRENCY}). `
       + "Returns a compact WorkspaceBrief (≤12KB aggregate) with citations; raw evidence stays in store.",
     promptSnippet: "Read-only explore subagents: narrow slices, WorkspaceBrief aggregate back",

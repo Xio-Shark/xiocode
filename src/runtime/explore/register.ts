@@ -65,17 +65,17 @@ export type ExploreCapabilityHandle = Readonly<{
   /** True after the explore tool is registered. */
   isRegistered: () => boolean;
   /**
-   * Ensure explore is installed. `ultra` force-enables even when config is off.
+   * Ensure explore is installed. `max` force-enables even when config is off.
    * Idempotent. Returns resolved config or undefined when no model identity exists.
    */
-  ensure: (reason: "config" | "ultra") => Promise<ResolvedExploreConfig | undefined>;
+  ensure: (reason: "config" | "max") => Promise<ResolvedExploreConfig | undefined>;
   getResolved: () => ResolvedExploreConfig | undefined;
 }>;
 
 /**
  * Register multi-explore capability.
  * - `[explore] enabled = true` → install at session start
- * - thinking=`ultra` → auto force-enable (even if config disabled), using explore.model
+ * - thinking=`max` → auto force-enable (even if config disabled), using explore.model
  *   or the session primary model as worker model
  */
 export async function registerExploreCapability(
@@ -125,16 +125,16 @@ export async function registerExploreCapability(
       },
     );
 
-  const install = async (reason: "config" | "ultra"): Promise<ResolvedExploreConfig | undefined> => {
+  const install = async (reason: "config" | "max"): Promise<ResolvedExploreConfig | undefined> => {
     if (registered && resolved) {
       return resolved;
     }
 
-    const next = tryResolve(reason === "ultra" || options.runtimeConfig.explore.enabled);
+    const next = tryResolve(reason === "max" || options.runtimeConfig.explore.enabled);
     if (!next) {
-      if (reason === "ultra") {
+      if (reason === "max") {
         options.onNotify?.(
-          "ultra multi-explore unavailable: set [explore].model or general.default_model / connect a provider model",
+          "max multi-explore unavailable: set [explore].model or general.default_model / connect a provider model",
         );
       }
       return undefined;
@@ -218,9 +218,9 @@ export async function registerExploreCapability(
       userRequest: { highFanout: false },
       scale,
     });
-    const auto = reason === "ultra" && !options.runtimeConfig.explore.enabled;
+    const auto = reason === "max" && !options.runtimeConfig.explore.enabled;
     options.onNotify?.(
-      (auto ? "ultra auto-enabled multi-explore: " : "subagent explore ready: ")
+      (auto ? "max auto-enabled multi-explore: " : "subagent explore ready: ")
         + `${resolved.provider}/${resolved.model} `
         + `(lane=${initialBudget.lane ?? "standard"} cap≤${initialBudget.effectiveMax}; `
         + `deep ceiling ≤${Math.max(8, initialBudget.suggested)}; `
@@ -234,9 +234,9 @@ export async function registerExploreCapability(
     return resolved;
   };
 
-  // Config opt-in, or session already on ultra (default_thinking_level / resume).
-  if (options.runtimeConfig.explore.enabled || host.getThinkingLevel() === "ultra") {
-    await install(options.runtimeConfig.explore.enabled ? "config" : "ultra");
+  // Config opt-in, or session already on max effort (default_thinking_level / resume).
+  if (options.runtimeConfig.explore.enabled || host.getThinkingLevel() === "max") {
+    await install(options.runtimeConfig.explore.enabled ? "config" : "max");
   }
 
   return {

@@ -17,7 +17,7 @@ export {
   PARALLEL_PLAN_FILE,
   PARALLEL_PLAN_VERSION,
   parallelPlanPath,
-  ULTRA_PARALLEL_PLAN_ADDENDUM,
+  MAX_PARALLEL_PLAN_ADDENDUM,
   validateParallelPlan,
   writeParallelPlan,
   type ParallelPlanChild,

@@ -6,7 +6,7 @@ import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 const DEFAULT_ACTIVE_MAX = 4;
 const DEEP_ACTIVE_MIN = 8;
 
-/** Adaptive explore lanes (replaces fixed ultra=>8+ spawn mandate). */
+/** Adaptive explore lanes (replaces fixed max=>8+ spawn mandate). */
 export type ExploreLane = "fast" | "standard" | "deep" | "explicit_high";
 
 export type TaskExploreSignal = Readonly<{
@@ -29,7 +29,7 @@ export type LaneDecision = Readonly<{
   effectiveMax: number;
   /** Prompt guidance for how many to issue (0 = do not spawn). */
   suggested: number;
-  mode: "default" | "ultra" | "user" | "fast";
+  mode: "default" | "max" | "user" | "fast";
   hardCap: number;
   reason: string;
 }>;
@@ -38,7 +38,7 @@ export type LaneDecision = Readonly<{
  * Select explore lane from task/uncertainty/coverage signals.
  * - fast (0): simple/single-file without uncertainty or user request
  * - standard (2–4): default multi-file
- * - deep (4–8): high uncertainty / ultra thinking with evidence need
+ * - deep (4–8): high uncertainty / max thinking with evidence need
  * - explicit_high (up to 16): user high fan-out only
  */
 export function selectExploreLane(signal: TaskExploreSignal): LaneDecision {
@@ -76,12 +76,12 @@ export function selectExploreLane(signal: TaskExploreSignal): LaneDecision {
     };
   }
 
-  const deepByThinking = signal.thinkingLevel === "ultra";
+  const deepByThinking = signal.thinkingLevel === "max";
   const deepByUncertainty = uncertain && !singleFile;
   if (deepByThinking || deepByUncertainty) {
     const effectiveMax = Math.min(hardCap, Math.max(DEEP_ACTIVE_MIN, DEFAULT_ACTIVE_MAX * 2));
     const scaleSuggest = scaleSuggestWorkers(signal.scale, effectiveMax);
-    // Ultra raises ceiling; does not force 8+ when coverage already high / scale tiny.
+    // Max effort raises ceiling; does not force 8+ when coverage already high / scale tiny.
     const suggested = Math.min(
       effectiveMax,
       Math.max(DEFAULT_ACTIVE_MAX, Math.min(DEEP_ACTIVE_MIN, scaleSuggest)),
@@ -90,10 +90,10 @@ export function selectExploreLane(signal: TaskExploreSignal): LaneDecision {
       lane: "deep",
       effectiveMax,
       suggested,
-      mode: deepByThinking ? "ultra" : "default",
+      mode: deepByThinking ? "max" : "default",
       hardCap: configMax,
       reason: deepByThinking
-        ? "ultra thinking elevates deep lane ceiling"
+        ? "max thinking elevates deep lane ceiling"
         : "unresolved multi-file uncertainty",
     };
   }

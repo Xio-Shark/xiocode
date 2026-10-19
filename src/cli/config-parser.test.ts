@@ -77,7 +77,7 @@ describe("parseXioConfig", () => {
     });
   });
 
-  it("parses default_thinking_level including ultra", () => {
+  it("parses default_thinking_level and folds the retired ultra name", () => {
     const parsed = parseXioConfig(`
 [general]
 default_provider = "deepseek"
@@ -91,10 +91,10 @@ model = "deepseek-chat"
 api_key_env = "DEEPSEEK_API_KEY"
 
 [providers.deepseek.thinking_level_map]
-ultra = "ultra"
+ultra = "max"
 `);
-    expect(parsed.runtimeConfig.general.defaultThinkingLevel).toBe("ultra");
-    expect(parsed.runtimeConfig.providers.deepseek?.thinkingLevelMap).toEqual({ ultra: "ultra" });
+    expect(parsed.runtimeConfig.general.defaultThinkingLevel).toBe("max");
+    expect(parsed.runtimeConfig.providers.deepseek?.thinkingLevelMap).toEqual({ max: "max" });
   });
 
   it("rejects unsafe or fractional max_session_messages values", () => {
@@ -134,7 +134,7 @@ model = "bad"
 [providers.bad.thinking_level_map]
 turbo = "yes"
 `),
-    ).toThrow("providers.bad.thinking_level_map keys must be off, minimal, low, medium, high, xhigh, max, or ultra");
+    ).toThrow("providers.bad.thinking_level_map keys must be off, low, high, or max");
   });
 
   it("rejects invalid provider parallel tool call settings", () => {

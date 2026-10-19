@@ -32,7 +32,7 @@ export class Semaphore {
       await new Promise<void>((resolve) => {
         this.#waiters.push(resolve);
       });
-      // Re-check limit after wake (may have dropped when thinking left ultra).
+      // Re-check limit after wake (may have dropped when thinking left max).
     }
     this.#active += 1;
     let released = false;

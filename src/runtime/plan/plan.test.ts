@@ -169,28 +169,28 @@ describe("registerPlanCapability", () => {
     expect(String(text)).toMatch(/no plan/i);
   });
 
-  it("injects ultra parallel-plan addendum when Trellis is present", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-ultra-"));
+  it("injects the parallel-plan addendum at max effort when Trellis is present", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-max-"));
     tempDirs.push(root);
     await mkdir(path.join(root, ".trellis", "scripts"), { recursive: true });
     await writeFile(path.join(root, ".trellis", "scripts", "task.py"), "# stub\n");
     const host = new ExtensionHost();
-    host.setThinkingLevel("ultra");
+    host.setThinkingLevel("max");
     await registerPlanCapability(host, { workspaceRoot: root });
     const results = await host.emit("before_agent_start", {
       prompt: "big multi-file refactor",
       systemPrompt: "You are XioCode.",
     });
     const last = results.at(-1) as { systemPrompt?: string } | undefined;
-    expect(last?.systemPrompt).toContain("## Ultra → Trellis parallel-plan.v1");
+    expect(last?.systemPrompt).toContain("## Max effort → Trellis parallel-plan.v1");
     expect(last?.systemPrompt).toContain("parallel_draft");
   });
 
-  it("emits explicit degrade notice on ultra without Trellis", async () => {
+  it("emits explicit degrade notice at max effort without Trellis", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "xio-plan-degrade-"));
     tempDirs.push(root);
     const host = new ExtensionHost();
-    host.setThinkingLevel("ultra");
+    host.setThinkingLevel("max");
     await registerPlanCapability(host, { workspaceRoot: root });
     const results = await host.emit("before_agent_start", {
       prompt: "refactor",
@@ -198,7 +198,7 @@ describe("registerPlanCapability", () => {
     });
     const last = results.at(-1) as { systemPrompt?: string } | undefined;
     expect(last?.systemPrompt).toMatch(/并行写码派发不可用/);
-    expect(last?.systemPrompt).not.toContain("## Ultra → Trellis parallel-plan.v1");
+    expect(last?.systemPrompt).not.toContain("## Max effort → Trellis parallel-plan.v1");
   });
 });
 

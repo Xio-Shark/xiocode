@@ -42,10 +42,10 @@ retain_on_reject = false
     id: "explore",
     title: "Multi-explore scouts (parallel read-only subagents)",
     toml: `# Multi-explore scouts: primary keeps the session; workers survey tiny read-only slices.
-# thinking=ultra FORCE-ENABLES explore even when enabled=false (uses explore.model, else session primary).
-# Non-ultra sessions: set enabled=true + model to opt in (enabled=false alone never installs explore).
+# thinking=max FORCE-ENABLES explore even when enabled=false (uses explore.model, else session primary).
+# Non-max sessions: set enabled=true + model to opt in (enabled=false alone never installs explore).
 # max_concurrency counts WORKERS only (1–16) — not the primary process.
-# Adaptive lanes: fast(0) / standard(2–4) / deep(4–8, ultra) / explicit_high(≤16, user-only).
+# Adaptive lanes: fast(0) / standard(2–4) / deep(4–8, max) / explicit_high(≤16, user-only).
 [explore]
 enabled = false
 # model = "provider/<verified-low-cost-model>"  # REQUIRED when enabled = true

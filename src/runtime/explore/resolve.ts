@@ -37,12 +37,12 @@ export function parseProviderModelRef(
 export type ResolveExploreConfigOptions = Readonly<{
   /**
    * Force-enable even when `[explore] enabled = false`.
-   * Used for thinking=ultra auto multi-explore.
+   * Used for thinking=max auto multi-explore.
    */
   forceEnable?: boolean;
   /**
    * Fallback model when `explore.model` is unset (`provider/model` or bare id).
-   * Typically the session primary model so ultra works without config.
+   * Typically the session primary model so max effort works without config.
    */
   fallbackModel?: string;
 }>;

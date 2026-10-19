@@ -1,5 +1,5 @@
 /**
- * parallel-plan.v1 — Trellis DAG plan artifact produced by xiocode under ultra.
+ * parallel-plan.v1 — Trellis DAG plan artifact produced by xiocode under max effort.
  * XioCode only drafts + handoff; Trellis owns import/dispatch/integrate.
  */
 
@@ -179,10 +179,10 @@ export function formatTrellisDegradeNotice(presence: TrellisPresence): string {
   return "";
 }
 
-/** Injected when thinking=ultra and Trellis is present. */
-export const ULTRA_PARALLEL_PLAN_ADDENDUM = [
-  "## Ultra → Trellis parallel-plan.v1",
-  "When thinking=ultra and the task is multi-file / multi-deliverable (not a trivial single-file fix):",
+/** Injected when thinking=max and Trellis is present. */
+export const MAX_PARALLEL_PLAN_ADDENDUM = [
+  "## Max effort → Trellis parallel-plan.v1",
+  "When thinking=max and the task is multi-file / multi-deliverable (not a trivial single-file fix):",
   "1. Decompose into independently verifiable children with `depends_on`, `isolation`, and `write_scope`.",
   "2. Write-domain overlap between edge-free siblings → add a depends_on edge or merge tasks.",
   "3. Persist the draft via `plan` action=`parallel_draft` (or write `.claude/plan/parallel-plan.json`).",

@@ -383,7 +383,7 @@ describe("provider usage normalization", () => {
           id: "test",
           name: "test",
           reasoning: true,
-          thinkingLevelMap: { high: "large", ultra: "ultra" },
+          thinkingLevelMap: { high: "large", max: "max" },
         }],
       },
       apiKey: "test",
@@ -398,7 +398,7 @@ describe("provider usage normalization", () => {
     expect(body?.reasoning_effort).toBeUndefined();
   });
 
-  it("wires deepseek ultra/max as max + thinking enabled (official V4 shape)", async () => {
+  it("wires deepseek max effort as max + thinking enabled (official V4 shape)", async () => {
     let body: Record<string, unknown> | undefined;
     const client = createLlmClient({
       registration: {
@@ -416,7 +416,7 @@ describe("provider usage normalization", () => {
     await client.complete({
       model: "deepseek-v4-pro",
       messages: [],
-      thinkingLevel: "ultra",
+      thinkingLevel: "max",
     });
     expect(body?.reasoning_effort).toBe("max");
     expect(body?.thinking).toEqual({ type: "enabled" });
@@ -446,8 +446,8 @@ describe("provider usage normalization", () => {
         return jsonResponse({ content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 1 } });
       },
     });
-    await client.complete({ model: "test", messages: [{ role: "user", content: "hi" }], thinkingLevel: "ultra" });
-    expect(body?.thinking).toEqual({ type: "enabled", budget_tokens: 128_000 });
+    await client.complete({ model: "test", messages: [{ role: "user", content: "hi" }], thinkingLevel: "max" });
+    expect(body?.thinking).toEqual({ type: "enabled", budget_tokens: 65_536 });
   });
 
   it("wires configured max_tokens and tool_choice on OpenAI-compatible payloads", async () => {

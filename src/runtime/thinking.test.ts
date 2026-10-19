@@ -11,18 +11,26 @@ import {
 } from "./thinking.ts";
 
 describe("thinking helpers", () => {
-  it("parses levels including ultra", () => {
-    expect(parseThinkingLevel("ultra")).toBe("ultra");
+  it("offers the four-level product ladder", () => {
+    expect([...THINKING_LEVELS]).toEqual(["off", "low", "high", "max"]);
+  });
+
+  it("parses levels and folds retired names onto the ladder", () => {
+    expect(parseThinkingLevel("max")).toBe("max");
+    expect(parseThinkingLevel(" HIGH ")).toBe("high");
+    expect(parseThinkingLevel("minimal")).toBe("low");
+    expect(parseThinkingLevel("medium")).toBe("high");
+    expect(parseThinkingLevel("xhigh")).toBe("max");
+    expect(parseThinkingLevel("ultra")).toBe("max");
     expect(parseThinkingLevel("nope")).toBeUndefined();
-    expect(THINKING_LEVELS).toContain("ultra");
   });
 
   it("filters available levels from thinkingLevelMap keys", () => {
     expect(availableThinkingLevels({
       id: "m",
       name: "m",
-      thinkingLevelMap: { low: "low", high: "large", ultra: "ultra" },
-    })).toEqual(["low", "high", "ultra"]);
+      thinkingLevelMap: { low: "low", high: "large" },
+    })).toEqual(["low", "high"]);
   });
 
   it("offers full ladder for every model without an explicit map", () => {
@@ -41,8 +49,8 @@ describe("thinking helpers", () => {
   });
 
   it("cycles through available levels", () => {
-    expect(cycleThinkingLevel("high", ["low", "high", "ultra"])).toBe("ultra");
-    expect(cycleThinkingLevel("ultra", ["low", "high", "ultra"])).toBe("low");
+    expect(cycleThinkingLevel("high", ["off", "low", "high", "max"])).toBe("max");
+    expect(cycleThinkingLevel("max", ["off", "low", "high", "max"])).toBe("off");
   });
 
   it("maps OpenAI reasoning_effort and omits off", () => {
@@ -55,32 +63,24 @@ describe("thinking helpers", () => {
     })).toBe("large");
   });
 
-  it("maps product max/ultra to DeepSeek wire high|max per official docs", () => {
+  it("maps product levels to each gateway's wire enum", () => {
     const pro = { id: "deepseek-v4-pro", name: "deepseek-v4-pro" };
-    // Official possible values: high | max
-    // Compatibility: low/medium → high; xhigh → max
-    expect(openAiReasoningEffort("minimal", pro)).toBe("high");
-    expect(openAiReasoningEffort("low", pro)).toBe("high");
-    expect(openAiReasoningEffort("medium", pro)).toBe("high");
+    // DeepSeek names low | high | max on the wire; off is the thinking toggle, not an effort.
+    expect(openAiReasoningEffort("low", pro)).toBe("low");
     expect(openAiReasoningEffort("high", pro)).toBe("high");
-    expect(openAiReasoningEffort("xhigh", pro)).toBe("max");
     expect(openAiReasoningEffort("max", pro)).toBe("max");
-    // Client menus (Claude Code / Codex / XioCode) keep "ultra"; wire is still max
-    expect(openAiReasoningEffort("ultra", pro)).toBe("max");
-    // OpenAI-style: top wire tier is xhigh
-    expect(openAiReasoningEffort("ultra", { id: "gpt-5", name: "gpt-5" })).toBe("xhigh");
+    // OpenAI-style gateways stop at xhigh, so product max is their top tier.
     expect(openAiReasoningEffort("max", { id: "gpt-5", name: "gpt-5" })).toBe("xhigh");
-    // Explicit map still wins
-    expect(openAiReasoningEffort("ultra", {
+    // Explicit map still wins.
+    expect(openAiReasoningEffort("max", {
       id: "deepseek-v4-pro",
       name: "deepseek-v4-pro",
-      thinkingLevelMap: { ultra: "max" },
-    })).toBe("max");
+      thinkingLevelMap: { max: "high" },
+    })).toBe("high");
   });
 
   it("sets DeepSeek thinking toggle with effort levels", () => {
     const pro = { id: "deepseek-v4-pro", name: "deepseek-v4-pro" };
-    expect(deepseekThinkingToggle("ultra", pro)).toEqual({ type: "enabled" });
     expect(deepseekThinkingToggle("max", pro)).toEqual({ type: "enabled" });
     expect(deepseekThinkingToggle("off", pro)).toEqual({ type: "disabled" });
     expect(deepseekThinkingToggle("high", { id: "gpt-5", name: "gpt-5" })).toBeUndefined();
@@ -88,9 +88,9 @@ describe("thinking helpers", () => {
 
   it("maps Anthropic budget tokens", () => {
     expect(anthropicThinkingConfig("off", undefined)).toBeUndefined();
-    expect(anthropicThinkingConfig("ultra", undefined)).toEqual({
+    expect(anthropicThinkingConfig("max", undefined)).toEqual({
       type: "enabled",
-      budget_tokens: 128_000,
+      budget_tokens: 65_536,
     });
     expect(anthropicThinkingConfig("high", {
       id: "m",

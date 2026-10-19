@@ -4,7 +4,7 @@ import { formatTasklistWidget } from "./format.ts";
 import {
   detectTrellis,
   formatTrellisDegradeNotice,
-  ULTRA_PARALLEL_PLAN_ADDENDUM,
+  MAX_PARALLEL_PLAN_ADDENDUM,
 } from "./parallel-plan.ts";
 import { createPlanTool, PLAN_PROMPT_ADDENDUM, PLAN_TOOL_NAME } from "./plan-tool.ts";
 import { loadPlanBoard } from "./store.ts";
@@ -36,10 +36,10 @@ export async function registerPlanCapability(
     if (!base.includes("## Plan → tasks → implement")) {
       parts.push(PLAN_PROMPT_ADDENDUM);
     }
-    const ultra = host.getThinkingLevel() === "ultra";
-    if (ultra && presence.hasTrellis && !base.includes("## Ultra → Trellis parallel-plan.v1")) {
-      parts.push(ULTRA_PARALLEL_PLAN_ADDENDUM);
-    } else if (ultra && !presence.hasTrellis && !base.includes("并行写码派发不可用")) {
+    const maxEffort = host.getThinkingLevel() === "max";
+    if (maxEffort && presence.hasTrellis && !base.includes("## Max effort → Trellis parallel-plan.v1")) {
+      parts.push(MAX_PARALLEL_PLAN_ADDENDUM);
+    } else if (maxEffort && !presence.hasTrellis && !base.includes("并行写码派发不可用")) {
       const notice = formatTrellisDegradeNotice(presence);
       if (notice) parts.push(`## Parallel dispatch\n${notice}`);
     }

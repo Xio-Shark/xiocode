@@ -128,9 +128,9 @@
 - Harness throughput H1–H5; session/turn rollback G5b
 - **Host search backends**: builtin `grep` order `ugrep → rg → grep → node`; `glob` order `ugrep → rg → bfs → find → node` (caps 100/500); first `xio init` / config create recommends optional tools without requiring install
 - **Robust edit (H8)**: exact unique replace; optional `replace_all`; one whitespace fuzzy retry; optional unified `patch` via `diff` applyPatch
-- **Thinking levels**: `/effort` + Tab 全档 (`off`…`ultra`)；UI 档与 wire 分离
-  - DeepSeek：产品 `max`/`ultra` 均映射 wire `reasoning_effort=max`（API 无 ultra 字面量）+ `thinking: { type: "enabled" }` 开关
-  - 其他 OpenAI-compat：顶档 `max`/`ultra` → `xhigh`（可被 `[providers.*.thinking_level_map]` 覆盖）
+- **Thinking levels**: `/effort` + Tab 四档 (`off` / `low` / `high` / `max`，旧名 minimal/medium/xhigh/ultra 读入时折叠)；UI 档与 wire 分离
+  - DeepSeek：`low`/`high`/`max` 原样映射 `reasoning_effort` + `thinking: { type: "enabled" }` 开关（`off` 只关 thinking）
+  - 其他 OpenAI-compat：顶档 `max` → `xhigh`（可被 `[providers.*.thinking_level_map]` 覆盖）
 - **Multi-explore**: opt-in `[explore]` registers `explore` tool; read-only parallel workers on `explore.model`
   - `max_concurrency` = absolute ceiling **1–16** (default **16**)
   - Live `ExploreOrchestrator` on product path (fast skip / brief / ownership / wall+straggler) with **nonzero product budgets** (`max_tokens` / `max_cost_usd` / `max_starts_per_minute`; `0`=unlimited; `provider_rate_budget` skip)

@@ -4,14 +4,14 @@ import { selectExploreLane, type ExploreLane, type TaskExploreSignal } from "./l
 import { suggestExploreConcurrency, type ExploreScaleEstimate } from "./scale.ts";
 import { MAX_EXPLORE_CONCURRENCY } from "./types.ts";
 
-/** Default concurrent explore budget when not ultra and user did not request high fan-out. */
+/** Default concurrent explore budget when not on max effort and user did not request high fan-out. */
 export const DEFAULT_EXPLORE_ACTIVE_MAX = 4;
 
 /**
- * Deep-lane ceiling target (was hard ultra=>8+ spawn mandate).
- * Ultra elevates the lane ceiling; suggested count still follows coverage/scale.
+ * Deep-lane ceiling target (was hard max=>8+ spawn mandate).
+ * Max effort elevates the lane ceiling; suggested count still follows coverage/scale.
  */
-export const ULTRA_EXPLORE_ACTIVE_MIN = 8;
+export const MAX_EXPLORE_ACTIVE_MIN = 8;
 
 export type ExploreFanoutRequest = Readonly<{
   /** User asked for wider-than-default parallel explores (up to 16). */
@@ -25,7 +25,7 @@ export type ExploreConcurrencyBudget = Readonly<{
   effectiveMax: number;
   /** Prompt guidance for how many to issue (0 = prefer no subagents). */
   suggested: number;
-  mode: "default" | "ultra" | "user" | "fast";
+  mode: "default" | "max" | "user" | "fast";
   /** Config / absolute ceiling used for this resolution. */
   hardCap: number;
   /** Adaptive lane when signal-based resolution is used. */
@@ -35,7 +35,7 @@ export type ExploreConcurrencyBudget = Readonly<{
 
 /**
  * Detect explicit user requests for large explore fan-out.
- * Only high fan-out (≥5 named workers, or “max/as many”) unlocks up to 16 when not ultra.
+ * Only high fan-out (≥5 named workers, or “max/as many”) unlocks up to 16 when not on max effort.
  */
 export function detectUserExploreFanoutRequest(text: string): ExploreFanoutRequest {
   const raw = text.trim();
@@ -82,7 +82,7 @@ export function detectUserExploreFanoutRequest(text: string): ExploreFanoutReque
  *
  * Legacy path (no signal):
  * - user high fan-out → up to 16
- * - thinking=ultra → deep ceiling (not forced spawn on single-file)
+ * - thinking=max → deep ceiling (not forced spawn on single-file)
  * - otherwise → at most 4
  */
 export function resolveExploreConcurrencyBudget(
@@ -135,20 +135,20 @@ export function resolveExploreConcurrencyBudget(
     };
   }
 
-  if (input.thinkingLevel === "ultra") {
+  if (input.thinkingLevel === "max") {
     // Deep lane ceiling: raise max, suggest scale-aware count (not always 8+).
     const effectiveMax = hardCap;
     const suggested = Math.min(
       effectiveMax,
-      Math.max(DEFAULT_EXPLORE_ACTIVE_MAX, Math.min(ULTRA_EXPLORE_ACTIVE_MIN, scaleSuggest)),
+      Math.max(DEFAULT_EXPLORE_ACTIVE_MAX, Math.min(MAX_EXPLORE_ACTIVE_MIN, scaleSuggest)),
     );
     return {
       effectiveMax,
       suggested: Math.max(1, suggested),
-      mode: "ultra",
+      mode: "max",
       hardCap,
       lane: "deep",
-      reason: "ultra thinking elevates deep lane ceiling",
+      reason: "max thinking elevates deep lane ceiling",
     };
   }
 

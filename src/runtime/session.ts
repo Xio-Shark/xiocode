@@ -316,7 +316,7 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   const fileShift = new FileShiftRegistry();
   const requireReadBeforeEdit = options.runtimeConfig.tools?.requireReadBeforeEdit !== false;
   const pathPolicy = await WorkspacePathPolicy.create({ workspaceRoot, cwd });
-  const { host, mergeGate, directGate, rollbackGate, ensureExploreForUltra } = await createConfiguredHost({
+  const { host, mergeGate, directGate, rollbackGate, ensureExploreForMax } = await createConfiguredHost({
     options,
     clientIdentity,
     model,
@@ -503,8 +503,8 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
 
   const getModel = () => currentModel;
   const onThinkingLevelChanged = async (level: ThinkingLevel) => {
-    if (level === "ultra") {
-      await ensureExploreForUltra();
+    if (level === "max") {
+      await ensureExploreForMax();
     }
   };
   const thinkingOpts = {
@@ -965,7 +965,7 @@ async function createConfiguredHost(input: Readonly<{
   mergeGate?: MergeGate;
   directGate?: DirectRollbackGate;
   rollbackGate?: import("./session-lifecycle.ts").RollbackGate;
-  ensureExploreForUltra: () => Promise<unknown>;
+  ensureExploreForMax: () => Promise<unknown>;
 }> {
   const host = createSessionHost(
     input.model,
@@ -1022,7 +1022,7 @@ async function createConfiguredHost(input: Readonly<{
   const rollbackGate = mergeGate ?? directGate;
   await input.options.registerExtensions?.(host);
   // After extensions so explore prompt addendum and tool sit on the full host surface.
-  // Ultra auto-enables explore even when [explore] enabled = false.
+  // Max effort auto-enables explore even when [explore] enabled = false.
   const explore = await registerExploreCapability(host, {
     runtimeConfig: input.options.runtimeConfig,
     cwd: input.cwd,
@@ -1052,7 +1052,7 @@ async function createConfiguredHost(input: Readonly<{
     mergeGate,
     directGate,
     rollbackGate,
-    ensureExploreForUltra: () => explore.ensure("ultra"),
+    ensureExploreForMax: () => explore.ensure("max"),
   };
 }
 

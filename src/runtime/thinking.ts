@@ -6,34 +6,47 @@ import type {
   ThinkingLevel,
 } from "./types.ts";
 
+/**
+ * Product ladder — the four levels a session can be on, same set DSH offers.
+ *
+ * Wire encoding stays separate (`openAiReasoningEffort` / `anthropicThinkingConfig`)
+ * so a gateway never receives a level its API does not name.
+ */
 export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "off",
-  "minimal",
   "low",
-  "medium",
   "high",
-  "xhigh",
   "max",
-  "ultra",
 ] as const;
 
+/**
+ * Older product names, still accepted from config files and scripts.
+ *
+ * They resolve to the nearest surviving level on read instead of failing a
+ * session start; nothing in the UI offers them anymore.
+ */
+const LEGACY_THINKING_LEVELS: Readonly<Record<string, ThinkingLevel>> = {
+  minimal: "low",
+  medium: "high",
+  xhigh: "max",
+  ultra: "max",
+};
+
 const ANTHROPIC_BUDGETS: Readonly<Record<Exclude<ThinkingLevel, "off">, number>> = {
-  minimal: 1_024,
   low: 2_048,
-  medium: 8_192,
   high: 16_384,
-  xhigh: 32_768,
   max: 65_536,
-  ultra: 128_000,
 };
 
 export function isThinkingLevel(value: string): value is ThinkingLevel {
   return (THINKING_LEVELS as readonly string[]).includes(value);
 }
 
+/** Canonical level for user input; legacy names come back as their surviving neighbour. */
 export function parseThinkingLevel(value: string): ThinkingLevel | undefined {
   const trimmed = value.trim().toLowerCase();
-  return isThinkingLevel(trimmed) ? trimmed : undefined;
+  if (isThinkingLevel(trimmed)) return trimmed;
+  return LEGACY_THINKING_LEVELS[trimmed];
 }
 
 export function thinkingStatusLabel(level: ThinkingLevel): string {
@@ -51,11 +64,9 @@ export function findProviderModel(
 /**
  * Levels the UI may offer for the active model.
  *
- * - Explicit `thinkingLevelMap` keys still restrict the menu (opt-in API mapping).
+ * - An explicit `thinkingLevelMap` restricts the menu to the levels it names
+ *   (the model declares what it supports, the way DSH adapters do).
  * - Otherwise every model gets the full ladder so `/effort` and Tab cycling always work.
- * - Product levels (`max` / `ultra`) stay in the UI; wire encoding is separate
- *   (`openAiReasoningEffort`) so gateways never see unknown product-only tokens
- *   unless the user mapped them explicitly.
  */
 export function availableThinkingLevels(model: ProviderModelConfig | undefined): readonly ThinkingLevel[] {
   if (!model?.thinkingLevelMap) return THINKING_LEVELS;
@@ -66,37 +77,22 @@ export function availableThinkingLevels(model: ProviderModelConfig | undefined):
 /**
  * Default OpenAI-compat `reasoning_effort` when no thinking_level_map entry.
  *
- * Product UI keeps the full ladder (incl. max/ultra) for status + explore policy.
- * Wire encoding follows each provider's documented enum:
+ * DeepSeek names `low | high | max` on the wire (probed against the configured
+ * gateways 2026-10-19: all four product levels are accepted); `off` is expressed
+ * by the thinking toggle, never as an effort value.
  *
- * DeepSeek V4 (official docs):
- *   - Possible values: high | max
- *   - Compatibility: low/medium → high; xhigh → max
- *   - Claude Code / Codex "max"/"ultra" are client effort menus; on DeepSeek both map to max
- *     (ultra is not a DeepSeek API token — same pattern as Claude Code ultracode ≠ extra API enum)
- *
- * OpenAI-style: top wire tier is xhigh; product max/ultra → xhigh.
+ * Other OpenAI-style gateways stop at `xhigh`, so product `max` is its top tier.
  */
 const DEEPSEEK_REASONING_EFFORT: Readonly<Record<Exclude<ThinkingLevel, "off">, string>> = {
-  // Official: low/medium map to high; minimal treated the same for the short ladder.
-  minimal: "high",
-  low: "high",
-  medium: "high",
+  low: "low",
   high: "high",
-  // Official: xhigh → max; max is a first-class value; ultra is client-only → max.
-  xhigh: "max",
   max: "max",
-  ultra: "max",
 };
 
 const OPENAI_REASONING_EFFORT: Readonly<Record<Exclude<ThinkingLevel, "off">, string>> = {
-  minimal: "minimal",
   low: "low",
-  medium: "medium",
   high: "high",
-  xhigh: "xhigh",
   max: "xhigh",
-  ultra: "xhigh",
 };
 
 export function isDeepSeekReasoningModel(model: ProviderModelConfig | undefined): boolean {

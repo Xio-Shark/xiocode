@@ -123,7 +123,7 @@ export function tierForCount(fileCount: number, capped: boolean): ExploreScaleTi
 /**
  * Scale-only suggestion for explore workers (before effort/user policy).
  * Always ≤ maxConcurrency and ≤ MAX_EXPLORE_CONCURRENCY.
- * Policy layer then clamps: default ≤4, ultra ≥8, user-high ≤16.
+ * Policy layer then clamps: default ≤4, max ≥8, user-high ≤16.
  */
 export function suggestExploreConcurrency(
   estimate: ExploreScaleEstimate,

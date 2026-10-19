@@ -10,7 +10,7 @@ export {
   DEFAULT_EXPLORE_ACTIVE_MAX,
   detectUserExploreFanoutRequest,
   resolveExploreConcurrencyBudget,
-  ULTRA_EXPLORE_ACTIVE_MIN,
+  MAX_EXPLORE_ACTIVE_MIN,
 } from "./policy.ts";
 export { selectExploreLane } from "./lanes.ts";
 export { planExploreRoles, ownershipOverlap, EXPLORE_ROLES } from "./roles.ts";

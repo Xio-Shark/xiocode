@@ -73,7 +73,7 @@ export type ProviderToolPolicy = Readonly<{
   thinkingDisplay?: ProviderThinkingDisplay;
 }>;
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type ThinkingLevel = "off" | "low" | "high" | "max";
 
 export type ModelRegistryLike = Readonly<{
   find?: (provider: string, modelId: string) => ModelInfo | undefined;
