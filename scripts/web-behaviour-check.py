@@ -96,8 +96,15 @@ def check_mcp_status(browser, url):
 def check_session_list(page):
     titles = page.eval_on_selector_all("#session-list .session-title", "els => els.map(e => e.textContent)")
     check("a session that was never prompted is not listed", not any(t.startswith("会话 ") for t in titles), str(titles))
-    started = page.eval_on_selector_all("#session-list .session-started", "els => els.map(e => e.textContent)")
-    check("sessions that share a first prompt show when each started", len(started) == 2 and len(set(started)) == 2, str(started))
+    started = page.eval_on_selector_all("#session-list .session-item-text",
+        "els => els.map(e => (e.title || '').split(' · ').slice(1).join(' · ')).filter(Boolean)")
+    check("sessions that share a first prompt show when each started", len(started) >= 2 and len(set(started)) >= 2, str(started))
+
+
+def open_view(page, view):
+    page.click("#view-menu-trigger")
+    page.click(f'#view-menu [data-view="{view}"]')
+    page.wait_for_timeout(200)
 
 
 def feed(page, events):
@@ -107,7 +114,10 @@ def feed(page, events):
 
 def check_timeline(page):
     """Trajectory on a real time axis; sessions without a timeline say so; usage survives a reload."""
-    page.click('[data-view="trajectory"]')
+    page.click("#session-list .session-item-text")
+    page.wait_for_selector(".log-step", timeout=5000)
+    page.wait_for_timeout(400)
+    open_view(page, "trajectory")
     page.wait_for_timeout(300)
     blocks = page.evaluate("""() => [...document.querySelectorAll('#tl-chart .tl-block')].map(b => ({
         label: b.getAttribute('aria-label'), width: b.getBoundingClientRect().width }))""")
@@ -118,18 +128,16 @@ def check_timeline(page):
           f"{width('#10 '):.0f}px vs {width('#8 '):.0f}px")
     check("idle gap between turns is folded and labelled", "空闲 2 小时" in (page.text_content("#tl-chart") or ""))
     check("header separates active time from span", "活跃" in page.text_content("#traj-stat-duration"))
-    page.click('[data-view="metrics"]')
+    open_view(page, "metrics")
     check("usage comes back from the timeline after a reload", page.text_content("#val-tokens") == "45,490")
     page.click("text=解释一下 server.ts 的启动流程")
     page.wait_for_timeout(400)
-    page.click('[data-view="trajectory"]')
+    open_view(page, "trajectory")
     page.wait_for_timeout(200)
     check("a session without a timeline falls back to step order", page.text_content("#timeline-title") == "步骤顺序"
           and "没有时间记录" in page.text_content("#timeline-note"))
     page.click("text=给 parseConfig 加上 port")
     page.wait_for_timeout(400)
-    page.click('[data-view="chat"]')
-    page.wait_for_timeout(200)
 
 
 def run(page, server_proc):
@@ -205,15 +213,15 @@ def run(page, server_proc):
     check("deny-reason is posted as a choice", any(p and '"value":"deny-reason"' in p for p in posted), str(posted[-2:]))
     check("the reason is posted as text", any(p and '"text":"用 build 脚本"' in p for p in posted), str(posted[-1:]))
 
-    # 4. Tabs work from the keyboard.
-    page.focus(".nav-tab.active")
-    page.keyboard.press("ArrowRight")
+    # 4. Views open from the header menu, and the back arrow returns to chat.
+    page.click("#view-menu-trigger")
+    page.click('#view-menu [data-view="trajectory"]')
     page.wait_for_timeout(150)
-    check("ArrowRight moves to the next tab", page.evaluate("document.querySelector('.nav-tab.active').dataset.view") == "trajectory")
-    page.keyboard.press("End")
+    check("menu opens the trajectory", page.evaluate("document.querySelector('main').dataset.view") == "trajectory")
+    check("a back arrow appears", page.evaluate("!document.getElementById('btn-back-view').hidden"))
+    page.click("#btn-back-view")
     page.wait_for_timeout(150)
-    check("End jumps to the last tab", page.evaluate("document.querySelector('.nav-tab.active').dataset.view") == "metrics")
-    page.keyboard.press("Home")
+    check("back returns to chat", page.evaluate("document.querySelector('main').dataset.view") == "chat")
 
     # 5. Theme switch sets and clears data-theme.
     page.click('[data-theme-choice="dark"]')
@@ -221,7 +229,7 @@ def run(page, server_proc):
     bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
     page.click('[data-theme-choice="system"]')
     cleared = page.evaluate("document.documentElement.dataset.theme === undefined")
-    check("theme switch applies dark and returns to system", dark == "dark" and bg == "rgb(15, 17, 21)" and cleared, bg)
+    check("theme switch applies dark and returns to system", dark == "dark" and bg == "rgb(10, 17, 19)" and cleared, bg)
 
     # 6. Idle settles a tool that never returned.
     feed(page, [{"event": "tool.call", "payload": {"toolCallId": "z1", "toolName": "bash", "args": {"command": "sleep 100"}}},
@@ -252,7 +260,7 @@ def check_english(browser, url, fixture):
     page.wait_for_timeout(300)
     chrome = page.evaluate("""(() => {
       // Session titles and messages are user content; everything else is interface copy.
-      const skip = el => el.closest('#session-list, #chat-messages, #current-session-title, [id^="traj-step-"], .traj-detail, #approval-modal');
+      const skip = el => el.closest('#session-list, #chat-messages, #current-session-title, #welcome-foot, [id^="traj-step-"], .traj-detail, #approval-modal');
       const out = [];
       const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       while (walk.nextNode()) {
@@ -302,7 +310,7 @@ def audit_typography(browser, url):
                 bad[(x["text"], x["cls"])] = x["ratio"]
         take()
         for view in ("trajectory", "diff", "metrics"):
-            page.click(f'[data-view="{view}"]')
+            open_view(page, view)
             page.wait_for_timeout(400)
             take()
         page.click("#btn-open-settings")

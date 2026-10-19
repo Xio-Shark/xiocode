@@ -52,6 +52,12 @@ def find_chrome():
     return None
 
 
+def open_view(page, view):
+    page.click("#view-menu-trigger")
+    page.click(f'#view-menu [data-view="{view}"]')
+    page.wait_for_timeout(80)
+
+
 def seed_fixture(project_root, work_dir):
     out = subprocess.run(
         ["node", os.path.join(project_root, "scripts", "web-demo-fixture.ts"), work_dir],
@@ -110,9 +116,9 @@ def open_page(browser, url, **context_args):
     page.on("console", lambda msg: errors.append("console: " + msg.text) if msg.type == "error" else None)
     # SSE keeps the network busy: wait for the DOM, then for the transcript.
     page.goto(url, wait_until="domcontentloaded")
-    page.wait_for_selector(".nav-tabs", timeout=5000)
+    page.wait_for_selector("#view-menu-trigger", timeout=5000)
     try:
-        page.wait_for_selector(".message-row, #welcome-slot:not([hidden])", timeout=5000)
+        page.wait_for_selector(".log-step, #welcome-slot:not([hidden])", timeout=5000)
     except Exception:
         raise RuntimeError("the transcript never rendered; page errors:\n  " + "\n  ".join(errors or ["(none)"]))
     page.wait_for_timeout(400)
@@ -170,16 +176,16 @@ def main():
             page_errors.extend(errors)
             # A reload now lands on the home screen; open the fixture conversation explicitly.
             page.click(".session-item-text")
-            page.wait_for_selector(".message-row", timeout=5000)
+            page.wait_for_selector(".log-step", timeout=5000)
             page.wait_for_timeout(300)
             shot(page, "01-chat-light")
-            page.click('[data-view="diff"]')
+            open_view(page, "diff")
             page.wait_for_timeout(400)
             shot(page, "02-diff-light")
-            page.click('[data-view="metrics"]')
+            open_view(page, "metrics")
             page.wait_for_timeout(200)
             shot(page, "03-metrics-light")
-            page.click('[data-view="trajectory"]')
+            open_view(page, "trajectory")
             page.wait_for_timeout(300)
             shot(page, "04-trajectory-light")
             page.click("#btn-open-settings")
@@ -192,7 +198,7 @@ def main():
             page.keyboard.press("Escape")
             page.wait_for_timeout(200)
 
-            page.click('[data-view="chat"]')
+            page.click("#btn-back-view")
             feed(page, LIVE_EVENTS)
             shot(page, "08-chat-live")
             feed(page, [APPROVAL_EVENT])
@@ -208,16 +214,16 @@ def main():
             dark, errors = open_page(browser, launch_url, color_scheme="dark", **desktop)
             page_errors.extend(errors)
             dark.click(".session-item-text")
-            dark.wait_for_selector(".message-row", timeout=5000)
+            dark.wait_for_selector(".log-step", timeout=5000)
             dark.wait_for_timeout(300)
             shot(dark, "11-chat-dark")
-            dark.click('[data-view="diff"]')
+            open_view(dark, "diff")
             dark.wait_for_timeout(400)
             shot(dark, "12-diff-dark")
-            dark.click('[data-view="trajectory"]')
+            open_view(dark, "trajectory")
             dark.wait_for_timeout(300)
             shot(dark, "13-trajectory-dark")
-            dark.click('[data-view="chat"]')
+            dark.click("#btn-back-view")
             feed(dark, LIVE_EVENTS)
             shot(dark, "14-chat-live-dark")
 
