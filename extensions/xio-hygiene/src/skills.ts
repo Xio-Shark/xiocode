@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -12,6 +12,7 @@ import {
   createHygieneResourcePolicy,
   isMissingResource,
   readAuthorizedResourceText,
+  readUserResourceText,
 } from "./project-resource-read.ts";
 
 export type SkillsConfig = Readonly<{
@@ -178,6 +179,53 @@ async function listSkillFiles(
     .map((entry) => path.join(root, entry));
 }
 
+/**
+ * Read one SKILL.md. User-global skills are frequently *directory* symlinks into
+ * another tool's skill root (mirasim / gemini / ego layouts), which the path
+ * policy rejects as `SYMLINK_COMPONENT` because the target lives outside the
+ * authorized root. A user-owned global tree is the same trust level as the other
+ * user config files `readUserResourceText` already accepts, so resolve exactly
+ * that case: the skill directory must be the link and SKILL.md itself a real
+ * file. Symlinked *files* (inside a real directory) stay rejected everywhere.
+ */
+async function readSkillText(
+  policy: Awaited<ReturnType<typeof createHygieneResourcePolicy>>,
+  filePath: string,
+  source: SkillSourceKind,
+  warn: (message: string) => void,
+): Promise<Readonly<{ text: string; canonicalPath: string }> | undefined> {
+  const loaded = await readAuthorizedResourceText(policy, filePath);
+  if (loaded.ok) {
+    return loaded;
+  }
+  if (isMissingResource(loaded)) {
+    return undefined;
+  }
+  if (loaded.code === "SYMLINK_COMPONENT" && source === "user-claude") {
+    const linked = await readLinkedUserSkill(filePath);
+    if (linked) {
+      return linked;
+    }
+  }
+  warn(`skills: ${loaded.code} for ${filePath}; skipping`);
+  return undefined;
+}
+
+async function readLinkedUserSkill(
+  filePath: string,
+): Promise<Readonly<{ text: string; canonicalPath: string }> | undefined> {
+  const directory = await lstat(path.dirname(filePath)).catch(() => undefined);
+  if (!directory?.isSymbolicLink()) {
+    return undefined;
+  }
+  const leaf = await lstat(filePath).catch(() => undefined);
+  if (!leaf?.isFile() || leaf.isSymbolicLink()) {
+    return undefined;
+  }
+  const linked = await readUserResourceText(filePath);
+  return linked.ok ? linked : undefined;
+}
+
 async function parseSkillFile(
   filePath: string,
   source: SkillSourceKind,
@@ -185,11 +233,8 @@ async function parseSkillFile(
   policy: Awaited<ReturnType<typeof createHygieneResourcePolicy>>,
   warn: (message: string) => void,
 ): Promise<SkillEntry | undefined> {
-  const loaded = await readAuthorizedResourceText(policy, filePath);
-  if (!loaded.ok) {
-    if (!isMissingResource(loaded)) {
-      warn(`skills: ${loaded.code} for ${filePath}; skipping`);
-    }
+  const loaded = await readSkillText(policy, filePath, source, warn);
+  if (loaded === undefined) {
     return undefined;
   }
   const raw = loaded.text;

@@ -80,6 +80,22 @@ describe("discoverSkills", () => {
     expect(checked.skills.map((s) => s.name)).toEqual(["allowed"]);
     expect(checked.warnings.join("\n")).toContain("SYMLINK_COMPONENT");
   });
+  it("loads a user skill whose directory links into another tool's skill root", async () => {
+    const { symlink } = await import("node:fs/promises");
+    const root = await tempRoot("xio-user-skills-dir-link-");
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "project");
+    const external = path.join(root, "external-skills");
+    await mkdir(cwd);
+    await mkdir(path.join(home, ".claude", "skills"), { recursive: true });
+    await writeSkill(external, "portable", { name: "portable", body: "PORTABLE_BODY" });
+    await symlink(path.join(external, "portable"), path.join(home, ".claude", "skills", "portable"));
+
+    const loaded = await discoverSkills({ cwd, home, config: config() });
+    expect(loaded.skills.map((s) => s.name)).toEqual(["portable"]);
+    expect(loaded.skills[0]?.body).toContain("PORTABLE_BODY");
+    expect(loaded.warnings).toEqual([]);
+  });
   it("discovers skills from .claude/skills and .cursor/skills", async () => {
     const root = await tempRoot("xio-skills-discover-");
     const home = path.join(root, "home");
