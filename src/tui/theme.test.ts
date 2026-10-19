@@ -26,9 +26,9 @@ describe("theme helpers", () => {
   });
 
   it("defaults to the groknight palette (XIO_THEME unset or unknown)", () => {
-    expect(resolveTheme(undefined).accent).toBe("#7aa2f7");
-    expect(resolveTheme("groknight").brand).toBe("#e6e8ec");
-    expect(resolveTheme("bogus").tool).toBe("#e0af68");
+    expect(resolveTheme(undefined).accent).toBe("#e08a52");
+    expect(resolveTheme("groknight").brand).toBe("#efeae0");
+    expect(resolveTheme("bogus").tool).toBe("#d7a24a");
   });
 
   it("keeps the claude quiet theme opt-in", () => {
@@ -116,11 +116,11 @@ describe("theme helpers", () => {
     it("supports switching themes via setTheme and reflects active theme name", () => {
       setTheme("light");
       expect(getActiveThemeName()).toBe("light");
-      expect(theme.accent).toBe("#3b5bdb");
+      expect(theme.accent).toBe("#a94e26");
 
       setTheme("groknight");
       expect(getActiveThemeName()).toBe("groknight");
-      expect(theme.accent).toBe("#7aa2f7");
+      expect(theme.accent).toBe("#e08a52");
     });
 
     it("parses OSC 11 response for 4-digit and 2-digit hex RGB values", () => {

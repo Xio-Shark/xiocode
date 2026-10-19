@@ -47,7 +47,7 @@ describe("theme slash command", () => {
       const output = await cmd!.handler("light", host.createContext());
       expect(output).toContain('Switched theme to "light"');
       expect(getActiveThemeName()).toBe("light");
-      expect(theme.accent).toBe("#3b5bdb");
+      expect(theme.accent).toBe("#a94e26");
       expect(changed).toBe("light");
       expect(notified).toBe('Theme changed to "light"');
 

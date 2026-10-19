@@ -1,5 +1,6 @@
 /**
  * Brand colour tokens — the one place xio's semantic colours are defined.
+ * Deep-water ink at night, warm paper by day, one ember accent.
  *
  * The TUI themes `groknight` (dark) and `light` read their shared slots from
  * here (src/tui/theme.ts), and the web console's stylesheet gets the same
@@ -14,18 +15,18 @@ export type SchemeColor = Readonly<{ light: string; dark: string }>;
 
 export const COLOR_TOKENS = {
   /** Page / terminal background the contrast checks are measured against. */
-  bg: { light: "#ffffff", dark: "#0f1115" },
+  bg: { light: "#f5efe3", dark: "#0a1113" },
   /** Primary text; also the TUI brand lettering. */
-  text: { light: "#16181d", dark: "#e6e8ec" },
+  text: { light: "#1b1a17", dark: "#efeae0" },
   /** Secondary text: line numbers, hints, thinking body. */
-  muted: { light: "#5b6372", dark: "#8d94a3" },
+  muted: { light: "#5d5c55", dark: "#b6b3a9" },
   /** Brand accent: prompt, links, the shark fin. */
-  accent: { light: "#3b5bdb", dark: "#7aa2f7" },
-  success: { light: "#18794e", dark: "#9ece6a" },
-  warn: { light: "#9a5b00", dark: "#e0af68" },
-  danger: { light: "#c4262e", dark: "#f7768e" },
-  diffAdd: { light: "#116329", dark: "#9ece6a" },
-  diffDel: { light: "#a40e26", dark: "#f7768e" },
+  accent: { light: "#a94e26", dark: "#e08a52" },
+  success: { light: "#2f6b3a", dark: "#8fbb83" },
+  warn: { light: "#8a5a00", dark: "#d7a24a" },
+  danger: { light: "#a33a33", dark: "#e07b78" },
+  diffAdd: { light: "#2f6b3a", dark: "#8fbb83" },
+  diffDel: { light: "#a33a33", dark: "#e07b78" },
 } as const satisfies Readonly<Record<string, SchemeColor>>;
 
 export type ColorToken = keyof typeof COLOR_TOKENS;
