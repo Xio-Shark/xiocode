@@ -4,7 +4,7 @@
  * Colour: cool neutral chrome, one brand accent. Brand colours come from
  * src/design/tokens.ts, the same source as the TUI themes; contrast ≥ 4.5:1.
  * Type: six sizes (12/13/14/16/20/28). Motion: three durations, ease-out,
- * transform/opacity only, and none at all under prefers-reduced-motion.
+ * transform/opacity plus the sidebar track, and none under prefers-reduced-motion.
  */
 
 /* Every colour is light-dark(light, dark); the theme switch only sets color-scheme.
@@ -19,9 +19,9 @@
   --bg-muted: light-dark(#e9ecf1, #20242c);
   --surface: light-dark(#ffffff, #14171c);
   --surface-raised: light-dark(#ffffff, #1a1d24);
-  --border: light-dark(#e3e6eb, #272b34);
-  --border-subtle: light-dark(#eef0f3, #1e2128);
-  --border-strong: light-dark(#c5cbd5, #3b414d);
+  --border: light-dark(#cfd5df, #333a47);
+  --border-subtle: light-dark(#e8ebf0, #22262e);
+  --border-strong: light-dark(#aab3c0, #414958);
 
   --text-2: light-dark(#474d59, #b1b7c3);
   --text-on-accent: light-dark(#ffffff, #0b0d10);
@@ -69,9 +69,10 @@
   --radius-full: 999px;
 
   --dur-fast: 120ms;
-  --dur: 180ms;
-  --dur-slow: 260ms;
+  --dur: 200ms;
+  --dur-slow: 300ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
   --sidebar-w: 268px;
   --column-w: 768px;
@@ -104,6 +105,10 @@ code, pre, kbd { font-family: var(--font-mono); }
 ::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
 
 :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* forced-colors drops box-shadow, so the outline is the only focus cue there. */
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+}
 /* Text fields show focus on their own frame (input border or the composer card). */
 input:focus-visible, textarea:focus-visible, select:focus-visible { box-shadow: none; }
 
@@ -208,7 +213,12 @@ kbd {
 
 /* ---------- Layout ---------- */
 
-.app-layout { display: flex; height: 100vh; height: 100dvh; }
+.app-layout {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+}
 
 main {
   position: relative;
@@ -228,9 +238,15 @@ main {
   flex-direction: column;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
-  transition: margin-left var(--dur-slow) var(--ease-out);
+  min-width: 0;
+  /* Width is the one layout property that may animate: a collapsed rail has to
+     give its space back to the transcript. Inner columns keep their design width
+     and are clipped, so the slide reads as a reveal instead of a squeeze. */
+  overflow: hidden;
+  transition: width var(--dur-slow) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
 }
-#sidebar.collapsed { margin-left: calc(var(--sidebar-w) * -1); }
+#sidebar.collapsed { width: 0; border-right-width: 0; }
+#sidebar > * { min-width: var(--sidebar-w); }
 
 .sidebar-brand-row {
   display: flex;
@@ -305,10 +321,14 @@ main {
 
 .ws-group + .ws-group { margin-top: 14px; }
 .ws-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
+  background: var(--bg-sidebar);
   font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text-3);
@@ -331,28 +351,29 @@ main {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  /* The time lines up with the title's first line, not the middle of a wrap. */
+  align-items: flex-start;
   gap: 8px;
-  height: 34px;
-  padding: 0 8px 0 10px;
+  min-height: 34px;
+  padding: 5px 8px 5px 10px;
   text-align: left;
   border-radius: var(--radius-md);
 }
 .session-title {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text-2);
 }
 .session-item.active .session-title { color: var(--text); font-weight: 550; }
-/* Only on titles shared by several sessions; never truncated with the title. */
-.session-started { flex-shrink: 0; font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.session-time { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.session-time { flex-shrink: 0; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .session-item:hover .session-time, .session-item:focus-within .session-time { visibility: hidden; }
-.session-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.6s var(--ease-out) infinite; }
+.session-live-dot { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.6s var(--ease-out) infinite; }
 .session-del-btn {
   position: absolute;
   right: 4px;
@@ -820,13 +841,11 @@ main {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
+/* Opacity pulse, not a gradient sweep: clipping a gradient to CJK glyphs
+   slices strokes mid-character, and opacity stays on the compositor. */
 .shimmer {
-  background: linear-gradient(90deg, var(--text-3) 0%, var(--text-3) 40%, var(--text) 50%, var(--text-3) 60%, var(--text-3) 100%);
-  background-size: 250% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: shimmer 2.2s linear infinite;
+  color: var(--text-2);
+  animation: shimmer 1.4s var(--ease-in-out) infinite;
 }
 
 .system-note {
@@ -1328,7 +1347,7 @@ main:not([data-view="chat"]) .composer-section { display: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes blink { to { visibility: hidden; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1337,13 +1356,15 @@ main:not([data-view="chat"]) .composer-section { display: none; }
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-  /* Status must still read without motion: keep the spinner ring, drop the shimmer sweep. */
-  .shimmer { color: var(--text-2); background: none; }
+  /* Status must still read without motion: freeze on the steady state. */
+  .shimmer { animation: none; opacity: 1; }
 }
 
 /* ---------- Narrow screens ---------- */
 
 @media (max-width: 900px) {
+  /* The sidebar becomes a fixed drawer here; the grid track no longer owns it. */
+  .app-layout { display: flex; transition: none; }
   #sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -1352,9 +1373,11 @@ main:not([data-view="chat"]) .composer-section { display: none; }
     transform: translateX(-100%);
     box-shadow: var(--shadow-lg);
     transition: transform var(--dur-slow) var(--ease-out);
+    overflow: visible;
   }
+  #sidebar > * { min-width: 0; }
   #sidebar.open { transform: none; }
-  #sidebar.collapsed { margin-left: 0; }
+  #sidebar.collapsed { width: var(--sidebar-w); border-right-color: var(--border-subtle); }
   .btn-expand-sidebar { display: inline-flex; }
   .main-header { padding: 0 12px; }
   .chat-column { padding: 20px 16px 32px; }

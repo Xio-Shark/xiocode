@@ -50,13 +50,15 @@ function renderSessionList() {
 
 function sessionItem(sess, sharedTitle) {
   const active = sess.id === activeSessionId;
-  const started = sharedTitle ? sessionStartLabel(sess) : "";
+  // One time per row: absolute start only when several sessions share a title,
+  // which is the case it was added for; the tooltip always carries it.
+  const startedAt = sessionStartLabel(sess);
+  const timeLabel = sharedTitle ? startedAt : formatRelativeTime(sess.updated_at || sess.created_at);
   const open = el("button", "session-item-text",
     el("span", "session-title", sessionTitle(sess)),
-    started ? el("span", "session-started", started) : null,
-    active && isRunning ? el("span", "session-live-dot") : el("span", "session-time", formatRelativeTime(sess.updated_at || sess.created_at)));
+    active && isRunning ? el("span", "session-live-dot") : el("span", "session-time", timeLabel));
   open.type = "button";
-  open.title = sess.firstPrompt || sess.first_prompt || "";
+  open.title = [sess.firstPrompt || sess.first_prompt || "", startedAt].filter(Boolean).join(" · ");
   if (active) open.setAttribute("aria-current", "true");
   open.addEventListener("click", () => {
     selectSession(sess.id);
