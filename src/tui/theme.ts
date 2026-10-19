@@ -134,14 +134,14 @@ const MINIMAL: Theme = {
   accent: "#7aa2f7",
   userBar: "#1a1a1a",
   tool: "#f5a623",
-  think: "#555555",
+  think: "#8a8f98",
   explore: "#00c853",
-  error: "#ee0000",
+  error: "#ff6b6b",
   success: "#00c853",
   warn: "#f5a623",
   diffAdd: "#00c853",
-  diffDel: "#ee0000",
-  muted: "#555555",
+  diffDel: "#ff6b6b",
+  muted: "#8a8f98",
   shark: "#ededed",
   sharkEyeBg: "#0a0a0a",
 };
@@ -153,14 +153,14 @@ const NORD: Theme = {
   accent: "#88c0d0",
   userBar: "#3b4252",
   tool: "#ebcb8b",
-  think: "#4c566a",
+  think: "#9aa5b1",
   explore: "#a3be8c",
-  error: "#bf616a",
+  error: "#e08c8c",
   success: "#a3be8c",
   warn: "#ebcb8b",
   diffAdd: "#a3be8c",
-  diffDel: "#bf616a",
-  muted: "#4c566a",
+  diffDel: "#e08c8c",
+  muted: "#9aa5b1",
   shark: "#81a1c1",
   sharkEyeBg: "#2e3440",
 };
@@ -200,6 +200,21 @@ const THEMES: Readonly<Record<ThemeName, Theme>> = {
   minimal: MINIMAL,
   nord: NORD,
   light: LIGHT,
+};
+
+/**
+ * Background each palette is tuned for. The TUI never paints its own
+ * background, so these are the values contrast is measured against — keep them
+ * in sync with the terminal the palette was designed for (nord0 for nord).
+ * `claude` uses ANSI slot names, whose values are the user's terminal's, so it
+ * has no measurable background and is skipped by the contrast test.
+ */
+export const THEME_BACKGROUNDS: Readonly<Record<ThemeName, string>> = {
+  groknight: COLOR_TOKENS.bg.dark,
+  claude: COLOR_TOKENS.bg.dark,
+  minimal: COLOR_TOKENS.bg.dark,
+  nord: "#2e3440",
+  light: COLOR_TOKENS.bg.light,
 };
 
 /** Resolve a named theme; unknown names fall back to the default. */

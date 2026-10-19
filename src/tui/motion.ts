@@ -3,8 +3,8 @@
  *
  * All animated chrome derives its frame from one wall-clock (`animClock` in app.ts),
  * so every spinner on screen stays in phase and one timer drives all motion.
- * Frame cadence is 120ms (~8fps) — well above the 60ms flash-safety floor and
- * cheap for Ink's diff renderer.
+ * Frame cadence is 80ms (12.5fps) — braille frames step visibly at anything
+ * slower, and it is still cheap for Ink's diff renderer.
  */
 
 /** Braille spinner — renders on every modern terminal, single cell wide. */
@@ -13,7 +13,7 @@ export const SPINNER_FRAMES: readonly string[] = [
 ];
 
 /** Spinner frame period; also the busy tick interval of the animation clock. */
-export const SPINNER_INTERVAL_MS = 120;
+export const SPINNER_INTERVAL_MS = 80;
 
 /** Reduced-motion tick: elapsed-seconds labels still update, spinners freeze. */
 export const REDUCED_TICK_MS = 1_000;

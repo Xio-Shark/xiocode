@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { inlinePage } from "../web/assemble-page.ts";
-import { contrastRatio, hexToRgb, resolveTheme } from "../tui/theme.ts";
+import { contrastRatio, hexToRgb, resolveTheme, THEME_BACKGROUNDS, THEME_NAMES } from "../tui/theme.ts";
 import { COLOR_TOKENS, CSS_VARIABLES, cssTokenDeclarations, type ColorToken } from "./tokens.ts";
 
 const FOREGROUND = (Object.keys(COLOR_TOKENS) as ColorToken[]).filter((token) => token !== "bg");
@@ -52,5 +52,23 @@ describe("design tokens", () => {
     expect(page).not.toContain("@design-tokens");
     expect(page).toContain(`${CSS_VARIABLES.accent}: light-dark(${COLOR_TOKENS.accent.light}, ${COLOR_TOKENS.accent.dark});`);
     expect(cssTokenDeclarations().split("\n")).toHaveLength(Object.keys(COLOR_TOKENS).length);
+  });
+
+  // The brand palettes are covered by the token checks above; alternates used to
+  // escape them, which let `nord` (1.69:1 muted) and `minimal` (2.53:1) ship.
+  const TEXT_SLOTS = ["brand", "accent", "tool", "think", "explore", "error", "success", "warn", "diffAdd", "diffDel", "muted"] as const;
+  const MEASURABLE_THEMES = THEME_NAMES.filter((name) => name !== "claude");
+
+  it.each(MEASURABLE_THEMES)("theme %s keeps every text slot ≥ 4.5:1 on its background", (name) => {
+    const theme = resolveTheme(name);
+    const bg = THEME_BACKGROUNDS[name];
+    for (const slot of TEXT_SLOTS) {
+      const color = theme[slot];
+      expect(contrastRatio(color, bg), `${name} ${slot} ${color} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("only the ANSI-named claude theme is exempt from the contrast sweep", () => {
+    expect(MEASURABLE_THEMES).toEqual(["groknight", "minimal", "nord", "light"]);
   });
 });
