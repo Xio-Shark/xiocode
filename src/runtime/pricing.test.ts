@@ -10,6 +10,8 @@ import {
   resolveModelPrice,
 } from "./pricing.ts";
 
+import { slimPriceCatalog } from "./pricing-catalog.ts";
+
 import type { TokenUsage } from "./types.ts";
 
 function usage(input: number, output: number, cache = 0): TokenUsage {
@@ -24,6 +26,33 @@ describe("resolveModelPrice", () => {
 
   it("returns undefined for unknown models rather than a zero price", () => {
     expect(resolveModelPrice("some-private-gateway-model")).toBeUndefined();
+  });
+
+  it("prefers the live catalog over the built-in table, and overrides over both", () => {
+    const catalog = slimPriceCatalog({
+      commandcode: {
+        api: "https://api.commandcode.ai/provider/v1",
+        models: { "deepseek/deepseek-v4.1-flash-fast": { cost: { input: 0.16, output: 0.58 } } },
+      },
+      deepseek: {
+        api: "https://api.deepseek.com",
+        models: { "deepseek-flash": { cost: { input: 0.15, output: 0.6 } } },
+      },
+    }, 1);
+    const gateway = {
+      provider: "command",
+      baseUrl: "https://api.commandcode.ai/provider/v1",
+      catalog,
+    };
+    expect(resolveModelPrice("deepseek/deepseek-v4.1-flash-fast", gateway)?.outputPerMTok).toBe(0.58);
+    // The catalog row wins over the built-in DeepSeek family row for an exact id.
+    expect(resolveModelPrice("deepseek-flash", { catalog })?.inputPerMTok).toBe(0.15);
+    expect(resolveModelPrice("deepseek-flash", {
+      catalog,
+      overrides: { "deepseek-flash": { inputPerMTok: 3, outputPerMTok: 4 } },
+    })?.inputPerMTok).toBe(3);
+    // No catalog, no exact match: the built-in substring table still answers.
+    expect(resolveModelPrice("claude-sonnet-4-20250514", { catalog })?.outputPerMTok).toBe(15);
   });
 
   it("prefers overrides, and provider-qualified keys over bare model keys", () => {

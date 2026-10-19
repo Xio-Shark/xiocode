@@ -421,7 +421,12 @@ export async function prepareSession(options: SessionOptions): Promise<PreparedS
   host.on("provider_response", async (payload) => {
     try {
       const usage = decodeProviderUsageEvent(payload);
-      costMeter.add(usage, currentModel.id, currentModel.provider);
+      costMeter.add(
+        usage,
+        currentModel.id,
+        currentModel.provider,
+        options.runtimeConfig.providers[currentModel.provider]?.baseUrl,
+      );
       const used = Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
       const modelCfg = registration.models.find((entry) => entry.id === currentModel.id)
         ?? registration.models[0];

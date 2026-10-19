@@ -2,6 +2,7 @@ import path from "node:path";
 import { lstat } from "node:fs/promises";
 
 import { WorktreeSandbox } from "../../extensions/xio-sandbox/src/worktree-sandbox.ts";
+import { refreshPriceCatalog } from "../runtime/pricing-catalog.ts";
 import { runSession } from "../runtime/session.ts";
 import {
   migrateSensitiveLocalState,
@@ -142,6 +143,8 @@ export async function launchStoredSession(input: Readonly<{
   allowDirty?: boolean;
 }>): Promise<LaunchPlan> {
   const { recovered } = input;
+  // Prices are reference data for the cost readout; never block the first frame on them.
+  void refreshPriceCatalog({ env: input.env });
   const launch = await prepareLaunch(input.cwd, input.env, {
     runtimeExtensionEnabled: input.runtimeExtensionEnabled,
     allowDirty: input.allowDirty,

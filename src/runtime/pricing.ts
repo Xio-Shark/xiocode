@@ -1,3 +1,6 @@
+import { catalogPrice, getPriceCatalog } from "./pricing-catalog.ts";
+
+import type { PriceCatalog } from "./pricing-catalog.ts";
 import type { TokenUsage } from "./types.ts";
 
 /**
@@ -43,13 +46,24 @@ const BUILTIN_PRICES: readonly (readonly [pattern: string, price: ModelPrice])[]
 ];
 
 /**
- * Resolve a model's price. Overrides win over built-ins; override keys match
- * as exact model id or `provider/model`. Built-ins match by substring so dated
- * ids (`claude-sonnet-4-20250514`) hit their family row.
+ * Resolve a model's price.
+ *
+ * Precedence: user overrides → the live models.dev catalog → built-in rows.
+ * Override keys match as exact model id or `provider/model`; catalog matches are
+ * exact (provider name, base-URL host, or a model id every provider agrees on);
+ * built-ins match by substring so dated ids (`claude-sonnet-4-20250514`) hit
+ * their family row.
  */
 export function resolveModelPrice(
   model: string,
-  options: Readonly<{ provider?: string; overrides?: PricingOverrides }> = {},
+  options: Readonly<{
+    provider?: string;
+    overrides?: PricingOverrides;
+    /** Provider base URL, so a gateway is recognised under another catalog name. */
+    baseUrl?: string;
+    /** Defaults to the catalog loaded by refreshPriceCatalog. */
+    catalog?: PriceCatalog;
+  }> = {},
 ): ModelPrice | undefined {
   const overrides = options.overrides;
   if (overrides) {
@@ -58,6 +72,12 @@ export function resolveModelPrice(
     const exact = overrides[model];
     if (exact) return exact;
   }
+  const listed = catalogPrice(options.catalog ?? getPriceCatalog(), {
+    provider: options.provider,
+    model,
+    baseUrl: options.baseUrl,
+  });
+  if (listed) return listed.price;
   const id = model.toLowerCase();
   for (const [pattern, price] of BUILTIN_PRICES) {
     if (id.includes(pattern)) return price;
@@ -134,7 +154,7 @@ export type SessionCostSummary = Readonly<{
 
 export type SessionCostMeter = Readonly<{
   /** Fold one provider response into the running total. */
-  add: (usage: TokenUsage, model: string, provider?: string) => void;
+  add: (usage: TokenUsage, model: string, provider?: string, baseUrl?: string) => void;
   summary: () => SessionCostSummary;
 }>;
 
@@ -148,9 +168,9 @@ export function createSessionCostMeter(overrides?: PricingOverrides): SessionCos
   let costUsd: number | null = null;
   let hasUnpriced = false;
   return {
-    add(usage, model, provider) {
+    add(usage, model, provider, baseUrl) {
       totalTokens += Math.max(0, usage.inputTokens ?? 0) + Math.max(0, usage.outputTokens ?? 0);
-      const price = resolveModelPrice(model, { provider, overrides });
+      const price = resolveModelPrice(model, { provider, overrides, baseUrl });
       const cost = price ? estimateUsageCostUsd(usage, price) : null;
       if (cost === null) {
         hasUnpriced = true;
