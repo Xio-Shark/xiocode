@@ -10,6 +10,8 @@ const rec = (sec: number, event: string, extra: Partial<TimelineRecord> = {}): T
   ({ at: t(sec), event, run: "r", seq: seq++, ...extra });
 const usage = (input: number, output: number, cacheRead?: number) =>
   ({ inputTokens: input, outputTokens: output, cacheTokens: null, reasoningTokens: null, ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}) });
+const openAiUsage = (input: number, output: number, cached: number) =>
+  ({ inputTokens: input, outputTokens: output, cacheTokens: cached, reasoningTokens: null });
 
 const messages: ChatMessage[] = [
   { role: "system", content: "sys" },
@@ -39,6 +41,16 @@ describe("alignMessageTimes", () => {
     expect(times.tools.get("c1")).toEqual({ start: t(3), end: t(7) });
     expect(times.activeMs).toBe(10_000);
     expect(times.usage).toEqual({ inputTokens: 220, outputTokens: 15, cacheReadTokens: 40, providerCalls: 2 });
+  });
+
+  it("counts the cached prompt tokens OpenAI-style gateways report as cacheTokens", () => {
+    const times = alignMessageTimes(messages, [
+      rec(0, "turn.start", { promptHash: hashPrompt("fix it") }),
+      rec(1, "provider.request"),
+      rec(3, "provider.done", { usage: openAiUsage(100, 10, 64) }),
+      rec(10, "turn.end", { outcome: "success" }),
+    ]);
+    expect(times.usage).toEqual({ inputTokens: 100, outputTokens: 10, cacheReadTokens: 64, providerCalls: 1 });
   });
 
   it("leaves a turn untimed when no turn.start carries its prompt", () => {

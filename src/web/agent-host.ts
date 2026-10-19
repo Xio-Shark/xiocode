@@ -22,6 +22,7 @@ import type { InteractiveIO } from "../runtime/interactive-io.ts";
 import type { PermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
 import type { SessionUiSink } from "../runtime/session-ui.ts";
+import type { ModelInfo, ThinkingLevel } from "../runtime/types.ts";
 import { formatSessionCost, type SessionCostSummary } from "../runtime/pricing.ts";
 
 export type WebEvent = Readonly<{ event: string; payload: Readonly<Record<string, unknown>> }>;
@@ -59,6 +60,9 @@ export class WebAgentHost {
   #approvalSeq = 0;
   /** Chosen in the console; applied to the live session and to the next one opened. */
   #permissionMode: PermissionMode | undefined;
+  /** Last model/effort picked in the console; the live session wins while one is open. */
+  #model: ModelInfo | undefined;
+  #thinkingLevel: ThinkingLevel | undefined;
 
   constructor(options: AgentHostOptions) {
     this.#options = options;
@@ -66,6 +70,27 @@ export class WebAgentHost {
 
   get activeSessionId(): string | undefined {
     return this.#active?.sessionId;
+  }
+
+  get currentModel(): ModelInfo | undefined {
+    return this.#active?.prepared.getModel() ?? this.#model;
+  }
+
+  get currentThinkingLevel(): ThinkingLevel | undefined {
+    return this.#active?.prepared.getThinkingLevel() ?? this.#thinkingLevel;
+  }
+
+  /**
+   * Switch model/effort mid-session. `setModel` rebuilds the client and clamps
+   * the effort to what the new model maps, so the explicit pick is applied after.
+   */
+  async applyModel(model: ModelInfo, thinkingLevel?: ThinkingLevel): Promise<void> {
+    this.#model = model;
+    if (thinkingLevel) this.#thinkingLevel = thinkingLevel;
+    const active = this.#active;
+    if (!active) return;
+    await active.prepared.setModel(model);
+    if (thinkingLevel) active.prepared.host.setThinkingLevel(thinkingLevel);
   }
 
   get permissionMode(): PermissionMode | undefined {

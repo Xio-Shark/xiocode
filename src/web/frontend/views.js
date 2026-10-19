@@ -243,10 +243,18 @@ function renderMetrics() {
   setMetric("val-cache", cacheKnown ? Math.round((usageTotals.cacheRead / usageTotals.input) * 100) + "%" : null,
     cacheKnown ? t("web.cacheRead", { n: formatNumber(usageTotals.cacheRead) }) : t("web.noCacheReport"));
   const priced = usageTotals.costLabel && usageTotals.costLabel !== t("web.unpriced") && usageTotals.costLabel !== "~unknown";
-  setMetric("val-cost", priced ? usageTotals.costLabel : null, priced ? t("web.pricedFoot") : t("web.costFoot"));
+  // A known rate is worth showing before the first turn: the card then answers
+  // "what does this model cost" instead of only "nothing spent yet".
+  const costFoot = priced
+    ? t("web.pricedFoot")
+    : currentPriceLabel ? t("web.priceKnownFoot", { price: currentPriceLabel }) : t("web.costFoot");
+  setMetric("val-cost", priced ? usageTotals.costLabel : null, costFoot);
+  const priceNote = pricingInfo
+    ? t("web.costNoteLive", { age: formatRelativeTime(new Date(pricingInfo.fetchedAt).toISOString()) })
+    : t("web.costNote");
   $("metrics-note-text").textContent = (usageTotals.persisted
     ? t("web.usageTimeline")
     : t("web.usageNoTimeline"))
-    + t("web.costNote");
+    + priceNote;
   setMetric("val-turns", String(usageTotals.toolCalls), usageTotals.toolErrors ? t("web.ofWhichFailed", { n: usageTotals.toolErrors }) : t("web.sessionTotal"));
 }

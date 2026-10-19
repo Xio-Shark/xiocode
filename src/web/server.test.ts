@@ -5,10 +5,12 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import http from "node:http";
+import net from "node:net";
 
 import { displayPath, startWebServer, withMcpStates, type WebServerHandle } from "./server.ts";
 import { parseWebCliArgs } from "../cli/web-cli.ts";
 import { SessionStore } from "../runtime/session-store.ts";
+import { slimPriceCatalog, setPriceCatalog } from "../runtime/pricing-catalog.ts";
 import { THINKING_LEVELS } from "../runtime/thinking.ts";
 import { PROVIDER_PRESETS } from "../cli/provider-catalog.ts";
 
@@ -41,18 +43,62 @@ describe("Web Console & Server", () => {
   }
 
   it("parses CLI args correctly", () => {
-    expect(parseWebCliArgs([])).toEqual({ port: undefined, host: undefined, open: true });
-    expect(parseWebCliArgs(["--no-open"])).toEqual({ port: undefined, host: undefined, open: false });
+    expect(parseWebCliArgs([])).toEqual({ port: undefined, host: undefined, open: true, strictPort: false });
+    expect(parseWebCliArgs(["--no-open"])).toEqual({ port: undefined, host: undefined, open: false, strictPort: false });
     expect(parseWebCliArgs(["--port", "4000", "--host", "0.0.0.0"])).toEqual({
       port: 4000,
       host: "0.0.0.0",
       open: true,
+      strictPort: false,
     });
     expect(parseWebCliArgs(["--port=5000", "--host=localhost", "--no-open"])).toEqual({
       port: 5000,
       host: "localhost",
       open: false,
+      strictPort: false,
     });
+    expect(parseWebCliArgs(["--port", "0", "--strict-port"])).toEqual({
+      port: 0,
+      host: undefined,
+      open: true,
+      strictPort: true,
+    });
+  });
+
+  it("falls back to the next free port only when asked, and reports the requested one", async () => {
+    const { store, project } = await createTempStore();
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve));
+    const takenPort = (blocker.address() as net.AddressInfo).port;
+
+    try {
+      const handle = await startWebServer({
+        port: takenPort,
+        portAttempts: 3,
+        host: "127.0.0.1",
+        store,
+        cwd: project,
+        agentHost: fakeAgentHost().host,
+      });
+      openServers.push(handle);
+
+      expect(handle.requestedPort).toBe(takenPort);
+      expect(handle.port).toBeGreaterThan(takenPort);
+      expect(handle.url).toBe(`http://127.0.0.1:${handle.port}`);
+
+      await expect(
+        startWebServer({
+          port: takenPort,
+          portAttempts: 1,
+          host: "127.0.0.1",
+          store,
+          cwd: project,
+          agentHost: fakeAgentHost().host,
+        }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
   });
 
   function fakeAgentHost() {
@@ -69,6 +115,11 @@ describe("Web Console & Server", () => {
         permissionMode: undefined,
         setPermissionMode: (mode: "auto" | "strict" | "full") => { calls.push(`mode:${mode}`); return mode; },
         getCostSummary: () => undefined,
+        currentModel: undefined as { provider: string; id: string; name: string; api: string } | undefined,
+        currentThinkingLevel: undefined as import("../runtime/types.ts").ThinkingLevel | undefined,
+        applyModel: async (model: { provider: string; id: string }, level?: string) => {
+          calls.push(`model:${model.provider}/${model.id}${level ? `:${level}` : ""}`);
+        },
       },
     };
   }
@@ -331,6 +382,99 @@ describe("Web Console & Server", () => {
     const block = /\[providers\.anthropic\][\s\S]*?(?=\n\[|$)/.exec(config)?.[0] ?? "";
     expect(block).toContain('kind = "anthropic"');
     expect(block).toContain('api_key_env = "ANTHROPIC_API_KEY"');
+  });
+
+  it("offers the configured providers and switches provider, model and effort", async () => {
+    const { store, project } = await createTempStore();
+    const agent = fakeAgentHost();
+    const handle = await startWebServer({ port: 0, host: "127.0.0.1", store, cwd: project, agentHost: agent.host });
+    openServers.push(handle);
+    const auth = { authorization: `Bearer ${handle.token}` };
+    const post = (body: unknown) => globalThis.fetch(`${handle.url}/api/model`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const listed = await (await globalThis.fetch(`${handle.url}/api/model`, { headers: auth })).json();
+    expect(listed.thinkingLevels).toEqual([...THINKING_LEVELS]);
+    expect(listed.providers.length).toBeGreaterThan(0);
+    expect(typeof listed.current.model).toBe("string");
+    expect(listed.current.thinkingLevel).toBeTruthy();
+    const target = listed.providers[0];
+
+    const save = await post({ provider: target.name, model: "test-model-x", thinkingLevel: "high" });
+    expect(save.status).toBe(200);
+    expect((await save.json()).current).toEqual({ provider: target.name, model: "test-model-x", thinkingLevel: "high" });
+    expect(agent.calls).toContain(`model:${target.name}/test-model-x:high`);
+
+    const config = await readFile(process.env.XIO_CONFIG ?? path.join(os.homedir(), ".xiocode", "config.toml"), "utf8");
+    expect(config).toContain(`default_provider = "${target.name}"`);
+    expect(config).toContain('default_model = "test-model-x"');
+    expect(config).toContain('default_thinking_level = "high"');
+
+    expect((await post({ provider: "nope", model: "x" })).status).toBe(400);
+    expect((await post({ provider: target.name, model: "  " })).status).toBe(400);
+    expect((await post({ provider: target.name, model: "x", thinkingLevel: "extreme" })).status).toBe(400);
+
+    // A tab still holding the previous bundle sends a retired name; it lands on max.
+    const legacy = await post({ provider: target.name, model: "test-model-x", thinkingLevel: "ultra" });
+    expect(legacy.status).toBe(200);
+    expect((await legacy.json()).current.thinkingLevel).toBe("max");
+  });
+
+  it("reports the running model's unit price and the catalog freshness", async () => {
+    const { store, project } = await createTempStore();
+    const agent = fakeAgentHost();
+    agent.host.currentModel = { provider: "local", id: "stub", name: "stub", api: "openai" };
+    setPriceCatalog(slimPriceCatalog({
+      local: { models: { stub: { cost: { input: 1, output: 2 } } } },
+    }, Date.now()));
+    const handle = await startWebServer({ port: 0, host: "127.0.0.1", store, cwd: project, agentHost: agent.host });
+    openServers.push(handle);
+    const auth = { authorization: `Bearer ${handle.token}` };
+    try {
+      const listed = await (await globalThis.fetch(`${handle.url}/api/model`, { headers: auth })).json();
+      expect(listed.price).toBe("$1.00 / $2.00 / 1M");
+      const status = await (await globalThis.fetch(`${handle.url}/api/status`, { headers: auth })).json();
+      expect(status.pricing).toMatchObject({ source: "https://models.dev/api.json", providers: 1, models: 1 });
+    } finally {
+      setPriceCatalog(undefined);
+    }
+  });
+
+  it("archives and restores a conversation without touching its messages", async () => {
+    const { store, project } = await createTempStore();
+    const handle = await startWebServer({ port: 0, host: "127.0.0.1", store, cwd: project, agentHost: fakeAgentHost().host });
+    openServers.push(handle);
+    const auth = { authorization: `Bearer ${handle.token}` };
+    const id = store.createId();
+    await store.save({ id, model: { provider: "local", id: "stub" }, cwd: project, mainRoot: project, messages: [{ role: "user", content: "archive me" }] });
+    const archive = (archived: boolean) => globalThis.fetch(`${handle.url}/api/sessions/${id}/archive`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ archived }),
+    });
+
+    const archived = await archive(true);
+    expect(archived.status).toBe(200);
+    const archivedAt = (await archived.json()).archived_at as string;
+    expect(archivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const listed = await (await globalThis.fetch(`${handle.url}/api/sessions`, { headers: auth })).json();
+    expect(listed.find((s: { id: string }) => s.id === id)?.archived_at).toBe(archivedAt);
+    expect((await store.load(id)).messages[0]?.content).toBe("archive me");
+
+    const restored = await archive(false);
+    expect(restored.status).toBe(200);
+    expect((await restored.json()).archived_at).toBeNull();
+    expect((await store.load(id)).metadata).not.toHaveProperty("archived_at");
+
+    expect((await globalThis.fetch(`${handle.url}/api/sessions/missing/archive`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    })).status).toBe(404);
   });
 
   it("reports a failing git diff as an error, not as an empty diff", async () => {

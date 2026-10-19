@@ -21,6 +21,8 @@
     <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.7-7 10-7 10 7 10 7-3.7 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
@@ -46,6 +48,7 @@
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21s7-3.5 7-9.5V5.5L12 3 5 5.5v6c0 6 7 9.5 7 9.5z"/></symbol>
     <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 10h4v4h-4zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
     <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M8 21h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8"/><path d="M8 3a2 2 0 0 0-2 2v14a2 2 0 1 1-4 0v-2h4M12 8h4M12 12h4"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/></symbol>
     <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></symbol>
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
@@ -82,6 +85,12 @@
 
       <nav id="session-list" class="session-list" aria-label="{{t:web.sessionList}}"></nav>
 
+      <button id="archive-toggle" class="archive-toggle" type="button" aria-pressed="false" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>
+        <span id="archive-toggle-text">{{t:web.archived}}</span>
+        <span id="archive-count" class="archive-count">0</span>
+      </button>
+
       <div class="sidebar-footer">
         <button id="btn-open-settings" class="sidebar-footer-btn" type="button">
           <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
@@ -104,36 +113,47 @@
               <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
             </button>
             <h1 id="current-session-title" class="header-title">{{t:web.newSession}}</h1>
-            <span id="current-mode-badge" class="model-chip" title="{{t:web.model}}"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg><span id="current-model-text">—</span></span>
           </div>
 
+          <nav class="nav-tabs" role="tablist" aria-label="{{t:web.views}}">
+            <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>{{t:web.tabChat}}</button>
+            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>{{t:web.tabTrajectory}}</button>
+            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.tabDiff}}</button>
+            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>{{t:web.tabUsage}}</button>
+            <span class="nav-tab-indicator" aria-hidden="true"></span>
+          </nav>
           <div class="header-right">
+            <div class="model-picker">
+              <button id="model-trigger" class="model-chip model-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" title="{{t:web.modelMenuTitle}}">
+                <svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>
+                <span id="current-model-text">—</span>
+                <span id="current-effort-text" class="model-effort"></span>
+                <svg class="icon model-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+              </button>
+              <div id="model-menu" class="model-menu" role="dialog" aria-label="{{t:web.modelMenuTitle}}" hidden>
+                <div class="model-menu-group">
+                  <div class="model-menu-label">{{t:web.channel}}</div>
+                  <div id="model-provider-list" class="model-options" role="listbox" aria-label="{{t:web.channel}}"></div>
+                </div>
+                <div class="model-menu-group">
+                  <div class="model-menu-label">{{t:web.model}}</div>
+                  <div id="model-model-list" class="model-options model-models" role="listbox" aria-label="{{t:web.model}}"></div>
+                </div>
+                <div class="model-menu-group">
+                  <div class="model-menu-label">{{t:web.effort}}</div>
+                  <div id="model-effort-list" class="model-options model-fixed" role="radiogroup" aria-label="{{t:web.effort}}"></div>
+                </div>
+              </div>
+            </div>
             <div id="status-pill" class="status-pill" role="status" aria-live="polite">
               <span class="status-dot" aria-hidden="true"></span>
               <span id="status-text">{{t:web.ready}}</span>
             </div>
-            <label class="perm-select-wrap" title="{{t:web.permTitle}}">
-              <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
-              <span class="visually-hidden">{{t:web.permMode}}</span>
-              <select id="permission-select" class="perm-select">
-                <option value="auto">{{t:web.modeAuto}}</option>
-                <option value="strict">{{t:web.modeStrict}}</option>
-                <option value="full">{{t:web.modeFull}}</option>
-              </select>
-            </label>
             <button id="btn-export-log" class="icon-btn" type="button" title="{{t:web.exportTitle}}" aria-label="{{t:web.exportLabel}}">
               <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
             </button>
           </div>
         </div>
-
-        <nav class="nav-tabs" role="tablist" aria-label="{{t:web.views}}">
-          <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>{{t:web.tabChat}}</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>{{t:web.tabTrajectory}}</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.tabDiff}}</button>
-          <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>{{t:web.tabUsage}}</button>
-          <span class="nav-tab-indicator" aria-hidden="true"></span>
-        </nav>
       </header>
 
       <div id="connection-banner" class="connection-banner" role="alert" hidden>
@@ -226,20 +246,37 @@
       </div>
 
       <div class="composer-section">
+        <div id="welcome-slot" class="welcome-slot" hidden></div>
         <div class="composer-card">
           <label class="visually-hidden" for="composer-input">{{t:web.composerLabel}}</label>
           <textarea id="composer-input" class="composer-input" rows="1" placeholder="{{t:web.composerPlaceholder}}"></textarea>
           <div class="composer-bar">
-            <div class="chip-list">
-              <button type="button" class="chip" data-prompt="{{t:web.chipTestPrompt}}"><svg class="icon" aria-hidden="true"><use href="#i-test"/></svg>{{t:web.chipTest}}</button>
-              <button type="button" class="chip" data-prompt="{{t:web.chipDiffPrompt}}"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.chipDiff}}</button>
+            <div class="perm-menu" id="perm-menu">
+              <button id="perm-trigger" class="perm-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="{{t:web.permTitle}}">
+                <svg class="icon" aria-hidden="true"><use id="perm-icon" href="#i-shield"/></svg>
+                <span id="perm-label">{{t:web.modeAuto}}</span>
+                <svg class="icon perm-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+              </button>
+              <div id="perm-list" class="perm-list" role="listbox" aria-label="{{t:web.permMode}}" hidden>
+                <button class="perm-option" type="button" role="option" data-perm-choice="auto" aria-selected="true">
+                  <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>{{t:web.modeAuto}}</span>
+                  <svg class="icon perm-check" aria-hidden="true"><use href="#i-check"/></svg>
+                </button>
+                <button class="perm-option" type="button" role="option" data-perm-choice="strict" aria-selected="false">
+                  <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg><span>{{t:web.modeStrict}}</span>
+                  <svg class="icon perm-check" aria-hidden="true"><use href="#i-check"/></svg>
+                </button>
+                <button class="perm-option" type="button" role="option" data-perm-choice="full" aria-selected="false">
+                  <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg><span>{{t:web.modeFull}}</span>
+                  <svg class="icon perm-check" aria-hidden="true"><use href="#i-check"/></svg>
+                </button>
+              </div>
             </div>
             <div class="composer-actions">
-              <span class="key-tip" aria-hidden="true"><kbd>↵</kbd> {{t:web.send}} <kbd>⇧↵</kbd> {{t:web.newline}}</span>
               <button id="btn-abort" class="btn-stop" type="button" aria-label="{{t:web.stop}}" title="{{t:web.stopTitle}}">
                 <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
               </button>
-              <button id="btn-send" class="btn-send" type="button" aria-label="{{t:web.send}}" disabled>
+              <button id="btn-send" class="btn-send" type="button" aria-label="{{t:web.send}}" title="↵ {{t:web.send}} · ⇧↵ {{t:web.newline}}" disabled>
                 <svg class="icon" aria-hidden="true"><use href="#i-arrow-up"/></svg>
               </button>
             </div>

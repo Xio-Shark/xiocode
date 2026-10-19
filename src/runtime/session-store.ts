@@ -79,6 +79,8 @@ const metadataV1Schema = z.object({
   worktree_path: z.string().optional(),
   created_at: timestampSchema,
   updated_at: timestampSchema,
+  /** Set when the user archived the conversation; absent means active. */
+  archived_at: timestampSchema.optional(),
 });
 
 const metadataV2Schema = z.object({
@@ -93,6 +95,8 @@ const metadataV2Schema = z.object({
   updated_at: timestampSchema,
   workspace: workspaceSchema,
   execution: executionSchema,
+  /** Set when the user archived the conversation; absent means active. */
+  archived_at: timestampSchema.optional(),
 });
 
 const stateV2Schema = metadataV2Schema.extend({
@@ -292,6 +296,55 @@ export class SessionStore {
       ? sessions.find((item) => path.resolve(item.main_root) === path.resolve(mainRoot))
       : sessions[0];
     return metadata ? this.load(metadata.id) : undefined;
+  }
+
+  /**
+   * Flip the archive flag in place. Archiving touches metadata only — messages,
+   * execution state and the journal stay as they are — and `updated_at` is left
+   * alone so restoring does not reorder the conversation list.
+   */
+  async setArchived(id: string, archivedAt: string | undefined): Promise<SessionMetadata> {
+    assertSessionId(id);
+    const directory = this.#sessionDirectory(id);
+    const stateFile = path.join(directory, STATE_FILE);
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(await readFile(stateFile, "utf8")) as Record<string, unknown>;
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") {
+        return this.#setArchivedV1(id, directory, archivedAt);
+      }
+      throw new Error(`failed to load session ${id}: ${errorMessage(error)}`);
+    }
+    const revision = typeof raw.revision === "number" ? raw.revision : 1;
+    const next: Record<string, unknown> = { ...raw, revision: revision + 1 };
+    if (archivedAt === undefined) delete next.archived_at;
+    else next.archived_at = archivedAt;
+    const state = stateV2Schema.parse(next);
+    await writeJsonAtomicDurable(stateFile, state);
+    this.#live.delete(id);
+    return (await this.#loadVersioned(id)).metadata;
+  }
+
+  async #setArchivedV1(
+    id: string,
+    directory: string,
+    archivedAt: string | undefined,
+  ): Promise<SessionMetadata> {
+    const metadataFile = path.join(directory, "metadata.json");
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(await readFile(metadataFile, "utf8")) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`failed to load session ${id}: ${errorMessage(error)}`);
+    }
+    const next: Record<string, unknown> = { ...raw };
+    if (archivedAt === undefined) delete next.archived_at;
+    else next.archived_at = archivedAt;
+    const metadata = metadataV1Schema.parse(next);
+    await writeJsonAtomicDurable(metadataFile, metadata);
+    this.#live.delete(id);
+    return metadata;
   }
 
   /**

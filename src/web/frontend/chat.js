@@ -50,29 +50,26 @@ function appendToColumn(node) {
   followIfStuck();
 }
 
+/**
+ * Welcome state: greeting + composer read as one centred group. The prompt ideas
+ * sit under the composer as quiet chips, not as a wall of cards.
+ */
 function renderHero() {
-  const grid = el("div", "starter-grid");
-  STARTERS.forEach(s => {
-    const b = el("button", "starter-item",
-      el("span", "starter-icon", xioIcon(s.icon)),
-      el("span", "starter-title", s.title),
-      el("span", "starter-desc", s.desc));
-    b.type = "button";
-    b.dataset.prompt = s.prompt;
-    grid.appendChild(b);
-  });
-  const hero = el("div", "hero-state",
-    el("div", "hero-mark", xioIcon("fin")),
-    el("h2", "hero-title", t("web.heroTitle")),
-    el("p", "hero-subtitle", t("web.heroSubtitle")),
-    workspaceName ? el("span", "hero-workspace", xioIcon("folder"), workspaceName) : null,
-    grid);
-  hero.id = "hero-state";
-  chatFlowContainer.appendChild(hero);
+  const slot = $("welcome-slot");
+  if (!slot) return;
+  // One line of greeting and nothing else: the composer is the call to action.
+  slot.replaceChildren(el("h2", "hero-title", t("web.heroTitle")));
+  slot.hidden = false;
+  document.body.classList.add("is-empty");
 }
 
 function removeHero() {
-  $("hero-state")?.remove();
+  const slot = $("welcome-slot");
+  if (slot) {
+    slot.replaceChildren();
+    slot.hidden = true;
+  }
+  document.body.classList.remove("is-empty");
 }
 
 function messageRow(role) {

@@ -112,7 +112,7 @@ def open_page(browser, url, **context_args):
     page.goto(url, wait_until="domcontentloaded")
     page.wait_for_selector(".nav-tabs", timeout=5000)
     try:
-        page.wait_for_selector(".message-row, .hero-state", timeout=5000)
+        page.wait_for_selector(".message-row, #welcome-slot:not([hidden])", timeout=5000)
     except Exception:
         raise RuntimeError("the transcript never rendered; page errors:\n  " + "\n  ".join(errors or ["(none)"]))
     page.wait_for_timeout(400)
@@ -168,6 +168,10 @@ def main():
 
             page, errors = open_page(browser, launch_url, color_scheme="light", **desktop)
             page_errors.extend(errors)
+            # A reload now lands on the home screen; open the fixture conversation explicitly.
+            page.click(".session-item-text")
+            page.wait_for_selector(".message-row", timeout=5000)
+            page.wait_for_timeout(300)
             shot(page, "01-chat-light")
             page.click('[data-view="diff"]')
             page.wait_for_timeout(400)
@@ -203,6 +207,9 @@ def main():
 
             dark, errors = open_page(browser, launch_url, color_scheme="dark", **desktop)
             page_errors.extend(errors)
+            dark.click(".session-item-text")
+            dark.wait_for_selector(".message-row", timeout=5000)
+            dark.wait_for_timeout(300)
             shot(dark, "11-chat-dark")
             dark.click('[data-view="diff"]')
             dark.wait_for_timeout(400)

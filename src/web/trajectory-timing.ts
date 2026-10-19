@@ -163,7 +163,13 @@ function usage(records: readonly TimelineRecord[]): TimelineUsage | null {
   for (const r of done) {
     input += r.usage!.inputTokens ?? 0;
     output += r.usage!.outputTokens ?? 0;
-    if (typeof r.usage!.cacheReadTokens === "number") cache = (cache ?? 0) + r.usage!.cacheReadTokens;
+    // Anthropic splits cache read from creation; OpenAI-style gateways report the
+    // cached prompt tokens under `cacheTokens` only, and this is the copy the
+    // session page reloads, so both names have to count.
+    const cached = typeof r.usage!.cacheReadTokens === "number"
+      ? r.usage!.cacheReadTokens
+      : typeof r.usage!.cacheTokens === "number" ? r.usage!.cacheTokens : undefined;
+    if (cached !== undefined) cache = (cache ?? 0) + cached;
   }
   return { inputTokens: input, outputTokens: output, cacheReadTokens: cache, providerCalls: done.length };
 }

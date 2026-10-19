@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { XIO_VERSION } from "../cli/version.ts";
 import { createSessionStore } from "../cli/session-resume.ts";
 import { ensureConfigFile } from "../cli/ensure-config.ts";
-import { parseXioConfig } from "../cli/config-parser.ts";
+import { parseXioConfig, type XioConfig } from "../cli/config-parser.ts";
 import { upsertSectionValue, upsertProviderBlock } from "../cli/config-mutate.ts";
 import { loadCredentials, saveProviderCredential } from "../cli/credentials.ts";
 import { writePrivateFileAtomic } from "../runtime/private-fs.ts";
@@ -24,10 +24,11 @@ import { toHygieneMcp } from "../cli/xio-extension.ts";
 import { parsePermissionMode } from "../runtime/permission-mode.ts";
 import type { SessionStore, StoredSession } from "../runtime/session-store.ts";
 import type { RuntimeEventV1 } from "../runtime/events/types.ts";
-import { formatSessionCost } from "../runtime/pricing.ts";
-import { THINKING_LEVELS } from "../runtime/thinking.ts";
+import { formatModelPrice, formatSessionCost, resolveModelPrice } from "../runtime/pricing.ts";
+import { priceCatalogSummary } from "../runtime/pricing-catalog.ts";
+import { parseThinkingLevel, THINKING_LEVELS } from "../runtime/thinking.ts";
 import { PROVIDER_PRESETS, findProviderPreset } from "../cli/provider-catalog.ts";
-import { providerRegistration } from "../runtime/provider-registry.ts";
+import { providerApi, providerRegistration } from "../runtime/provider-registry.ts";
 import { resolveModelApi, wireApiEndpoint } from "../runtime/providers/wire-api.ts";
 import type { ProviderRegistration } from "../runtime/types.ts";
 
@@ -43,11 +44,60 @@ function modelEndpoints(registration: ProviderRegistration, models: readonly str
     modelEndpoints: Object.fromEntries(models.map((id) => [id, wireApiEndpoint(resolveModelApi(registration, id))])),
   };
 }
+
+/** Providers the picker may offer: what config sets, plus model ids `/connect` saved. */
+type ProviderChoice = Readonly<{
+  name: string;
+  kind: string;
+  baseUrl: string;
+  model: string;
+  apiKeyEnv: string;
+  hasKey: boolean;
+  models: readonly string[];
+  endpoint: string;
+  modelEndpoints: Record<string, string>;
+}>;
+
+function providerChoices(
+  providers: XioConfig["providers"],
+  credentials: Awaited<ReturnType<typeof loadCredentials>>,
+  env: NodeJS.ProcessEnv,
+): ProviderChoice[] {
+  return Object.entries(providers).map(([name, provider]) => {
+    const envKey = provider.apiKeyEnv ? env[provider.apiKeyEnv] : undefined;
+    const credKey = credentials.providers[name]?.apiKey;
+    const models = [...new Set([
+      ...(provider.model ? [provider.model] : []),
+      ...(credentials.providers[name]?.models ?? []),
+    ])];
+    return {
+      name,
+      kind: provider.kind,
+      baseUrl: provider.baseUrl ?? (provider.kind === "anthropic" ? "https://api.anthropic.com" : "https://api.deepseek.com"),
+      model: provider.model ?? (name === "deepseek" ? "deepseek-chat" : "gpt-4.1"),
+      apiKeyEnv: provider.apiKeyEnv ?? (name === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY"),
+      hasKey: Boolean(envKey || credKey),
+      models,
+      ...modelEndpoints(providerRegistration(provider), models),
+    };
+  });
+}
+
+/** Retired level names still arrive from a browser tab holding the previous bundle. */
+function requestedThinkingLevel(value: unknown) {
+  return typeof value === "string" ? parseThinkingLevel(value) : undefined;
+}
+
 /** git diff output above this is refused with an error instead of being cut short. */
 const DIFF_MAX_BUFFER = 32 * 1024 * 1024;
 
 export type WebServerOptions = Readonly<{
   port?: number;
+  /**
+   * Consecutive ports to try starting at `port` when it is already taken.
+   * Defaults to 1 (no fallback): only the CLI opts into scanning.
+   */
+  portAttempts?: number;
   host?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -57,7 +107,17 @@ export type WebServerOptions = Readonly<{
   /** Test seam: the agent runner behind /prompt. */
   agentHost?: Pick<
     WebAgentHost,
-    "prompt" | "abort" | "answerApproval" | "close" | "isRunning" | "activeSessionId" | "permissionMode" | "setPermissionMode"
+    | "prompt"
+    | "abort"
+    | "answerApproval"
+    | "close"
+    | "isRunning"
+    | "activeSessionId"
+    | "permissionMode"
+    | "setPermissionMode"
+    | "currentModel"
+    | "currentThinkingLevel"
+    | "applyModel"
   > & {
     getCostSummary?: (sessionId: string) => import("../runtime/pricing.ts").SessionCostSummary | undefined;
     getMcpStatus?: WebAgentHost["getMcpStatus"];
@@ -66,6 +126,8 @@ export type WebServerOptions = Readonly<{
 
 export type WebServerHandle = Readonly<{
   server: http.Server;
+  /** Port asked for; differs from `port` when a fallback port was used. */
+  requestedPort: number;
   port: number;
   host: string;
   /** Plain origin, e.g. http://127.0.0.1:3080 */
@@ -110,7 +172,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
   const agentHost = options.agentHost ?? new WebAgentHost({ cwd, env, store, broadcast: broadcastEvent });
   const cookieName = () => `xio_web_${listeningPort}`;
 
-  const server = http.createServer(async (req, res) => {
+  const handleRequest: http.RequestListener = async (req, res) => {
     // No CORS: the console is same-origin only. Framing and sniffing are off.
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -181,8 +243,86 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           defaultModel: await readDefaultModel(env, cwd),
           activeSessionId: agentHost.activeSessionId,
           permissionMode: agentHost.permissionMode ?? "auto",
+          pricing: priceCatalogSummary() ?? null,
         }));
         return;
+      }
+
+      // 2a. Model picker: what can be chosen, and what is running now.
+      if (pathname === "/api/model") {
+        const configRes = await ensureConfigFile(env);
+        const parsed = parseXioConfig(configRes.content, { cwd });
+        if (req.method === "GET") {
+          const credentials = await loadCredentials(env);
+          const live = agentHost.currentModel;
+          const provider = live?.provider ?? parsed.xio.general.defaultProvider;
+          const model = live?.id ?? parsed.xio.general.defaultModel ?? "";
+          const price = resolveModelPrice(model, {
+            provider,
+            overrides: parsed.xio.pricing,
+            baseUrl: provider ? parsed.xio.providers[provider]?.baseUrl : undefined,
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            current: {
+              provider,
+              model,
+              thinkingLevel: agentHost.currentThinkingLevel ?? parsed.xio.general.defaultThinkingLevel ?? "off",
+            },
+            price: price ? formatModelPrice(price) : null,
+            providers: providerChoices(parsed.xio.providers, credentials, env),
+            thinkingLevels: THINKING_LEVELS,
+          }));
+          return;
+        }
+        if (req.method === "POST") {
+          const body = await readJsonBody<{ provider?: unknown; model?: unknown; thinkingLevel?: unknown }>(req);
+          const provider = typeof body.provider === "string" ? body.provider : "";
+          const model = typeof body.model === "string" ? body.model.trim() : "";
+          const configured = parsed.xio.providers[provider];
+          if (!configured) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `unknown provider: ${provider}` }));
+            return;
+          }
+          if (model.length === 0 || model.length > 200) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "model id must be 1-200 characters" }));
+            return;
+          }
+          const thinkingLevel = body.thinkingLevel === undefined ? undefined : requestedThinkingLevel(body.thinkingLevel);
+          if (body.thinkingLevel !== undefined && thinkingLevel === undefined) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `unknown thinking level: ${String(body.thinkingLevel)}` }));
+            return;
+          }
+          let content = upsertSectionValue(configRes.content, "general", "default_provider", provider);
+          content = upsertSectionValue(content, "general", "default_model", model);
+          if (thinkingLevel !== undefined) {
+            content = upsertSectionValue(content, "general", "default_thinking_level", thinkingLevel);
+          }
+          await writePrivateFileAtomic(configRes.path, content);
+          try {
+            await agentHost.applyModel(
+              { provider, id: model, name: model, api: providerApi(configured.kind) },
+              thinkingLevel,
+            );
+          } catch (error) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            status: "ok",
+            current: {
+              provider,
+              model,
+              thinkingLevel: agentHost.currentThinkingLevel ?? thinkingLevel ?? parsed.xio.general.defaultThinkingLevel ?? "off",
+            },
+          }));
+          return;
+        }
       }
 
       // 2b. SSE Real-time Events Stream
@@ -274,6 +414,23 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
             "Content-Disposition": `attachment; filename="session-${id}-log.json"`,
           });
           res.end(JSON.stringify(exportPayload, null, 2));
+        } catch {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session not found" }));
+        }
+        return;
+      }
+
+      // 4c. Archive / restore a conversation (/api/sessions/:id/archive)
+      const archiveMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
+      if (archiveMatch && req.method === "POST") {
+        const id = archiveMatch[1]!;
+        try {
+          const body = await readJsonBody<{ archived?: boolean }>(req);
+          const archivedAt = body.archived === false ? undefined : new Date().toISOString();
+          const metadata = await store.setArchived(id, archivedAt);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "ok", id, archived_at: metadata.archived_at ?? null }));
         } catch {
           res.writeHead(404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Session not found" }));
@@ -459,22 +616,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
           const parsed = parseXioConfig(configRes.content, { cwd });
           const creds = await loadCredentials(env);
 
-          const providersList = Object.entries(parsed.xio.providers).map(([name, p]) => {
-            const envKey = p.apiKeyEnv ? env[p.apiKeyEnv] : undefined;
-            const credKey = creds.providers[name]?.apiKey;
-            const hasKey = Boolean(envKey || credKey);
-            const models = [...new Set([...(p.model ? [p.model] : []), ...(creds.providers[name]?.models ?? [])])];
-            return {
-              name,
-              kind: p.kind,
-              baseUrl: p.baseUrl ?? (p.kind === "anthropic" ? "https://api.anthropic.com" : "https://api.deepseek.com"),
-              model: p.model ?? (name === "deepseek" ? "deepseek-chat" : "gpt-4.1"),
-              apiKeyEnv: p.apiKeyEnv ?? (name === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENAI_API_KEY"),
-              hasKey,
-              models,
-              ...modelEndpoints(providerRegistration(p), models),
-            };
-          });
+          const providersList = providerChoices(parsed.xio.providers, creds, env);
 
           if (providersList.length === 0) {
             providersList.push({
@@ -651,25 +793,58 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
     }
-  });
+  };
 
-  const actualPort = await new Promise<number>((resolve, reject) => {
-    server.listen(requestedPort, host, () => {
-      const address = server.address();
-      if (address && typeof address === "object") {
-        resolve(address.port);
-      } else {
-        resolve(requestedPort);
-      }
+  const bind = (candidate: number): Promise<Readonly<{ server: http.Server; port: number }>> =>
+    new Promise((resolve, reject) => {
+      const candidateServer = http.createServer(handleRequest);
+      candidateServer.once("error", (error: NodeJS.ErrnoException) => {
+        candidateServer.removeAllListeners();
+        reject(error);
+      });
+      candidateServer.once("listening", () => {
+        candidateServer.removeAllListeners("error");
+        // Post-bind socket errors must not take a running console down; surface them instead.
+        candidateServer.on("error", (error: Error) => {
+          process.stderr.write(`web console: ${error.message}\n`);
+        });
+        const address = candidateServer.address();
+        const boundPort = address && typeof address === "object" ? address.port : candidate;
+        // A request can arrive before startWebServer resolves; the request guard
+        // reads `listeningPort`, so it must be current before we announce the bind.
+        listeningPort = boundPort;
+        resolve({ server: candidateServer, port: boundPort });
+      });
+      candidateServer.listen(candidate, host);
     });
-    server.on("error", reject);
-  });
 
-  listeningPort = actualPort;
+  const configuredAttempts = Math.floor(options.portAttempts ?? 1);
+  const attempts = requestedPort === 0 || !Number.isFinite(configuredAttempts) ? 1 : Math.max(1, configuredAttempts);
+  let bound: Readonly<{ server: http.Server; port: number }> | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const candidate = requestedPort === 0 ? 0 : requestedPort + attempt;
+    if (candidate > 65535) break;
+    try {
+      bound = await bind(candidate);
+      break;
+    } catch (error) {
+      lastError = error;
+      // Only a taken port is worth retrying; anything else is a real failure.
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+    }
+  }
+  if (!bound) {
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  const server = bound.server;
+  const actualPort = bound.port;
   const url = `http://${host}:${actualPort}`;
 
   return {
     server,
+    requestedPort,
     port: actualPort,
     host,
     url,

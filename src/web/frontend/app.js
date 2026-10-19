@@ -15,10 +15,22 @@ let currentTrajectorySteps = [];
 let currentStats = {};
 let currentTimelineError = null;
 let defaultModel = null;
+/** How fresh the models.dev price catalog behind the usage view is. */
+let pricingInfo = null;
+/** Unit price of the running model, formatted by the server (`$0.16 / $0.58 / 1M`). */
+let currentPriceLabel = null;
 const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheKnown: false, toolCalls: 0, toolErrors: 0, costLabel: t("web.unpriced") };
 const pendingApprovals = [];
 const connection = { source: null, sessionId: null, attempts: 0, timer: null, lost: false };
 const RECONNECT_ATTEMPTS = 6;
+/** Providers, their models and the effort ladder, as the server reports them. */
+let modelCatalog = null;
+/** What is running now: { provider, model, thinkingLevel }. */
+let currentModel = null;
+/** Provider being browsed in an open model menu (not necessarily the running one). */
+let menuProvider = null;
+/** When the catalog was last fetched; opening the menu refreshes only stale data. */
+let modelStateAt = 0;
 
 const chatFlowContainer = $("chat-flow-container");
 const chatScrollArea = $("chat-messages");
@@ -31,11 +43,6 @@ const sidebarScrim = $("sidebar-scrim");
 const sessionSearch = $("session-search");
 const narrowScreen = window.matchMedia("(max-width: 900px)");
 
-const STARTERS = [
-  { icon: "test", title: t("web.starterTest"), desc: t("web.starterTestDesc"), prompt: t("web.chipTestPrompt") },
-  { icon: "diff", title: t("web.starterReview"), desc: t("web.starterReviewDesc"), prompt: t("web.starterReviewPrompt") },
-  { icon: "layers", title: t("web.starterArch"), desc: t("web.starterArchDesc"), prompt: t("web.starterArchPrompt") },
-];
 
 document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
@@ -47,15 +54,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   initTrajectoryControls();
   initSettingsModal();
   initApprovalDialog();
+  initModelMenu();
+  initArchiveToggle();
   initConnection();
   setRunningState(false);
   await fetchStatus();
+  await refreshModelState();
   await loadSessions();
-  const initial = activeSessionId
-    || allSessions.find(s => (s.messageCount && s.messageCount > 0) || s.firstPrompt)?.id
-    || allSessions[0]?.id;
-  if (initial) selectSession(initial);
-  else startDraftSession();
+  // A reload lands on the welcome screen, never on whatever conversation was
+  // open before. Opening a session is an explicit click, not a side effect.
+  showWelcome();
 });
 
 // ---------- Theme ----------
@@ -170,12 +178,15 @@ function closeSidebar() {
 
 function initDelegatedActions() {
   document.addEventListener("click", (e) => {
-    const target = e.target.closest("[data-prompt], [data-action], [data-rule-preset], [data-perm-mode], [data-delete-id], [data-toggle]");
+    const target = e.target.closest("[data-prompt], [data-action], [data-rule-preset], [data-perm-mode], [data-delete-id], [data-archive-id], [data-toggle]");
     if (!target) return;
     const d = target.dataset;
     if (d.deleteId) {
       e.stopPropagation();
       deleteSession(d.deleteId);
+    } else if (d.archiveId) {
+      e.stopPropagation();
+      toggleArchived(d.archiveId, d.archived === "true");
     } else if (d.prompt) insertPrompt(d.prompt);
     else if (d.rulePreset) appendRulePreset(d.rulePreset);
     else if (d.permMode) setPermissionMode(d.permMode);
@@ -204,7 +215,51 @@ function initComposer() {
   btnSend.addEventListener("click", handleSend);
   btnAbort.addEventListener("click", handleAbort);
   btnNewSession.addEventListener("click", handleNewSession);
-  $("permission-select").addEventListener("change", (e) => setPermissionMode(e.target.value));
+  initPermissionMenu();
+}
+
+/** Permission is a real menu, not a native <select>: the OS menu brings its own
+    font, highlight and glow, which is exactly the inconsistency we can see. */
+function initPermissionMenu() {
+  const trigger = $("perm-trigger");
+  const list = $("perm-list");
+  if (!trigger || !list) return;
+  const options = [...list.querySelectorAll(".perm-option")];
+  const close = (returnFocus = false) => {
+    list.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (returnFocus) trigger.focus();
+  };
+  const open = () => {
+    list.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    const current = options.find(o => o.getAttribute("aria-selected") === "true") || options[0];
+    current?.focus();
+  };
+  trigger.addEventListener("click", () => (list.hidden ? open() : close()));
+  trigger.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); open(); }
+  });
+  options.forEach((option, index) => {
+    option.addEventListener("click", () => {
+      setPermissionMode(option.dataset.permChoice);
+      close(true);
+    });
+    option.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        options[(index + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length].focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        close(true);
+      } else if (e.key === "Tab") {
+        close();
+      }
+    });
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#perm-menu")) close();
+  });
 }
 
 /** Grow with the text up to the CSS max-height; enable send only when there is something to send. */
@@ -226,6 +281,7 @@ async function fetchStatus() {
   try {
     const data = await api("/api/status");
     defaultModel = data.defaultModel || null;
+    pricingInfo = data.pricing || null;
     workspaceName = lastPathSegment(data.cwd);
     reflectPermissionMode(data.permissionMode || "auto");
     $("meta-session-cwd").textContent = workspaceName || "—";
@@ -244,8 +300,18 @@ async function setPermissionMode(mode) {
   }
 }
 
+const PERMISSION_ICONS = { auto: "i-shield", strict: "i-eye", full: "i-alert" };
+const PERMISSION_LABELS = { auto: "web.modeAuto", strict: "web.modeStrict", full: "web.modeFull" };
+
 function reflectPermissionMode(mode) {
-  $("permission-select").value = mode;
+  const key = PERMISSION_LABELS[mode] ? mode : "auto";
+  const label = $("perm-label");
+  if (label) label.textContent = t(PERMISSION_LABELS[key]);
+  const icon = $("perm-icon");
+  if (icon) icon.setAttribute("href", "#" + PERMISSION_ICONS[key]);
+  document.querySelectorAll(".perm-option").forEach(option => {
+    option.setAttribute("aria-selected", String(option.dataset.permChoice === key));
+  });
   document.querySelectorAll(".perm-card").forEach(card => {
     const on = card.dataset.permMode === mode;
     card.classList.toggle("active", on);
@@ -253,13 +319,165 @@ function reflectPermissionMode(mode) {
   });
 }
 
-function modelLabel(model) {
-  return model ? (model.provider ? model.provider + "/" : "") + model.id : "—";
+// ---------- Model picker (provider · model · effort) ----------
+
+function effortLabel(level) {
+  const key = "web.think." + level;
+  return MESSAGES[key] === undefined ? level : t(key);
 }
 
-function setHeader(title, model) {
+async function refreshModelState() {
+  try {
+    const data = await api("/api/model");
+    modelCatalog = data;
+    currentModel = data.current;
+    currentPriceLabel = data.price || null;
+    modelStateAt = Date.now();
+    renderModelChip();
+    if (document.querySelector("main").dataset.view === "metrics") renderMetrics();
+    if (!$("model-menu").hidden) renderModelMenu();
+  } catch {
+    // The chip keeps its last value; the menu still opens with what we know.
+  }
+}
+
+function renderModelChip() {
+  const provider = currentModel?.provider || "";
+  const id = currentModel?.model || "";
+  const text = provider && id ? provider + "/" + id : (id || "—");
+  $("current-model-text").textContent = text;
+  $("current-effort-text").textContent = currentModel?.thinkingLevel ? effortLabel(currentModel.thinkingLevel) : "";
+  $("model-trigger").title = currentModel
+    ? t("web.modelMenuCurrent", { model: text, effort: effortLabel(currentModel.thinkingLevel) })
+    : t("web.modelMenuTitle");
+}
+
+let closeModelMenu = () => {};
+
+function initModelMenu() {
+  const trigger = $("model-trigger");
+  const menu = $("model-menu");
+  if (!trigger || !menu) return;
+  closeModelMenu = (returnFocus = false) => {
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    if (returnFocus) trigger.focus();
+  };
+  const open = () => {
+    menuProvider = currentModel?.provider ?? null;
+    renderModelMenu();
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    menu.querySelector(".model-option[aria-selected='true']")?.focus();
+  };
+  trigger.addEventListener("click", () => {
+    if (!menu.hidden) {
+      closeModelMenu(true);
+      return;
+    }
+    open();
+    // Another tab may have switched model; refresh only when what we show is stale.
+    if (Date.now() - modelStateAt > 5000) void refreshModelState();
+  });
+  trigger.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); }
+    else if (e.key === "Escape") closeModelMenu();
+  });
+  menu.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeModelMenu(true); return; }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const list = e.target.closest(".model-options");
+    if (!list) return;
+    const items = [...list.querySelectorAll("button")];
+    const index = items.indexOf(e.target);
+    if (index < 0) return;
+    e.preventDefault();
+    items[(index + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".model-picker")) closeModelMenu();
+  });
+}
+
+function modelOption(label, selected, onPick) {
+  const b = el("button", "model-option" + (selected ? " selected" : ""), el("span", "model-option-label", label));
+  b.type = "button";
+  b.setAttribute("role", "option");
+  b.setAttribute("aria-selected", String(Boolean(selected)));
+  // Re-rendering inside the handler detaches this button, so the document-level
+  // "click outside" check would see no .model-picker ancestor and close the menu.
+  b.addEventListener("click", (e) => { e.stopPropagation(); onPick(); });
+  if (selected) b.append(xioIcon("check", "model-option-check"));
+  return b;
+}
+
+function renderModelMenu() {
+  if (!modelCatalog) return;
+  // Current first, then providers that can actually run, then the rest by name:
+  // the list stays useful when it has to scroll.
+  const providers = [...(modelCatalog.providers || [])].sort((a, b) =>
+    Number(b.name === currentModel?.provider) - Number(a.name === currentModel?.provider)
+    || Number(b.hasKey) - Number(a.hasKey)
+    || a.name.localeCompare(b.name));
+  const activeProvider = providers.some(p => p.name === menuProvider)
+    ? menuProvider
+    : (currentModel?.provider || providers[0]?.name);
+  menuProvider = activeProvider;
+  const provider = providers.find(p => p.name === activeProvider);
+  $("model-provider-list").replaceChildren(...providers.map(p => modelOption(
+    p.name + (p.hasKey ? "" : t("web.noKey")),
+    p.name === activeProvider,
+    () => { menuProvider = p.name; renderModelMenu(); },
+  )));
+  const models = provider?.models || [];
+  $("model-model-list").replaceChildren(...(models.length
+    ? models.map(id => modelOption(
+      id,
+      provider.name === currentModel?.provider && id === currentModel?.model,
+      () => chooseModel(provider.name, id),
+    ))
+    : [el("div", "model-empty", t("web.noModels"))]));
+  $("model-effort-list").replaceChildren(...(modelCatalog.thinkingLevels || []).map(level => {
+    const on = level === currentModel?.thinkingLevel;
+    const b = el("button", "model-effort-option" + (on ? " active" : ""), effortLabel(level));
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(on));
+    b.addEventListener("click", (e) => { e.stopPropagation(); chooseEffort(level); });
+    return b;
+  }));
+}
+
+async function applyModelChoice(body) {
+  try {
+    const data = await api("/api/model", { method: "POST", body });
+    currentModel = data.current;
+    modelStateAt = Date.now();
+    renderModelChip();
+    closeModelMenu();
+  } catch (err) {
+    showToast(t("web.modelSwitchFailed", { error: err.message }), "error");
+  }
+}
+
+function chooseModel(provider, model) {
+  if (provider === currentModel?.provider && model === currentModel?.model) {
+    closeModelMenu(true);
+    return;
+  }
+  void applyModelChoice({ provider, model });
+}
+
+function chooseEffort(level) {
+  if (!currentModel || level === currentModel.thinkingLevel) {
+    closeModelMenu(true);
+    return;
+  }
+  void applyModelChoice({ provider: currentModel.provider, model: currentModel.model, thinkingLevel: level });
+}
+
+function setHeader(title) {
   $("current-session-title").textContent = title;
-  $("current-model-text").textContent = model || "—";
   document.title = title + " · XioCode";
 }
 

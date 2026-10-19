@@ -134,14 +134,20 @@ function handleRuntimeEvent(event) {
     case "web.approval":
       enqueueApproval(payload);
       break;
-    case "web.notice":
+    case "web.notice": {
+      // "xio status: <model> run=…" is the evolve extension's run banner; the TUI
+      // already drops it (isInternalNotice) and the chip shows the model here.
+      const message = String(payload.message || "");
+      if (payload.level !== "warning" && payload.level !== "warn" && payload.level !== "error"
+        && /^xio status\b/.test(message)) break;
       // Warnings (recovery, refused leases, denied questions) stay in the transcript; routine info is transient.
       if (payload.level === "warning" || payload.level === "warn" || payload.level === "error") {
         appendSystemNote(payload.message || "", "warning");
       } else {
-        showToast(payload.message || "", "info");
+        showToast(message, "info");
       }
       break;
+    }
     case "web.error":
       appendSystemNote(t("web.runError", { error: payload.message || t("web.unknownError") }), "error");
       break;
@@ -168,8 +174,10 @@ function addUsage(usage) {
   if (!usage) return;
   usageTotals.input += usage.inputTokens || 0;
   usageTotals.output += usage.outputTokens || 0;
-  if (typeof usage.cacheReadTokens === "number") {
-    usageTotals.cacheRead += usage.cacheReadTokens;
+  // `cacheTokens` is what the runtime normalises to; the alias keeps older payloads working.
+  const cacheRead = typeof usage.cacheTokens === "number" ? usage.cacheTokens : usage.cacheReadTokens;
+  if (typeof cacheRead === "number") {
+    usageTotals.cacheRead += cacheRead;
     usageTotals.cacheKnown = true;
   }
   renderMetrics();
