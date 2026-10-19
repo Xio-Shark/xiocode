@@ -100,6 +100,8 @@ xio resume        # 恢复上一次意外退出或中断的会话，任务与上
 xio web           # 启动本地可视化控制台并在浏览器打开 http://localhost:3080
 ```
 提供时间线流水线视图，清晰排查上下文演变、工具入参与执行结果。
+3080 被占用时会自动向后找最多十个端口并说明实际使用的端口；要严格失败用
+`--strict-port`，要交给系统分配用 `--port 0`。
 
 ### 界面语言与配色
 终端界面和 Web 控制台共用一张文案表和一套配色：
@@ -123,7 +125,7 @@ theme = "light"   # groknight | light | claude | minimal | nord；/theme 会写�
 | `xio "任务描述"` | 单次执行指定任务，完成后退出 |
 | `xio resume` | 恢复上一次中断或退出的会话 |
 | `xio resume --prune` | 预览从未提问的旧会话；加 `--yes` 确认删除，跳过有 worktree 或正在使用的会话 |
-| `xio web` | 启动本地 Web 控制台 (`http://localhost:3080`) |
+| `xio web` | 启动本地 Web 控制台 (`http://localhost:3080`；被占用时顺延到空闲端口，`--strict-port` 则直接失败) |
 | `xio doctor` | 一键诊断系统环境、Node 版本、配置及 API 连通性 |
 | `xio models` | 查看模型目录、内置单价、每个模型走的接口、配置状态，以及网关已下线的模型（`[offline]`；`--refresh` 更新已保存的列表） |
 

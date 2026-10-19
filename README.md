@@ -101,6 +101,8 @@ xio resume        # Restores the session with full context, task lists, and hist
 xio web           # Launches the lightweight visual console at http://localhost:3080
 ```
 Inspect model interactions, tool call arguments, execution output, and timeline progression.
+If 3080 is taken, `xio web` scans up to ten ports and reports the one it used; pass
+`--strict-port` to fail instead, or `--port 0` to let the OS choose.
 
 ### Language and Theme
 The terminal UI and the web console share one copy table and one colour palette:
@@ -124,7 +126,7 @@ Approvals list their choices (allow once, allow for the session where it is safe
 | `xio "task description"` | Execute a one-shot task and exit upon completion |
 | `xio resume` | Resume the most recent active or interrupted session |
 | `xio resume --prune` | Preview old sessions without a prompt; add `--yes` to delete, skipping worktrees and active sessions |
-| `xio web` | Launch the local web timeline console (`http://localhost:3080`) |
+| `xio web` | Launch the local web timeline console (`http://localhost:3080`; the next free port if busy, `--strict-port` to refuse) |
 | `xio doctor` | Diagnose environment, configuration, and API connectivity |
 | `xio models` | Display provider/model ids, unit pricing, the endpoint each model is called on, configuration status, and models the provider no longer lists (`[offline]`; `--refresh` updates the saved lists) |
 

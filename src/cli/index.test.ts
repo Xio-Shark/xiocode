@@ -387,8 +387,8 @@ describe("web-cli options and openBrowser", () => {
     expect(parseWebCliArgs(["--port", "3080"]).port).toBe(3080);
     expect(parseWebCliArgs(["--port=8080"]).port).toBe(8080);
     expect(() => parseWebCliArgs(["--port=abc"])).toThrow(/Invalid --port: "abc"/);
-    expect(() => parseWebCliArgs(["--port", "70000"])).toThrow(/between 1 and 65535/);
-    expect(() => parseWebCliArgs(["--port", "-1"])).toThrow(/between 1 and 65535/);
+    expect(() => parseWebCliArgs(["--port", "70000"])).toThrow(/between 0 and 65535/);
+    expect(() => parseWebCliArgs(["--port", "-1"])).toThrow(/between 0 and 65535/);
   });
 
   it("builds correct cross-platform openBrowser command", async () => {
