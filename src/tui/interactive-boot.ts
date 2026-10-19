@@ -66,6 +66,7 @@ export function startInteractiveBoot(options: StartInteractiveBootOptions): Inte
     onInterrupt: options.onInterrupt,
     captureInput,
     columns: process.stdout.columns,
+    splash: env.XIO_SPLASH === "1",
   }), {
     alternateScreen: true,
     exitOnCtrlC: false,

@@ -128,6 +128,7 @@ export const en: Messages = {
   "notice.nothingToExpand": "No expandable tool or thinking block to view (ctrl+o)",
   "notice.copied": "Copied to clipboard ({via})",
   "notice.copyFailed": "Copy failed: no clipboard available",
+  "notice.bootWarnings": "{count} startup warning(s) folded: {first} · run xio doctor for all",
   "notice.help": "Commands: {names} · shift+tab permissions · /thinking effort · ctrl+o transcript · ? help",
   "notice.bypassFull": "Permission mode: full. Unsafe or complex shell and merge/rollback still confirm. Restore: /permission auto",
   "notice.bypassAuto": "Permission mode: auto",

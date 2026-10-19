@@ -140,6 +140,8 @@ export type BootShellProps = Readonly<{
   captureInput?: boolean;
   /** Terminal width; forwarded so the brand mark is dropped when it cannot fit. */
   columns?: number;
+  /** Opt-in pixel splash (XIO_SPLASH=1); off by default so the prompt comes first. */
+  splash?: boolean;
 }>;
 
 export function BootShell(props: BootShellProps): React.JSX.Element {
@@ -180,6 +182,7 @@ export function BootShell(props: BootShellProps): React.JSX.Element {
       meta: props.confirmation ? t("boot.projectTrust") : statusLabel,
       path: formatShortCwd(props.cwd),
       columns: props.columns,
+      mark: props.splash === true,
     }),
     props.confirmation
       ? h(Box, { flexDirection: "column", marginTop: 1 },

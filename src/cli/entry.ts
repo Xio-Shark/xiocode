@@ -8,7 +8,15 @@
 import { realpathSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+// Side effect, and must stay first: chalk (inside Ink) reads FORCE_COLOR at import.
+import "./color-env.ts";
+import { beginBootDiagnostics } from "../tui/boot-diagnostics.ts";
 import { handleXioFlag } from "./router-help.ts";
+
+// Buffer extension / MCP warnings from the start: they would otherwise print
+// above the Ink boot frame. The App folds them into one notice; anything the App
+// never receives is replayed on exit.
+beginBootDiagnostics();
 
 if (isDirectRun()) {
   await main();

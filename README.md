@@ -109,7 +109,7 @@ The terminal UI and the web console share one copy table and one colour palette:
 language = "zh"   # "zh" (default) or "en"; the web console re-reads it on reload
 theme = "light"   # groknight | light | claude | minimal | nord; written by /theme
 ```
-Without a saved theme, `xio` asks the terminal for its background colour at start and picks `light` or the dark default; `xio doctor` shows what it detected. `XIO_THEME` overrides both.
+Without a saved theme, `xio` asks the terminal for its background colour at start and picks `light` or the dark default; `xio doctor` shows what it detected. `XIO_THEME` overrides both. `NO_COLOR` turns colour off for both front ends; the boot splash is opt-in with `XIO_SPLASH=1`.
 
 Approvals list their choices (allow once, allow for the session where it is safe, deny, deny and tell the model why); Esc always declines.
 

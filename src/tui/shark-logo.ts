@@ -76,8 +76,14 @@ export function BrandHeader(props: Readonly<{
   path?: string;
   /** Terminal width; below {@link BRAND_MARK_MIN_COLUMNS} the mark is dropped. */
   columns?: number;
+  /**
+   * Show the pixel mark. Splashes are opt-in (XIO_SPLASH=1): a 4-row mark on
+   * every launch delays the prompt for decoration, and terminal animations are
+   * an accessibility cost (see GitHub Copilot CLI's opt-in banner).
+   */
+  mark?: boolean;
 }>): React.JSX.Element {
-  const showMark = (props.columns ?? 80) >= BRAND_MARK_MIN_COLUMNS;
+  const showMark = props.mark !== false && (props.columns ?? 80) >= BRAND_MARK_MIN_COLUMNS;
   return h(Box, {
     flexDirection: "row",
     gap: 2,

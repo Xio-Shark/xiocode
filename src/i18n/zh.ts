@@ -126,6 +126,7 @@ export const zh = {
   "notice.nothingToExpand": "没有可展开的工具输出或思考（ctrl+o）",
   "notice.copied": "已复制到剪贴板（{via}）",
   "notice.copyFailed": "复制失败：没有可用的剪贴板",
+  "notice.bootWarnings": "启动告警 {count} 条（已收起）：{first} · 运行 xio doctor 查看全部",
   "notice.help": "命令：{names} · shift+tab 权限 · /thinking 思考强度 · ctrl+o 对话 · ? 帮助",
   "notice.bypassFull": "权限模式：完全（full）。不安全或复杂的 shell 以及合并/回滚仍需确认。恢复：/permission auto",
   "notice.bypassAuto": "权限模式：自动（auto）",

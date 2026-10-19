@@ -108,7 +108,7 @@ xio web           # 启动本地可视化控制台并在浏览器打开 http://l
 language = "zh"   # "zh"（默认）或 "en"；Web 控制台刷新页面即生效
 theme = "light"   # groknight | light | claude | minimal | nord；/theme 会写入这里
 ```
-没有保存配色时，`xio` 启动时会询问终端背景色，自动选择 `light` 或默认深色；`xio doctor` 会显示检测结果。`XIO_THEME` 优先于两者。
+没有保存配色时，`xio` 启动时会询问终端背景色，自动选择 `light` 或默认深色；`xio doctor` 会显示检测结果。`XIO_THEME` 优先于两者。`NO_COLOR` 会同时关闭两端颜色；启动画面默认收起，`XIO_SPLASH=1` 才显示品牌像素图。
 
 权限确认以选项列表呈现（仅本次允许、安全时可本会话允许、拒绝、拒绝并告诉模型原因），Esc 永远是拒绝。
 

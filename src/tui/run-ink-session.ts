@@ -6,6 +6,7 @@ import { prepareSession } from "../runtime/session.ts";
 import { App } from "./app.ts";
 import { startInteractiveBoot } from "./interactive-boot.ts";
 import type { EarlyBootHandle } from "./early-boot.ts";
+import { takeBootDiagnostics } from "./boot-diagnostics.ts";
 import { TuiSessionBridge } from "./session-bridge.ts";
 import { applyStartupTheme, registerThemeCommands } from "./theme-commands.ts";
 import { applyConfiguredLanguage, t } from "../i18n/messages.ts";
@@ -93,6 +94,7 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
 
     if (bootInterrupted) {
       inkBoot.unmount();
+      takeBootDiagnostics();
       await session.close();
       return 130;
     }
@@ -109,12 +111,14 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
       }
       emitPerfSpans(tracer);
       inkBoot.unmount();
+      takeBootDiagnostics();
       await session.close();
       return 0;
     }
 
     const drained = inkBoot.buffer.drain();
     inkBoot.unmount();
+    flushBootDiagnostics(bridge);
 
     let exitCode = 0;
     let closed = false;
@@ -153,11 +157,20 @@ export async function runInkSession(options: RunInkSessionOptions): Promise<numb
     }
   } catch (error) {
     inkBoot.unmount();
+    takeBootDiagnostics();
     if (bootInterrupted) {
       return 130;
     }
     throw error;
   }
+}
+
+/** Replay buffered boot warnings as one collapsed notice once the App is on screen. */
+function flushBootDiagnostics(bridge: TuiSessionBridge): void {
+  const warnings = takeBootDiagnostics();
+  if (warnings.length === 0) return;
+  const first = (warnings[0] ?? "").slice(0, 120);
+  bridge.sink.notify?.(t("notice.bootWarnings", { count: String(warnings.length), first }), "warning");
 }
 
 function emitPerfSpans(tracer: ReturnType<typeof getGlobalTracer>): void {
