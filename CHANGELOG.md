@@ -21,6 +21,11 @@ Requires `@xioflow/kernel` 0.7.0 (processes a command leaves running are reaped 
 - `XIOCODE_KERNEL_DRIVER=cgroup` (Linux): every command runs in its own cgroup v2, so nothing it forks escapes, and crash recovery reaps what is left. It needs a cgroup delegated to xiocode (`systemd-run --user --scope -p Delegate=yes xio`); `auto` never picks it.
 
 ### Changed
+- **Both front ends got an accessibility and density pass.**
+  - Every text colour in `minimal` and `nord` now meets 4.5:1 against the background it is drawn on (`nord`'s muted text was 1.69:1); a test sweeps all four measurable themes instead of only the two brand palettes, and `claude` is exempt because its colours are the terminal's.
+  - The boot screen no longer draws the four-row pixel mark on every launch — `XIO_SPLASH=1` brings it back — and extension/MCP startup warnings are held back and folded into one notice instead of printing above the brand header. If the session never starts, they are replayed on exit.
+  - `NO_COLOR` now turns colour off (chalk only reads `FORCE_COLOR`); an explicit `FORCE_COLOR` still wins. The TUI spinner refreshes at 12.5fps instead of 8.3.
+  - Web console: session rows show one timestamp (the start time only when titles collide), titles wrap to two lines, workgroup headers stay put while the list scrolls, borders are visible on low-contrast panels, focus stays visible in Windows high-contrast mode, the sidebar collapse no longer animates the whole layout by margin, and the "working" label pulses instead of sweeping a gradient through CJK glyphs. Durations are 120/200/300ms.
 - **Processes a command leaves running are stopped when the command ends**, including `nohup server >log 2>&1 &` (kernel 0.7.0). The bash result says so on its second line; start servers with `background: true` instead.
 - Failed first turns keep the user's prompt and a failure marker in both main and worktree sessions. Cancelling also preserves the prompt.
 - `xio resume --prune` previews sessions that were never prompted; `--yes` deletes them through the existing cleanup path. Sessions with a worktree or an active lease are skipped.
