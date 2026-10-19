@@ -5,7 +5,7 @@
 > 这里此前是一份内核规范的旧拷贝（四协议、八契约、`stopped: boolean`、`accurateStartTime`），
 > 与 0.2.0 起的实际 API 不一致，已删除，避免出现第二份真相源。
 
-依赖版本：`@xioflow/kernel` 0.5.1。代码入口：`src/runtime/process/`（内核会话与进程执行）、
+依赖版本：`@xioflow/kernel` 0.8.0。代码入口：`src/runtime/process/`（内核会话与进程执行）、
 `src/runtime/kernel-binding.ts`（会话层接线）、`extensions/xio-sandbox/src/direct-gate.ts`（回滚）、
 `extensions/xio-hygiene/src/kernel-stdio-transport.ts`（MCP）。
 

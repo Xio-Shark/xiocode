@@ -150,6 +150,13 @@ export function mapKernelTermination(
       };
     case "crash_detected":
       return { termination: "cleanup_failed", cleanupError: "kernel reported crash_detected" };
+    case "observation_failed":
+      // The kernel lost the evidence it needs to observe the process and stopped
+      // it. Stop may be unconfirmed, so this is never a clean exit (0.8+ reason).
+      return {
+        termination: "cleanup_failed",
+        cleanupError: "kernel could not observe the process and stopped it; termination is unconfirmed",
+      };
     case "exit_unobserved":
       // Recovery saw the process gone but never saw its exit: the outcome is
       // unknown, so it must not read as a clean exit (or be retried blindly).
