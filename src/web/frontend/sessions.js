@@ -89,7 +89,7 @@ function renderSessionList() {
     groups.get(ws).push(sess);
   });
   list.replaceChildren(...[...groups.entries()].map(([ws, sessions]) => el("div", "ws-group",
-    el("div", "ws-group-header", xioIcon("folder"), el("span", "ws-group-name", ws), el("span", "ws-count", String(sessions.length))),
+    el("div", "ws-group-header", el("span", "ws-group-name", ws), el("span", "ws-count", String(sessions.length))),
     el("ul", "ws-group-items", ...sessions.map(sess => sessionItem(sess))))));
 }
 
@@ -195,6 +195,7 @@ async function deleteSession(id) {
 }
 
 function selectSession(id) {
+  openView("chat");
   activeSessionId = id;
   renderSessionList();
   connectSse(id);

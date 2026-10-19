@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>{{t:web.title}}</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b5bdb'/%3E%3Cpath d='M4 22.7c5.3-2 11.3-9.3 16-17.3-.5 7.3.8 14.1 5.3 17.3z' fill='%23fff'/%3E%3Cpath d='M3.5 27.3c2 0 2-1.3 4-1.3s2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' opacity='.75'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23a94e26'/%3E%3Cpath d='M4 22.7c5.3-2 11.3-9.3 16-17.3-.5 7.3.8 14.1 5.3 17.3z' fill='%23fdf8ee'/%3E%3Cpath d='M3.5 27.3c2 0 2-1.3 4-1.3s2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3 2-1.3 4-1.3 2 1.3 4 1.3' fill='none' stroke='%23fdf8ee' stroke-width='1.8' stroke-linecap='round' opacity='.75'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <!-- Icon set: 24px grid, 1.75 stroke, round caps. Shapes follow Lucide (ISC). -->
   <svg class="icon-sprite" aria-hidden="true" focusable="false">
-    <symbol id="i-fin" viewBox="0 0 24 24"><path d="M3 17c4-1.5 8.5-7 12-13-.4 5.5.6 10.6 4 13z" fill="currentColor" stroke="none"/><path d="M2.5 20.5c1.6 0 1.6-1 3.2-1s1.6 1 3.2 1 1.6-1 3.2-1 1.6 1 3.2 1 1.6-1 3.2-1 1.6 1 3 1"/></symbol>
+    <symbol id="i-fin" viewBox="0 0 24 24"><path d="M2.5 19C6 11.4 11 5.6 21 2.6c-3.6 6.1-5.2 10.8-6 16.4z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
     <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></symbol>
@@ -57,6 +57,8 @@
     <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5a6 6 0 0 1-6 6H6"/></symbol>
     <symbol id="i-test" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3M7.5 14h9"/></symbol>
     <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
   </svg>
 
   <div class="app-layout">
@@ -109,20 +111,17 @@
       <header class="main-header">
         <div class="header-row">
           <div class="header-left">
+            <button id="btn-back-view" class="icon-btn btn-back-view" type="button" aria-label="{{t:web.backToChat}}" title="{{t:web.backToChat}}" hidden>
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>
+            </button>
             <button id="btn-expand-sidebar" class="icon-btn btn-expand-sidebar" type="button" aria-label="{{t:web.expandSidebar}}" title="{{t:web.expandSidebar}}">
               <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
             </button>
             <h1 id="current-session-title" class="header-title">{{t:web.newSession}}</h1>
           </div>
 
-          <nav class="nav-tabs" role="tablist" aria-label="{{t:web.views}}">
-            <button class="nav-tab active" type="button" role="tab" aria-selected="true" aria-controls="view-chat" data-view="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>{{t:web.tabChat}}</button>
-            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-trajectory" data-view="trajectory" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>{{t:web.tabTrajectory}}</button>
-            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-diff" data-view="diff" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>{{t:web.tabDiff}}</button>
-            <button class="nav-tab" type="button" role="tab" aria-selected="false" aria-controls="view-metrics" data-view="metrics" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>{{t:web.tabUsage}}</button>
-            <span class="nav-tab-indicator" aria-hidden="true"></span>
-          </nav>
           <div class="header-right">
+            <button id="header-cost" class="header-cost" type="button" title="{{t:web.cost}}" aria-label="{{t:web.tabUsage}}">—</button>
             <div class="model-picker">
               <button id="model-trigger" class="model-chip model-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" title="{{t:web.modelMenuTitle}}">
                 <svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>
@@ -149,9 +148,18 @@
               <span class="status-dot" aria-hidden="true"></span>
               <span id="status-text">{{t:web.ready}}</span>
             </div>
-            <button id="btn-export-log" class="icon-btn" type="button" title="{{t:web.exportTitle}}" aria-label="{{t:web.exportLabel}}">
-              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
-            </button>
+            <div class="view-menu-wrap">
+              <button id="view-menu-trigger" class="icon-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="{{t:web.views}}" title="{{t:web.views}}">
+                <svg class="icon" aria-hidden="true"><use href="#i-more"/></svg>
+              </button>
+              <div id="view-menu" class="view-menu" role="menu" hidden>
+                <button type="button" role="menuitem" data-view="trajectory"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg><span>{{t:web.tabTrajectory}}</span></button>
+                <button type="button" role="menuitem" data-view="diff"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg><span>{{t:web.tabDiff}}</span></button>
+                <button type="button" role="menuitem" data-view="metrics"><svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg><span>{{t:web.tabUsage}}</span></button>
+                <div class="view-menu-sep"></div>
+                <button id="btn-export-log" type="button" role="menuitem"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>{{t:web.exportLabel}}</span></button>
+              </div>
+            </div>
           </div>
         </div>
       </header>
@@ -282,6 +290,7 @@
             </div>
           </div>
         </div>
+        <div id="welcome-foot" class="welcome-foot" hidden></div>
         <div class="composer-statusbar" id="composer-statusbar">
           <span class="meta-item"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span id="meta-session-cwd">—</span></span>
           <span class="meta-item" id="meta-turns-info">{{t:web.turnsSteps}}</span>

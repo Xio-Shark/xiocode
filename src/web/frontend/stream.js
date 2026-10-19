@@ -152,7 +152,7 @@ function handleRuntimeEvent(event) {
       appendSystemNote(t("web.runError", { error: payload.message || t("web.unknownError") }), "error");
       break;
     case "web.turn_end":
-      if (payload.cost) usageTotals.costLabel = payload.cost;
+      if (payload.cost) { usageTotals.costLabel = payload.cost; updateHeaderCost(); }
       addUsage(payload.usage);
       if (payload.cancelled) appendSystemNote(t("web.stopped"), "info");
       break;
@@ -188,6 +188,7 @@ function addUsage(usage) {
 async function handleSend() {
   const text = composerInput.value.trim();
   if (!text || isRunning) return;
+  openView("chat");
   if (!activeSessionId) await startDraftSession();
   appendUserMessage(text);
   scrollToBottom();

@@ -6,6 +6,11 @@
 const TOOL_OUTPUT_LIMIT = 20000;
 
 /** How each tool reads in the transcript: an icon, a verb and the thing it acts on. */
+const TOOL_LABELS = {
+  read: "read", write: "write", edit: "edit", bash: "bash",
+  grep: "grep", glob: "glob", skill: "skill", parallel_edit: "edit",
+};
+
 const TOOL_KINDS = {
   read: { icon: "file", title: t("web.toolRead"), target: a => a.path || a.file_path },
   write: { icon: "file-plus", title: t("web.toolWrite"), target: a => a.path || a.file_path },
@@ -28,6 +33,7 @@ function toolKind(name, args) {
 
 const chat = {
   assistantBox: null,
+  seq: 0,
   toolRows: new Map(),
   stick: true,
   working: null,
@@ -42,6 +48,7 @@ function clearChat() {
   chat.toolRows.clear();
   chat.assistantBox = null;
   chat.working = null;
+  chat.seq = 0;
 }
 
 /** Insert above the live "working" line so it always stays last. */
@@ -58,7 +65,26 @@ function renderHero() {
   const slot = $("welcome-slot");
   if (!slot) return;
   // One line of greeting and nothing else: the composer is the call to action.
-  slot.replaceChildren(el("h2", "hero-title", t("web.heroTitle")));
+  slot.replaceChildren(
+    el("div", "welcome-eyebrow", t("web.localRuntime")),
+    el("h2", "hero-title", t("web.heroTitle")),
+  );
+  // One way back into the last run, without a wall of recents.
+  const foot = $("welcome-foot");
+  const recent = Array.isArray(allSessions)
+    ? allSessions.slice().sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))[0]
+    : null;
+  if (foot) {
+    foot.replaceChildren();
+    foot.hidden = true;
+    if (recent) {
+      const back = el("button", "welcome-continue", el("span", "welcome-continue-label", t("web.continueLast")), el("b", null, sessionTitle(recent)));
+      back.type = "button";
+      back.addEventListener("click", () => selectSession(recent.id));
+      foot.replaceChildren(back);
+      foot.hidden = false;
+    }
+  }
   slot.hidden = false;
   document.body.classList.add("is-empty");
 }
@@ -69,31 +95,40 @@ function removeHero() {
     slot.replaceChildren();
     slot.hidden = true;
   }
+  const foot = $("welcome-foot");
+  if (foot) {
+    foot.replaceChildren();
+    foot.hidden = true;
+  }
   document.body.classList.remove("is-empty");
 }
 
-function messageRow(role) {
+/** One turn in the run log: ordinal in the gutter, rail node, then the work. */
+function logStep(role) {
   removeHero();
-  const body = el("div", "bubble " + role);
-  const row = el("article", "message-row " + role);
-  if (role === "assistant") {
-    row.append(el("div", "message-role", el("span", "avatar", xioIcon("fin")), "XioCode"));
-  } else {
-    row.setAttribute("aria-label", t("web.you"));
-  }
-  row.appendChild(body);
+  chat.seq += 1;
+  const node = role === "user"
+    ? el("span", "node user", "\u203A")
+    : role === "assistant"
+      ? el("span", "node assistant", xioIcon("fin"))
+      : el("span", "node note");
+  const body = el("div", "step-body");
+  const row = el("article", "log-step " + role,
+    el("span", "stamp", String(chat.seq).padStart(2, "0")), node, body);
+  if (role === "user") row.setAttribute("aria-label", t("web.you"));
   appendToColumn(row);
   return body;
 }
 
 function appendUserMessage(text) {
   finishAssistant();
-  messageRow("user").appendChild(el("div", "bubble-content", text));
+  const body = logStep("user");
+  body.appendChild(el("div", "prompt", el("div", "bubble-content", text)));
   chat.assistantBox = null;
 }
 
 function assistantBox() {
-  if (!chat.assistantBox) chat.assistantBox = messageRow("assistant");
+  if (!chat.assistantBox) chat.assistantBox = logStep("assistant");
   return chat.assistantBox;
 }
 
@@ -241,9 +276,9 @@ function appendToolCall(id, name, args, live) {
   target.title = kind.target;
   const meta = el("span", "tool-meta");
   const state = el("span", "tool-state");
+  const label = TOOL_LABELS[name] || (name && name.startsWith("mcp__") ? "mcp" : String(name || "tool").slice(0, 10));
   const header = el("button", "tool-header",
-    el("span", "tool-icon", xioIcon(kind.icon)),
-    el("span", "tool-title", kind.title),
+    el("span", "tool-title", label),
     target, meta, state, xioIcon("chevron", "chev"));
   header.type = "button";
   header.dataset.toggle = "tool-row";

@@ -46,7 +46,7 @@ const narrowScreen = window.matchMedia("(max-width: 900px)");
 
 document.addEventListener("DOMContentLoaded", async () => {
   initTheme();
-  initTabs();
+  initViews();
   initSidebar();
   initComposer();
   initDelegatedActions();
@@ -91,9 +91,9 @@ function applyTheme(choice) {
   });
 }
 
-// ---------- Tabs ----------
+// ---------- Views ----------
 
-/** Arrow keys move between tabs and activate them (WAI-ARIA tabs pattern). */
+/** Arrow keys move between tabs (the settings dialog still uses the pattern). */
 function initRovingTabs(tabs, activate, orientation) {
   const next = orientation === "vertical" ? ["ArrowDown", "ArrowUp"] : ["ArrowRight", "ArrowLeft"];
   tabs.forEach((tab, i) => {
@@ -111,34 +111,67 @@ function initRovingTabs(tabs, activate, orientation) {
   });
 }
 
-function initTabs() {
-  const tabs = [...document.querySelectorAll(".nav-tab")];
-  tabs.forEach(btn => btn.addEventListener("click", () => activateTab(btn)));
-  initRovingTabs(tabs, activateTab, "horizontal");
-  moveTabIndicator(tabs[0]);
-  window.addEventListener("resize", () => moveTabIndicator(document.querySelector(".nav-tab.active")));
-}
+const mainEl = document.querySelector("main");
+let chatHeaderTitle = t("web.newSession");
 
-function moveTabIndicator(tab) {
-  if (!tab) return;
-  document.querySelector(".nav-tab-indicator").style.transform = `translateX(${tab.offsetLeft}px) scaleX(${tab.offsetWidth})`;
-}
-
-function activateTab(btn) {
-  document.querySelectorAll(".nav-tab").forEach(b => {
-    const on = b === btn;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-selected", on ? "true" : "false");
-    b.tabIndex = on ? 0 : -1;
+/** Views live behind one menu: the console has a spine, not four equal tabs. */
+function initViews() {
+  const trigger = $("view-menu-trigger");
+  const menu = $("view-menu");
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setViewMenuOpen(menu.hidden);
   });
-  moveTabIndicator(btn);
-  document.querySelectorAll(".view-panel").forEach(v => v.classList.remove("active"));
-  document.querySelector("main").dataset.view = btn.dataset.view;
-  $("view-" + btn.dataset.view)?.classList.add("active");
-  if (btn.dataset.view === "trajectory") renderTrajectory(currentTrajectorySteps, currentStats, currentTimelineError);
-  else if (btn.dataset.view === "diff") fetchDiff();
-  else if (btn.dataset.view === "metrics") renderMetrics();
-  else if (btn.dataset.view === "chat") followIfStuck();
+  menu.querySelectorAll("[data-view]").forEach(btn => {
+    btn.addEventListener("click", () => openView(btn.dataset.view));
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".view-menu-wrap")) setViewMenuOpen(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !menu.hidden) {
+      setViewMenuOpen(false);
+      trigger.focus();
+    }
+  });
+  $("btn-back-view").addEventListener("click", () => openView("chat"));
+  $("btn-export-log").addEventListener("click", () => setViewMenuOpen(false));
+  $("header-cost").addEventListener("click", () => openView("metrics"));
+}
+
+function setViewMenuOpen(open) {
+  $("view-menu").hidden = !open;
+  $("view-menu-trigger").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function viewLabel(view) {
+  return { trajectory: t("web.tabTrajectory"), diff: t("web.tabDiff"), metrics: t("web.tabUsage") }[view] || "";
+}
+
+function openView(view) {
+  mainEl.dataset.view = view;
+  document.querySelectorAll(".view-panel").forEach(v => v.classList.toggle("active", v.id === "view-" + view));
+  setViewMenuOpen(false);
+  applyHeader();
+  if (view === "trajectory") renderTrajectory(currentTrajectorySteps, currentStats, currentTimelineError);
+  else if (view === "diff") fetchDiff();
+  else if (view === "metrics") renderMetrics();
+  else if (view === "chat") followIfStuck();
+}
+
+function applyHeader() {
+  const view = mainEl.dataset.view || "chat";
+  const title = view === "chat" ? chatHeaderTitle : viewLabel(view);
+  $("current-session-title").textContent = title;
+  document.title = title + " · XioCode";
+  $("btn-back-view").hidden = view === "chat";
+}
+
+/** Unit-price and spend summary in the header; usage stays one click away. */
+function updateHeaderCost() {
+  const priced = usageTotals.costLabel && usageTotals.costLabel !== t("web.unpriced") && usageTotals.costLabel !== "~unknown";
+  $("header-cost").hidden = !priced;
+  $("header-cost").textContent = priced ? usageTotals.costLabel : "";
 }
 
 // ---------- Sidebar ----------
@@ -344,11 +377,12 @@ async function refreshModelState() {
 function renderModelChip() {
   const provider = currentModel?.provider || "";
   const id = currentModel?.model || "";
-  const text = provider && id ? provider + "/" + id : (id || "—");
-  $("current-model-text").textContent = text;
+  const full = provider && id ? provider + "/" + id : (id || "—");
+  // The header carries the model, not its routing path; the menu shows the rest.
+  $("current-model-text").textContent = (id ? id.split("/").pop() : full);
   $("current-effort-text").textContent = currentModel?.thinkingLevel ? effortLabel(currentModel.thinkingLevel) : "";
   $("model-trigger").title = currentModel
-    ? t("web.modelMenuCurrent", { model: text, effort: effortLabel(currentModel.thinkingLevel) })
+    ? t("web.modelMenuCurrent", { model: full, effort: effortLabel(currentModel.thinkingLevel) })
     : t("web.modelMenuTitle");
 }
 
@@ -477,8 +511,8 @@ function chooseEffort(level) {
 }
 
 function setHeader(title) {
-  $("current-session-title").textContent = title;
-  document.title = title + " · XioCode";
+  chatHeaderTitle = title;
+  applyHeader();
 }
 
 function updateComposerMeta() {

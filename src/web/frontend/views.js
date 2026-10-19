@@ -257,4 +257,5 @@ function renderMetrics() {
     : t("web.usageNoTimeline"))
     + priceNote;
   setMetric("val-turns", String(usageTotals.toolCalls), usageTotals.toolErrors ? t("web.ofWhichFailed", { n: usageTotals.toolErrors }) : t("web.sessionTotal"));
+  updateHeaderCost();
 }
